@@ -7,7 +7,7 @@ import uuid
 import cv2
 import numpy as np
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, Signal
-from PySide6.QtGui import QAction, QColor, QImage, QMouseEvent, QPainter, QPen, QPixmap
+from PySide6.QtGui import QAction, QColor, QImage, QMouseEvent, QKeyEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -55,6 +55,7 @@ class TemplateCanvas(QWidget):
         self._move_offset = QPoint()
 
         self.recognition_overlay: dict[str, list[bool]] = {}
+        self.setFocusPolicy(Qt.StrongFocus)
 
     def set_template(self, template: Template, pixmap: QPixmap):
         self.template = template
@@ -92,6 +93,7 @@ class TemplateCanvas(QWidget):
         if not self.template or not self.pixmap or e.button() != Qt.LeftButton:
             return
         p = self._to_img(e.position().toPoint())
+        self.setFocus()
 
         if self.add_anchor_mode:
             self.template.anchors.append(AnchorPoint(p.x() / self.template.width, p.y() / self.template.height, f"A{len(self.template.anchors)+1}"))
@@ -119,6 +121,7 @@ class TemplateCanvas(QWidget):
         if not self.template:
             return
         p = self._to_img(e.position().toPoint())
+        self.setFocus()
 
         if self._drawing:
             self._current_rect = QRect(self._start, p).normalized(); self.update(); return
@@ -190,6 +193,17 @@ class TemplateCanvas(QWidget):
                 return i, -1
         return -1, -1
 
+
+    def keyPressEvent(self, e: QKeyEvent):
+        if not self.template:
+            return
+        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and 0 <= self.selected_zone < len(self.template.zones):
+            del self.template.zones[self.selected_zone]
+            self.selected_zone = -1
+            self.selection_changed.emit(-1)
+            self.zones_changed.emit()
+            self.update()
+
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
@@ -227,21 +241,47 @@ class TemplateCanvas(QWidget):
 
     def _draw_grid_preview(self, painter: QPainter, zone: Zone):
         assert self.template and zone.grid
-        choices = max(1, len(zone.grid.options))
+        rows, cols = max(1, zone.grid.rows), max(1, zone.grid.cols)
         painter.setPen(QPen(QColor(50, 120, 240), 1))  # blue template bubbles
         for idx, (bx, by) in enumerate(zone.grid.bubble_positions):
             x = bx * self.template.width * self.zoom
             y = by * self.template.height * self.zoom
             painter.drawEllipse(QPointF(x, y), 2.5, 2.5)
-            q_idx = idx // choices
-            c_idx = idx % choices
-            if c_idx == 0:
-                painter.drawText(QPointF(x - 22, y + 4), str(zone.grid.question_start + q_idx))
-                if zone.zone_type == ZoneType.TRUE_FALSE_BLOCK:
-                    spq = int(zone.metadata.get("statements_per_question", 4))
-                    statement_labels = [chr(ord("a") + i) for i in range(spq)]
-                    painter.drawText(QPointF(x - 34, y - 4), statement_labels[q_idx % max(1, spq)])
-            painter.drawText(QPointF(x + 4, y - 2), zone.grid.options[c_idx])
+
+            r = idx // cols
+            c = idx % cols
+
+            if zone.zone_type == ZoneType.MCQ_BLOCK:
+                if c == 0:
+                    painter.drawText(QPointF(x - 22, y + 4), str(zone.grid.question_start + r))
+                if c < len(zone.grid.options):
+                    painter.drawText(QPointF(x + 4, y - 2), zone.grid.options[c])
+
+            elif zone.zone_type == ZoneType.TRUE_FALSE_BLOCK:
+                spq = int(zone.metadata.get("statements_per_question", 4))
+                qpb = int(zone.metadata.get("questions_per_block", 2))
+                q_no = zone.grid.question_start + (r // max(1, spq))
+                stmt_labels = [chr(ord("a") + i) for i in range(spq)]
+                stmt = stmt_labels[r % max(1, spq)]
+                if c == 0:
+                    painter.drawText(QPointF(x - 30, y + 4), f"{q_no}{stmt}")
+                if c < len(zone.grid.options):
+                    painter.drawText(QPointF(x + 4, y - 2), zone.grid.options[c])
+
+            elif zone.zone_type == ZoneType.NUMERIC_BLOCK:
+                digits = int(zone.metadata.get("digits_per_answer", 5))
+                q_no = zone.grid.question_start + (c // max(1, digits))
+                d_no = (c % max(1, digits)) + 1
+                if r == 0:
+                    painter.drawText(QPointF(x - 12, y - 6), f"Q{q_no}D{d_no}")
+                if r < len(zone.grid.options):
+                    painter.drawText(QPointF(x + 4, y - 2), zone.grid.options[r])
+
+            elif zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+                if r == 0:
+                    painter.drawText(QPointF(x - 10, y - 6), f"C{c+1}")
+                if r < len(zone.grid.options):
+                    painter.drawText(QPointF(x + 4, y - 2), zone.grid.options[r])
 
     def _draw_recognition_overlay(self, painter: QPainter, zone: Zone):
         assert self.template and zone.grid
@@ -282,6 +322,7 @@ class TemplateEditorWindow(QMainWindow):
             ("Copy Block", self.copy_block),
             ("Paste Block", self.paste_block),
             ("Duplicate Block", self.duplicate_block),
+            ("Delete Block", self.delete_selected_block),
             ("Snap Grid", self.snap_grid_to_detected_bubbles),
         ]:
             a = QAction(label, self); a.triggered.connect(fn); toolbar.addAction(a)
@@ -458,6 +499,18 @@ class TemplateEditorWindow(QMainWindow):
             return
         self.template.zones.append(self.template_engine.duplicate_zone(z))
         self.canvas.update()
+
+
+    def delete_selected_block(self):
+        z = self._selected_zone()
+        if not self.template or not z:
+            return
+        idx = self.canvas.selected_zone
+        if 0 <= idx < len(self.template.zones):
+            del self.template.zones[idx]
+            self.canvas.selected_zone = -1
+            self.canvas.selection_changed.emit(-1)
+            self.canvas.update()
 
     def snap_grid_to_detected_bubbles(self):
         z = self._selected_zone()

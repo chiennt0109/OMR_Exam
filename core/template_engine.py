@@ -69,10 +69,12 @@ class TemplateEngine:
             rows, cols = 10, 6
             options = [str(i) for i in range(10)]
             logical_questions = cols
+            semantic = "vertical_digits"
         elif zone.zone_type == ZoneType.EXAM_CODE_BLOCK:
             rows, cols = 10, 3
             options = [str(i) for i in range(10)]
             logical_questions = cols
+            semantic = "vertical_digits"
         elif zone.zone_type == ZoneType.MCQ_BLOCK:
             rows = int(params.get("questions_per_block", 10))
             cols = int(params.get("choices_per_question", 4))
@@ -80,6 +82,7 @@ class TemplateEngine:
             if len(options) < cols:
                 options += [chr(65 + i) for i in range(len(options), cols)]
             logical_questions = rows
+            semantic = "row_questions"
         elif zone.zone_type == ZoneType.TRUE_FALSE_BLOCK:
             qpb = int(params.get("questions_per_block", 2))
             spq = int(params.get("statements_per_question", 4))
@@ -87,11 +90,14 @@ class TemplateEngine:
             rows, cols = qpb * spq, cps
             options = ["Đ", "S"][:cps] if cps <= 2 else [str(i) for i in range(cps)]
             logical_questions = rows
+            semantic = "row_statements"
         elif zone.zone_type == ZoneType.NUMERIC_BLOCK:
             digits = int(params.get("digits_per_answer", 5))
-            rows, cols = 10, max(1, digits * max(1, total_questions))
+            qcount = max(1, total_questions)
+            rows, cols = 10, max(1, digits * qcount)
             options = [str(i) for i in range(10)]
             logical_questions = cols
+            semantic = "vertical_digits"
         else:
             return None
 
@@ -105,12 +111,11 @@ class TemplateEngine:
             for c in range(cols):
                 u = (c + 0.5) / max(1, cols)
                 v = (r + 0.5) / max(1, rows)
-                if zone.zone_type in (ZoneType.MCQ_BLOCK, ZoneType.TRUE_FALSE_BLOCK):
-                    # semantic row-oriented: each row is one logical question/statement
-                    v = (r + 0.5) / max(1, rows)
                 u = min(0.999, max(0.001, (u - 0.5) * scale + 0.5 + off_x))
                 v = min(0.999, max(0.001, (v - 0.5) * scale + 0.5 + off_y))
                 bubbles.append(self.bilinear_point(control_points, u, v))
+
+        zone.metadata["semantic_layout"] = semantic
 
         return BubbleGrid(
             rows=rows,
