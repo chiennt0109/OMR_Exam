@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -363,19 +364,25 @@ class TemplateEditorWindow(QMainWindow):
         self.p_spq = QSpinBox(); self.p_spq.setRange(1, 10); self.p_spq.setValue(4)
         self.p_digits = QSpinBox(); self.p_digits.setRange(1, 20); self.p_digits.setValue(5)
         self.p_cps = QSpinBox(); self.p_cps.setRange(2, 5); self.p_cps.setValue(2)
+        self.p_rows = QSpinBox(); self.p_rows.setRange(2, 20); self.p_rows.setValue(10)
+        self.p_columns = QSpinBox(); self.p_columns.setRange(1, 20); self.p_columns.setValue(8)
+        self.p_digit_map = QLineEdit(); self.p_digit_map.setText("0,1,2,3,4,5,6,7,8,9")
 
         self._prop_controls = [
             ("question_start", self.p_qstart), ("total_questions", self.p_total), ("choices_per_question", self.p_choices),
             ("questions_per_column", self.p_qpc), ("column_count", self.p_cols), ("grid_scale", self.p_scale),
             ("offset_x", self.p_ox), ("offset_y", self.p_oy), ("questions_per_block", self.p_qpb),
-            ("statements_per_question", self.p_spq), ("choices_per_statement", self.p_cps), ("digits_per_answer", self.p_digits),
+            ("statements_per_question", self.p_spq), ("choices_per_statement", self.p_cps), ("digits_per_answer", self.p_digits), ("rows", self.p_rows), ("columns", self.p_columns), ("digit_map", self.p_digit_map),
         ]
         self._prop_rows = {}
         for name, widget in self._prop_controls:
             lbl = QLabel(name)
             f.addRow(lbl, widget)
             self._prop_rows[name] = (lbl, widget)
-            widget.valueChanged.connect(self._prop_changed)
+            if hasattr(widget, "valueChanged"):
+                widget.valueChanged.connect(self._prop_changed)
+            else:
+                widget.textChanged.connect(self._prop_changed)
         l.addLayout(f)
         self.btn_regen = QPushButton("Regenerate Grid"); self.btn_regen.clicked.connect(self.regenerate_selected_grid)
         l.addWidget(self.btn_regen); l.addStretch(1)
@@ -394,9 +401,11 @@ class TemplateEditorWindow(QMainWindow):
         elif zone_type == ZoneType.TRUE_FALSE_BLOCK:
             visible.update({"questions_per_block": True, "statements_per_question": True, "choices_per_statement": True})
         elif zone_type == ZoneType.NUMERIC_BLOCK:
-            visible.update({"total_questions": True, "digits_per_answer": True})
-        elif zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
-            pass
+            visible.update({"questions_per_block": True, "digits_per_answer": True, "rows": True, "digit_map": True})
+        elif zone_type == ZoneType.STUDENT_ID_BLOCK:
+            visible.update({"rows": True, "columns": True, "digit_map": True})
+        elif zone_type == ZoneType.EXAM_CODE_BLOCK:
+            visible.update({"rows": True, "columns": True, "digit_map": True})
 
         for name, (lbl, widget) in self._prop_rows.items():
             show = visible.get(name, False)
@@ -417,7 +426,7 @@ class TemplateEditorWindow(QMainWindow):
     def _load_props(self, _idx: int):
         z = self._selected_zone()
         enabled = bool(z and z.zone_type in BLOCK_TYPES)
-        for w in [self.p_qstart, self.p_total, self.p_choices, self.p_qpc, self.p_cols, self.p_scale, self.p_ox, self.p_oy, self.p_qpb, self.p_spq, self.p_cps, self.p_digits, self.btn_regen]:
+        for w in [self.p_qstart, self.p_total, self.p_choices, self.p_qpc, self.p_cols, self.p_scale, self.p_ox, self.p_oy, self.p_qpb, self.p_spq, self.p_cps, self.p_digits, self.p_rows, self.p_columns, self.p_digit_map, self.btn_regen]:
             w.setEnabled(enabled)
         self._apply_block_property_visibility(z.zone_type if z else None)
         if not enabled:
@@ -436,9 +445,12 @@ class TemplateEditorWindow(QMainWindow):
         self.p_spq.setValue(int(md.get("statements_per_question", 4)))
         self.p_cps.setValue(int(md.get("choices_per_statement", 2)))
         self.p_digits.setValue(int(md.get("digits_per_answer", 5)))
+        self.p_rows.setValue(int(md.get("rows", 10)))
+        self.p_columns.setValue(int(md.get("columns", 8)))
+        self.p_digit_map.setText(",".join(str(x) for x in md.get("digit_map", list(range(10)))))
         self._sync = False
 
-    def _prop_changed(self):
+    def _prop_changed(self, *_args):
         if not self._sync:
             self.regenerate_selected_grid(auto=True)
 
@@ -469,11 +481,13 @@ class TemplateEditorWindow(QMainWindow):
             "grid_scale": self.p_scale.value(),
             "bubble_offset_x": self.p_ox.value(),
             "bubble_offset_y": self.p_oy.value(),
-            "questions_per_block": self.p_qpb.value(),
             "statements_per_question": self.p_spq.value(),
             "choices_per_statement": self.p_cps.value(),
             "digits_per_answer": self.p_digits.value(),
             "questions": self.p_total.value(),
+            "rows": self.p_rows.value(),
+            "columns": self.p_columns.value(),
+            "digit_map": ([int(x.strip()) for x in self.p_digit_map.text().split(",") if x.strip().lstrip("-").isdigit()] or list(range(self.p_rows.value()))),
         })
         z.grid = self.template_engine.generate_semantic_grid(z)
         self.canvas.update()
@@ -562,7 +576,7 @@ class TemplateEditorWindow(QMainWindow):
         res = self.omr.process_image(path, self.template)
         self.result_box.setPlainText(
             f"Student ID: {res.student_id or '-'}\nExam Code: {res.exam_code or '-'}\n"
-            f"MCQ: {', '.join([f'Q{k}:{v}' for k, v in sorted(res.answers.items())]) or '(none)'}\n"
+            f"MCQ: {', '.join([f'Q{k}:{v}' for k, v in sorted(res.mcq_answers.items())]) or '(none)'}\n"
             f"TF: {res.true_false_answers or {}}\n"
             f"NUM: {res.numeric_answers or {}}"
         )

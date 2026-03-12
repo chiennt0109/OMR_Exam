@@ -195,11 +195,13 @@ class OMRProcessor:
             for bx, by in grid.bubble_positions
         ], dtype=np.float32)
 
-        scores = self._measure_fill_scores(gray, pts)
+        bubble_radius = int(zone.metadata.get("bubble_radius", 9))
+        scores = self._measure_fill_scores(gray, pts, bubble_radius)
         rows, cols = max(1, grid.rows), max(1, grid.cols)
         mat = scores.reshape(rows, cols) if len(scores) >= rows * cols else np.pad(scores, (0, rows * cols - len(scores)), constant_values=0).reshape(rows, cols)
 
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+            digit_map = zone.metadata.get("digit_map", list(range(rows)))
             digits = []
             confs: list[float] = []
             for c in range(cols):
@@ -208,11 +210,14 @@ class OMRProcessor:
                 top_i = int(order[0])
                 top = float(col_scores[top_i])
                 second = float(col_scores[int(order[1])]) if len(order) > 1 else 0.0
+                if second > self.fill_threshold:
+                    result.errors.append(f"{zone.zone_type.value} column {c+1}: double mark")
                 if top < self.fill_threshold or (top - second) <= self.certainty_margin:
                     digits.append("?")
                     result.errors.append(f"{zone.zone_type.value} column {c+1}: uncertain")
                 else:
-                    digits.append(str(top_i))
+                    mapped = digit_map[top_i] if top_i < len(digit_map) else top_i
+                    digits.append(str(mapped))
                 confs.append(top - second)
             value = "".join(digits)
             if zone.zone_type == ZoneType.EXAM_CODE_BLOCK:
@@ -274,8 +279,9 @@ class OMRProcessor:
             return
 
         if zone.zone_type == ZoneType.NUMERIC_BLOCK:
-            digits_per_answer = int(zone.metadata.get("digits_per_answer", 5))
-            q_count = int(zone.metadata.get("total_questions", zone.metadata.get("questions", 1)))
+            digits_per_answer = int(zone.metadata.get("digits_per_answer", 3))
+            q_count = int(zone.metadata.get("questions_per_block", zone.metadata.get("total_questions", zone.metadata.get("questions", 1))))
+            digit_map = zone.metadata.get("digit_map", list(range(rows)))
             confs: list[float] = []
             for q in range(q_count):
                 digits = []
@@ -288,21 +294,24 @@ class OMRProcessor:
                     top_i = int(order[0])
                     top = float(col_scores[top_i])
                     second = float(col_scores[int(order[1])]) if len(order) > 1 else 0.0
+                    if second > self.fill_threshold:
+                        result.errors.append(f"NUM Q{grid.question_start+q} digit {d+1}: double mark")
                     if top < self.fill_threshold or (top - second) <= self.certainty_margin:
                         digits.append("?")
                         result.errors.append(f"NUM Q{grid.question_start+q} digit {d+1}: uncertain")
                     else:
-                        digits.append(str(top_i))
+                        mapped = digit_map[top_i] if top_i < len(digit_map) else top_i
+                        digits.append(str(mapped))
                     confs.append(top - second)
                 result.numeric_answers[grid.question_start + q] = "".join(digits)
             if confs:
                 result.confidence[f"num:{zone.id}"] = float(np.mean(confs))
             return
 
-    def _measure_fill_scores(self, gray: np.ndarray, centers: np.ndarray) -> np.ndarray:
+    def _measure_fill_scores(self, gray: np.ndarray, centers: np.ndarray, radius: int = 9) -> np.ndarray:
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
         th = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 15, 6)
-        r = 7
+        r = max(3, int(radius))
         yy, xx = np.ogrid[-r:r+1, -r:r+1]
         mask = (xx * xx + yy * yy) <= (r * r)
         area = float(np.count_nonzero(mask))
