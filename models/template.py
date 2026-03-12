@@ -27,7 +27,9 @@ class BubbleGrid:
     rows: int
     cols: int
     question_start: int
+    question_count: int = 0
     options: list[str] = field(default_factory=lambda: ["A", "B", "C", "D", "E"])
+    bubble_positions: list[tuple[float, float]] = field(default_factory=list)
 
 
 @dataclass
@@ -40,6 +42,7 @@ class Zone:
     width: int
     height: int
     grid: BubbleGrid | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def rect(self) -> tuple[int, int, int, int]:
         return self.x, self.y, self.width, self.height
@@ -57,8 +60,8 @@ class Template:
 
     def validate(self) -> list[str]:
         errors: list[str] = []
-        if not (4 <= len(self.anchors) <= 12):
-            errors.append("Template must contain 4-12 anchor points.")
+        if not self.anchors:
+            errors.append("Template must contain at least one anchor point.")
         if not self.zones:
             errors.append("Template must contain at least one zone.")
         return errors
@@ -86,6 +89,7 @@ class Template:
                     width=raw["width"],
                     height=raw["height"],
                     grid=grid,
+                    metadata=raw.get("metadata", {}),
                 )
             )
         return cls(
