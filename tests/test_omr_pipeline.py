@@ -175,6 +175,62 @@ class OMRPipelineTests(unittest.TestCase):
         self.processor.recognize_block(binary, template.zones[0], template, result_stub)
         self.assertEqual(result_stub.numeric_answers.get(1), "-91.3")
 
+    def test_numeric_block_removes_unfilled_placeholders(self):
+        rows, cols = 12, 3
+        bubbles = []
+        for r in range(rows):
+            for c in range(cols):
+                bubbles.append((30 + c * 40, 20 + r * 16))
+
+        template = Template(
+            name="num2",
+            image_path="",
+            width=200,
+            height=240,
+            anchors=[AnchorPoint(0.05, 0.05), AnchorPoint(0.95, 0.05), AnchorPoint(0.95, 0.95), AnchorPoint(0.05, 0.95)],
+            zones=[
+                Zone(
+                    id="num2",
+                    name="num",
+                    zone_type=ZoneType.NUMERIC_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=rows, cols=cols, question_start=1, question_count=1, options=[], bubble_positions=bubbles),
+                    metadata={
+                        "bubble_radius": 5,
+                        "questions_per_block": 1,
+                        "digits_per_answer": 3,
+                        "sign_row": 1,
+                        "decimal_row": 2,
+                        "digit_start_row": 3,
+                        "sign_columns": [1],
+                        "decimal_columns": [2, 3],
+                        "digit_map": list(range(10)),
+                        "sign_symbol": "-",
+                        "decimal_symbol": ",",
+                    },
+                )
+            ],
+        )
+        binary = np.zeros((240, 200), dtype=np.uint8)
+
+        def fill(row: int, col: int) -> None:
+            idx = row * cols + col
+            x, y = bubbles[idx]
+            cv2.circle(binary, (int(x), int(y)), 5, 255, -1)
+
+        fill(0, 0)   # sign
+        fill(11, 0)  # first digit = 9
+        # middle digit intentionally left empty => would become '?'
+        fill(1, 2)   # decimal marker on col 3
+        fill(5, 2)   # third digit = 3
+
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
+        self.processor.recognize_block(binary, template.zones[0], template, result_stub)
+        self.assertEqual(result_stub.numeric_answers.get(1), "-9,3")
+
 
 if __name__ == "__main__":
     unittest.main()
