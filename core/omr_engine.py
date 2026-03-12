@@ -6,7 +6,7 @@ from typing import Callable
 import cv2
 import numpy as np
 
-from models.template import Template, ZoneType
+from models.template import Template, ZoneType, Zone
 
 
 @dataclass
@@ -41,7 +41,8 @@ class OMRProcessor:
         gray = cv2.cvtColor(aligned, cv2.COLOR_BGR2GRAY)
 
         for zone in template.zones:
-            crop = gray[zone.y : zone.y + zone.height, zone.x : zone.x + zone.width]
+            zx, zy, zw, zh = self._zone_to_abs(zone, template.width, template.height)
+            crop = gray[zy : zy + zh, zx : zx + zw]
             if crop.size == 0:
                 result.issues.append(OMRIssue("TEMPLATE_MISMATCH", "Zone outside image", zone.id))
                 continue
@@ -52,7 +53,7 @@ class OMRProcessor:
                     result.issues.append(OMRIssue("UNREADABLE_STUDENT_ID", "Student ID could not be read", zone.id))
             elif zone.zone_type == ZoneType.EXAM_CODE:
                 result.exam_code = self._read_digit_bubbles(crop) or result.exam_code
-            elif zone.zone_type == ZoneType.ANSWER_GRID and zone.grid:
+            elif zone.zone_type in (ZoneType.MCQ_BLOCK, ZoneType.TRUE_FALSE_GROUP, ZoneType.NUMERIC_GRID) and zone.grid:
                 answer, issue = self._detect_single_answer(crop, zone.grid.options)
                 q_no = zone.grid.question_start
                 if answer:
@@ -142,6 +143,16 @@ class OMRProcessor:
         if len(marks) > 1:
             return None, "MULTIPLE_ANSWERS"
         return options[marks[0]], None
+
+
+    def _zone_to_abs(self, zone: Zone, width: int, height: int) -> tuple[int, int, int, int]:
+        if zone.width <= 1.0 and zone.height <= 1.0:
+            x = int(zone.x * width)
+            y = int(zone.y * height)
+            w = max(1, int(zone.width * width))
+            h = max(1, int(zone.height * height))
+            return x, y, w, h
+        return int(zone.x), int(zone.y), int(zone.width), int(zone.height)
 
     def _four_point_transform(self, image: np.ndarray, pts: np.ndarray) -> np.ndarray:
         rect = self._order_points(pts)
