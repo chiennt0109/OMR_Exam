@@ -398,7 +398,8 @@ class OMRProcessor:
 
     def _decode_column_digits(self, mat: np.ndarray, zone: Zone, grid, result: OMRResult) -> tuple[str, list[float]]:
         rows, cols = mat.shape
-        digit_map = zone.metadata.get("digit_map", list(range(rows)))
+        default_digit_map = list(range(10)) if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK) else list(range(rows))
+        digit_map = zone.metadata.get("digit_map", default_digit_map)
         digits: list[str] = []
         confs: list[float] = []
         for c in range(cols):
@@ -497,6 +498,8 @@ class OMRProcessor:
             if decimal_mark is not None and decimal_mark > 0 and decimal_mark <= len(value):
                 value = value[:decimal_mark] + decimal_symbol + value[decimal_mark:]
                 value = value.replace("?", "")
+            else:
+                value = value.rstrip("?")
             if sign_mark is not None:
                 value = sign_symbol + value
             result.numeric_answers[grid.question_start + q] = value

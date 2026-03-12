@@ -322,6 +322,95 @@ class OMRPipelineTests(unittest.TestCase):
         self.processor.recognize_block(binary, template.zones[0], template, result_stub)
         self.assertEqual(result_stub.student_id, "90")
 
+    def test_student_id_default_digit_map_matches_exam_code(self):
+        template = Template(
+            name="sid_default",
+            image_path="",
+            width=200,
+            height=200,
+            anchors=[AnchorPoint(0.05, 0.05), AnchorPoint(0.95, 0.05), AnchorPoint(0.95, 0.95), AnchorPoint(0.05, 0.95)],
+            zones=[
+                Zone(
+                    id="sid_default",
+                    name="sid",
+                    zone_type=ZoneType.STUDENT_ID_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(
+                        rows=10,
+                        cols=1,
+                        question_start=1,
+                        question_count=1,
+                        options=[],
+                        bubble_positions=[(40, 20 + r * 16) for r in range(10)],
+                    ),
+                    metadata={"bubble_radius": 5},
+                )
+            ],
+        )
+        binary = np.zeros((200, 200), dtype=np.uint8)
+        cv2.circle(binary, (40, 20 + 7 * 16), 5, 255, -1)
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
+        self.processor.recognize_block(binary, template.zones[0], template, result_stub)
+        self.assertEqual(result_stub.student_id, "7")
+
+    def test_numeric_block_removes_only_trailing_placeholders_without_decimal(self):
+        rows, cols = 12, 4
+        bubbles = []
+        for r in range(rows):
+            for c in range(cols):
+                bubbles.append((25 + c * 35, 20 + r * 14))
+
+        template = Template(
+            name="num4",
+            image_path="",
+            width=220,
+            height=220,
+            anchors=[AnchorPoint(0.05, 0.05), AnchorPoint(0.95, 0.05), AnchorPoint(0.95, 0.95), AnchorPoint(0.05, 0.95)],
+            zones=[
+                Zone(
+                    id="num4",
+                    name="num",
+                    zone_type=ZoneType.NUMERIC_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=rows, cols=cols, question_start=1, question_count=1, options=[], bubble_positions=bubbles),
+                    metadata={
+                        "bubble_radius": 5,
+                        "questions_per_block": 1,
+                        "digits_per_answer": 4,
+                        "sign_row": 1,
+                        "decimal_row": 2,
+                        "digit_start_row": 3,
+                        "sign_columns": [1],
+                        "decimal_columns": [2, 3],
+                        "digit_map": list(range(10)),
+                        "sign_symbol": "-",
+                        "decimal_symbol": ",",
+                    },
+                )
+            ],
+        )
+        binary = np.zeros((220, 220), dtype=np.uint8)
+
+        def fill(row: int, col: int) -> None:
+            idx = row * cols + col
+            x, y = bubbles[idx]
+            cv2.circle(binary, (int(x), int(y)), 5, 255, -1)
+
+        fill(0, 0)    # sign
+        fill(11, 0)   # first digit 9
+        fill(5, 2)    # third digit 3 (second digit left blank => internal '?')
+        # fourth digit left blank => trailing '?', should be removed
+
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
+        self.processor.recognize_block(binary, template.zones[0], template, result_stub)
+        self.assertEqual(result_stub.numeric_answers.get(1), "-9?3")
+
 
 if __name__ == "__main__":
     unittest.main()
