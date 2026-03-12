@@ -323,18 +323,44 @@ class TemplateEditorWindow(QMainWindow):
         self.p_digits = QSpinBox(); self.p_digits.setRange(1, 20); self.p_digits.setValue(5)
         self.p_cps = QSpinBox(); self.p_cps.setRange(2, 5); self.p_cps.setValue(2)
 
-        for name, widget in [
+        self._prop_controls = [
             ("question_start", self.p_qstart), ("total_questions", self.p_total), ("choices_per_question", self.p_choices),
             ("questions_per_column", self.p_qpc), ("column_count", self.p_cols), ("grid_scale", self.p_scale),
             ("offset_x", self.p_ox), ("offset_y", self.p_oy), ("questions_per_block", self.p_qpb),
             ("statements_per_question", self.p_spq), ("choices_per_statement", self.p_cps), ("digits_per_answer", self.p_digits),
-        ]:
-            f.addRow(name, widget)
+        ]
+        self._prop_rows = {}
+        for name, widget in self._prop_controls:
+            lbl = QLabel(name)
+            f.addRow(lbl, widget)
+            self._prop_rows[name] = (lbl, widget)
             widget.valueChanged.connect(self._prop_changed)
         l.addLayout(f)
         self.btn_regen = QPushButton("Regenerate Grid"); self.btn_regen.clicked.connect(self.regenerate_selected_grid)
         l.addWidget(self.btn_regen); l.addStretch(1)
         return w
+
+
+    def _apply_block_property_visibility(self, zone_type: ZoneType | None) -> None:
+        visible = {
+            "question_start": True,
+            "grid_scale": True,
+            "offset_x": True,
+            "offset_y": True,
+        }
+        if zone_type == ZoneType.MCQ_BLOCK:
+            visible.update({"questions_per_block": True, "choices_per_question": True})
+        elif zone_type == ZoneType.TRUE_FALSE_BLOCK:
+            visible.update({"questions_per_block": True, "statements_per_question": True, "choices_per_statement": True})
+        elif zone_type == ZoneType.NUMERIC_BLOCK:
+            visible.update({"total_questions": True, "digits_per_answer": True})
+        elif zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+            pass
+
+        for name, (lbl, widget) in self._prop_rows.items():
+            show = visible.get(name, False)
+            lbl.setVisible(show)
+            widget.setVisible(show)
 
     def _selected_zone(self) -> Zone | None:
         if not self.template: return None
@@ -352,19 +378,20 @@ class TemplateEditorWindow(QMainWindow):
         enabled = bool(z and z.zone_type in BLOCK_TYPES)
         for w in [self.p_qstart, self.p_total, self.p_choices, self.p_qpc, self.p_cols, self.p_scale, self.p_ox, self.p_oy, self.p_qpb, self.p_spq, self.p_cps, self.p_digits, self.btn_regen]:
             w.setEnabled(enabled)
+        self._apply_block_property_visibility(z.zone_type if z else None)
         if not enabled:
             return
         md = z.metadata
         self._sync = True
         self.p_qstart.setValue(int(md.get("question_start", 1)))
-        self.p_total.setValue(int(md.get("total_questions", 10)))
+        self.p_total.setValue(int(md.get("total_questions", md.get("questions_per_block", 10))))
         self.p_choices.setValue(int(md.get("choices_per_question", 4)))
         self.p_qpc.setValue(int(md.get("questions_per_column", 10)))
         self.p_cols.setValue(int(md.get("column_count", 1)))
         self.p_scale.setValue(float(md.get("grid_scale", 1.0)))
         self.p_ox.setValue(float(md.get("bubble_offset_x", 0.0)))
         self.p_oy.setValue(float(md.get("bubble_offset_y", 0.0)))
-        self.p_qpb.setValue(int(md.get("questions_per_block", 2)))
+        self.p_qpb.setValue(int(md.get("questions_per_block", md.get("total_questions", 10))))
         self.p_spq.setValue(int(md.get("statements_per_question", 4)))
         self.p_cps.setValue(int(md.get("choices_per_statement", 2)))
         self.p_digits.setValue(int(md.get("digits_per_answer", 5)))
@@ -394,6 +421,7 @@ class TemplateEditorWindow(QMainWindow):
         z.metadata.update({
             "question_start": self.p_qstart.value(),
             "total_questions": self.p_total.value(),
+            "questions_per_block": self.p_qpb.value(),
             "choices_per_question": self.p_choices.value(),
             "questions_per_column": self.p_qpc.value(),
             "column_count": self.p_cols.value(),

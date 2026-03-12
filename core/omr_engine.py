@@ -23,15 +23,19 @@ class OMRResult:
     image_path: str
     student_id: str = ""
     exam_code: str = ""
-    answers: dict[int, str] = field(default_factory=dict)
+    mcq_answers: dict[int, str] = field(default_factory=dict)
     true_false_answers: dict[int, dict[str, bool]] = field(default_factory=dict)
     numeric_answers: dict[int, str] = field(default_factory=dict)
+    confidence: dict[str, float] = field(default_factory=dict)
+    errors: list[str] = field(default_factory=list)
     issues: list[OMRIssue] = field(default_factory=list)
 
 
 class OMRProcessor:
-    def __init__(self, fill_threshold: float = 0.42):
+    def __init__(self, fill_threshold: float = 0.40, empty_threshold: float = 0.20, certainty_margin: float = 0.08):
         self.fill_threshold = fill_threshold
+        self.empty_threshold = empty_threshold
+        self.certainty_margin = certainty_margin
 
     def process_image(self, image_path: str | Path, template: Template) -> OMRResult:
         result = OMRResult(image_path=str(image_path))
@@ -54,6 +58,8 @@ class OMRProcessor:
             if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK, ZoneType.MCQ_BLOCK, ZoneType.TRUE_FALSE_BLOCK, ZoneType.NUMERIC_BLOCK):
                 self._recognize_zone(gray, zone, template, result)
 
+        # Backward-compatible alias
+        setattr(result, "answers", result.mcq_answers)
         return result
 
     def process_batch(
@@ -189,70 +195,133 @@ class OMRProcessor:
             for bx, by in grid.bubble_positions
         ], dtype=np.float32)
 
-        filled_scores = self._measure_fill_scores(gray, pts)
-        options = max(1, len(grid.options))
-        question_count = len(filled_scores) // options
+        scores = self._measure_fill_scores(gray, pts)
+        rows, cols = max(1, grid.rows), max(1, grid.cols)
+        mat = scores.reshape(rows, cols) if len(scores) >= rows * cols else np.pad(scores, (0, rows * cols - len(scores)), constant_values=0).reshape(rows, cols)
 
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
             digits = []
-            for q in range(question_count):
-                row_scores = filled_scores[q * options:(q + 1) * options]
-                idx = int(np.argmax(row_scores))
-                digits.append(str(idx))
-            val = "".join(digits)
+            confs: list[float] = []
+            for c in range(cols):
+                col_scores = mat[:, c]
+                order = np.argsort(col_scores)[::-1]
+                top_i = int(order[0])
+                top = float(col_scores[top_i])
+                second = float(col_scores[int(order[1])]) if len(order) > 1 else 0.0
+                if top < self.fill_threshold or (top - second) <= self.certainty_margin:
+                    digits.append("?")
+                    result.errors.append(f"{zone.zone_type.value} column {c+1}: uncertain")
+                else:
+                    digits.append(str(top_i))
+                confs.append(top - second)
+            value = "".join(digits)
             if zone.zone_type == ZoneType.EXAM_CODE_BLOCK:
-                result.exam_code = val
+                result.exam_code = value
+                result.confidence[f"exam_code:{zone.id}"] = float(np.mean(confs)) if confs else 0.0
             else:
-                result.student_id = val
+                result.student_id = value
+                result.confidence[f"student_id:{zone.id}"] = float(np.mean(confs)) if confs else 0.0
             return
 
         if zone.zone_type == ZoneType.MCQ_BLOCK:
-            for q in range(question_count):
-                row_scores = filled_scores[q * options:(q + 1) * options]
-                idx = int(np.argmax(row_scores))
-                result.answers[grid.question_start + q] = grid.options[idx]
+            confs: list[float] = []
+            q_count = min(grid.question_count, rows)
+            for r in range(q_count):
+                row_scores = mat[r, :]
+                order = np.argsort(row_scores)[::-1]
+                top_idx = int(order[0])
+                top = float(row_scores[top_idx])
+                second = float(row_scores[int(order[1])]) if len(order) > 1 else 0.0
+                qno = grid.question_start + r
+                if top < self.fill_threshold or (top - second) <= self.certainty_margin:
+                    result.errors.append(f"MCQ Q{qno}: uncertain")
+                    continue
+                if second > self.fill_threshold:
+                    result.errors.append(f"MCQ Q{qno}: double mark")
+                    continue
+                labels = grid.options if grid.options else [chr(65 + i) for i in range(cols)]
+                result.mcq_answers[qno] = labels[top_idx]
+                confs.append(top - second)
+            if confs:
+                result.confidence[f"mcq:{zone.id}"] = float(np.mean(confs))
             return
 
         if zone.zone_type == ZoneType.TRUE_FALSE_BLOCK:
             qpb = int(zone.metadata.get("questions_per_block", 2))
             spq = int(zone.metadata.get("statements_per_question", 4))
             cps = int(zone.metadata.get("choices_per_statement", 2))
-            statement_labels = [chr(ord("a") + i) for i in range(spq)]
+            confs: list[float] = []
+            labels = [chr(ord("a") + i) for i in range(spq)]
             for q in range(qpb):
-                result.true_false_answers[grid.question_start + q] = {}
-                for s in range(spq):
-                    idx = q * spq + s
-                    if idx >= question_count:
+                qno = grid.question_start + q
+                result.true_false_answers[qno] = {}
+                for sidx in range(spq):
+                    r = q * spq + sidx
+                    if r >= rows:
                         break
-                    row_scores = filled_scores[idx * options:(idx + 1) * options]
-                    pick = int(np.argmax(row_scores))
-                    result.true_false_answers[grid.question_start + q][statement_labels[s]] = bool(pick == 0) if cps == 2 else bool(pick)
+                    row_scores = mat[r, :max(1, cps)]
+                    order = np.argsort(row_scores)[::-1]
+                    top = float(row_scores[int(order[0])])
+                    second = float(row_scores[int(order[1])]) if len(order) > 1 else 0.0
+                    if top < self.fill_threshold or second > self.fill_threshold:
+                        result.errors.append(f"TF Q{qno}{labels[sidx]}: uncertain/double")
+                        continue
+                    pick = int(order[0])
+                    result.true_false_answers[qno][labels[sidx]] = bool(pick == 0)
+                    confs.append(top - second)
+            if confs:
+                result.confidence[f"tf:{zone.id}"] = float(np.mean(confs))
             return
 
         if zone.zone_type == ZoneType.NUMERIC_BLOCK:
             digits_per_answer = int(zone.metadata.get("digits_per_answer", 5))
-            q_count = int(zone.metadata.get("questions", 5))
+            q_count = int(zone.metadata.get("total_questions", zone.metadata.get("questions", 1)))
+            confs: list[float] = []
             for q in range(q_count):
-                digs = []
+                digits = []
                 for d in range(digits_per_answer):
-                    idx = q * digits_per_answer + d
-                    if idx >= question_count:
+                    c = q * digits_per_answer + d
+                    if c >= cols:
                         break
-                    row_scores = filled_scores[idx * options:(idx + 1) * options]
-                    digs.append(str(int(np.argmax(row_scores))))
-                result.numeric_answers[grid.question_start + q] = "".join(digs)
+                    col_scores = mat[:, c]
+                    order = np.argsort(col_scores)[::-1]
+                    top_i = int(order[0])
+                    top = float(col_scores[top_i])
+                    second = float(col_scores[int(order[1])]) if len(order) > 1 else 0.0
+                    if top < self.fill_threshold or (top - second) <= self.certainty_margin:
+                        digits.append("?")
+                        result.errors.append(f"NUM Q{grid.question_start+q} digit {d+1}: uncertain")
+                    else:
+                        digits.append(str(top_i))
+                    confs.append(top - second)
+                result.numeric_answers[grid.question_start + q] = "".join(digits)
+            if confs:
+                result.confidence[f"num:{zone.id}"] = float(np.mean(confs))
             return
 
     def _measure_fill_scores(self, gray: np.ndarray, centers: np.ndarray) -> np.ndarray:
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
         th = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 15, 6)
-        r = 6
+        r = 7
+        yy, xx = np.ogrid[-r:r+1, -r:r+1]
+        mask = (xx * xx + yy * yy) <= (r * r)
+        area = float(np.count_nonzero(mask))
+
         scores = np.zeros((len(centers),), dtype=np.float32)
+        h, w = th.shape[:2]
         for i, (x, y) in enumerate(centers.astype(int)):
-            x0, y0 = max(0, x - r), max(0, y - r)
-            x1, y1 = min(th.shape[1], x + r), min(th.shape[0], y + r)
-            roi = th[y0:y1, x0:x1]
-            scores[i] = 0.0 if roi.size == 0 else float(np.count_nonzero(roi)) / float(roi.size)
+            x0, y0 = x - r, y - r
+            x1, y1 = x + r + 1, y + r + 1
+            if x0 < 0 or y0 < 0 or x1 > w or y1 > h:
+                x0c, y0c = max(0, x0), max(0, y0)
+                x1c, y1c = min(w, x1), min(h, y1)
+                roi = th[y0c:y1c, x0c:x1c]
+                m = mask[(y0c - y0):(y1c - y0), (x0c - x0):(x1c - x0)]
+                den = float(np.count_nonzero(m))
+                scores[i] = 0.0 if roi.size == 0 or den == 0 else float(np.count_nonzero(roi[m])) / den
+            else:
+                roi = th[y0:y1, x0:x1]
+                scores[i] = float(np.count_nonzero(roi[mask])) / area
         return scores
 
     def _four_point_transform(self, image: np.ndarray, pts: np.ndarray) -> np.ndarray:

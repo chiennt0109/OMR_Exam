@@ -62,26 +62,36 @@ class TemplateEngine:
         params = zone.metadata
         control_points = self.ensure_control_points(zone)
 
+        question_start = int(params.get("question_start", 1))
+        total_questions = int(params.get("total_questions", 1))
+
         if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
-            cols, rows, options, q_count = 6, 10, [str(i) for i in range(10)], 6
+            rows, cols = 10, 6
+            options = [str(i) for i in range(10)]
+            logical_questions = cols
         elif zone.zone_type == ZoneType.EXAM_CODE_BLOCK:
-            cols, rows, options, q_count = 3, 10, [str(i) for i in range(10)], 3
+            rows, cols = 10, 3
+            options = [str(i) for i in range(10)]
+            logical_questions = cols
         elif zone.zone_type == ZoneType.MCQ_BLOCK:
-            q_count = int(params.get("total_questions", 10))
-            options = list(params.get("choice_labels", ["A", "B", "C", "D"]))
-            cols = int(params.get("column_count", 1))
-            rows = int(params.get("questions_per_column", max(1, q_count // max(1, cols))))
+            rows = int(params.get("questions_per_block", 10))
+            cols = int(params.get("choices_per_question", 4))
+            options = list(params.get("choice_labels", ["A", "B", "C", "D"]))[:cols]
+            if len(options) < cols:
+                options += [chr(65 + i) for i in range(len(options), cols)]
+            logical_questions = rows
         elif zone.zone_type == ZoneType.TRUE_FALSE_BLOCK:
             qpb = int(params.get("questions_per_block", 2))
             spq = int(params.get("statements_per_question", 4))
             cps = int(params.get("choices_per_statement", 2))
-            q_count = qpb * spq
-            rows, cols, options = q_count, cps, ["T", "F"][:cps] if cps <= 2 else [str(i) for i in range(cps)]
+            rows, cols = qpb * spq, cps
+            options = ["Đ", "S"][:cps] if cps <= 2 else [str(i) for i in range(cps)]
+            logical_questions = rows
         elif zone.zone_type == ZoneType.NUMERIC_BLOCK:
-            q_count = int(params.get("questions", 5))
             digits = int(params.get("digits_per_answer", 5))
-            q_count = q_count * digits
-            rows, cols, options = q_count, 10, [str(i) for i in range(10)]
+            rows, cols = 10, max(1, digits * max(1, total_questions))
+            options = [str(i) for i in range(10)]
+            logical_questions = cols
         else:
             return None
 
@@ -90,24 +100,23 @@ class TemplateEngine:
         off_y = float(params.get("bubble_offset_y", 0.0))
 
         bubbles: list[tuple[float, float]] = []
-        for q in range(q_count):
-            block_col = q // max(1, rows)
-            row = q % max(1, rows)
-            if block_col >= max(1, cols):
-                break
-            base_u = (block_col + 0.5) / max(1, cols)
-            base_v = (row + 0.5) / max(1, rows)
-            for c in range(len(options)):
-                du = ((c + 0.5) / max(1, len(options)) - 0.5) * (1 / max(1, cols)) * scale
-                u = min(0.999, max(0.001, base_u + du + off_x))
-                v = min(0.999, max(0.001, base_v + off_y))
+
+        for r in range(rows):
+            for c in range(cols):
+                u = (c + 0.5) / max(1, cols)
+                v = (r + 0.5) / max(1, rows)
+                if zone.zone_type in (ZoneType.MCQ_BLOCK, ZoneType.TRUE_FALSE_BLOCK):
+                    # semantic row-oriented: each row is one logical question/statement
+                    v = (r + 0.5) / max(1, rows)
+                u = min(0.999, max(0.001, (u - 0.5) * scale + 0.5 + off_x))
+                v = min(0.999, max(0.001, (v - 0.5) * scale + 0.5 + off_y))
                 bubbles.append(self.bilinear_point(control_points, u, v))
 
         return BubbleGrid(
-            rows=max(1, rows),
-            cols=max(1, cols),
-            question_start=int(params.get("question_start", 1)),
-            question_count=max(1, len(bubbles) // max(1, len(options))),
+            rows=rows,
+            cols=cols,
+            question_start=question_start,
+            question_count=logical_questions,
             options=options,
             bubble_positions=bubbles,
         )
