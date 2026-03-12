@@ -496,9 +496,9 @@ class OMRProcessor:
             value = "".join(chars)
             if decimal_mark is not None and decimal_mark > 0 and decimal_mark <= len(value):
                 value = value[:decimal_mark] + decimal_symbol + value[decimal_mark:]
+                value = value.replace("?", "")
             if sign_mark is not None:
                 value = sign_symbol + value
-            value = value.replace("?", "")
             result.numeric_answers[grid.question_start + q] = value
 
         result.confidence_scores[f"num:{zone.id}"] = float(np.mean(confs)) if confs else 0.0

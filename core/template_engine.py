@@ -68,7 +68,7 @@ class TemplateEngine:
         if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
             rows = int(params.get("rows", 10))
             cols = int(params.get("columns", 8))
-            digit_map = params.get("digit_map", list(range(rows)))
+            digit_map = params.get("digit_map", list(range(10)))
             options = [str(d) for d in digit_map[:rows]]
             logical_questions = cols
             semantic = "vertical_digits"
@@ -76,7 +76,7 @@ class TemplateEngine:
         elif zone.zone_type == ZoneType.EXAM_CODE_BLOCK:
             rows = int(params.get("rows", 10))
             cols = int(params.get("columns", 4))
-            digit_map = params.get("digit_map", list(range(rows)))
+            digit_map = params.get("digit_map", list(range(10)))
             options = [str(d) for d in digit_map[:rows]]
             logical_questions = cols
             semantic = "vertical_digits"

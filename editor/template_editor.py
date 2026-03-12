@@ -471,7 +471,8 @@ class TemplateEditorWindow(QMainWindow):
         default_cols = 8 if z.zone_type == ZoneType.STUDENT_ID_BLOCK else 4 if z.zone_type == ZoneType.EXAM_CODE_BLOCK else 8
         self.p_rows.setValue(int(md.get("rows", default_rows)))
         self.p_columns.setValue(int(md.get("columns", default_cols)))
-        self.p_digit_map.setText(",".join(str(x) for x in md.get("digit_map", list(range(self.p_rows.value())))))
+        default_digit_map = list(range(10)) if z.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK) else list(range(self.p_rows.value()))
+        self.p_digit_map.setText(",".join(str(x) for x in md.get("digit_map", default_digit_map)))
         self.p_sign_row.setValue(int(md.get("sign_row", 1)))
         self.p_decimal_row.setValue(int(md.get("decimal_row", 2)))
         self.p_digit_start_row.setValue(int(md.get("digit_start_row", 3)))
@@ -558,7 +559,10 @@ class TemplateEditorWindow(QMainWindow):
             "questions": self.p_total.value(),
             "rows": self.p_rows.value(),
             "columns": self.p_columns.value(),
-            "digit_map": ([int(x.strip()) for x in self.p_digit_map.text().split(",") if x.strip().lstrip("-").isdigit()] or list(range(self.p_rows.value()))),
+            "digit_map": (
+                [int(x.strip()) for x in self.p_digit_map.text().split(",") if x.strip().lstrip("-").isdigit()]
+                or (list(range(10)) if z.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK) else list(range(self.p_rows.value())))
+            ),
             "sign_row": self.p_sign_row.value(),
             "decimal_row": self.p_decimal_row.value(),
             "digit_start_row": self.p_digit_start_row.value(),
