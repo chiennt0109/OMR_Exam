@@ -51,7 +51,7 @@ class OMRProcessor:
         for zone in template.zones:
             if zone.zone_type == ZoneType.ANCHOR:
                 continue
-            if zone.zone_type in (ZoneType.STUDENT_ID, ZoneType.EXAM_CODE, ZoneType.MCQ_BLOCK, ZoneType.TRUE_FALSE_BLOCK, ZoneType.NUMERIC_BLOCK, ZoneType.ID_BLOCK):
+            if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK, ZoneType.MCQ_BLOCK, ZoneType.TRUE_FALSE_BLOCK, ZoneType.NUMERIC_BLOCK):
                 self._recognize_zone(gray, zone, template, result)
 
         return result
@@ -193,14 +193,14 @@ class OMRProcessor:
         options = max(1, len(grid.options))
         question_count = len(filled_scores) // options
 
-        if zone.zone_type in (ZoneType.STUDENT_ID, ZoneType.EXAM_CODE, ZoneType.ID_BLOCK):
+        if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
             digits = []
             for q in range(question_count):
                 row_scores = filled_scores[q * options:(q + 1) * options]
                 idx = int(np.argmax(row_scores))
                 digits.append(str(idx))
             val = "".join(digits)
-            if zone.zone_type == ZoneType.EXAM_CODE:
+            if zone.zone_type == ZoneType.EXAM_CODE_BLOCK:
                 result.exam_code = val
             else:
                 result.student_id = val
@@ -216,7 +216,8 @@ class OMRProcessor:
         if zone.zone_type == ZoneType.TRUE_FALSE_BLOCK:
             qpb = int(zone.metadata.get("questions_per_block", 2))
             spq = int(zone.metadata.get("statements_per_question", 4))
-            statement_labels = ["a", "b", "c", "d"]
+            cps = int(zone.metadata.get("choices_per_statement", 2))
+            statement_labels = [chr(ord("a") + i) for i in range(spq)]
             for q in range(qpb):
                 result.true_false_answers[grid.question_start + q] = {}
                 for s in range(spq):
@@ -225,7 +226,7 @@ class OMRProcessor:
                         break
                     row_scores = filled_scores[idx * options:(idx + 1) * options]
                     pick = int(np.argmax(row_scores))
-                    result.true_false_answers[grid.question_start + q][statement_labels[s]] = bool(pick == 0)
+                    result.true_false_answers[grid.question_start + q][statement_labels[s]] = bool(pick == 0) if cps == 2 else bool(pick)
             return
 
         if zone.zone_type == ZoneType.NUMERIC_BLOCK:

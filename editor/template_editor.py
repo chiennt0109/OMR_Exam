@@ -30,7 +30,7 @@ from core.omr_engine import OMRProcessor
 from core.template_engine import TemplateEngine
 from models.template import AnchorPoint, Template, Zone, ZoneType
 
-BLOCK_TYPES = {ZoneType.STUDENT_ID, ZoneType.EXAM_CODE, ZoneType.MCQ_BLOCK, ZoneType.TRUE_FALSE_BLOCK, ZoneType.NUMERIC_BLOCK, ZoneType.ID_BLOCK}
+BLOCK_TYPES = {ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK, ZoneType.MCQ_BLOCK, ZoneType.TRUE_FALSE_BLOCK, ZoneType.NUMERIC_BLOCK}
 
 
 class TemplateCanvas(QWidget):
@@ -238,8 +238,9 @@ class TemplateCanvas(QWidget):
             if c_idx == 0:
                 painter.drawText(QPointF(x - 22, y + 4), str(zone.grid.question_start + q_idx))
                 if zone.zone_type == ZoneType.TRUE_FALSE_BLOCK:
-                    statement_labels = ["a", "b", "c", "d"]
-                    painter.drawText(QPointF(x - 34, y - 4), statement_labels[q_idx % 4])
+                    spq = int(zone.metadata.get("statements_per_question", 4))
+                    statement_labels = [chr(ord("a") + i) for i in range(spq)]
+                    painter.drawText(QPointF(x - 34, y - 4), statement_labels[q_idx % max(1, spq)])
             painter.drawText(QPointF(x + 4, y - 2), zone.grid.options[c_idx])
 
     def _draw_recognition_overlay(self, painter: QPainter, zone: Zone):
@@ -290,7 +291,7 @@ class TemplateEditorWindow(QMainWindow):
         toolbar.addWidget(self.anchor_btn)
 
         toolbar.addWidget(QLabel(" Zone Type: "))
-        self.zone_type = QComboBox(); self.zone_type.addItems([z.value for z in [ZoneType.STUDENT_ID, ZoneType.EXAM_CODE, ZoneType.MCQ_BLOCK, ZoneType.TRUE_FALSE_BLOCK, ZoneType.NUMERIC_BLOCK, ZoneType.ID_BLOCK]])
+        self.zone_type = QComboBox(); self.zone_type.addItems([z.value for z in [ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK, ZoneType.MCQ_BLOCK, ZoneType.TRUE_FALSE_BLOCK, ZoneType.NUMERIC_BLOCK]])
         self.zone_type.currentTextChanged.connect(lambda t: setattr(self.canvas, "current_zone_type", ZoneType(t)))
         toolbar.addWidget(self.zone_type)
 
@@ -320,12 +321,13 @@ class TemplateEditorWindow(QMainWindow):
         self.p_qpb = QSpinBox(); self.p_qpb.setRange(1, 20); self.p_qpb.setValue(2)
         self.p_spq = QSpinBox(); self.p_spq.setRange(1, 10); self.p_spq.setValue(4)
         self.p_digits = QSpinBox(); self.p_digits.setRange(1, 20); self.p_digits.setValue(5)
+        self.p_cps = QSpinBox(); self.p_cps.setRange(2, 5); self.p_cps.setValue(2)
 
         for name, widget in [
             ("question_start", self.p_qstart), ("total_questions", self.p_total), ("choices_per_question", self.p_choices),
             ("questions_per_column", self.p_qpc), ("column_count", self.p_cols), ("grid_scale", self.p_scale),
             ("offset_x", self.p_ox), ("offset_y", self.p_oy), ("questions_per_block", self.p_qpb),
-            ("statements_per_question", self.p_spq), ("digits_per_answer", self.p_digits),
+            ("statements_per_question", self.p_spq), ("choices_per_statement", self.p_cps), ("digits_per_answer", self.p_digits),
         ]:
             f.addRow(name, widget)
             widget.valueChanged.connect(self._prop_changed)
@@ -348,7 +350,7 @@ class TemplateEditorWindow(QMainWindow):
     def _load_props(self, _idx: int):
         z = self._selected_zone()
         enabled = bool(z and z.zone_type in BLOCK_TYPES)
-        for w in [self.p_qstart, self.p_total, self.p_choices, self.p_qpc, self.p_cols, self.p_scale, self.p_ox, self.p_oy, self.p_qpb, self.p_spq, self.p_digits, self.btn_regen]:
+        for w in [self.p_qstart, self.p_total, self.p_choices, self.p_qpc, self.p_cols, self.p_scale, self.p_ox, self.p_oy, self.p_qpb, self.p_spq, self.p_cps, self.p_digits, self.btn_regen]:
             w.setEnabled(enabled)
         if not enabled:
             return
@@ -364,6 +366,7 @@ class TemplateEditorWindow(QMainWindow):
         self.p_oy.setValue(float(md.get("bubble_offset_y", 0.0)))
         self.p_qpb.setValue(int(md.get("questions_per_block", 2)))
         self.p_spq.setValue(int(md.get("statements_per_question", 4)))
+        self.p_cps.setValue(int(md.get("choices_per_statement", 2)))
         self.p_digits.setValue(int(md.get("digits_per_answer", 5)))
         self._sync = False
 
@@ -399,6 +402,7 @@ class TemplateEditorWindow(QMainWindow):
             "bubble_offset_y": self.p_oy.value(),
             "questions_per_block": self.p_qpb.value(),
             "statements_per_question": self.p_spq.value(),
+            "choices_per_statement": self.p_cps.value(),
             "digits_per_answer": self.p_digits.value(),
             "questions": self.p_total.value(),
         })

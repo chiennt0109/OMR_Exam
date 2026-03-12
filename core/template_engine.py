@@ -62,9 +62,9 @@ class TemplateEngine:
         params = zone.metadata
         control_points = self.ensure_control_points(zone)
 
-        if zone.zone_type == ZoneType.STUDENT_ID:
+        if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
             cols, rows, options, q_count = 6, 10, [str(i) for i in range(10)], 6
-        elif zone.zone_type == ZoneType.EXAM_CODE:
+        elif zone.zone_type == ZoneType.EXAM_CODE_BLOCK:
             cols, rows, options, q_count = 3, 10, [str(i) for i in range(10)], 3
         elif zone.zone_type == ZoneType.MCQ_BLOCK:
             q_count = int(params.get("total_questions", 10))
@@ -74,8 +74,9 @@ class TemplateEngine:
         elif zone.zone_type == ZoneType.TRUE_FALSE_BLOCK:
             qpb = int(params.get("questions_per_block", 2))
             spq = int(params.get("statements_per_question", 4))
+            cps = int(params.get("choices_per_statement", 2))
             q_count = qpb * spq
-            rows, cols, options = q_count, 2, ["T", "F"]
+            rows, cols, options = q_count, cps, ["T", "F"][:cps] if cps <= 2 else [str(i) for i in range(cps)]
         elif zone.zone_type == ZoneType.NUMERIC_BLOCK:
             q_count = int(params.get("questions", 5))
             digits = int(params.get("digits_per_answer", 5))

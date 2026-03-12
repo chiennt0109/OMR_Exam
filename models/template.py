@@ -9,12 +9,11 @@ from typing import Any
 
 class ZoneType(str, Enum):
     ANCHOR = "ANCHOR"
-    STUDENT_ID = "STUDENT_ID"
-    EXAM_CODE = "EXAM_CODE"
+    STUDENT_ID_BLOCK = "STUDENT_ID_BLOCK"
+    EXAM_CODE_BLOCK = "EXAM_CODE_BLOCK"
     MCQ_BLOCK = "MCQ_BLOCK"
     TRUE_FALSE_BLOCK = "TRUE_FALSE_BLOCK"
     NUMERIC_BLOCK = "NUMERIC_BLOCK"
-    ID_BLOCK = "ID_BLOCK"
 
 
 @dataclass
@@ -81,6 +80,9 @@ class Template:
         legacy = {
             "TRUE_FALSE_GROUP": "TRUE_FALSE_BLOCK",
             "NUMERIC_GRID": "NUMERIC_BLOCK",
+            "STUDENT_ID": "STUDENT_ID_BLOCK",
+            "EXAM_CODE": "EXAM_CODE_BLOCK",
+            "ID_BLOCK": "STUDENT_ID_BLOCK",
         }
         anchors = [AnchorPoint(**a) for a in data.get("anchors", [])]
         zones: list[Zone] = []

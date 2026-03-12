@@ -7,7 +7,7 @@ Desktop Optical Mark Recognition (OMR) exam grading system built with **Python +
 ### 1) Paper Template Editor
 - Load blank exam paper image.
 - Define anchors interactively (unlimited), recognition zones, and bubble grids.
-- Zone types: `ANCHOR`, `STUDENT_ID`, `EXAM_CODE`, `MCQ_BLOCK`, `TRUE_FALSE_BLOCK`, `NUMERIC_BLOCK`, `ID_BLOCK`.
+- Zone types: `ANCHOR`, `STUDENT_ID_BLOCK`, `EXAM_CODE_BLOCK`, `MCQ_BLOCK`, `TRUE_FALSE_BLOCK`, `NUMERIC_BLOCK`.
 - Zoom/pan canvas.
 - Draw rectangle zones with click-drag, then move/resize/delete them.
 - Deformable grid engine with 4 corner control points, bilinear warping, property-based regeneration, and snap-to-bubbles tools.
