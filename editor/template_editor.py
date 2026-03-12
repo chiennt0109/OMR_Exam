@@ -335,7 +335,7 @@ class TemplateEditorWindow(QMainWindow):
 
         toolbar.addWidget(QLabel(" Zone Type: "))
         self.zone_type = QComboBox(); self.zone_type.addItems([z.value for z in [ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK, ZoneType.MCQ_BLOCK, ZoneType.TRUE_FALSE_BLOCK, ZoneType.NUMERIC_BLOCK]])
-        self.zone_type.currentTextChanged.connect(lambda t: setattr(self.canvas, "current_zone_type", ZoneType(t)))
+        self.zone_type.currentTextChanged.connect(self._on_zone_type_changed)
         toolbar.addWidget(self.zone_type)
 
         zin = QAction("Zoom +", self); zin.triggered.connect(lambda: self.canvas.set_zoom(self.canvas.zoom * 1.15)); toolbar.addAction(zin)
@@ -445,6 +445,26 @@ class TemplateEditorWindow(QMainWindow):
             self.regenerate_selected_grid(auto=True)
             self.preview_template()
 
+    def _on_zone_type_changed(self, text: str):
+        zt = ZoneType(text)
+        self.canvas.current_zone_type = zt
+        z = self._selected_zone()
+        if not z or z.zone_type == zt:
+            return
+
+        z.zone_type = zt
+        if zt == ZoneType.STUDENT_ID_BLOCK:
+            z.metadata.setdefault("rows", 10)
+            z.metadata.setdefault("columns", 8)
+            z.metadata.setdefault("digit_map", list(range(10)))
+        elif zt == ZoneType.EXAM_CODE_BLOCK:
+            z.metadata.setdefault("rows", 10)
+            z.metadata.setdefault("columns", 4)
+            z.metadata.setdefault("digit_map", list(range(10)))
+        self.regenerate_selected_grid(auto=True)
+        self._load_props(self.canvas.selected_zone)
+        self.canvas.update()
+
     def _load_props(self, _idx: int):
         z = self._selected_zone()
         enabled = bool(z and z.zone_type in BLOCK_TYPES)
@@ -455,6 +475,7 @@ class TemplateEditorWindow(QMainWindow):
             return
         md = z.metadata
         self._sync = True
+        self.zone_type.setCurrentText(z.zone_type.value)
         self.p_qstart.setValue(int(md.get("question_start", 1)))
         self.p_total.setValue(int(md.get("total_questions", md.get("questions_per_block", 10))))
         self.p_choices.setValue(int(md.get("choices_per_question", 4)))
