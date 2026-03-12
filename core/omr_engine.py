@@ -53,7 +53,7 @@ class OMRProcessor:
                     result.issues.append(OMRIssue("UNREADABLE_STUDENT_ID", "Student ID could not be read", zone.id))
             elif zone.zone_type == ZoneType.EXAM_CODE:
                 result.exam_code = self._read_digit_bubbles(crop) or result.exam_code
-            elif zone.zone_type in (ZoneType.MCQ_BLOCK, ZoneType.TRUE_FALSE_GROUP, ZoneType.NUMERIC_GRID) and zone.grid:
+            elif zone.zone_type in (ZoneType.MCQ_BLOCK, ZoneType.TRUE_FALSE_BLOCK, ZoneType.NUMERIC_BLOCK, ZoneType.ID_BLOCK) and zone.grid:
                 answer, issue = self._detect_single_answer(crop, zone.grid.options)
                 q_no = zone.grid.question_start
                 if answer:

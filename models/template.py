@@ -12,8 +12,9 @@ class ZoneType(str, Enum):
     STUDENT_ID = "STUDENT_ID"
     EXAM_CODE = "EXAM_CODE"
     MCQ_BLOCK = "MCQ_BLOCK"
-    TRUE_FALSE_GROUP = "TRUE_FALSE_GROUP"
-    NUMERIC_GRID = "NUMERIC_GRID"
+    TRUE_FALSE_BLOCK = "TRUE_FALSE_BLOCK"
+    NUMERIC_BLOCK = "NUMERIC_BLOCK"
+    ID_BLOCK = "ID_BLOCK"
 
 
 @dataclass
@@ -30,7 +31,7 @@ class BubbleGrid:
     question_start: int
     question_count: int = 0
     options: list[str] = field(default_factory=list)
-    bubble_positions: list[tuple[float, float]] = field(default_factory=list)  # relative coordinates
+    bubble_positions: list[tuple[float, float]] = field(default_factory=list)
 
 
 @dataclass
@@ -60,14 +61,11 @@ class Template:
         errors: list[str] = []
         if not self.anchors:
             errors.append("Template must contain at least one anchor point.")
-        for a in self.anchors:
-            if not (0.0 <= a.x <= 1.0 and 0.0 <= a.y <= 1.0):
-                errors.append(f"Anchor {a.name or '?'} is outside relative bounds [0,1].")
+        if not self.zones:
+            errors.append("Template must contain at least one recognition zone.")
         for z in self.zones:
             if not (0.0 <= z.x <= 1.0 and 0.0 <= z.y <= 1.0 and 0.0 < z.width <= 1.0 and 0.0 < z.height <= 1.0):
                 errors.append(f"Zone {z.name} has invalid relative geometry.")
-        if not self.zones:
-            errors.append("Template must contain at least one recognition zone.")
         return errors
 
     def to_dict(self) -> dict[str, Any]:
@@ -80,15 +78,20 @@ class Template:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Template":
+        legacy = {
+            "TRUE_FALSE_GROUP": "TRUE_FALSE_BLOCK",
+            "NUMERIC_GRID": "NUMERIC_BLOCK",
+        }
         anchors = [AnchorPoint(**a) for a in data.get("anchors", [])]
         zones: list[Zone] = []
         for raw in data.get("zones", []):
             grid = BubbleGrid(**raw["grid"]) if raw.get("grid") else None
+            zt_raw = legacy.get(raw["zone_type"], raw["zone_type"])
             zones.append(
                 Zone(
                     id=raw["id"],
                     name=raw["name"],
-                    zone_type=ZoneType(raw["zone_type"]),
+                    zone_type=ZoneType(zt_raw),
                     x=float(raw["x"]),
                     y=float(raw["y"]),
                     width=float(raw["width"]),
