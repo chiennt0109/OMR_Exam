@@ -70,6 +70,47 @@ class OMRPipelineTests(unittest.TestCase):
         self.processor.recognize_block(binary, template.zones[0], template, result_stub)
         self.assertEqual(result_stub.mcq_answers.get(1), "C")
 
+    def test_legacy_template_absolute_coordinates_are_converted(self):
+        raw = {
+            "name": "legacy",
+            "image_path": "sheet.png",
+            "width": 1000,
+            "height": 2000,
+            "metadata": {"coordinate_mode": "absolute"},
+            "anchors": [{"x": 100, "y": 200, "name": "A1"}],
+            "zones": [
+                {
+                    "id": "z1",
+                    "name": "Z",
+                    "zone_type": "MCQ_BLOCK",
+                    "x": 100,
+                    "y": 300,
+                    "width": 400,
+                    "height": 500,
+                    "grid": {
+                        "rows": 1,
+                        "cols": 2,
+                        "question_start": 1,
+                        "question_count": 1,
+                        "options": ["A", "B"],
+                        "bubble_positions": [[200, 500], [300, 500]],
+                    },
+                    "metadata": {},
+                }
+            ],
+        }
+
+        tpl = Template.from_dict(raw)
+        self.assertAlmostEqual(tpl.anchors[0].x, 0.1, places=4)
+        self.assertAlmostEqual(tpl.anchors[0].y, 0.1, places=4)
+        z = tpl.zones[0]
+        self.assertAlmostEqual(z.x, 0.1, places=4)
+        self.assertAlmostEqual(z.y, 0.15, places=4)
+        self.assertAlmostEqual(z.width, 0.4, places=4)
+        self.assertAlmostEqual(z.height, 0.25, places=4)
+        self.assertAlmostEqual(z.grid.bubble_positions[0][0], 0.2, places=4)
+        self.assertAlmostEqual(z.grid.bubble_positions[0][1], 0.25, places=4)
+
 
 if __name__ == "__main__":
     unittest.main()

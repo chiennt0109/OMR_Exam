@@ -317,6 +317,7 @@ class TemplateEditorWindow(QMainWindow):
         self.addToolBar(toolbar)
         for label, fn in [
             ("Load Blank Paper", self.load_image),
+            ("Open Template", self.open_template),
             ("Preview", self.preview_template),
             ("Test Recognition", self.test_recognition),
             ("Save Template", self.save_template),
@@ -465,6 +466,46 @@ class TemplateEditorWindow(QMainWindow):
         self.template = Template(Path(path).stem, path, pix.width(), pix.height())
         self.canvas.set_template(self.template, pix)
         self.preview_ok = False; self.test_ok = False
+
+    def open_template(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Open Template", "", "JSON (*.json)")
+        if not path:
+            return
+        try:
+            tpl = Template.load_json(path)
+        except Exception as exc:
+            QMessageBox.warning(self, "Invalid template", f"Unable to load template:\n{exc}")
+            return
+
+        img_path = Path(tpl.image_path)
+        if not img_path.is_absolute():
+            img_path = (Path(path).parent / img_path).resolve()
+
+        if not img_path.exists():
+            new_img, _ = QFileDialog.getOpenFileName(
+                self,
+                "Template image not found - choose image",
+                "",
+                "Images (*.png *.jpg *.jpeg *.tif *.tiff)",
+            )
+            if not new_img:
+                return
+            img_path = Path(new_img)
+
+        pix = QPixmap(str(img_path))
+        if pix.isNull():
+            QMessageBox.warning(self, "Invalid", "Unable to load template image")
+            return
+
+        # Keep relative geometry from template, but update canvas dimensions to actual image.
+        tpl.image_path = str(img_path)
+        tpl.width = pix.width()
+        tpl.height = pix.height()
+        self.template = tpl
+        self.canvas.set_template(self.template, pix)
+        self.preview_ok = False
+        self.test_ok = False
+        self.result_box.setPlainText("Template loaded. You can preview, adjust and save again.")
 
     def regenerate_selected_grid(self, auto: bool = False):
         z = self._selected_zone()

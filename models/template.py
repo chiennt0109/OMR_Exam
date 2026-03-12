@@ -84,20 +84,62 @@ class Template:
             "EXAM_CODE": "EXAM_CODE_BLOCK",
             "ID_BLOCK": "STUDENT_ID_BLOCK",
         }
-        anchors = [AnchorPoint(**a) for a in data.get("anchors", [])]
+        width = int(data.get("width", 1) or 1)
+        height = int(data.get("height", 1) or 1)
+        metadata = data.get("metadata", {}) or {}
+        coordinate_mode = str(metadata.get("coordinate_mode", "")).lower()
+
+        def _is_relative(v: float) -> bool:
+            return 0.0 <= float(v) <= 1.0
+
+        def _to_relative_x(x: float) -> float:
+            xv = float(x)
+            if coordinate_mode == "absolute":
+                return xv / width
+            if coordinate_mode == "relative":
+                return xv
+            return xv if _is_relative(xv) else (xv / width)
+
+        def _to_relative_y(y: float) -> float:
+            yv = float(y)
+            if coordinate_mode == "absolute":
+                return yv / height
+            if coordinate_mode == "relative":
+                return yv
+            return yv if _is_relative(yv) else (yv / height)
+
+        anchors = [
+            AnchorPoint(
+                x=_to_relative_x(a.get("x", 0.0)),
+                y=_to_relative_y(a.get("y", 0.0)),
+                name=str(a.get("name", "")),
+            )
+            for a in data.get("anchors", [])
+        ]
         zones: list[Zone] = []
         for raw in data.get("zones", []):
-            grid = BubbleGrid(**raw["grid"]) if raw.get("grid") else None
+            grid = None
+            if raw.get("grid"):
+                gr = dict(raw["grid"])
+                legacy_positions = gr.get("bubble_positions", [])
+                converted_positions: list[tuple[float, float]] = []
+                for pos in legacy_positions:
+                    if not isinstance(pos, (list, tuple)) or len(pos) < 2:
+                        continue
+                    bx, by = float(pos[0]), float(pos[1])
+                    converted_positions.append((_to_relative_x(bx), _to_relative_y(by)))
+                gr["bubble_positions"] = converted_positions
+                grid = BubbleGrid(**gr)
             zt_raw = legacy.get(raw["zone_type"], raw["zone_type"])
             zones.append(
                 Zone(
-                    id=raw["id"],
-                    name=raw["name"],
+                    id=raw.get("id", ""),
+                    name=raw.get("name", ""),
                     zone_type=ZoneType(zt_raw),
-                    x=float(raw["x"]),
-                    y=float(raw["y"]),
-                    width=float(raw["width"]),
-                    height=float(raw["height"]),
+                    x=_to_relative_x(raw.get("x", 0.0)),
+                    y=_to_relative_y(raw.get("y", 0.0)),
+                    width=max(1e-6, _to_relative_x(raw.get("width", 0.0))),
+                    height=max(1e-6, _to_relative_y(raw.get("height", 0.0))),
                     grid=grid,
                     metadata=raw.get("metadata", {}),
                 )
@@ -105,11 +147,11 @@ class Template:
         return cls(
             name=data["name"],
             image_path=data["image_path"],
-            width=data["width"],
-            height=data["height"],
+            width=width,
+            height=height,
             anchors=anchors,
             zones=zones,
-            metadata=data.get("metadata", {}),
+            metadata=metadata,
         )
 
     def save_json(self, path: str | Path) -> None:
