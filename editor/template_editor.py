@@ -368,12 +368,21 @@ class TemplateEditorWindow(QMainWindow):
         self.p_rows = QSpinBox(); self.p_rows.setRange(2, 20); self.p_rows.setValue(10)
         self.p_columns = QSpinBox(); self.p_columns.setRange(1, 20); self.p_columns.setValue(8)
         self.p_digit_map = QLineEdit(); self.p_digit_map.setText("0,1,2,3,4,5,6,7,8,9")
+        self.p_sign_row = QSpinBox(); self.p_sign_row.setRange(1, 50); self.p_sign_row.setValue(1)
+        self.p_decimal_row = QSpinBox(); self.p_decimal_row.setRange(1, 50); self.p_decimal_row.setValue(2)
+        self.p_digit_start_row = QSpinBox(); self.p_digit_start_row.setRange(1, 50); self.p_digit_start_row.setValue(3)
+        self.p_sign_columns = QLineEdit(); self.p_sign_columns.setText("1")
+        self.p_decimal_columns = QLineEdit(); self.p_decimal_columns.setText("2,3")
+        self.p_sign_symbol = QLineEdit(); self.p_sign_symbol.setText("-")
+        self.p_decimal_symbol = QLineEdit(); self.p_decimal_symbol.setText(".")
 
         self._prop_controls = [
             ("question_start", self.p_qstart), ("total_questions", self.p_total), ("choices_per_question", self.p_choices),
             ("questions_per_column", self.p_qpc), ("column_count", self.p_cols), ("grid_scale", self.p_scale),
             ("offset_x", self.p_ox), ("offset_y", self.p_oy), ("questions_per_block", self.p_qpb),
             ("statements_per_question", self.p_spq), ("choices_per_statement", self.p_cps), ("digits_per_answer", self.p_digits), ("rows", self.p_rows), ("columns", self.p_columns), ("digit_map", self.p_digit_map),
+            ("sign_row", self.p_sign_row), ("decimal_row", self.p_decimal_row), ("digit_start_row", self.p_digit_start_row),
+            ("sign_columns", self.p_sign_columns), ("decimal_columns", self.p_decimal_columns), ("sign_symbol", self.p_sign_symbol), ("decimal_symbol", self.p_decimal_symbol),
         ]
         self._prop_rows = {}
         for name, widget in self._prop_controls:
@@ -402,7 +411,19 @@ class TemplateEditorWindow(QMainWindow):
         elif zone_type == ZoneType.TRUE_FALSE_BLOCK:
             visible.update({"questions_per_block": True, "statements_per_question": True, "choices_per_statement": True})
         elif zone_type == ZoneType.NUMERIC_BLOCK:
-            visible.update({"questions_per_block": True, "digits_per_answer": True, "rows": True, "digit_map": True})
+            visible.update({
+                "questions_per_block": True,
+                "digits_per_answer": True,
+                "rows": True,
+                "digit_map": True,
+                "sign_row": True,
+                "decimal_row": True,
+                "digit_start_row": True,
+                "sign_columns": True,
+                "decimal_columns": True,
+                "sign_symbol": True,
+                "decimal_symbol": True,
+            })
         elif zone_type == ZoneType.STUDENT_ID_BLOCK:
             visible.update({"rows": True, "columns": True, "digit_map": True})
         elif zone_type == ZoneType.EXAM_CODE_BLOCK:
@@ -427,7 +448,7 @@ class TemplateEditorWindow(QMainWindow):
     def _load_props(self, _idx: int):
         z = self._selected_zone()
         enabled = bool(z and z.zone_type in BLOCK_TYPES)
-        for w in [self.p_qstart, self.p_total, self.p_choices, self.p_qpc, self.p_cols, self.p_scale, self.p_ox, self.p_oy, self.p_qpb, self.p_spq, self.p_cps, self.p_digits, self.p_rows, self.p_columns, self.p_digit_map, self.btn_regen]:
+        for w in [self.p_qstart, self.p_total, self.p_choices, self.p_qpc, self.p_cols, self.p_scale, self.p_ox, self.p_oy, self.p_qpb, self.p_spq, self.p_cps, self.p_digits, self.p_rows, self.p_columns, self.p_digit_map, self.p_sign_row, self.p_decimal_row, self.p_digit_start_row, self.p_sign_columns, self.p_decimal_columns, self.p_sign_symbol, self.p_decimal_symbol, self.btn_regen]:
             w.setEnabled(enabled)
         self._apply_block_property_visibility(z.zone_type if z else None)
         if not enabled:
@@ -446,9 +467,18 @@ class TemplateEditorWindow(QMainWindow):
         self.p_spq.setValue(int(md.get("statements_per_question", 4)))
         self.p_cps.setValue(int(md.get("choices_per_statement", 2)))
         self.p_digits.setValue(int(md.get("digits_per_answer", 5)))
-        self.p_rows.setValue(int(md.get("rows", 10)))
-        self.p_columns.setValue(int(md.get("columns", 8)))
-        self.p_digit_map.setText(",".join(str(x) for x in md.get("digit_map", list(range(10)))))
+        default_rows = 10
+        default_cols = 8 if z.zone_type == ZoneType.STUDENT_ID_BLOCK else 4 if z.zone_type == ZoneType.EXAM_CODE_BLOCK else 8
+        self.p_rows.setValue(int(md.get("rows", default_rows)))
+        self.p_columns.setValue(int(md.get("columns", default_cols)))
+        self.p_digit_map.setText(",".join(str(x) for x in md.get("digit_map", list(range(self.p_rows.value())))))
+        self.p_sign_row.setValue(int(md.get("sign_row", 1)))
+        self.p_decimal_row.setValue(int(md.get("decimal_row", 2)))
+        self.p_digit_start_row.setValue(int(md.get("digit_start_row", 3)))
+        self.p_sign_columns.setText(",".join(str(x) for x in md.get("sign_columns", [1])))
+        self.p_decimal_columns.setText(",".join(str(x) for x in md.get("decimal_columns", [2, 3])))
+        self.p_sign_symbol.setText(str(md.get("sign_symbol", "-")))
+        self.p_decimal_symbol.setText(str(md.get("decimal_symbol", ".")))
         self._sync = False
 
     def _prop_changed(self, *_args):
@@ -529,6 +559,13 @@ class TemplateEditorWindow(QMainWindow):
             "rows": self.p_rows.value(),
             "columns": self.p_columns.value(),
             "digit_map": ([int(x.strip()) for x in self.p_digit_map.text().split(",") if x.strip().lstrip("-").isdigit()] or list(range(self.p_rows.value()))),
+            "sign_row": self.p_sign_row.value(),
+            "decimal_row": self.p_decimal_row.value(),
+            "digit_start_row": self.p_digit_start_row.value(),
+            "sign_columns": ([int(x.strip()) for x in self.p_sign_columns.text().split(",") if x.strip().lstrip("-").isdigit()] or [1]),
+            "decimal_columns": ([int(x.strip()) for x in self.p_decimal_columns.text().split(",") if x.strip().lstrip("-").isdigit()] or [2, 3]),
+            "sign_symbol": self.p_sign_symbol.text() or "-",
+            "decimal_symbol": self.p_decimal_symbol.text() or ".",
         })
         z.grid = self.template_engine.generate_semantic_grid(z)
         self.canvas.update()

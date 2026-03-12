@@ -450,31 +450,93 @@ class OMRProcessor:
         rows, cols = mat.shape
         digits_per_answer = int(zone.metadata.get("digits_per_answer", 3))
         question_count = int(zone.metadata.get("questions_per_block", zone.metadata.get("total_questions", 1)))
-        digit_map = zone.metadata.get("digit_map", list(range(rows)))
+        digit_map = zone.metadata.get("digit_map", list(range(max(0, rows - 2))))
+        sign_row = max(0, int(zone.metadata.get("sign_row", 1)) - 1)
+        decimal_row = max(0, int(zone.metadata.get("decimal_row", 2)) - 1)
+        digit_start_row = max(0, int(zone.metadata.get("digit_start_row", 3)) - 1)
+        sign_columns = self._parse_index_list(zone.metadata.get("sign_columns", [1]), digits_per_answer)
+        decimal_columns = self._parse_index_list(zone.metadata.get("decimal_columns", [2, 3]), digits_per_answer)
+        sign_symbol = str(zone.metadata.get("sign_symbol", "-"))
+        decimal_symbol = str(zone.metadata.get("decimal_symbol", "."))
         confs: list[float] = []
 
         for q in range(question_count):
             chars: list[str] = []
+            question_base = q * digits_per_answer
+
+            sign_mark = self._pick_row_mark(mat, sign_row, question_base, sign_columns)
+            decimal_mark = self._pick_row_mark(mat, decimal_row, question_base, decimal_columns)
+
             for d in range(digits_per_answer):
-                c = q * digits_per_answer + d
+                c = question_base + d
                 if c >= cols:
                     break
                 col = mat[:, c]
-                order = np.argsort(col)[::-1]
-                top_i, second_i = int(order[0]), int(order[1]) if len(order) > 1 else int(order[0])
-                top, second = float(col[top_i]), float(col[second_i]) if len(order) > 1 else 0.0
-                if len(np.where(col > self.fill_threshold)[0]) > 1:
+                digit_slice = col[digit_start_row:]
+                if digit_slice.size == 0:
+                    chars.append("?")
+                    result.recognition_errors.append(f"NUM Q{grid.question_start+q} digit {d+1}: invalid digit rows")
+                    continue
+                order = np.argsort(digit_slice)[::-1]
+                top_local = int(order[0])
+                second_local = int(order[1]) if len(order) > 1 else int(order[0])
+                top = float(digit_slice[top_local])
+                second = float(digit_slice[second_local]) if len(order) > 1 else 0.0
+                filled = np.where(digit_slice > self.fill_threshold)[0]
+                if len(filled) > 1:
                     result.recognition_errors.append(f"NUM Q{grid.question_start+q} digit {d+1}: multiple answer")
                 if self.classify_bubble(top) != "filled" or (top - second) <= self.certainty_margin:
                     chars.append("?")
                     result.recognition_errors.append(f"NUM Q{grid.question_start+q} digit {d+1}: uncertain")
                 else:
-                    mapped = digit_map[top_i] if top_i < len(digit_map) else top_i
+                    mapped = digit_map[top_local] if top_local < len(digit_map) else top_local
                     chars.append(str(mapped))
                 confs.append(top - second)
-            result.numeric_answers[grid.question_start + q] = "".join(chars)
+
+            value = "".join(chars)
+            if decimal_mark is not None and decimal_mark > 0 and decimal_mark <= len(value):
+                value = value[:decimal_mark] + decimal_symbol + value[decimal_mark:]
+            if sign_mark is not None:
+                value = sign_symbol + value
+            result.numeric_answers[grid.question_start + q] = value
 
         result.confidence_scores[f"num:{zone.id}"] = float(np.mean(confs)) if confs else 0.0
+
+    def _parse_index_list(self, raw: object, width: int) -> list[int]:
+        if raw is None:
+            return []
+        items: list[int] = []
+        if isinstance(raw, str):
+            tokens = [t.strip() for t in raw.split(",") if t.strip()]
+            for tok in tokens:
+                if tok.lstrip("-").isdigit():
+                    items.append(int(tok) - 1)
+        elif isinstance(raw, (list, tuple)):
+            for val in raw:
+                try:
+                    items.append(int(val) - 1)
+                except Exception:
+                    continue
+        return sorted({i for i in items if 0 <= i < max(1, width)})
+
+    def _pick_row_mark(self, mat: np.ndarray, row: int, q_base: int, allowed_cols: list[int]) -> int | None:
+        if row < 0 or row >= mat.shape[0] or not allowed_cols:
+            return None
+        picks: list[tuple[float, int]] = []
+        for rel_col in allowed_cols:
+            col = q_base + rel_col
+            if col >= mat.shape[1]:
+                continue
+            picks.append((float(mat[row, col]), rel_col))
+        if not picks:
+            return None
+        picks.sort(key=lambda x: x[0], reverse=True)
+        best_ratio, best_col = picks[0]
+        if self.classify_bubble(best_ratio) != "filled":
+            return None
+        if len(picks) > 1 and picks[1][0] > self.fill_threshold:
+            return None
+        return best_col
 
     def _get_circular_mask(self, radius: int) -> tuple[np.ndarray, float]:
         r = max(3, int(radius))

@@ -104,10 +104,22 @@ class TemplateEngine:
             qpb = int(params.get("questions_per_block", params.get("total_questions", 1)))
             digits = int(params.get("digits_per_answer", 3))
             cols = max(1, qpb * digits)
-            digit_map = params.get("digit_map", list(range(rows)))
-            options = [str(d) for d in digit_map[:rows]]
+            sign_row = max(0, int(params.get("sign_row", 1)) - 1)
+            decimal_row = max(0, int(params.get("decimal_row", 2)) - 1)
+            digit_start_row = max(0, int(params.get("digit_start_row", 3)) - 1)
+            digit_map = params.get("digit_map", list(range(max(0, rows - digit_start_row))))
+            sign_symbol = str(params.get("sign_symbol", "-"))
+            decimal_symbol = str(params.get("decimal_symbol", "."))
+            options = ["" for _ in range(rows)]
+            if 0 <= sign_row < rows:
+                options[sign_row] = sign_symbol
+            if 0 <= decimal_row < rows:
+                options[decimal_row] = decimal_symbol
+            for idx in range(digit_start_row, rows):
+                map_idx = idx - digit_start_row
+                options[idx] = str(digit_map[map_idx] if map_idx < len(digit_map) else map_idx)
             logical_questions = qpb
-            semantic = "vertical_digits_by_question"
+            semantic = "numeric_signed_decimal"
 
         else:
             return None

@@ -111,6 +111,70 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertAlmostEqual(z.grid.bubble_positions[0][0], 0.2, places=4)
         self.assertAlmostEqual(z.grid.bubble_positions[0][1], 0.25, places=4)
 
+    def test_numeric_block_signed_decimal_layout(self):
+        rows, cols = 12, 3
+        bubbles = []
+        for r in range(rows):
+            for c in range(cols):
+                bubbles.append((30 + c * 40, 20 + r * 16))
+
+        template = Template(
+            name="num",
+            image_path="",
+            width=200,
+            height=240,
+            anchors=[AnchorPoint(0.05, 0.05), AnchorPoint(0.95, 0.05), AnchorPoint(0.95, 0.95), AnchorPoint(0.05, 0.95)],
+            zones=[
+                Zone(
+                    id="num1",
+                    name="num",
+                    zone_type=ZoneType.NUMERIC_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(
+                        rows=rows,
+                        cols=cols,
+                        question_start=1,
+                        question_count=1,
+                        options=[],
+                        bubble_positions=bubbles,
+                    ),
+                    metadata={
+                        "bubble_radius": 5,
+                        "questions_per_block": 1,
+                        "digits_per_answer": 3,
+                        "sign_row": 1,
+                        "decimal_row": 2,
+                        "digit_start_row": 3,
+                        "sign_columns": [1],
+                        "decimal_columns": [2, 3],
+                        "digit_map": list(range(10)),
+                        "sign_symbol": "-",
+                        "decimal_symbol": ".",
+                    },
+                )
+            ],
+        )
+
+        binary = np.zeros((240, 200), dtype=np.uint8)
+
+        def fill(row: int, col: int) -> None:
+            idx = row * cols + col
+            x, y = bubbles[idx]
+            cv2.circle(binary, (int(x), int(y)), 5, 255, -1)
+
+        fill(0, 0)   # sign row, column 1 -> negative
+        fill(11, 0)  # digit 9 in first column (row index 11 => 11-2=9)
+        fill(3, 1)   # digit 1 in second column
+        fill(1, 2)   # decimal row on third column -> place decimal before col 3
+        fill(5, 2)   # digit 3 in third column
+
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
+        self.processor.recognize_block(binary, template.zones[0], template, result_stub)
+        self.assertEqual(result_stub.numeric_answers.get(1), "-91.3")
+
 
 if __name__ == "__main__":
     unittest.main()
