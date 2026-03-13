@@ -1649,6 +1649,41 @@ class MainWindow(QMainWindow):
             ses.config = {**cfg, "subject_configs": subject_cfgs}
             ses.save_json(session_path)
 
+            # Write sidecar cache to ensure grids can be restored even if subject config is trimmed elsewhere.
+            try:
+                cache_path = session_path.with_suffix(".batch_cache.json")
+                cache_data = {}
+                if cache_path.exists():
+                    raw = json.loads(cache_path.read_text(encoding="utf-8"))
+                    if isinstance(raw, dict):
+                        cache_data = raw
+                cache_key = f"{str(subject_cfg.get('name','')).strip().lower()}::{str(subject_cfg.get('block','')).strip().lower()}::{str(subject_cfg.get('answer_key_key','')).strip().lower()}"
+                cache_data[cache_key] = {
+                    "batch_saved": True,
+                    "batch_saved_at": datetime.now().isoformat(timespec="seconds"),
+                    "batch_result_count": len(self.scan_results),
+                    "batch_saved_rows": [
+                        {
+                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
+                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
+                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
+                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
+                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                        }
+                        for r in range(self.scan_list.rowCount())
+                    ],
+                    "batch_saved_preview": [
+                        {
+                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
+                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
+                        }
+                        for r in range(self.scan_result_preview.rowCount())
+                    ],
+                }
+                cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+
             if self.session:
                 self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
             self._refresh_batch_subject_controls()
@@ -1847,7 +1882,7 @@ class MainWindow(QMainWindow):
 
     def _merge_saved_batch_snapshot(self, cfg: dict) -> dict:
         merged = dict(cfg)
-        if merged.get("batch_saved_rows") and merged.get("batch_saved_preview"):
+        if merged.get("batch_saved_rows") or merged.get("batch_saved_preview"):
             return merged
 
         session_path = self._batch_context_session_path()
@@ -1862,16 +1897,43 @@ class MainWindow(QMainWindow):
         if not isinstance(raw_cfgs, list):
             return merged
 
-        name = str(merged.get("name", ""))
-        block = str(merged.get("block", ""))
+        def _norm(v: str) -> str:
+            return str(v or "").strip().lower()
+
+        name = _norm(merged.get("name", ""))
+        block = _norm(merged.get("block", ""))
+        key = _norm(merged.get("answer_key_key", ""))
+        found: dict | None = None
         for item in raw_cfgs:
             if not isinstance(item, dict):
                 continue
-            if str(item.get("name", "")) == name and str(item.get("block", "")) == block:
-                for k in ["batch_saved", "batch_saved_at", "batch_result_count", "batch_saved_rows", "batch_saved_preview"]:
-                    if k in item:
-                        merged[k] = item.get(k)
-                return merged
+            same_name_block = _norm(item.get("name", "")) == name and _norm(item.get("block", "")) == block
+            same_key = key and _norm(item.get("answer_key_key", "")) == key
+            if same_name_block or same_key:
+                found = item
+                break
+
+        if found:
+            for k in ["batch_saved", "batch_saved_at", "batch_result_count", "batch_saved_rows", "batch_saved_preview"]:
+                if k in found:
+                    merged[k] = found.get(k)
+
+        # Sidecar fallback for large snapshots or older sessions.
+        sidecar = session_path.with_suffix(".batch_cache.json")
+        if sidecar.exists() and not (merged.get("batch_saved_rows") or merged.get("batch_saved_preview")):
+            try:
+                raw = json.loads(sidecar.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    cache_key = f"{_norm(merged.get('name', ''))}::{_norm(merged.get('block', ''))}::{_norm(merged.get('answer_key_key', ''))}"
+                    payload = raw.get(cache_key)
+                    if isinstance(payload, dict):
+                        merged["batch_saved_rows"] = payload.get("batch_saved_rows", [])
+                        merged["batch_saved_preview"] = payload.get("batch_saved_preview", [])
+                        merged["batch_saved"] = bool(payload.get("batch_saved", True))
+                        merged["batch_saved_at"] = payload.get("batch_saved_at", merged.get("batch_saved_at", "-"))
+                        merged["batch_result_count"] = payload.get("batch_result_count", merged.get("batch_result_count", "-"))
+            except Exception:
+                pass
         return merged
 
     def _on_batch_subject_changed(self, _index: int) -> None:
