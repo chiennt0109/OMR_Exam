@@ -16,30 +16,32 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from core.answer_key_importer import ImportedAnswerKey
+from core.answer_key_importer import ImportedAnswerKey, ImportedAnswerKeyPackage
 
 
 @dataclass
 class PreviewRow:
     question: int
+    exam_code: str
     answer_type: str
     answer_value: str
 
 
 class ImportAnswerKeyDialog(QDialog):
-    def __init__(self, imported: ImportedAnswerKey, parent=None):
+    def __init__(self, imported: ImportedAnswerKeyPackage, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Preview Imported Answer Key")
-        self.resize(720, 520)
+        self.setWindowTitle("Preview Imported Answer Keys")
+        self.resize(860, 560)
         self.imported = imported
 
-        self.exam_id_edit = QLineEdit(str(imported.exam_id))
+        first_exam = next(iter(imported.exam_keys.values()), ImportedAnswerKey())
+        self.exam_id_edit = QLineEdit(str(first_exam.exam_id))
         top = QHBoxLayout()
         top.addWidget(QLabel("Exam ID:"))
         top.addWidget(self.exam_id_edit)
 
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Question", "Type", "Answer"])
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Question", "Exam Code", "Type", "Answer"])
 
         btn_add = QPushButton("Add Row")
         btn_add.clicked.connect(self._add_empty_row)
@@ -58,13 +60,14 @@ class ImportAnswerKeyDialog(QDialog):
 
     def _load_rows(self) -> None:
         rows: list[PreviewRow] = []
-        for q, ans in sorted(self.imported.mcq_answers.items()):
-            rows.append(PreviewRow(question=q, answer_type="MCQ", answer_value=ans))
-        for q, ans in sorted(self.imported.numeric_answers.items()):
-            rows.append(PreviewRow(question=q, answer_type="NUMERIC", answer_value=ans))
-        for q, ans in sorted(self.imported.true_false_answers.items()):
-            text = ",".join(f"{k}:{'T' if v else 'F'}" for k, v in sorted(ans.items()))
-            rows.append(PreviewRow(question=q, answer_type="TF", answer_value=text))
+        for exam_code, key in sorted(self.imported.exam_keys.items()):
+            for q, ans in sorted(key.mcq_answers.items()):
+                rows.append(PreviewRow(q, exam_code, "MCQ", ans))
+            for q, ans in sorted(key.numeric_answers.items()):
+                rows.append(PreviewRow(q, exam_code, "NUMERIC", ans))
+            for q, ans in sorted(key.true_false_answers.items()):
+                text = "".join("T" if ans.get(ch, False) else "F" for ch in ["a", "b", "c", "d"])
+                rows.append(PreviewRow(q, exam_code, "TF", text))
 
         self.table.setRowCount(0)
         for row in rows:
@@ -74,15 +77,17 @@ class ImportAnswerKeyDialog(QDialog):
         r = self.table.rowCount()
         self.table.insertRow(r)
         self.table.setItem(r, 0, QTableWidgetItem(str(row.question)))
+        self.table.setItem(r, 1, QTableWidgetItem(row.exam_code))
 
         type_combo = QComboBox()
         type_combo.addItems(["MCQ", "TF", "NUMERIC"])
         type_combo.setCurrentText(row.answer_type)
-        self.table.setCellWidget(r, 1, type_combo)
-        self.table.setItem(r, 2, QTableWidgetItem(row.answer_value))
+        self.table.setCellWidget(r, 2, type_combo)
+        self.table.setItem(r, 3, QTableWidgetItem(row.answer_value))
 
     def _add_empty_row(self) -> None:
-        self._append_row(PreviewRow(question=self.table.rowCount() + 1, answer_type="MCQ", answer_value="A"))
+        default_exam = next(iter(self.imported.exam_keys.keys()), "0101")
+        self._append_row(PreviewRow(question=self.table.rowCount() + 1, exam_code=default_exam, answer_type="MCQ", answer_value="A"))
 
     def _on_accept(self) -> None:
         try:
@@ -91,16 +96,19 @@ class ImportAnswerKeyDialog(QDialog):
             QMessageBox.warning(self, "Invalid exam id", "Exam ID must be an integer.")
             return
 
-        parsed = ImportedAnswerKey(exam_id=exam_id)
+        package = ImportedAnswerKeyPackage()
         try:
             for row_idx in range(self.table.rowCount()):
                 q_item = self.table.item(row_idx, 0)
-                a_item = self.table.item(row_idx, 2)
-                if q_item is None or a_item is None:
+                code_item = self.table.item(row_idx, 1)
+                a_item = self.table.item(row_idx, 3)
+                if not q_item or not code_item or not a_item:
                     continue
                 q = int((q_item.text() or "").strip())
-                answer_type = self.table.cellWidget(row_idx, 1).currentText()
+                exam_code = (code_item.text() or "").strip() or "DEFAULT"
+                answer_type = self.table.cellWidget(row_idx, 2).currentText()
                 answer_text = (a_item.text() or "").strip()
+                key = package.exam_keys.setdefault(exam_code, ImportedAnswerKey(exam_id=exam_id))
 
                 if answer_type == "MCQ":
                     val = answer_text.upper()
@@ -108,37 +116,25 @@ class ImportAnswerKeyDialog(QDialog):
                         raise ImportError(
                             f"Row {row_idx + 1}: invalid MCQ value '{answer_text}'. Expected A/B/C/D/E."
                         )
-                    parsed.mcq_answers[q] = val
+                    key.mcq_answers[q] = val
                 elif answer_type == "NUMERIC":
-                    if not answer_text.isdigit():
+                    if not answer_text.lstrip("-").isdigit():
                         raise ImportError(
                             f"Row {row_idx + 1}: invalid numeric value '{answer_text}'. Expected digits only."
                         )
-                    parsed.numeric_answers[q] = answer_text
+                    key.numeric_answers[q] = answer_text
                 else:
-                    tf_payload: dict[str, bool] = {}
-                    parts = [p.strip() for p in answer_text.split(",") if p.strip()]
-                    if not parts:
+                    token = answer_text.replace(" ", "").upper()
+                    if len(token) != 4 or any(ch not in {"T", "F", "D", "S", "Đ"} for ch in token):
                         raise ImportError(
-                            f"Row {row_idx + 1}: invalid TF value '{answer_text}'. "
-                            "Expected format a:T,b:F,c:T,d:F"
+                            f"Row {row_idx + 1}: invalid TF value '{answer_text}'. Expected 4 chars (T/F or Đ/S)."
                         )
-                    for part in parts:
-                        if ":" not in part:
-                            raise ImportError(
-                                f"Row {row_idx + 1}: invalid TF entry '{part}'. Expected key:value."
-                            )
-                        key, raw_val = [x.strip() for x in part.split(":", 1)]
-                        val = raw_val.upper()
-                        if val in {"T", "TRUE", "D", "Đ", "1"}:
-                            tf_payload[key.lower()] = True
-                        elif val in {"F", "FALSE", "S", "0"}:
-                            tf_payload[key.lower()] = False
-                        else:
-                            raise ImportError(
-                                f"Row {row_idx + 1}: invalid TF value '{raw_val}'. Expected T/F or D/S."
-                            )
-                    parsed.true_false_answers[q] = tf_payload
+                    key.true_false_answers[q] = {
+                        "a": token[0] in {"T", "D", "Đ"},
+                        "b": token[1] in {"T", "D", "Đ"},
+                        "c": token[2] in {"T", "D", "Đ"},
+                        "d": token[3] in {"T", "D", "Đ"},
+                    }
         except ImportError as exc:
             QMessageBox.warning(self, "Validation error", str(exc))
             return
@@ -146,8 +142,8 @@ class ImportAnswerKeyDialog(QDialog):
             QMessageBox.warning(self, "Validation error", f"Invalid edited data: {exc}")
             return
 
-        self.imported = parsed
+        self.imported = package
         self.accept()
 
-    def result_answer_key(self) -> ImportedAnswerKey:
+    def result_answer_key(self) -> ImportedAnswerKeyPackage:
         return self.imported

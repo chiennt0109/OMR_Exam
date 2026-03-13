@@ -26,8 +26,9 @@ class ScoringEngine:
     def score(self, omr: OMRResult, subject_key: SubjectKey, student_name: str = "") -> ScoreResult:
         correct = wrong = blank = 0
         score = 0.0
+
         for q_no, key_answer in subject_key.answers.items():
-            marked = omr.answers.get(q_no)
+            marked = (omr.mcq_answers or {}).get(q_no)
             if not marked:
                 blank += 1
                 continue
@@ -36,6 +37,29 @@ class ScoringEngine:
                 score += subject_key.points_for_question(q_no)
             else:
                 wrong += 1
+
+        for q_no, key_answer in (subject_key.true_false_answers or {}).items():
+            marked = (omr.true_false_answers or {}).get(q_no)
+            if not marked:
+                blank += 1
+                continue
+            if marked == key_answer:
+                correct += 1
+                score += subject_key.points_for_question(q_no)
+            else:
+                wrong += 1
+
+        for q_no, key_answer in (subject_key.numeric_answers or {}).items():
+            marked = (omr.numeric_answers or {}).get(q_no)
+            if marked is None or str(marked).strip() == "":
+                blank += 1
+                continue
+            if str(marked).strip() == str(key_answer).strip():
+                correct += 1
+                score += subject_key.points_for_question(q_no)
+            else:
+                wrong += 1
+
         return ScoreResult(
             student_id=omr.student_id,
             name=student_name,

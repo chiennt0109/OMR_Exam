@@ -31,6 +31,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QInputDialog,
+    QToolBar,
+    QStyle,
 )
 
 from core.answer_key_importer import import_answer_key
@@ -59,6 +61,7 @@ class MainWindow(QMainWindow):
         self.scan_manual_adjustments: dict[int, list[str]] = {}
         self.scan_edit_history: dict[int, list[str]] = {}
         self.scan_last_adjustment: dict[int, str] = {}
+        self.score_rows = []
 
         self.omr_processor = OMRProcessor()
         self.scoring_engine = ScoringEngine()
@@ -76,6 +79,31 @@ class MainWindow(QMainWindow):
         exam_menu = self.menuBar().addMenu("Exam")
         action_import_answer_key = exam_menu.addAction("Import Answer Key")
         action_import_answer_key.triggered.connect(self.import_answer_key_file)
+        action_export_sample = exam_menu.addAction("Export Answer Key Sample")
+        action_export_sample.triggered.connect(self.export_answer_key_sample)
+
+        scoring_menu = self.menuBar().addMenu("Scoring")
+        action_preview_scores = scoring_menu.addAction("Calculate & Preview Scores")
+        action_preview_scores.triggered.connect(self.calculate_scores)
+        action_export_results = scoring_menu.addAction("Export Results")
+        action_export_results.triggered.connect(self.export_results)
+
+        toolbar = QToolBar("Word-like Ribbon")
+        toolbar.setMovable(False)
+        self.addToolBar(toolbar)
+
+        style = self.style()
+        act_import = toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Import Key")
+        act_import.triggered.connect(self.import_answer_key_file)
+        act_export_sample = toolbar.addAction(style.standardIcon(QStyle.SP_DriveFDIcon), "Export Sample")
+        act_export_sample.triggered.connect(self.export_answer_key_sample)
+        toolbar.addSeparator()
+        act_scan = toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Batch Scan")
+        act_scan.triggered.connect(self.run_batch_scan)
+        act_score = toolbar.addAction(style.standardIcon(QStyle.SP_DialogApplyButton), "Calculate Scores")
+        act_score.triggered.connect(self.calculate_scores)
+        act_export = toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Export")
+        act_export.triggered.connect(self.export_results)
 
     def import_answer_key_file(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
@@ -87,7 +115,7 @@ class MainWindow(QMainWindow):
         if not file_path:
             return
         try:
-            imported = import_answer_key(file_path)
+            imported_package = import_answer_key(file_path)
         except ImportError as exc:
             QMessageBox.warning(self, "Import failed", str(exc))
             return
@@ -95,41 +123,76 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Import failed", f"Cannot import answer key:\n{exc}")
             return
 
-        dlg = ImportAnswerKeyDialog(imported, self)
+        dlg = ImportAnswerKeyDialog(imported_package, self)
         if dlg.exec() != QDialog.Accepted:
             return
-        edited = dlg.result_answer_key()
+        edited_package = dlg.result_answer_key()
 
         if not self.session:
             self.create_session()
         subject = self.session.subjects[0] if self.session and self.session.subjects else "General"
-        default_exam_code = "DEFAULT"
-        exam_code, ok = QInputDialog.getText(
-            self,
-            "Exam code",
-            "Enter exam code for this imported key:",
-            text=default_exam_code,
-        )
-        if not ok:
-            return
-        exam_code = exam_code.strip() or default_exam_code
 
         if self.answer_keys is None:
             self.answer_keys = AnswerKeyRepository()
 
-        self.answer_keys.upsert(
-            SubjectKey(
-                subject=subject,
-                exam_code=exam_code,
-                answers=edited.mcq_answers,
-                true_false_answers=edited.true_false_answers,
-                numeric_answers=edited.numeric_answers,
+        imported_count = 0
+        for exam_code, edited in edited_package.exam_keys.items():
+            code = exam_code.strip() or "DEFAULT"
+            self.answer_keys.upsert(
+                SubjectKey(
+                    subject=subject,
+                    exam_code=code,
+                    answers=edited.mcq_answers,
+                    true_false_answers=edited.true_false_answers,
+                    numeric_answers=edited.numeric_answers,
+                )
             )
-        )
+            imported_count += 1
+
         if self.session:
             self.session.answer_key_path = file_path
         self._refresh_session_info()
-        QMessageBox.information(self, "Import successful", "Answer key imported and saved to current session.")
+        QMessageBox.information(self, "Import successful", f"Imported {imported_count} exam code(s) into current session.")
+
+    def export_answer_key_sample(self) -> None:
+        save_path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export Sample Answer Key",
+            "answer_key_sample.xlsx",
+            "Excel (*.xlsx);;CSV (*.csv)",
+        )
+        if not save_path:
+            return
+
+        import pandas as pd
+
+        data = {
+            "Question": list(range(1, 13)) + [13, 14, 15, 16],
+            "0101": ["D", "A", "B", "B", "B", "A", "C", "D", "B", "D", "B", "A", "ĐĐSĐ", "SSĐĐ", "113", "3"],
+            "0102": ["D", "D", "D", "B", "A", "B", "A", "A", "D", "B", "B", "C", "SĐĐĐ", "SĐSĐ", "617", "-105"],
+            "0103": ["D", "A", "B", "D", "C", "B", "D", "A", "C", "C", "D", "C", "ĐĐĐS", "SĐĐS", "113", "617"],
+            "0104": ["B", "B", "C", "D", "A", "B", "C", "B", "C", "D", "A", "A", "ĐSDS", "SĐĐĐ", "-105", "113"],
+        }
+        df = pd.DataFrame(data)
+        path = Path(save_path)
+        if path.suffix.lower() == ".csv" or "CSV" in selected_filter:
+            if path.suffix.lower() != ".csv":
+                path = path.with_suffix(".csv")
+            df.to_csv(path, index=False)
+        else:
+            if path.suffix.lower() != ".xlsx":
+                path = path.with_suffix(".xlsx")
+            with pd.ExcelWriter(path, engine="openpyxl") as writer:
+                df.to_excel(writer, index=False, startrow=1)
+                ws = writer.sheets[next(iter(writer.sheets))]
+                ws["A1"] = "Câu hỏi"
+                ws["B1"] = "Mã đề thi"
+                ws.merge_cells(start_row=1, start_column=2, end_row=1, end_column=5)
+                ws["B2"] = "0101"
+                ws["C2"] = "0102"
+                ws["D2"] = "0103"
+                ws["E2"] = "0104"
+        QMessageBox.information(self, "Sample exported", f"Saved sample answer key file to:\n{path}")
 
     def _build_session_tab(self) -> QWidget:
         w = QWidget()
@@ -214,14 +277,25 @@ class MainWindow(QMainWindow):
         btn_edit_scan = QPushButton("Sửa bài thi được chọn")
         btn_edit_scan.clicked.connect(self._open_edit_selected_scan)
 
+        btn_score = QPushButton("Calculate & Preview Scores")
+        btn_score.clicked.connect(self.calculate_scores)
+
         btn_export = QPushButton("Export Scoring Results")
         btn_export.clicked.connect(self.export_results)
 
+        self.score_preview_table = QTableWidget(0, 8)
+        self.score_preview_table.setHorizontalHeaderLabels(["Student ID", "Name", "Subject", "Exam Code", "Correct", "Wrong", "Blank", "Score"])
+        self.score_preview_table.verticalHeader().setVisible(False)
+        self.score_preview_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+
         layout.addWidget(btn_run_scan)
         layout.addWidget(btn_edit_scan)
+        layout.addWidget(btn_score)
         layout.addWidget(btn_export)
         layout.addWidget(self.progress)
         layout.addWidget(lr_split)
+        layout.addWidget(QLabel("Bảng điểm (xem trước trước khi export)"))
+        layout.addWidget(self.score_preview_table)
         return w
 
     def _build_correction_tab(self) -> QWidget:
@@ -683,18 +757,44 @@ class MainWindow(QMainWindow):
         self._load_selected_result_for_correction()
         QMessageBox.information(self, "Correction", "Manual correction applied to selected scan.")
 
-    def export_results(self) -> None:
+    def calculate_scores(self) -> list:
         if not self.scan_results or not self.answer_keys:
-            QMessageBox.warning(self, "Missing data", "Run scans and load answer keys first.")
-            return
+            QMessageBox.warning(self, "Missing data", "Run scans and load/import answer keys first.")
+            return []
 
         subject = self.session.subjects[0] if self.session else "General"
         rows = []
+        missing = 0
         for scan in self.scan_results:
             key = self.answer_keys.get(subject, scan.exam_code)
             if not key:
+                missing += 1
                 continue
             rows.append(self.scoring_engine.score(scan, key))
+
+        self.score_rows = rows
+        self.score_preview_table.setRowCount(0)
+        for i, r in enumerate(rows):
+            self.score_preview_table.insertRow(i)
+            self.score_preview_table.setItem(i, 0, QTableWidgetItem(r.student_id or "-"))
+            self.score_preview_table.setItem(i, 1, QTableWidgetItem(r.name or "-"))
+            self.score_preview_table.setItem(i, 2, QTableWidgetItem(r.subject))
+            self.score_preview_table.setItem(i, 3, QTableWidgetItem(r.exam_code))
+            self.score_preview_table.setItem(i, 4, QTableWidgetItem(str(r.correct)))
+            self.score_preview_table.setItem(i, 5, QTableWidgetItem(str(r.wrong)))
+            self.score_preview_table.setItem(i, 6, QTableWidgetItem(str(r.blank)))
+            self.score_preview_table.setItem(i, 7, QTableWidgetItem(str(r.score)))
+
+        if missing:
+            QMessageBox.information(self, "Scoring preview", f"Calculated {len(rows)} result(s). Missing key for {missing} scan(s).")
+        else:
+            QMessageBox.information(self, "Scoring preview", f"Calculated {len(rows)} result(s).")
+        return rows
+
+    def export_results(self) -> None:
+        rows = self.score_rows or self.calculate_scores()
+        if not rows:
+            return
 
         output_dir = QFileDialog.getExistingDirectory(self, "Select export folder")
         if not output_dir:

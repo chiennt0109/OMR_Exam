@@ -19,8 +19,25 @@ class AnswerKeyImporterTests(unittest.TestCase):
                     "Answer": ["B", "C", "A"],
                 }
             ).to_csv(path, index=False)
-            result = import_answer_key(path)
+            package = import_answer_key(path)
+            result = package.exam_keys["DEFAULT"]
             self.assertEqual(result.mcq_answers, {1: "B", 2: "C", 3: "A"})
+
+    def test_import_exam_matrix_csv(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "matrix.csv"
+            pd.DataFrame(
+                {
+                    "Question": [1, 2, 13, 14, 15],
+                    "0101": ["B", "C", "ĐĐSĐ", "SSĐĐ", "245"],
+                    "0102": ["A", "D", "SĐĐĐ", "SĐSĐ", "103"],
+                }
+            ).to_csv(path, index=False)
+            package = import_answer_key(path)
+            self.assertEqual(package.exam_keys["0101"].mcq_answers, {1: "B", 2: "C"})
+            self.assertEqual(package.exam_keys["0102"].mcq_answers, {1: "A", 2: "D"})
+            self.assertEqual(package.exam_keys["0101"].true_false_answers[13], {"a": True, "b": True, "c": False, "d": True})
+            self.assertEqual(package.exam_keys["0102"].numeric_answers[15], "103")
 
     def test_import_mcq_matrix_xlsx(self):
         with tempfile.TemporaryDirectory() as td:
@@ -28,29 +45,12 @@ class AnswerKeyImporterTests(unittest.TestCase):
             pd.DataFrame(
                 {
                     "Question": [1, 2, 3],
-                    "A": ["", "", "X"],
-                    "B": ["X", "", ""],
-                    "C": ["", "X", ""],
-                    "D": ["", "", ""],
+                    "0101": ["B", "C", "A"],
+                    "0102": ["D", "D", "D"],
                 }
             ).to_excel(path, index=False)
-            result = import_answer_key(path)
-            self.assertEqual(result.mcq_answers, {1: "B", 2: "C", 3: "A"})
-
-    def test_import_true_false_matrix(self):
-        with tempfile.TemporaryDirectory() as td:
-            path = Path(td) / "tf.csv"
-            pd.DataFrame(
-                {
-                    "Question": [1],
-                    "a": ["T"],
-                    "b": ["F"],
-                    "c": ["D"],
-                    "d": ["S"],
-                }
-            ).to_csv(path, index=False)
-            result = import_answer_key(path)
-            self.assertEqual(result.true_false_answers, {1: {"a": True, "b": False, "c": True, "d": False}})
+            package = import_answer_key(path)
+            self.assertEqual(package.exam_keys["0101"].mcq_answers, {1: "B", 2: "C", 3: "A"})
 
     def test_import_numeric_answer_column(self):
         with tempfile.TemporaryDirectory() as td:
@@ -58,11 +58,12 @@ class AnswerKeyImporterTests(unittest.TestCase):
             pd.DataFrame(
                 {
                     "Question": [1, 2],
-                    "Answer": ["245", "103"],
+                    "Answer": ["245", "-103"],
                 }
             ).to_csv(path, index=False)
-            result = import_answer_key(path)
-            self.assertEqual(result.numeric_answers, {1: "245", 2: "103"})
+            package = import_answer_key(path)
+            result = package.exam_keys["DEFAULT"]
+            self.assertEqual(result.numeric_answers, {1: "245", 2: "-103"})
 
     def test_import_invalid_value_reports_row(self):
         with tempfile.TemporaryDirectory() as td:
@@ -70,7 +71,8 @@ class AnswerKeyImporterTests(unittest.TestCase):
             pd.DataFrame(
                 {
                     "Question": [1],
-                    "Answer": ["Z"],
+                    "0101": ["INVALID"],
+                    "0102": ["A"],
                 }
             ).to_csv(path, index=False)
             with self.assertRaises(ImportError) as cm:
