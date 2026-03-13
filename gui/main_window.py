@@ -1636,6 +1636,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            self._refresh_all_statuses()
             ses = ExamSession.load_json(session_path)
             cfg = ses.config or {}
             subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
@@ -1654,6 +1655,7 @@ class MainWindow(QMainWindow):
                             "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
                             "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
                             "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
                         }
                         for r in range(self.scan_list.rowCount())
@@ -1693,6 +1695,7 @@ class MainWindow(QMainWindow):
                             "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
                             "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
                             "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
                         }
                         for r in range(self.scan_list.rowCount())
@@ -2028,6 +2031,7 @@ class MainWindow(QMainWindow):
             self.scan_list.insertRow(r)
             sid_item = QTableWidgetItem(str(row.get("student_id", "-")))
             sid_item.setData(Qt.UserRole, str(row.get("image_path", "") or ""))
+            sid_item.setData(Qt.UserRole + 1, str(row.get("exam_code", "") or ""))
             self.scan_list.setItem(r, 0, sid_item)
             self.scan_list.setItem(r, 1, QTableWidgetItem(str(row.get("full_name", "-"))))
             self.scan_list.setItem(r, 2, QTableWidgetItem(str(row.get("birth_date", "-"))))
@@ -2193,6 +2197,7 @@ class MainWindow(QMainWindow):
             sid = (result.student_id or "").strip()
             full_name = str(getattr(result, "full_name", "") or "-")
             birth_date = str(getattr(result, "birth_date", "") or "-")
+            self._trim_result_answers_to_expected_scope(result)
             blank_map = self._compute_blank_questions(result)
             blank_questions = blank_map.get("MCQ", [])
             self.scan_blank_questions[idx] = blank_questions
@@ -2214,6 +2219,7 @@ class MainWindow(QMainWindow):
             self.scan_list.insertRow(idx)
             sid_item = QTableWidgetItem(sid or "-")
             sid_item.setData(Qt.UserRole, str(result.image_path))
+            sid_item.setData(Qt.UserRole + 1, exam_code_text)
             self.scan_list.setItem(idx, 0, sid_item)
             self.scan_list.setItem(idx, 1, QTableWidgetItem(full_name))
             self.scan_list.setItem(idx, 2, QTableWidgetItem(birth_date))
@@ -2290,19 +2296,24 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
-        parts = [
-            f"MCQ: {self._format_mcq_answers(result.mcq_answers or {})}",
-            f"TF: {self._format_tf_answers(result.true_false_answers or {})}",
-            f"NUM: {self._format_numeric_answers(result.numeric_answers or {})}",
-        ]
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
-        if blank_parts:
-            parts.append(" | ".join(blank_parts))
-        return " | ".join(parts)
+        return " | ".join(blank_parts) if blank_parts else "-"
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
 
     def _count_mismatch_status_parts(self, result) -> list[str]:
         expected = self._expected_questions_by_section(result)
@@ -2318,13 +2329,10 @@ class MainWindow(QMainWindow):
                 continue
             actual_set = {int(q) for q in actual_map.get(sec, set())}
             missing = sorted(expected_set - actual_set)
-            extras = sorted(actual_set - expected_set)
             if missing:
                 messages.append(
                     f"thiếu {sec} ({len(expected_set)-len(missing)}/{len(expected_set)}): {','.join(str(v) for v in missing)}"
                 )
-            if extras:
-                messages.append(f"thừa {sec}: {','.join(str(v) for v in extras)}")
         return messages
 
     def _apply_scan_filter(self) -> None:
@@ -2483,8 +2491,32 @@ class MainWindow(QMainWindow):
             + "\n".join(history),
         )
 
+    def _status_text_for_saved_table_row(self, row_idx: int) -> str:
+        sid_item = self.scan_list.item(row_idx, 0)
+        sid = (sid_item.text().strip() if sid_item else "")
+        exam_code_text = str(sid_item.data(Qt.UserRole + 1) if sid_item else "").strip()
+        status_parts: list[str] = []
+        if sid and sid != "-":
+            dup = 0
+            for r in range(self.scan_list.rowCount()):
+                it = self.scan_list.item(r, 0)
+                v = (it.text().strip() if it else "")
+                if v and v != "-" and v == sid:
+                    dup += 1
+            if dup > 1:
+                status_parts.append("trùng STUDENT ID")
+        if not exam_code_text or "?" in exam_code_text:
+            status_parts.append("không tô exam code")
+        else:
+            avail_codes = self._available_exam_codes()
+            if avail_codes and exam_code_text not in avail_codes:
+                status_parts.append("lỗi mã đề")
+        return ", ".join(status_parts) if status_parts else "OK"
+
     def _refresh_row_status(self, idx: int) -> None:
-        status = self._status_text_for_row(idx)
+        if idx < 0 or idx >= self.scan_list.rowCount():
+            return
+        status = self._status_text_for_row(idx) if idx < len(self.scan_results) else self._status_text_for_saved_table_row(idx)
         item = QTableWidgetItem(status)
         if status != "OK":
             item.setForeground(Qt.red)
@@ -2575,11 +2607,9 @@ class MainWindow(QMainWindow):
             form = QFormLayout()
             inp_sid = QLineEdit(sid)
             inp_code = QLineEdit(exam_code)
-            inp_status = QLineEdit(status)
             txt_content = QTextEdit(content)
             form.addRow("Student ID", inp_sid)
             form.addRow("Exam Code", inp_code)
-            form.addRow("Status", inp_status)
             lay.addLayout(form)
             lay.addWidget(QLabel("Nội dung"))
             lay.addWidget(txt_content)
@@ -2595,15 +2625,14 @@ class MainWindow(QMainWindow):
             sid_item.setData(Qt.UserRole, old_img)
             self.scan_list.setItem(idx, 0, sid_item)
             self.scan_list.setItem(idx, 3, QTableWidgetItem(txt_content.toPlainText().strip() or "-"))
-            st_item = QTableWidgetItem(inp_status.text().strip() or "-")
-            if st_item.text() != "OK":
-                st_item.setForeground(Qt.red)
-            self.scan_list.setItem(idx, 4, st_item)
+            sid_item.setData(Qt.UserRole + 1, inp_code.text().strip())
+            self._refresh_row_status(idx)
             for r in range(self.scan_result_preview.rowCount()):
                 k = self.scan_result_preview.item(r, 0)
                 if k and k.text().strip().lower() in {"exam code", "mã đề"}:
                     self.scan_result_preview.setItem(r, 1, QTableWidgetItem(inp_code.text().strip() or "-"))
                     break
+            self.btn_save_batch_subject.setEnabled(True)
             return
         res = self.scan_results[idx]
 
@@ -2648,6 +2677,7 @@ class MainWindow(QMainWindow):
             res.student_id = new_sid
             sid_item = QTableWidgetItem(new_sid or "-")
             sid_item.setData(Qt.UserRole, str(res.image_path))
+            sid_item.setData(Qt.UserRole + 1, new_code)
             self.scan_list.setItem(idx, 0, sid_item)
             changes.append(f"student_id: '{old_sid}' -> '{new_sid}'")
         if new_code != (res.exam_code or ""):
@@ -2677,10 +2707,17 @@ class MainWindow(QMainWindow):
             return
 
         if changes:
+            self._trim_result_answers_to_expected_scope(res)
+            self.scan_blank_summary[idx] = self._compute_blank_questions(res)
+            self.scan_list.setItem(idx, 3, QTableWidgetItem(self._build_recognition_content_text(res, self.scan_blank_summary[idx])))
+            sid_item = self.scan_list.item(idx, 0)
+            if sid_item:
+                sid_item.setData(Qt.UserRole + 1, res.exam_code or "")
             self._record_adjustment(idx, changes, "dialog_edit")
             self._refresh_all_statuses()
             self._update_scan_preview(idx)
             self._load_selected_result_for_correction()
+            self.btn_save_batch_subject.setEnabled(True)
 
     def apply_manual_correction(self) -> None:
         idx = self.scan_list.currentRow()
@@ -2725,9 +2762,16 @@ class MainWindow(QMainWindow):
                 changes.append("true_false_answers updated")
 
         sid = (res.student_id or "").strip() or "-"
-        self.scan_list.setItem(idx, 0, QTableWidgetItem(sid))
+        sid_item = QTableWidgetItem(sid)
+        sid_item.setData(Qt.UserRole, str(res.image_path))
+        sid_item.setData(Qt.UserRole + 1, res.exam_code or "")
+        self.scan_list.setItem(idx, 0, sid_item)
         if changes:
+            self._trim_result_answers_to_expected_scope(res)
+            self.scan_blank_summary[idx] = self._compute_blank_questions(res)
+            self.scan_list.setItem(idx, 3, QTableWidgetItem(self._build_recognition_content_text(res, self.scan_blank_summary[idx])))
             self._record_adjustment(idx, changes, "manual_json")
+            self.btn_save_batch_subject.setEnabled(True)
         self._refresh_all_statuses()
         self._update_scan_preview(idx)
         self._load_selected_result_for_correction()
