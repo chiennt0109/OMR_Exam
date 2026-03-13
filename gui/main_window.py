@@ -81,43 +81,52 @@ class SubjectConfigDialog(QDialog):
         subject_options = subject_options or []
         block_options = block_options or ["10", "11", "12"]
 
+        self.answer_key_data: dict = dict(data.get("imported_answer_key", {}))
+
         lay = QVBoxLayout(self)
         form = QFormLayout()
 
-        self.subject_name = QComboBox()
-        self.subject_name.setEditable(True)
-        self.subject_name.addItems(subject_options)
-        initial_subject = str(data.get("name", ""))
-        if initial_subject:
-            self.subject_name.setCurrentText(initial_subject)
+        self.subject_name = QComboBox(); self.subject_name.setEditable(True); self.subject_name.addItems(subject_options)
+        if str(data.get("name", "")).strip():
+            self.subject_name.setCurrentText(str(data.get("name", "")).strip())
 
-        self.block_name = QComboBox()
-        self.block_name.setEditable(True)
-        self.block_name.addItems(block_options)
+        self.block_name = QComboBox(); self.block_name.setEditable(True); self.block_name.addItems(block_options)
         self.block_name.setCurrentText(str(data.get("block", block_options[0] if block_options else "10")))
 
         self.template_path = QLineEdit(str(data.get("template_path", "")))
         self.scan_folder = QLineEdit(str(data.get("scan_folder", "")))
         self.answer_key = QLineEdit(str(data.get("answer_key_path", "")))
-        self.answer_key_key = QLineEdit(str(data.get("answer_key_key", "")))
-        self.answer_key_key.setReadOnly(True)
+        self.answer_key_key = QLineEdit(str(data.get("answer_key_key", ""))); self.answer_key_key.setReadOnly(True)
 
-        self.section_mode = QComboBox(); self.section_mode.addItems(["Tự tính điểm từng câu", "Nhập điểm từng phần"])
-        self.question_mode = QComboBox(); self.question_mode.addItems(["Tự tính điểm cả phần", "Nhập điểm từng câu"])
-        self.section_mode.setCurrentText(str(data.get("section_mode", "Tự tính điểm từng câu")))
-        self.question_mode.setCurrentText(str(data.get("question_mode", "Tự tính điểm cả phần")))
+        # One scoring mode only, text fields instead of JSON.
+        self.score_mode = QComboBox(); self.score_mode.addItems(["Điểm theo phần", "Điểm theo câu"])
+        self.score_mode.setCurrentText(str(data.get("score_mode", "Điểm theo phần")))
 
-        section_defaults = data.get("section_scores", self.default_section_scores())
-        question_defaults = data.get("question_scores", self.default_question_scores())
-        self.section_scores = QTextEdit(json.dumps(section_defaults, ensure_ascii=False, indent=2))
-        self.question_scores = QTextEdit(json.dumps(question_defaults, ensure_ascii=False, indent=2))
+        # Section-mode inputs
+        sec = data.get("section_scores", self.default_section_scores())
+        self.sec_mcq_total = QLineEdit(str((sec.get("MCQ") or {}).get("total_points", 3.0)))
+        self.sec_tf_total = QLineEdit(str((sec.get("TF") or {}).get("total_points", 2.0)))
+        self.sec_tf_1 = QLineEdit(str(((sec.get("TF") or {}).get("rule_per_question") or {}).get("1", 0.1)))
+        self.sec_tf_2 = QLineEdit(str(((sec.get("TF") or {}).get("rule_per_question") or {}).get("2", 0.25)))
+        self.sec_tf_3 = QLineEdit(str(((sec.get("TF") or {}).get("rule_per_question") or {}).get("3", 0.5)))
+        self.sec_tf_4 = QLineEdit(str(((sec.get("TF") or {}).get("rule_per_question") or {}).get("4", 1.0)))
+        self.sec_numeric_total = QLineEdit(str((sec.get("NUMERIC") or {}).get("total_points", 2.0)))
 
-        row_tpl = QHBoxLayout(); row_tpl.addWidget(self.template_path); btn_tpl = QPushButton("..."); row_tpl.addWidget(btn_tpl)
-        btn_tpl.clicked.connect(self._browse_template)
-        row_scan = QHBoxLayout(); row_scan.addWidget(self.scan_folder); btn_scan = QPushButton("..."); row_scan.addWidget(btn_scan)
-        btn_scan.clicked.connect(self._browse_scan_folder)
-        row_key = QHBoxLayout(); row_key.addWidget(self.answer_key); btn_key = QPushButton("..."); row_key.addWidget(btn_key)
-        btn_key.clicked.connect(self._browse_answer_key)
+        # Question-mode inputs
+        qsc = data.get("question_scores", self.default_question_scores())
+        self.q_mcq = QLineEdit(str((qsc.get("MCQ") or {}).get("per_question", 0.25)))
+        self.q_tf_1 = QLineEdit(str((qsc.get("TF") or {}).get("1", 0.1)))
+        self.q_tf_2 = QLineEdit(str((qsc.get("TF") or {}).get("2", 0.25)))
+        self.q_tf_3 = QLineEdit(str((qsc.get("TF") or {}).get("3", 0.5)))
+        self.q_tf_4 = QLineEdit(str((qsc.get("TF") or {}).get("4", 1.0)))
+        self.q_numeric = QLineEdit(str((qsc.get("NUMERIC") or {}).get("per_question", 1.0)))
+
+        row_tpl = QHBoxLayout(); row_tpl.addWidget(self.template_path); b_tpl = QPushButton("..."); row_tpl.addWidget(b_tpl)
+        b_tpl.clicked.connect(self._browse_template)
+        row_scan = QHBoxLayout(); row_scan.addWidget(self.scan_folder); b_scan = QPushButton("..."); row_scan.addWidget(b_scan)
+        b_scan.clicked.connect(self._browse_scan_folder)
+        row_key = QHBoxLayout(); row_key.addWidget(self.answer_key); b_key = QPushButton("..."); row_key.addWidget(b_key)
+        b_key.clicked.connect(self._browse_answer_key)
 
         form.addRow("Tên môn", self.subject_name)
         form.addRow("Khối", self.block_name)
@@ -126,26 +135,51 @@ class SubjectConfigDialog(QDialog):
         form.addRow("Đáp án môn", row_key)
         form.addRow("Mã đáp án môn_khối", self.answer_key_key)
         form.addRow("Số phần giấy thi", QLabel(str(paper_part_count)))
-        form.addRow("Điểm theo phần", self.section_mode)
-        form.addRow("Điểm theo câu", self.question_mode)
-        form.addRow("Section scores (JSON)", self.section_scores)
-        form.addRow("Question scores (JSON)", self.question_scores)
+        form.addRow("Cách nhập điểm", self.score_mode)
+
+        self.section_group = QGroupBox("Điểm theo phần")
+        sec_form = QFormLayout(self.section_group)
+        sec_form.addRow("MCQ tổng điểm", self.sec_mcq_total)
+        sec_form.addRow("TF tổng điểm", self.sec_tf_total)
+        sec_form.addRow("TF đúng 1 ý", self.sec_tf_1)
+        sec_form.addRow("TF đúng 2 ý", self.sec_tf_2)
+        sec_form.addRow("TF đúng 3 ý", self.sec_tf_3)
+        sec_form.addRow("TF đúng 4 ý", self.sec_tf_4)
+        sec_form.addRow("NUMERIC tổng điểm", self.sec_numeric_total)
+
+        self.question_group = QGroupBox("Điểm theo câu")
+        q_form = QFormLayout(self.question_group)
+        q_form.addRow("MCQ điểm/câu", self.q_mcq)
+        q_form.addRow("TF đúng 1 ý", self.q_tf_1)
+        q_form.addRow("TF đúng 2 ý", self.q_tf_2)
+        q_form.addRow("TF đúng 3 ý", self.q_tf_3)
+        q_form.addRow("TF đúng 4 ý", self.q_tf_4)
+        q_form.addRow("NUMERIC điểm/câu", self.q_numeric)
+
         lay.addLayout(form)
+        lay.addWidget(self.section_group)
+        lay.addWidget(self.question_group)
 
         self.subject_name.currentTextChanged.connect(self._update_answer_key_key)
         self.block_name.currentTextChanged.connect(self._update_answer_key_key)
+        self.score_mode.currentTextChanged.connect(self._refresh_score_mode_ui)
         self._update_answer_key_key()
+        self._refresh_score_mode_ui()
 
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
 
+    def _refresh_score_mode_ui(self) -> None:
+        section_mode = self.score_mode.currentText() == "Điểm theo phần"
+        self.section_group.setVisible(section_mode)
+        self.question_group.setVisible(not section_mode)
+
     def _update_answer_key_key(self) -> None:
         subject = self.subject_name.currentText().strip()
         block = self.block_name.currentText().strip()
-        key = f"{subject}_{block}" if subject and block else ""
-        self.answer_key_key.setText(key)
+        self.answer_key_key.setText(f"{subject}_{block}" if subject and block else "")
 
     def _browse_template(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Chọn giấy thi", "", "JSON (*.json)")
@@ -159,15 +193,79 @@ class SubjectConfigDialog(QDialog):
 
     def _browse_answer_key(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Chọn đáp án môn", "", "Answer files (*.json *.xlsx *.csv)")
-        if path:
-            self.answer_key.setText(path)
+        if not path:
+            return
+        try:
+            imported_package = import_answer_key(path)
+        except Exception as exc:
+            QMessageBox.warning(self, "Import đáp án", f"Không thể import đáp án:\n{exc}")
+            return
+
+        dlg = ImportAnswerKeyDialog(imported_package, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        edited_package = dlg.result_answer_key()
+        key_name = self.answer_key_key.text().strip()
+        exam_codes = sorted(edited_package.exam_keys.keys())
+        if not exam_codes:
+            QMessageBox.warning(self, "Import đáp án", "Không có mã đề nào trong file đáp án.")
+            return
+
+        selected_code = key_name if key_name in edited_package.exam_keys else exam_codes[0]
+        if key_name not in edited_package.exam_keys and len(exam_codes) > 1:
+            pick, ok = QInputDialog.getItem(
+                self,
+                "Chọn mã đáp án",
+                "Không tìm thấy mã đáp án môn_khối trùng khớp. Chọn mã đề để gắn cho môn này:",
+                exam_codes,
+                0,
+                False,
+            )
+            if not ok:
+                return
+            selected_code = pick
+
+        selected = edited_package.exam_keys[selected_code]
+        self.answer_key_data = {
+            "exam_code": selected_code,
+            "mcq_answers": selected.mcq_answers,
+            "true_false_answers": selected.true_false_answers,
+            "numeric_answers": selected.numeric_answers,
+        }
+        self.answer_key.setText(path)
+        QMessageBox.information(self, "Import đáp án", f"Đã gắn đáp án mã '{selected_code}' cho môn đang cấu hình.")
 
     def payload(self) -> dict:
-        try:
-            section_scores = json.loads(self.section_scores.toPlainText().strip() or "{}")
-            question_scores = json.loads(self.question_scores.toPlainText().strip() or "{}")
-        except Exception as exc:
-            raise ImportError(f"JSON cấu hình điểm không hợp lệ: {exc}") from exc
+        def f(v: str, label: str) -> float:
+            try:
+                return float(v.strip().replace(",", "."))
+            except Exception as exc:
+                raise ImportError(f"Giá trị điểm '{label}' không hợp lệ: {v}") from exc
+
+        section_scores = {
+            "MCQ": {"total_points": f(self.sec_mcq_total.text(), "MCQ tổng điểm"), "distribution": "auto_by_question_count"},
+            "TF": {
+                "total_points": f(self.sec_tf_total.text(), "TF tổng điểm"),
+                "rule_per_question": {
+                    "1": f(self.sec_tf_1.text(), "TF đúng 1 ý"),
+                    "2": f(self.sec_tf_2.text(), "TF đúng 2 ý"),
+                    "3": f(self.sec_tf_3.text(), "TF đúng 3 ý"),
+                    "4": f(self.sec_tf_4.text(), "TF đúng 4 ý"),
+                },
+            },
+            "NUMERIC": {"total_points": f(self.sec_numeric_total.text(), "NUMERIC tổng điểm"), "distribution": "auto_by_question_count"},
+        }
+        question_scores = {
+            "MCQ": {"per_question": f(self.q_mcq.text(), "MCQ điểm/câu")},
+            "TF": {
+                "1": f(self.q_tf_1.text(), "TF đúng 1 ý"),
+                "2": f(self.q_tf_2.text(), "TF đúng 2 ý"),
+                "3": f(self.q_tf_3.text(), "TF đúng 3 ý"),
+                "4": f(self.q_tf_4.text(), "TF đúng 4 ý"),
+            },
+            "NUMERIC": {"per_question": f(self.q_numeric.text(), "NUMERIC điểm/câu")},
+        }
+
         return {
             "name": self.subject_name.currentText().strip(),
             "block": self.block_name.currentText().strip(),
@@ -175,8 +273,8 @@ class SubjectConfigDialog(QDialog):
             "scan_folder": self.scan_folder.text().strip(),
             "answer_key_path": self.answer_key.text().strip(),
             "answer_key_key": self.answer_key_key.text().strip(),
-            "section_mode": self.section_mode.currentText(),
-            "question_mode": self.question_mode.currentText(),
+            "imported_answer_key": self.answer_key_data,
+            "score_mode": self.score_mode.currentText(),
             "section_scores": section_scores,
             "question_scores": question_scores,
         }
@@ -246,7 +344,8 @@ class NewExamDialog(QDialog):
         for cfg in self.subject_configs:
             tpl = cfg.get("template_path") or "[dùng mẫu chung]"
             key = cfg.get("answer_key_key", "")
-            self.subject_list.addItem(f"{cfg.get('name','')} - Khối {cfg.get('block','')} — Key: {key} — Template: {tpl}")
+            mode = cfg.get("score_mode", "Điểm theo phần")
+            self.subject_list.addItem(f"{cfg.get('name','')} - Khối {cfg.get('block','')} — Key: {key} — {mode} — Template: {tpl}")
 
     def _add_subject(self) -> None:
         dlg = SubjectConfigDialog(
@@ -257,12 +356,7 @@ class NewExamDialog(QDialog):
         )
         if dlg.exec() != QDialog.Accepted:
             return
-        try:
-            payload = dlg.payload()
-        except ImportError as exc:
-            QMessageBox.warning(self, "Lỗi", str(exc))
-            return
-        self.subject_configs.append(payload)
+        self.subject_configs.append(dlg.payload())
         self._refresh_subject_list()
 
     def _edit_subject(self) -> None:
@@ -278,11 +372,7 @@ class NewExamDialog(QDialog):
         )
         if dlg.exec() != QDialog.Accepted:
             return
-        try:
-            self.subject_configs[idx] = dlg.payload()
-        except ImportError as exc:
-            QMessageBox.warning(self, "Lỗi", str(exc))
-            return
+        self.subject_configs[idx] = dlg.payload()
         self._refresh_subject_list()
 
     def _delete_subject(self) -> None:
@@ -965,7 +1055,7 @@ class MainWindow(QMainWindow):
         common_template = str(payload.get("common_template", ""))
         subject_cfgs = payload.get("subject_configs", [])
         subjects = [
-            f"{str(x.get("name", "")).strip()}_{str(x.get("block", "")).strip()}"
+            f"{str(x.get('name', '')).strip()}_{str(x.get('block', '')).strip()}"
             for x in subject_cfgs
             if str(x.get("name", "")).strip()
         ]
@@ -1461,11 +1551,15 @@ class MainWindow(QMainWindow):
     def _refresh_session_info(self) -> None:
         if not self.session:
             return
+        cfg = self.session.config or {}
         self.session_info.setPlainText(
             f"Exam: {self.session.exam_name}\nDate: {self.session.exam_date}\n"
             f"Subjects: {', '.join(self.session.subjects)}\n"
             f"Template: {self.session.template_path}\n"
             f"AnswerKey: {self.session.answer_key_path}\n"
+            f"Scan mode: {cfg.get('scan_mode', '-')}\n"
+            f"Scan root: {cfg.get('scan_root', '-')}\n"
+            f"Paper parts: {cfg.get('paper_part_count', '-')}\n"
             f"Students: {len(self.session.students)}"
         )
         codes = ", ".join(self.imported_exam_codes) if self.imported_exam_codes else "-"
