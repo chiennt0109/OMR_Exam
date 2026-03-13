@@ -6,7 +6,7 @@ import uuid
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QImage, QMouseEvent, QKeyEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QTextEdit,
     QToolBar,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -333,8 +334,13 @@ class TemplateEditorWindow(QMainWindow):
         self.act_zoom_out = QAction("Zoom -", self); self.act_zoom_out.triggered.connect(lambda: self.canvas.set_zoom(self.canvas.zoom / 1.15))
 
         self._build_menus()
+        self._assign_action_icons()
 
         toolbar = QToolBar("Template")
+        toolbar.setMovable(False)
+        toolbar.setFloatable(False)
+        toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        toolbar.setIconSize(QSize(18, 18))
         self.addToolBar(toolbar)
         for act in [
             self.act_load_blank,
@@ -370,6 +376,22 @@ class TemplateEditorWindow(QMainWindow):
         left = QVBoxLayout(); left.addWidget(scroll); left.addWidget(self.result_box)
         layout.addLayout(left, 1); layout.addWidget(self.prop_panel)
         self.setCentralWidget(center)
+
+    def _assign_action_icons(self) -> None:
+        s = self.style()
+        self.act_load_blank.setIcon(s.standardIcon(QStyle.SP_DialogOpenButton))
+        self.act_open_template.setIcon(s.standardIcon(QStyle.SP_DialogOpenButton))
+        self.act_save.setIcon(s.standardIcon(QStyle.SP_DialogSaveButton))
+        self.act_save_as.setIcon(s.standardIcon(QStyle.SP_DialogSaveButton))
+        self.act_preview.setIcon(s.standardIcon(QStyle.SP_FileDialogContentsView))
+        self.act_test_recognition.setIcon(s.standardIcon(QStyle.SP_MediaPlay))
+        self.act_copy.setIcon(s.standardIcon(QStyle.SP_FileIcon))
+        self.act_paste.setIcon(s.standardIcon(QStyle.SP_DialogResetButton))
+        self.act_duplicate.setIcon(s.standardIcon(QStyle.SP_FileDialogNewFolder))
+        self.act_delete.setIcon(s.standardIcon(QStyle.SP_TrashIcon))
+        self.act_snap_grid.setIcon(s.standardIcon(QStyle.SP_BrowserReload))
+        self.act_zoom_in.setIcon(s.standardIcon(QStyle.SP_ArrowUp))
+        self.act_zoom_out.setIcon(s.standardIcon(QStyle.SP_ArrowDown))
 
     def _build_menus(self) -> None:
         menu = self.menuBar()

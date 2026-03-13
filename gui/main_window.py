@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 
@@ -39,6 +40,7 @@ class MainWindow(QMainWindow):
         self.template: Template | None = None
         self.answer_keys: AnswerKeyRepository | None = None
         self.scan_results = []
+        self.scan_files: list[Path] = []
 
         self.omr_processor = OMRProcessor()
         self.scoring_engine = ScoringEngine()
@@ -79,6 +81,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(w)
 
         self.scan_list = QListWidget()
+        self.scan_list.currentRowChanged.connect(self._on_scan_selected)
         self.progress = QProgressBar()
 
         btn_run_scan = QPushButton("Batch Scan Images")
@@ -103,13 +106,24 @@ class MainWindow(QMainWindow):
         self.preview_label.setAlignment(Qt.AlignCenter)
         self.manual_edit = QTextEdit()
         self.manual_edit.setPlaceholderText("Manual corrections JSON (e.g. {'student_id': '1001', 'answers': {'1':'A'}})")
+        self.result_preview = QTextEdit()
+        self.result_preview.setReadOnly(True)
+        self.result_preview.setPlaceholderText("Recognized result for selected scan")
+
+        btn_load_selected = QPushButton("Load Selected Scan Result")
+        btn_load_selected.clicked.connect(self._load_selected_result_for_correction)
+        btn_apply_correction = QPushButton("Apply Manual Correction")
+        btn_apply_correction.clicked.connect(self.apply_manual_correction)
 
         left_layout.addWidget(QLabel("Detected Errors"))
         left_layout.addWidget(self.error_list)
+        left_layout.addWidget(btn_load_selected)
+        left_layout.addWidget(btn_apply_correction)
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.addWidget(self.preview_label)
+        right_layout.addWidget(self.result_preview)
         right_layout.addWidget(QLabel("Manual Edit"))
         right_layout.addWidget(self.manual_edit)
 
@@ -156,12 +170,26 @@ class MainWindow(QMainWindow):
         if not self.template:
             QMessageBox.warning(self, "Missing template", "Load template first.")
             return
-        file_paths, _ = QFileDialog.getOpenFileNames(self, "Select scanned sheets", "", "Images (*.png *.jpg *.jpeg)")
+        folder = QFileDialog.getExistingDirectory(self, "Select folder containing scanned sheets")
+        if not folder:
+            return
+        directory = Path(folder)
+        file_paths = sorted(
+            [
+                str(p)
+                for p in directory.iterdir()
+                if p.is_file() and p.suffix.lower() in {".png", ".jpg", ".jpeg"}
+            ]
+        )
         if not file_paths:
+            QMessageBox.information(self, "No images", "Selected folder has no PNG/JPG images.")
             return
 
         self.scan_list.clear()
         self.error_list.clear()
+        self.result_preview.clear()
+        self.manual_edit.clear()
+        self.scan_files = [Path(p) for p in file_paths]
 
         def on_progress(current: int, total: int, image_path: str):
             self.progress.setMaximum(total)
@@ -169,9 +197,82 @@ class MainWindow(QMainWindow):
             self.scan_list.addItem(f"{current}/{total}: {Path(image_path).name}")
 
         self.scan_results = self.omr_processor.process_batch(file_paths, self.template, on_progress)
-        for result in self.scan_results:
+        self.scan_list.clear()
+        for idx, result in enumerate(self.scan_results):
+            rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
+            total_errors = len(rec_errors) + len(result.issues)
+            self.scan_list.addItem(
+                f"{idx+1}. {Path(result.image_path).name} | ID:{result.student_id or '-'} | Code:{result.exam_code or '-'} | Errors:{total_errors}"
+            )
             for issue in result.issues:
                 self.error_list.addItem(f"{Path(result.image_path).name}: {issue.code} - {issue.message}")
+            for err in rec_errors:
+                self.error_list.addItem(f"{Path(result.image_path).name}: RECOGNITION - {err}")
+
+    def _on_scan_selected(self, index: int) -> None:
+        if index < 0 or index >= len(self.scan_results):
+            return
+        self._load_selected_result_for_correction()
+
+    def _load_selected_result_for_correction(self) -> None:
+        idx = self.scan_list.currentRow()
+        if idx < 0 or idx >= len(self.scan_results):
+            return
+        res = self.scan_results[idx]
+        payload = {
+            "student_id": res.student_id,
+            "exam_code": res.exam_code,
+            "mcq_answers": res.mcq_answers,
+            "true_false_answers": res.true_false_answers,
+            "numeric_answers": res.numeric_answers,
+            "issues": [{"code": i.code, "message": i.message, "zone_id": i.zone_id} for i in res.issues],
+            "recognition_errors": list(getattr(res, "recognition_errors", [])) or list(getattr(res, "errors", [])),
+        }
+        self.result_preview.setPlainText(json.dumps(payload, ensure_ascii=False, indent=2))
+        self.manual_edit.setPlainText(
+            json.dumps(
+                {
+                    "student_id": res.student_id,
+                    "exam_code": res.exam_code,
+                    "mcq_answers": res.mcq_answers,
+                    "numeric_answers": res.numeric_answers,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+
+    def apply_manual_correction(self) -> None:
+        idx = self.scan_list.currentRow()
+        if idx < 0 or idx >= len(self.scan_results):
+            QMessageBox.warning(self, "No selection", "Select a scanned result first.")
+            return
+        txt = self.manual_edit.toPlainText().strip()
+        if not txt:
+            return
+        try:
+            patch = json.loads(txt)
+        except Exception as exc:
+            QMessageBox.warning(self, "Invalid JSON", f"Cannot parse manual correction:\n{exc}")
+            return
+
+        res = self.scan_results[idx]
+        if "student_id" in patch:
+            res.student_id = str(patch["student_id"])
+        if "exam_code" in patch:
+            res.exam_code = str(patch["exam_code"])
+        if isinstance(patch.get("mcq_answers"), dict):
+            res.mcq_answers = {int(k): str(v) for k, v in patch["mcq_answers"].items()}
+        if isinstance(patch.get("numeric_answers"), dict):
+            res.numeric_answers = {int(k): str(v) for k, v in patch["numeric_answers"].items()}
+        if isinstance(patch.get("true_false_answers"), dict):
+            res.true_false_answers = patch["true_false_answers"]
+
+        self.scan_list.item(idx).setText(
+            f"{idx+1}. {Path(res.image_path).name} | ID:{res.student_id or '-'} | Code:{res.exam_code or '-'} | Errors:{len(res.issues) + len(getattr(res, 'recognition_errors', []) or getattr(res, 'errors', []))}"
+        )
+        self._load_selected_result_for_correction()
+        QMessageBox.information(self, "Correction", "Manual correction applied to selected scan.")
 
     def export_results(self) -> None:
         if not self.scan_results or not self.answer_keys:
