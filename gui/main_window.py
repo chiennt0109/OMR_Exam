@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QProgressBar,
@@ -33,6 +34,7 @@ from PySide6.QtWidgets import (
     QToolBar,
     QStyle,
     QGroupBox,
+    QStackedWidget,
 )
 
 from core.answer_key_importer import import_answer_key
@@ -68,6 +70,77 @@ class MainWindow(QMainWindow):
         self.scoring_engine = ScoringEngine()
         self.current_session_path: Path | None = None
 
+        self.session_registry_path = Path.home() / ".omr_exam_sessions.json"
+        self.session_registry: list[dict[str, str | bool]] = self._load_session_registry()
+
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self._build_exam_list_page())
+        self.stack.addWidget(self._build_workspace_page())
+        self.setCentralWidget(self.stack)
+
+        self._build_menu()
+        self._refresh_exam_list()
+        self.stack.setCurrentIndex(0)
+
+    def _confirm(self, title: str, message: str) -> bool:
+        return (
+            QMessageBox.question(
+                self,
+                title,
+                message,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            == QMessageBox.Yes
+        )
+
+    def _load_session_registry(self) -> list[dict[str, str | bool]]:
+        if not self.session_registry_path.exists():
+            return []
+        try:
+            data = json.loads(self.session_registry_path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return [x for x in data if isinstance(x, dict) and x.get("path")]
+        except Exception:
+            return []
+        return []
+
+    def _save_session_registry(self) -> None:
+        self.session_registry_path.write_text(json.dumps(self.session_registry, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _upsert_session_registry(self, path: Path, name: str | None = None) -> None:
+        p = str(path)
+        for row in self.session_registry:
+            if row.get("path") == p:
+                row["name"] = name or row.get("name") or path.stem
+                return
+        self.session_registry.append({"name": name or path.stem, "path": p, "default": False})
+
+    def _build_exam_list_page(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.addWidget(QLabel("Danh sách các kỳ thi"))
+
+        self.exam_list_widget = QListWidget()
+        layout.addWidget(self.exam_list_widget)
+
+        row = QHBoxLayout()
+        btn_open = QPushButton("Mở")
+        btn_open.clicked.connect(self._open_selected_registry_session)
+        btn_edit = QPushButton("Sửa")
+        btn_edit.clicked.connect(self._edit_selected_registry_session)
+        btn_delete = QPushButton("Xoá")
+        btn_delete.clicked.connect(self._delete_selected_registry_session)
+        btn_default = QPushButton("Đặt mặc định")
+        btn_default.clicked.connect(self._set_default_selected_registry_session)
+        btn_new = QPushButton("Tạo kỳ thi mới")
+        btn_new.clicked.connect(self.action_create_session)
+        for b in [btn_open, btn_edit, btn_delete, btn_default, btn_new]:
+            row.addWidget(b)
+        layout.addLayout(row)
+        return w
+
+    def _build_workspace_page(self) -> QWidget:
         central = QWidget()
         root_layout = QVBoxLayout(central)
 
@@ -85,80 +158,69 @@ class MainWindow(QMainWindow):
         main_split.setSizes([220, 420, 260])
 
         root_layout.addWidget(main_split)
-        self.setCentralWidget(central)
+        return central
 
-        self._build_menu()
+    def _refresh_exam_list(self) -> None:
+        self.exam_list_widget.clear()
+        for row in self.session_registry:
+            name = str(row.get("name") or Path(str(row.get("path"))).stem)
+            suffix = " [MẶC ĐỊNH]" if bool(row.get("default")) else ""
+            item = QListWidgetItem(f"{name}{suffix} — {row.get('path')}")
+            item.setData(Qt.UserRole, row.get("path"))
+            self.exam_list_widget.addItem(item)
 
-    def _build_menu(self) -> None:
-        file_menu = self.menuBar().addMenu("File")
-        act_new = file_menu.addAction("Tạo kỳ thi mới")
-        act_new.setShortcut(QKeySequence("Ctrl+N"))
-        act_new.triggered.connect(self.create_session)
+    def _selected_registry_path(self) -> Path | None:
+        item = self.exam_list_widget.currentItem()
+        if not item:
+            return None
+        path = item.data(Qt.UserRole)
+        return Path(path) if path else None
 
-        act_open = file_menu.addAction("Mở kỳ thi cũ")
-        act_open.setShortcut(QKeySequence("Ctrl+O"))
-        act_open.triggered.connect(self.open_session)
-
-        act_save = file_menu.addAction("Lưu kỳ thi")
-        act_save.setShortcut(QKeySequence("Ctrl+S"))
-        act_save.triggered.connect(self.save_session)
-
-        act_save_as = file_menu.addAction("Lưu dưới tên khác")
-        act_save_as.triggered.connect(self.save_session_as)
-
-        file_menu.addSeparator()
-        act_manage_template = file_menu.addAction("Quản lý mẫu giấy thi")
-        act_manage_template.triggered.connect(self.open_template_editor)
-
-        act_manage_subject = file_menu.addAction("Quản lý môn học")
-        act_manage_subject.triggered.connect(self.manage_subjects)
-
-        file_menu.addSeparator()
-        act_exit = file_menu.addAction("Thoát")
-        act_exit.triggered.connect(self.close)
-
-        exam_menu = self.menuBar().addMenu("Exam")
-        exam_menu.addAction("Load Template JSON", self.load_template)
-        exam_menu.addAction("Load Answer Keys JSON", self.load_answer_keys)
-        exam_menu.addAction("Import Answer Key", self.import_answer_key_file)
-        exam_menu.addAction("Export Answer Key Sample", self.export_answer_key_sample)
-        exam_menu.addAction("Batch Scan Images", self.run_batch_scan)
-        exam_menu.addAction("Sửa bài thi được chọn", self._open_edit_selected_scan)
-        exam_menu.addAction("Load Selected Scan Result", self._load_selected_result_for_correction)
-        exam_menu.addAction("Apply Manual Correction", self.apply_manual_correction)
-
-        scoring_menu = self.menuBar().addMenu("Scoring")
-        scoring_menu.addAction("Calculate & Preview Scores", self.calculate_scores)
-        scoring_menu.addAction("Export Results", self.export_results)
-
-        toolbar = QToolBar("Ribbon")
-        toolbar.setMovable(False)
-        self.addToolBar(toolbar)
-
-        style = self.style()
-        toolbar.addAction(style.standardIcon(QStyle.SP_FileIcon), "New", self.create_session)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Open", self.open_session)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Save", self.save_session)
-        toolbar.addSeparator()
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Load Template", self.load_template)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Load Keys", self.load_answer_keys)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Import Key", self.import_answer_key_file)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DriveFDIcon), "Export Sample", self.export_answer_key_sample)
-        toolbar.addSeparator()
-        toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Batch Scan", self.run_batch_scan)
-        toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Edit Selected", self._open_edit_selected_scan)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogApplyButton), "Apply Correction", self.apply_manual_correction)
-        toolbar.addSeparator()
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogApplyButton), "Calculate Scores", self.calculate_scores)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Export", self.export_results)
-
-    def open_session(self) -> None:
-        file_path, _ = QFileDialog.getOpenFileName(self, "Mở kỳ thi cũ", "", "Exam Session JSON (*.json)")
-        if not file_path:
+    def _open_selected_registry_session(self) -> None:
+        path = self._selected_registry_path()
+        if not path:
+            QMessageBox.warning(self, "Mở kỳ thi", "Chọn kỳ thi trong danh sách trước.")
             return
+        if not self._confirm("Mở kỳ thi", f"Bạn có chắc muốn mở kỳ thi này?\n{path}"):
+            return
+        self._open_session_path(path)
+
+    def _edit_selected_registry_session(self) -> None:
+        path = self._selected_registry_path()
+        if not path:
+            QMessageBox.warning(self, "Sửa kỳ thi", "Chọn kỳ thi trong danh sách trước.")
+            return
+        if not self._confirm("Sửa kỳ thi", f"Bạn có chắc muốn sửa kỳ thi này?\n{path}"):
+            return
+        self._open_session_path(path)
+
+    def _delete_selected_registry_session(self) -> None:
+        path = self._selected_registry_path()
+        if not path:
+            QMessageBox.warning(self, "Xoá kỳ thi", "Chọn kỳ thi trong danh sách trước.")
+            return
+        if not self._confirm("Xoá kỳ thi", f"Bạn có chắc muốn xoá kỳ thi khỏi danh sách?\n{path}"):
+            return
+        self.session_registry = [x for x in self.session_registry if x.get("path") != str(path)]
+        self._save_session_registry()
+        self._refresh_exam_list()
+
+    def _set_default_selected_registry_session(self) -> None:
+        path = self._selected_registry_path()
+        if not path:
+            QMessageBox.warning(self, "Đặt mặc định", "Chọn kỳ thi trong danh sách trước.")
+            return
+        if not self._confirm("Đặt mặc định", f"Đặt kỳ thi này làm mặc định?\n{path}"):
+            return
+        for row in self.session_registry:
+            row["default"] = row.get("path") == str(path)
+        self._save_session_registry()
+        self._refresh_exam_list()
+
+    def _open_session_path(self, path: Path) -> None:
         try:
-            self.session = ExamSession.load_json(file_path)
-            self.current_session_path = Path(file_path)
+            self.session = ExamSession.load_json(path)
+            self.current_session_path = path
             if self.session.template_path:
                 t = Path(self.session.template_path)
                 if t.exists():
@@ -169,9 +231,79 @@ class MainWindow(QMainWindow):
                     self.answer_keys = AnswerKeyRepository.load_json(p)
                     self.imported_exam_codes = sorted({k.split("::", 1)[1] for k in self.answer_keys.keys.keys() if "::" in k})
             self._refresh_session_info()
-            QMessageBox.information(self, "Open session", "Đã mở kỳ thi cũ thành công.")
+            self.stack.setCurrentIndex(1)
+            QMessageBox.information(self, "Open session", "Đã mở kỳ thi thành công.")
         except Exception as exc:
             QMessageBox.warning(self, "Open session", f"Không thể mở kỳ thi:\n{exc}")
+
+    def _build_menu(self) -> None:
+        file_menu = self.menuBar().addMenu("File")
+        act_new = file_menu.addAction("Tạo kỳ thi mới")
+        act_new.setShortcut(QKeySequence("Ctrl+N"))
+        act_new.triggered.connect(self.action_create_session)
+
+        act_open = file_menu.addAction("Mở kỳ thi cũ")
+        act_open.setShortcut(QKeySequence("Ctrl+O"))
+        act_open.triggered.connect(self.action_open_session)
+
+        act_save = file_menu.addAction("Lưu kỳ thi")
+        act_save.setShortcut(QKeySequence("Ctrl+S"))
+        act_save.triggered.connect(self.action_save_session)
+
+        act_save_as = file_menu.addAction("Lưu dưới tên khác")
+        act_save_as.triggered.connect(self.action_save_session_as)
+
+        file_menu.addSeparator()
+        act_manage_template = file_menu.addAction("Quản lý mẫu giấy thi")
+        act_manage_template.triggered.connect(self.action_manage_template)
+
+        act_manage_subject = file_menu.addAction("Quản lý môn học")
+        act_manage_subject.triggered.connect(self.action_manage_subjects)
+
+        file_menu.addSeparator()
+        act_exit = file_menu.addAction("Thoát")
+        act_exit.triggered.connect(self.action_exit)
+
+        exam_menu = self.menuBar().addMenu("Exam")
+        exam_menu.addAction("Load Template JSON", self.action_load_template)
+        exam_menu.addAction("Load Answer Keys JSON", self.action_load_answer_keys)
+        exam_menu.addAction("Import Answer Key", self.action_import_answer_key)
+        exam_menu.addAction("Export Answer Key Sample", self.action_export_answer_key_sample)
+        exam_menu.addAction("Batch Scan Images", self.action_run_batch_scan)
+        exam_menu.addAction("Sửa bài thi được chọn", self.action_edit_selected_scan)
+        exam_menu.addAction("Load Selected Scan Result", self.action_load_selected_scan_result)
+        exam_menu.addAction("Apply Manual Correction", self.action_apply_manual_correction)
+
+        scoring_menu = self.menuBar().addMenu("Scoring")
+        scoring_menu.addAction("Calculate & Preview Scores", self.action_calculate_scores)
+        scoring_menu.addAction("Export Results", self.action_export_results)
+
+        toolbar = QToolBar("Ribbon")
+        toolbar.setMovable(False)
+        self.addToolBar(toolbar)
+
+        style = self.style()
+        toolbar.addAction(style.standardIcon(QStyle.SP_FileIcon), "New", self.action_create_session)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Open", self.action_open_session)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Save", self.action_save_session)
+        toolbar.addSeparator()
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Load Template", self.action_load_template)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Load Keys", self.action_load_answer_keys)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Import Key", self.action_import_answer_key)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DriveFDIcon), "Export Sample", self.action_export_answer_key_sample)
+        toolbar.addSeparator()
+        toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Batch Scan", self.action_run_batch_scan)
+        toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Edit Selected", self.action_edit_selected_scan)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogApplyButton), "Apply Correction", self.action_apply_manual_correction)
+        toolbar.addSeparator()
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogApplyButton), "Calculate Scores", self.action_calculate_scores)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Export", self.action_export_results)
+
+    def open_session(self) -> None:
+        file_path, _ = QFileDialog.getOpenFileName(self, "Mở kỳ thi cũ", "", "Exam Session JSON (*.json)")
+        if not file_path:
+            return
+        self._open_session_path(Path(file_path))
 
     def save_session(self) -> None:
         if not self.session:
@@ -181,6 +313,9 @@ class MainWindow(QMainWindow):
             return
         try:
             self.session.save_json(self.current_session_path)
+            self._upsert_session_registry(self.current_session_path, self.session.exam_name if self.session else None)
+            self._save_session_registry()
+            self._refresh_exam_list()
             QMessageBox.information(self, "Save session", f"Đã lưu kỳ thi:\n{self.current_session_path}")
         except Exception as exc:
             QMessageBox.warning(self, "Save session", f"Không thể lưu kỳ thi:\n{exc}")
@@ -209,6 +344,75 @@ class MainWindow(QMainWindow):
             return
         self.session.subjects = subjects
         self._refresh_session_info()
+
+    def action_create_session(self) -> None:
+        if self._confirm("Tạo kỳ thi mới", "Bạn có chắc muốn tạo kỳ thi mới?"):
+            self.create_session()
+            self.stack.setCurrentIndex(1)
+
+    def action_open_session(self) -> None:
+        if self._confirm("Mở kỳ thi", "Bạn có chắc muốn mở kỳ thi?"):
+            self.open_session()
+
+    def action_save_session(self) -> None:
+        if self._confirm("Lưu kỳ thi", "Bạn có chắc muốn lưu kỳ thi?"):
+            self.save_session()
+
+    def action_save_session_as(self) -> None:
+        if self._confirm("Lưu dưới tên khác", "Bạn có chắc muốn lưu kỳ thi dưới tên khác?"):
+            self.save_session_as()
+
+    def action_manage_template(self) -> None:
+        if self._confirm("Quản lý mẫu giấy thi", "Mở trình quản lý mẫu giấy thi?"):
+            self.open_template_editor()
+
+    def action_manage_subjects(self) -> None:
+        if self._confirm("Quản lý môn học", "Mở quản lý môn học?"):
+            self.manage_subjects()
+
+    def action_exit(self) -> None:
+        if self._confirm("Thoát", "Bạn có chắc muốn thoát ứng dụng?"):
+            self.close()
+
+    def action_load_template(self) -> None:
+        if self._confirm("Load Template", "Bạn có chắc muốn tải Template JSON?"):
+            self.load_template()
+
+    def action_load_answer_keys(self) -> None:
+        if self._confirm("Load Answer Keys", "Bạn có chắc muốn tải Answer Keys JSON?"):
+            self.load_answer_keys()
+
+    def action_import_answer_key(self) -> None:
+        if self._confirm("Import Answer Key", "Bạn có chắc muốn import Answer Key?"):
+            self.import_answer_key_file()
+
+    def action_export_answer_key_sample(self) -> None:
+        if self._confirm("Export Sample", "Bạn có chắc muốn export file mẫu?"):
+            self.export_answer_key_sample()
+
+    def action_run_batch_scan(self) -> None:
+        if self._confirm("Batch Scan", "Bạn có chắc muốn chạy Batch Scan?"):
+            self.run_batch_scan()
+
+    def action_edit_selected_scan(self) -> None:
+        if self._confirm("Sửa bài thi", "Bạn có chắc muốn sửa bài thi được chọn?"):
+            self._open_edit_selected_scan()
+
+    def action_load_selected_scan_result(self) -> None:
+        if self._confirm("Load Selected", "Bạn có chắc muốn load kết quả bài thi đang chọn?"):
+            self._load_selected_result_for_correction()
+
+    def action_apply_manual_correction(self) -> None:
+        if self._confirm("Apply Correction", "Bạn có chắc muốn áp dụng manual correction?"):
+            self.apply_manual_correction()
+
+    def action_calculate_scores(self) -> None:
+        if self._confirm("Calculate Scores", "Bạn có chắc muốn chấm điểm?"):
+            self.calculate_scores()
+
+    def action_export_results(self) -> None:
+        if self._confirm("Export Results", "Bạn có chắc muốn export kết quả?"):
+            self.export_results()
 
     def import_answer_key_file(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
@@ -904,7 +1108,7 @@ class MainWindow(QMainWindow):
 def run() -> None:
     app = QApplication([])
     window = MainWindow()
-    window.show()
+    window.showMaximized()
     app.exec()
 
 
