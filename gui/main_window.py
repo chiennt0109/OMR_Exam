@@ -30,12 +30,15 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
+    QInputDialog,
 )
 
+from core.answer_key_importer import import_answer_key
 from core.omr_engine import OMRProcessor
 from core.scoring_engine import ScoringEngine
 from editor.template_editor import TemplateEditorWindow
-from models.answer_key import AnswerKeyRepository
+from gui.import_answer_key_dialog import ImportAnswerKeyDialog
+from models.answer_key import AnswerKeyRepository, SubjectKey
 from models.exam_session import ExamSession
 from models.template import Template
 
@@ -66,6 +69,67 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_session_tab(), "Exam Session")
         self.tabs.addTab(self._build_scan_tab(), "OMR Scan")
         self.tabs.addTab(self._build_correction_tab(), "Error Correction")
+
+        self._build_menu()
+
+    def _build_menu(self) -> None:
+        exam_menu = self.menuBar().addMenu("Exam")
+        action_import_answer_key = exam_menu.addAction("Import Answer Key")
+        action_import_answer_key.triggered.connect(self.import_answer_key_file)
+
+    def import_answer_key_file(self) -> None:
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Answer Key",
+            "",
+            "Answer key files (*.xlsx *.csv)",
+        )
+        if not file_path:
+            return
+        try:
+            imported = import_answer_key(file_path)
+        except ImportError as exc:
+            QMessageBox.warning(self, "Import failed", str(exc))
+            return
+        except Exception as exc:
+            QMessageBox.warning(self, "Import failed", f"Cannot import answer key:\n{exc}")
+            return
+
+        dlg = ImportAnswerKeyDialog(imported, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        edited = dlg.result_answer_key()
+
+        if not self.session:
+            self.create_session()
+        subject = self.session.subjects[0] if self.session and self.session.subjects else "General"
+        default_exam_code = "DEFAULT"
+        exam_code, ok = QInputDialog.getText(
+            self,
+            "Exam code",
+            "Enter exam code for this imported key:",
+            text=default_exam_code,
+        )
+        if not ok:
+            return
+        exam_code = exam_code.strip() or default_exam_code
+
+        if self.answer_keys is None:
+            self.answer_keys = AnswerKeyRepository()
+
+        self.answer_keys.upsert(
+            SubjectKey(
+                subject=subject,
+                exam_code=exam_code,
+                answers=edited.mcq_answers,
+                true_false_answers=edited.true_false_answers,
+                numeric_answers=edited.numeric_answers,
+            )
+        )
+        if self.session:
+            self.session.answer_key_path = file_path
+        self._refresh_session_info()
+        QMessageBox.information(self, "Import successful", "Answer key imported and saved to current session.")
 
     def _build_session_tab(self) -> QWidget:
         w = QWidget()

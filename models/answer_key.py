@@ -23,6 +23,8 @@ class SubjectKey:
     exam_code: str
     answers: dict[int, str]
     section_rules: list[SectionRule] = field(default_factory=list)
+    true_false_answers: dict[int, dict[str, bool]] = field(default_factory=dict)
+    numeric_answers: dict[int, str] = field(default_factory=dict)
 
     def points_for_question(self, question_no: int) -> float:
         for rule in self.section_rules:
@@ -52,6 +54,11 @@ class AnswerKeyRepository:
                 "subject": v.subject,
                 "exam_code": v.exam_code,
                 "answers": {str(idx): ans for idx, ans in v.answers.items()},
+                "true_false_answers": {
+                    str(idx): {sub_q: bool(flag) for sub_q, flag in flags.items()}
+                    for idx, flags in v.true_false_answers.items()
+                },
+                "numeric_answers": {str(idx): ans for idx, ans in v.numeric_answers.items()},
                 "section_rules": [
                     {
                         "name": rule.name,
@@ -74,6 +81,11 @@ class AnswerKeyRepository:
                     subject=raw["subject"],
                     exam_code=raw["exam_code"],
                     answers={int(k): v for k, v in raw.get("answers", {}).items()},
+                    true_false_answers={
+                        int(k): {str(sub): bool(flag) for sub, flag in ans.items()}
+                        for k, ans in raw.get("true_false_answers", {}).items()
+                    },
+                    numeric_answers={int(k): str(v) for k, v in raw.get("numeric_answers", {}).items()},
                     section_rules=section_rules,
                 )
             )
