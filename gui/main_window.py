@@ -4,7 +4,7 @@ import json
 from datetime import date, datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QEvent
 from PySide6.QtGui import QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -660,6 +660,8 @@ class MainWindow(QMainWindow):
         self.embedded_exam_session_id: str | None = None
         self.embedded_exam_session: ExamSession | None = None
         self.embedded_exam_original_payload: dict | None = None
+        self.preview_zoom_factor = 1.0
+        self.preview_source_pixmap = QPixmap()
         self.setCentralWidget(self.stack)
 
         self._build_menu()
@@ -671,8 +673,12 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         if hasattr(self, "scan_list"):
             idx = self.scan_list.currentRow()
-            if idx >= 0:
+            if 0 <= idx < len(self.scan_results):
                 self._update_scan_preview(idx)
+            elif idx >= 0:
+                self._update_scan_preview_from_saved_row(idx)
+        elif hasattr(self, "scan_image_scroll") and not self.preview_source_pixmap.isNull():
+            self._render_preview_pixmap()
 
     def _confirm(self, title: str, message: str) -> bool:
         return (
@@ -1522,6 +1528,22 @@ class MainWindow(QMainWindow):
         self.scan_image_scroll.setWidgetResizable(True)
         self.scan_image_scroll.setAlignment(Qt.AlignCenter)
         self.scan_image_scroll.setWidget(self.scan_image_preview)
+        self.scan_image_scroll.viewport().installEventFilter(self)
+
+        self.btn_zoom_out = QPushButton("-")
+        self.btn_zoom_out.setMaximumWidth(36)
+        self.btn_zoom_out.clicked.connect(self._zoom_preview_out)
+        self.btn_zoom_reset = QPushButton("100%")
+        self.btn_zoom_reset.setMaximumWidth(60)
+        self.btn_zoom_reset.clicked.connect(self._zoom_preview_reset)
+        self.btn_zoom_in = QPushButton("+")
+        self.btn_zoom_in.setMaximumWidth(36)
+        self.btn_zoom_in.clicked.connect(self._zoom_preview_in)
+        zoom_row = QHBoxLayout()
+        zoom_row.addWidget(self.btn_zoom_out)
+        zoom_row.addWidget(self.btn_zoom_reset)
+        zoom_row.addWidget(self.btn_zoom_in)
+        zoom_row.addStretch()
 
         self.scan_result_preview = QTableWidget(0, 2)
         self.scan_result_preview.setHorizontalHeaderLabels(["Mục nhận dạng", "Kết quả"])
@@ -1539,6 +1561,7 @@ class MainWindow(QMainWindow):
         right = QWidget()
         right_l = QVBoxLayout(right)
         right_l.setContentsMargins(0, 0, 0, 0)
+        right_l.addLayout(zoom_row)
         right_l.addWidget(self.scan_image_scroll, 7)
         right_l.addWidget(self.scan_result_preview, 3)
 
@@ -1631,6 +1654,7 @@ class MainWindow(QMainWindow):
                             "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
                             "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
                             "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
                         }
                         for r in range(self.scan_list.rowCount())
                     ]
@@ -1669,6 +1693,7 @@ class MainWindow(QMainWindow):
                             "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
                             "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
                             "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
                         }
                         for r in range(self.scan_list.rowCount())
                     ],
@@ -1962,8 +1987,12 @@ class MainWindow(QMainWindow):
         if hasattr(self, "progress"):
             self.progress.setValue(0)
         if hasattr(self, "scan_image_preview"):
+            self.preview_source_pixmap = QPixmap()
             self.scan_image_preview.setPixmap(QPixmap())
             self.scan_image_preview.setText("Chọn bài thi ở danh sách bên trái")
+            if hasattr(self, "btn_zoom_reset"):
+                self.preview_zoom_factor = 1.0
+                self.btn_zoom_reset.setText("100%")
         if hasattr(self, "btn_save_batch_subject"):
             self.btn_save_batch_subject.setEnabled(False)
 
@@ -1997,7 +2026,9 @@ class MainWindow(QMainWindow):
                 continue
             r = self.scan_list.rowCount()
             self.scan_list.insertRow(r)
-            self.scan_list.setItem(r, 0, QTableWidgetItem(str(row.get("student_id", "-"))))
+            sid_item = QTableWidgetItem(str(row.get("student_id", "-")))
+            sid_item.setData(Qt.UserRole, str(row.get("image_path", "") or ""))
+            self.scan_list.setItem(r, 0, sid_item)
             self.scan_list.setItem(r, 1, QTableWidgetItem(str(row.get("full_name", "-"))))
             self.scan_list.setItem(r, 2, QTableWidgetItem(str(row.get("birth_date", "-"))))
             self.scan_list.setItem(r, 3, QTableWidgetItem(str(row.get("content", "-"))))
@@ -2180,7 +2211,9 @@ class MainWindow(QMainWindow):
             content_text = " | ".join(content_parts) if content_parts else "-"
 
             self.scan_list.insertRow(idx)
-            self.scan_list.setItem(idx, 0, QTableWidgetItem(sid or "-"))
+            sid_item = QTableWidgetItem(sid or "-")
+            sid_item.setData(Qt.UserRole, str(result.image_path))
+            self.scan_list.setItem(idx, 0, sid_item)
             self.scan_list.setItem(idx, 1, QTableWidgetItem(full_name))
             self.scan_list.setItem(idx, 2, QTableWidgetItem(birth_date))
             self.scan_list.setItem(idx, 3, QTableWidgetItem(content_text))
@@ -2244,12 +2277,89 @@ class MainWindow(QMainWindow):
             self.filter_column.setCurrentIndex(section)
             self._apply_scan_filter()
 
+    def eventFilter(self, obj, event):
+        if hasattr(self, "scan_image_scroll") and obj == self.scan_image_scroll.viewport() and event.type() == QEvent.Wheel:
+            if event.modifiers() & Qt.ControlModifier:
+                if event.angleDelta().y() > 0:
+                    self._zoom_preview_in()
+                else:
+                    self._zoom_preview_out()
+                return True
+        return super().eventFilter(obj, event)
+
+    def _render_preview_pixmap(self) -> None:
+        if self.preview_source_pixmap.isNull():
+            return
+        base_w = max(1, self.scan_image_scroll.viewport().width() - 8)
+        w = max(1, int(base_w * self.preview_zoom_factor))
+        scaled = self.preview_source_pixmap.scaledToWidth(w, Qt.SmoothTransformation)
+        self.scan_image_preview.setPixmap(scaled)
+
+    def _zoom_preview_in(self) -> None:
+        self.preview_zoom_factor = min(4.0, self.preview_zoom_factor + 0.1)
+        self._render_preview_pixmap()
+        self.btn_zoom_reset.setText(f"{int(self.preview_zoom_factor*100)}%")
+
+    def _zoom_preview_out(self) -> None:
+        self.preview_zoom_factor = max(0.3, self.preview_zoom_factor - 0.1)
+        self._render_preview_pixmap()
+        self.btn_zoom_reset.setText(f"{int(self.preview_zoom_factor*100)}%")
+
+    def _zoom_preview_reset(self) -> None:
+        self.preview_zoom_factor = 1.0
+        self._render_preview_pixmap()
+        self.btn_zoom_reset.setText("100%")
+
+    @staticmethod
+    def _compact_value(value, limit: int = 120) -> str:
+        text = str(value)
+        return text if len(text) <= limit else text[:limit] + "..."
+
+    def _update_scan_preview_from_saved_row(self, row: int) -> None:
+        sid = self.scan_list.item(row, 0).text() if self.scan_list.item(row, 0) else "-"
+        full_name = self.scan_list.item(row, 1).text() if self.scan_list.item(row, 1) else "-"
+        birth = self.scan_list.item(row, 2).text() if self.scan_list.item(row, 2) else "-"
+        content = self.scan_list.item(row, 3).text() if self.scan_list.item(row, 3) else "-"
+        status = self.scan_list.item(row, 4).text() if self.scan_list.item(row, 4) else "-"
+        img_path = ""
+        item0 = self.scan_list.item(row, 0)
+        if item0:
+            img_path = str(item0.data(Qt.UserRole) or "")
+
+        pix = QPixmap(img_path) if img_path else QPixmap()
+        if pix.isNull():
+            self.preview_source_pixmap = QPixmap()
+            self.scan_image_preview.setPixmap(QPixmap())
+            self.scan_image_preview.setText("Không có ảnh tương ứng cho dòng đã lưu")
+            self.btn_zoom_reset.setText("100%")
+        else:
+            self.preview_source_pixmap = pix
+            self._render_preview_pixmap()
+            self.btn_zoom_reset.setText(f"{int(self.preview_zoom_factor*100)}%")
+
+        rows = [
+            ("STUDENT ID", sid),
+            ("Họ tên", full_name),
+            ("Ngày sinh", birth),
+            ("Nội dung", self._compact_value(content, 220)),
+            ("Status", status),
+            ("Ảnh", img_path or "-"),
+        ]
+        self.scan_result_preview.setRowCount(0)
+        for r, (k, v) in enumerate(rows):
+            self.scan_result_preview.insertRow(r)
+            self.scan_result_preview.setItem(r, 0, QTableWidgetItem(str(k)))
+            self.scan_result_preview.setItem(r, 1, QTableWidgetItem(str(v)))
+
     def _on_scan_selected(self) -> None:
         index = self.scan_list.currentRow()
-        if index < 0 or index >= len(self.scan_results):
+        if index < 0:
             return
-        self._update_scan_preview(index)
-        self._load_selected_result_for_correction()
+        if 0 <= index < len(self.scan_results):
+            self._update_scan_preview(index)
+            self._load_selected_result_for_correction()
+            return
+        self._update_scan_preview_from_saved_row(index)
 
     def _status_text_for_row(self, idx: int) -> str:
         if idx < 0 or idx >= len(self.scan_results):
@@ -2314,10 +2424,11 @@ class MainWindow(QMainWindow):
         img_path = Path(result.image_path)
         pix = QPixmap(str(img_path))
         if pix.isNull():
+            self.preview_source_pixmap = QPixmap()
             self.scan_image_preview.setText(f"Cannot load image: {img_path.name}")
         else:
-            scaled = pix.scaledToWidth(max(1, self.scan_image_scroll.viewport().width() - 8), Qt.SmoothTransformation)
-            self.scan_image_preview.setPixmap(scaled)
+            self.preview_source_pixmap = pix
+            self._render_preview_pixmap()
 
         rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
         blank_map = self.scan_blank_summary.get(index, {"MCQ": [], "TF": [], "NUMERIC": []})
@@ -2326,9 +2437,9 @@ class MainWindow(QMainWindow):
             ("Họ tên", str(getattr(result, "full_name", "") or "-")),
             ("Ngày sinh", str(getattr(result, "birth_date", "") or "-")),
             ("Exam code", result.exam_code or "-"),
-            ("MCQ nhận dạng", json.dumps(result.mcq_answers, ensure_ascii=False)),
-            ("TF nhận dạng", json.dumps(result.true_false_answers, ensure_ascii=False)),
-            ("NUMERIC nhận dạng", json.dumps(result.numeric_answers, ensure_ascii=False)),
+            ("MCQ", self._compact_value(json.dumps(result.mcq_answers, ensure_ascii=False), 160)),
+            ("TF", self._compact_value(json.dumps(result.true_false_answers, ensure_ascii=False), 160)),
+            ("NUM", self._compact_value(json.dumps(result.numeric_answers, ensure_ascii=False), 160)),
             ("MCQ không tô", ", ".join(str(x) for x in blank_map.get("MCQ", [])) or "-"),
             ("TF không tô", ", ".join(str(x) for x in blank_map.get("TF", [])) or "-"),
             ("NUMERIC không tô", ", ".join(str(x) for x in blank_map.get("NUMERIC", [])) or "-"),
