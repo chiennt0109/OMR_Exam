@@ -1419,6 +1419,15 @@ class MainWindow(QMainWindow):
         raw = cfg.get("subject_configs", [])
         return raw if isinstance(raw, list) else []
 
+    @staticmethod
+    def _normalize_template_path(path_text: str) -> str:
+        t = str(path_text or "").strip()
+        if not t:
+            return ""
+        if t.lower() in {"[dùng mẫu chung]", "[dung mau chung]", "none", "null", "-"}:
+            return ""
+        return t
+
     def _effective_subject_configs_for_batch(self) -> list[dict]:
         cfgs = self._subject_configs_in_session()
         if cfgs:
@@ -1486,7 +1495,7 @@ class MainWindow(QMainWindow):
             self.batch_student_id_value.setText("-")
             self.batch_scan_folder_value.setText("-")
             return
-        template_path = str(cfg.get("template_path", "") or (self.session.template_path if self.session else "") or "-")
+        template_path = self._normalize_template_path(str(cfg.get("template_path", "") or "")) or self._normalize_template_path(str(self.session.template_path if self.session else "")) or "-"
         scan_folder = str(cfg.get("scan_folder", "") or ((self.session.config or {}).get("scan_root", "") if self.session else "") or "-")
         codes = ", ".join(sorted((cfg.get("imported_answer_keys") or {}).keys())) or "-"
         self.batch_template_value.setText(template_path)
@@ -1511,15 +1520,14 @@ class MainWindow(QMainWindow):
             return
 
         # Resolve template, scan folder and answer keys from selected subject config in session.
-        template_path = ""
+        subject_template_path = ""
+        exam_template_path = self._normalize_template_path(str(self.session.template_path if self.session else ""))
         scan_folder = ""
         answer_key_key = None
         if subject_cfg:
-            template_path = str(subject_cfg.get("template_path", "") or "")
+            subject_template_path = self._normalize_template_path(str(subject_cfg.get("template_path", "") or ""))
             scan_folder = str(subject_cfg.get("scan_folder", "") or "")
             answer_key_key = str(subject_cfg.get("answer_key_key", "") or "")
-            if not template_path:
-                template_path = str(self.session.template_path if self.session else "")
             if not scan_folder and self.session:
                 scan_folder = str((self.session.config or {}).get("scan_root", "") or "")
 
@@ -1538,16 +1546,25 @@ class MainWindow(QMainWindow):
                 self.imported_exam_codes = sorted(str(k) for k in imported_keys.keys())
                 self.active_batch_subject_key = answer_key_key
 
-        if template_path:
-            tp = Path(template_path)
-            if tp.exists():
-                try:
-                    self.template = Template.load_json(tp)
-                except Exception:
-                    self.template = None
+        template_candidates = [p for p in [subject_template_path, exam_template_path] if p]
+        loaded_template_path = ""
+        loaded_template = None
+        for cand in template_candidates:
+            tp = Path(cand)
+            if not tp.exists():
+                continue
+            try:
+                loaded_template = Template.load_json(tp)
+                loaded_template_path = cand
+                break
+            except Exception:
+                continue
 
+        if loaded_template is not None:
+            self.template = loaded_template
         if not self.template:
-            QMessageBox.warning(self, "Missing template", "Không tìm thấy mẫu giấy theo môn/kỳ thi. Hãy cấu hình mẫu giấy trong môn hoặc trong kỳ thi.")
+            tried = ", ".join(template_candidates) if template_candidates else "[không có đường dẫn]"
+            QMessageBox.warning(self, "Missing template", f"Không tìm thấy mẫu giấy theo môn/kỳ thi.\nĐã thử: {tried}")
             return
 
         if not scan_folder:
@@ -1562,7 +1579,7 @@ class MainWindow(QMainWindow):
             self,
             "Batch Scan",
             f"Môn: {subject_cfg.get('name','-') if subject_cfg else '-'}\n"
-            f"Template: {template_path or '[đang dùng mẫu đã nạp]'}\n"
+            f"Template: {loaded_template_path or subject_template_path or exam_template_path or '[đang dùng mẫu đã nạp]'}\n"
             f"Thư mục quét: {scan_folder}\n"
             f"Mã đề khả dụng: {codes}\n"
             f"Vùng EXAM_CODE: {'Có' if has_exam_code_zone else 'Không'}\n"
