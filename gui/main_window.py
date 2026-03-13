@@ -48,24 +48,69 @@ from models.template import Template
 
 
 class SubjectConfigDialog(QDialog):
-    def __init__(self, data: dict | None = None, parent=None):
+    @staticmethod
+    def default_section_scores() -> dict:
+        return {
+            "MCQ": {"total_points": 3.0, "distribution": "auto_by_question_count"},
+            "TF": {
+                "total_points": 2.0,
+                "rule_per_question": {"1": 0.1, "2": 0.25, "3": 0.5, "4": 1.0},
+            },
+            "NUMERIC": {"total_points": 2.0, "distribution": "auto_by_question_count"},
+        }
+
+    @staticmethod
+    def default_question_scores() -> dict:
+        return {
+            "MCQ": {"per_question": 0.25},
+            "TF": {"1": 0.1, "2": 0.25, "3": 0.5, "4": 1.0},
+            "NUMERIC": {"per_question": 1.0},
+        }
+
+    def __init__(
+        self,
+        data: dict | None = None,
+        subject_options: list[str] | None = None,
+        block_options: list[str] | None = None,
+        paper_part_count: int = 3,
+        parent=None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("Cấu hình môn học")
         data = data or {}
+        subject_options = subject_options or []
+        block_options = block_options or ["10", "11", "12"]
 
         lay = QVBoxLayout(self)
         form = QFormLayout()
 
-        self.subject_name = QLineEdit(str(data.get("name", "")))
+        self.subject_name = QComboBox()
+        self.subject_name.setEditable(True)
+        self.subject_name.addItems(subject_options)
+        initial_subject = str(data.get("name", ""))
+        if initial_subject:
+            self.subject_name.setCurrentText(initial_subject)
+
+        self.block_name = QComboBox()
+        self.block_name.setEditable(True)
+        self.block_name.addItems(block_options)
+        self.block_name.setCurrentText(str(data.get("block", block_options[0] if block_options else "10")))
+
         self.template_path = QLineEdit(str(data.get("template_path", "")))
         self.scan_folder = QLineEdit(str(data.get("scan_folder", "")))
         self.answer_key = QLineEdit(str(data.get("answer_key_path", "")))
+        self.answer_key_key = QLineEdit(str(data.get("answer_key_key", "")))
+        self.answer_key_key.setReadOnly(True)
+
         self.section_mode = QComboBox(); self.section_mode.addItems(["Tự tính điểm từng câu", "Nhập điểm từng phần"])
         self.question_mode = QComboBox(); self.question_mode.addItems(["Tự tính điểm cả phần", "Nhập điểm từng câu"])
         self.section_mode.setCurrentText(str(data.get("section_mode", "Tự tính điểm từng câu")))
         self.question_mode.setCurrentText(str(data.get("question_mode", "Tự tính điểm cả phần")))
-        self.section_scores = QTextEdit(json.dumps(data.get("section_scores", {}), ensure_ascii=False, indent=2))
-        self.question_scores = QTextEdit(json.dumps(data.get("question_scores", {}), ensure_ascii=False, indent=2))
+
+        section_defaults = data.get("section_scores", self.default_section_scores())
+        question_defaults = data.get("question_scores", self.default_question_scores())
+        self.section_scores = QTextEdit(json.dumps(section_defaults, ensure_ascii=False, indent=2))
+        self.question_scores = QTextEdit(json.dumps(question_defaults, ensure_ascii=False, indent=2))
 
         row_tpl = QHBoxLayout(); row_tpl.addWidget(self.template_path); btn_tpl = QPushButton("..."); row_tpl.addWidget(btn_tpl)
         btn_tpl.clicked.connect(self._browse_template)
@@ -75,19 +120,32 @@ class SubjectConfigDialog(QDialog):
         btn_key.clicked.connect(self._browse_answer_key)
 
         form.addRow("Tên môn", self.subject_name)
+        form.addRow("Khối", self.block_name)
         form.addRow("Giấy thi riêng (tùy chọn)", row_tpl)
         form.addRow("Thư mục bài thi môn", row_scan)
         form.addRow("Đáp án môn", row_key)
+        form.addRow("Mã đáp án môn_khối", self.answer_key_key)
+        form.addRow("Số phần giấy thi", QLabel(str(paper_part_count)))
         form.addRow("Điểm theo phần", self.section_mode)
         form.addRow("Điểm theo câu", self.question_mode)
         form.addRow("Section scores (JSON)", self.section_scores)
         form.addRow("Question scores (JSON)", self.question_scores)
         lay.addLayout(form)
 
+        self.subject_name.currentTextChanged.connect(self._update_answer_key_key)
+        self.block_name.currentTextChanged.connect(self._update_answer_key_key)
+        self._update_answer_key_key()
+
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
+
+    def _update_answer_key_key(self) -> None:
+        subject = self.subject_name.currentText().strip()
+        block = self.block_name.currentText().strip()
+        key = f"{subject}_{block}" if subject and block else ""
+        self.answer_key_key.setText(key)
 
     def _browse_template(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Chọn giấy thi", "", "JSON (*.json)")
@@ -111,10 +169,12 @@ class SubjectConfigDialog(QDialog):
         except Exception as exc:
             raise ImportError(f"JSON cấu hình điểm không hợp lệ: {exc}") from exc
         return {
-            "name": self.subject_name.text().strip(),
+            "name": self.subject_name.currentText().strip(),
+            "block": self.block_name.currentText().strip(),
             "template_path": self.template_path.text().strip(),
             "scan_folder": self.scan_folder.text().strip(),
             "answer_key_path": self.answer_key.text().strip(),
+            "answer_key_key": self.answer_key_key.text().strip(),
             "section_mode": self.section_mode.currentText(),
             "question_mode": self.question_mode.currentText(),
             "section_scores": section_scores,
@@ -123,11 +183,13 @@ class SubjectConfigDialog(QDialog):
 
 
 class NewExamDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, subject_options: list[str], block_options: list[str], parent=None):
         super().__init__(parent)
         self.setWindowTitle("Tạo kỳ thi mới")
         self.resize(860, 640)
         self.subject_configs: list[dict] = []
+        self.subject_options = subject_options
+        self.block_options = block_options
 
         lay = QVBoxLayout(self)
         form = QFormLayout()
@@ -136,6 +198,7 @@ class NewExamDialog(QDialog):
         self.common_template = QLineEdit()
         self.scan_root = QLineEdit()
         self.scan_mode = QComboBox(); self.scan_mode.addItems(["Ảnh trong thư mục gốc", "Ảnh theo phòng thi (thư mục con)"])
+        self.paper_part_count = QComboBox(); self.paper_part_count.addItems(["1", "2", "3", "4", "5"]); self.paper_part_count.setCurrentText("3")
 
         row_tpl = QHBoxLayout(); row_tpl.addWidget(self.common_template); btn_tpl = QPushButton("..."); row_tpl.addWidget(btn_tpl)
         btn_tpl.clicked.connect(self._browse_common_template)
@@ -146,6 +209,7 @@ class NewExamDialog(QDialog):
         form.addRow("Giấy thi dùng chung", row_tpl)
         form.addRow("Thư mục gốc bài thi", row_scan)
         form.addRow("Cơ chế thư mục bài thi", self.scan_mode)
+        form.addRow("Số phần trên giấy thi", self.paper_part_count)
         lay.addLayout(form)
 
         lay.addWidget(QLabel("Các môn trong kỳ thi"))
@@ -181,10 +245,16 @@ class NewExamDialog(QDialog):
         self.subject_list.clear()
         for cfg in self.subject_configs:
             tpl = cfg.get("template_path") or "[dùng mẫu chung]"
-            self.subject_list.addItem(f"{cfg.get('name','')} — Template: {tpl}")
+            key = cfg.get("answer_key_key", "")
+            self.subject_list.addItem(f"{cfg.get('name','')} - Khối {cfg.get('block','')} — Key: {key} — Template: {tpl}")
 
     def _add_subject(self) -> None:
-        dlg = SubjectConfigDialog(parent=self)
+        dlg = SubjectConfigDialog(
+            subject_options=self.subject_options,
+            block_options=self.block_options,
+            paper_part_count=int(self.paper_part_count.currentText()),
+            parent=self,
+        )
         if dlg.exec() != QDialog.Accepted:
             return
         try:
@@ -199,7 +269,13 @@ class NewExamDialog(QDialog):
         idx = self.subject_list.currentRow()
         if idx < 0 or idx >= len(self.subject_configs):
             return
-        dlg = SubjectConfigDialog(self.subject_configs[idx], self)
+        dlg = SubjectConfigDialog(
+            self.subject_configs[idx],
+            subject_options=self.subject_options,
+            block_options=self.block_options,
+            paper_part_count=int(self.paper_part_count.currentText()),
+            parent=self,
+        )
         if dlg.exec() != QDialog.Accepted:
             return
         try:
@@ -227,6 +303,9 @@ class NewExamDialog(QDialog):
             if not cfg.get("name"):
                 QMessageBox.warning(self, "Thiếu dữ liệu", "Mỗi môn phải có tên.")
                 return
+            if not cfg.get("block"):
+                QMessageBox.warning(self, "Thiếu dữ liệu", "Mỗi môn phải có khối.")
+                return
         self.accept()
 
     def payload(self) -> dict:
@@ -235,6 +314,7 @@ class NewExamDialog(QDialog):
             "common_template": self.common_template.text().strip(),
             "scan_root": self.scan_root.text().strip(),
             "scan_mode": self.scan_mode.currentText(),
+            "paper_part_count": int(self.paper_part_count.currentText()),
             "subject_configs": self.subject_configs,
         }
 
@@ -257,6 +337,8 @@ class MainWindow(QMainWindow):
         self.scan_last_adjustment: dict[int, str] = {}
         self.score_rows = []
         self.imported_exam_codes: list[str] = []
+        self.subject_catalog: list[str] = ["Toán", "Ngữ văn", "Tiếng Anh", "Vật lý", "Hóa học", "Sinh học"]
+        self.block_catalog: list[str] = ["10", "11", "12"]
 
         self.omr_processor = OMRProcessor()
         self.scoring_engine = ScoringEngine()
@@ -418,6 +500,9 @@ class MainWindow(QMainWindow):
                 t = Path(self.session.template_path)
                 if t.exists():
                     self.template = Template.load_json(t)
+            cfg = self.session.config or {}
+            self.subject_catalog = list(cfg.get("subject_catalog", self.subject_catalog)) or self.subject_catalog
+            self.block_catalog = list(cfg.get("block_catalog", self.block_catalog)) or self.block_catalog
             if self.session.answer_key_path:
                 p = Path(self.session.answer_key_path)
                 if p.exists() and p.suffix.lower() == ".json":
@@ -556,24 +641,44 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(0)
 
     def manage_subjects(self) -> None:
-        if not self.session:
-            self.create_session()
-        current = ", ".join(self.session.subjects)
-        text, ok = QInputDialog.getText(self, "Quản lý môn học", "Nhập danh sách môn (phân tách bằng dấu phẩy):", text=current)
+        subjects_text = ", ".join(self.subject_catalog)
+        blocks_text = ", ".join(self.block_catalog)
+        text, ok = QInputDialog.getText(
+            self,
+            "Quản lý môn học",
+            "Nhập danh sách môn (phân tách bằng dấu phẩy):",
+            text=subjects_text,
+        )
         if not ok:
             return
+        block_input, ok2 = QInputDialog.getText(
+            self,
+            "Quản lý khối",
+            "Nhập danh sách khối (phân tách bằng dấu phẩy):",
+            text=blocks_text,
+        )
+        if not ok2:
+            return
+
         subjects = [x.strip() for x in text.split(",") if x.strip()]
+        blocks = [x.strip() for x in block_input.split(",") if x.strip()]
         if not subjects:
             QMessageBox.warning(self, "Quản lý môn học", "Danh sách môn học không được để trống.")
             return
-        self.session.subjects = subjects
+        if not blocks:
+            QMessageBox.warning(self, "Quản lý khối", "Danh sách khối không được để trống.")
+            return
+
+        self.subject_catalog = subjects
+        self.block_catalog = blocks
         self.session_dirty = True
+        QMessageBox.information(self, "Quản lý môn/khối", "Đã cập nhật danh sách môn và khối.")
         self._refresh_session_info()
 
     def action_create_session(self) -> None:
         if not self._confirm("Tạo kỳ thi mới", "Bạn có chắc muốn tạo kỳ thi mới?"):
             return
-        dlg = NewExamDialog(self)
+        dlg = NewExamDialog(self.subject_catalog, self.block_catalog, self)
         if dlg.exec() != QDialog.Accepted:
             return
         self.create_session(dlg.payload())
@@ -859,7 +964,11 @@ class MainWindow(QMainWindow):
         exam_name = str(payload.get("exam_name", "Untitled Exam"))
         common_template = str(payload.get("common_template", ""))
         subject_cfgs = payload.get("subject_configs", [])
-        subjects = [str(x.get("name", "")).strip() for x in subject_cfgs if str(x.get("name", "")).strip()]
+        subjects = [
+            f"{str(x.get("name", "")).strip()}_{str(x.get("block", "")).strip()}"
+            for x in subject_cfgs
+            if str(x.get("name", "")).strip()
+        ]
         if not subjects:
             subjects = ["General"]
 
@@ -872,7 +981,10 @@ class MainWindow(QMainWindow):
             config={
                 "scan_mode": payload.get("scan_mode", "Ảnh trong thư mục gốc"),
                 "scan_root": payload.get("scan_root", ""),
+                "paper_part_count": payload.get("paper_part_count", 3),
                 "subject_configs": subject_cfgs,
+                "subject_catalog": self.subject_catalog,
+                "block_catalog": self.block_catalog,
             },
         )
         if common_template and Path(common_template).exists():
