@@ -929,28 +929,21 @@ class MainWindow(QMainWindow):
         scoring_menu = self.menuBar().addMenu("Scoring")
         scoring_menu.addAction("Calculate & Preview Scores", self.action_calculate_scores)
         scoring_menu.addAction("Export Results", self.action_export_results)
-
         toolbar = QToolBar("Ribbon")
         toolbar.setMovable(False)
         toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
         self.addToolBar(toolbar)
 
         style = self.style()
+        # Session actions
         toolbar.addAction(style.standardIcon(QStyle.SP_FileIcon), "Tạo mới", self.action_create_session)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Mở DS", self.action_open_session)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Lưu", self.action_save_session)
+        toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Sửa", self._edit_selected_registry_session)
+        toolbar.addAction(style.standardIcon(QStyle.SP_TrashIcon), "Xoá", self._delete_selected_registry_session)
         toolbar.addSeparator()
-        toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogContentsView), "Mẫu thi", self.action_load_template)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DirIcon), "Đáp án", self.action_load_answer_keys)
-        toolbar.addAction(style.standardIcon(QStyle.SP_ArrowDown), "Nhập đáp án", self.action_import_answer_key)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DriveFDIcon), "Mẫu file", self.action_export_answer_key_sample)
-        toolbar.addSeparator()
-        toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Quét", self.action_run_batch_scan)
-        toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Sửa bài", self.action_edit_selected_scan)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogApplyButton), "Hiệu chỉnh", self.action_apply_manual_correction)
-        toolbar.addSeparator()
+        # Workflow actions
+        toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Nhận dạng", self.action_run_batch_scan)
         toolbar.addAction(style.standardIcon(QStyle.SP_CommandLink), "Tính điểm", self.action_calculate_scores)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Xuất KQ", self.action_export_results)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DriveNetIcon), "Xuất KQ", self.action_export_results)
 
     def open_session(self) -> None:
         if self.session and self.session_dirty:
