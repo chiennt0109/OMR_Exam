@@ -74,6 +74,21 @@ def _parse_tf_token(df_row_idx: int, exam_code: str, token: str) -> dict[str, bo
     return payload
 
 
+
+
+def _is_numeric_token(value: str) -> bool:
+    token = value.strip().replace(" ", "")
+    if not token:
+        return False
+    if token[0] in "+-":
+        token = token[1:]
+    if not token:
+        return False
+    token = token.replace(",", ".")
+    if token.count(".") > 1:
+        return False
+    return token.replace(".", "").isdigit()
+
 def _ensure_question(df_row_idx: int, value: Any) -> int:
     try:
         q = int(str(value).strip())
@@ -106,7 +121,7 @@ def _parse_single_exam_table(df: pd.DataFrame) -> ImportedAnswerKeyPackage:
             upper = raw.upper()
             if upper in MCQ_CHOICES:
                 result.mcq_answers[q] = upper
-            elif raw.lstrip("-").isdigit():
+            elif _is_numeric_token(raw):
                 result.numeric_answers[q] = raw
             else:
                 raise ImportError(
@@ -176,13 +191,13 @@ def _parse_exam_matrix(df: pd.DataFrame) -> ImportedAnswerKeyPackage:
                     package.exam_keys[exam_code].true_false_answers[q] = _parse_tf_token(row_idx, exam_code, v)
             continue
 
-        if all(v.lstrip("-").isdigit() for v in non_empty):
+        if all(_is_numeric_token(v) for v in non_empty):
             for exam_code, v in values.items():
                 if v:
                     package.exam_keys[exam_code].numeric_answers[q] = v
             continue
 
-        first_invalid = next((v for v in non_empty if not (v.upper() in MCQ_CHOICES or len(v.replace(" ", "")) == 4 or v.lstrip("-").isdigit())), non_empty[0])
+        first_invalid = next((v for v in non_empty if not (v.upper() in MCQ_CHOICES or len(v.replace(" ", "")) == 4 or _is_numeric_token(v))), non_empty[0])
         raise ImportError(
             f"Row {row_idx + 2}: invalid value '{first_invalid}'. Expected MCQ(A-E), TF(4 chars T/F or Đ/S), or numeric."
         )

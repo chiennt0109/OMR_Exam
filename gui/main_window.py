@@ -62,6 +62,7 @@ class MainWindow(QMainWindow):
         self.scan_edit_history: dict[int, list[str]] = {}
         self.scan_last_adjustment: dict[int, str] = {}
         self.score_rows = []
+        self.imported_exam_codes: list[str] = []
 
         self.omr_processor = OMRProcessor()
         self.scoring_engine = ScoringEngine()
@@ -136,6 +137,7 @@ class MainWindow(QMainWindow):
             self.answer_keys = AnswerKeyRepository()
 
         imported_count = 0
+        self.imported_exam_codes = sorted(set(edited_package.exam_keys.keys()))
         for exam_code, edited in edited_package.exam_keys.items():
             code = exam_code.strip() or "DEFAULT"
             self.answer_keys.upsert(
@@ -167,11 +169,11 @@ class MainWindow(QMainWindow):
         import pandas as pd
 
         data = {
-            "Question": list(range(1, 13)) + [13, 14, 15, 16],
-            "0101": ["D", "A", "B", "B", "B", "A", "C", "D", "B", "D", "B", "A", "ĐĐSĐ", "SSĐĐ", "113", "3"],
-            "0102": ["D", "D", "D", "B", "A", "B", "A", "A", "D", "B", "B", "C", "SĐĐĐ", "SĐSĐ", "617", "-105"],
-            "0103": ["D", "A", "B", "D", "C", "B", "D", "A", "C", "C", "D", "C", "ĐĐĐS", "SĐĐS", "113", "617"],
-            "0104": ["B", "B", "C", "D", "A", "B", "C", "B", "C", "D", "A", "A", "ĐSDS", "SĐĐĐ", "-105", "113"],
+            "Question": list(range(1, 19)) + [1, 2, 3, 4] + [1, 2, 3, 4, 5, 6],
+            "0101": ["C", "C", "C", "B", "D", "D", "D", "B", "B", "B", "B", "B", "D", "C", "D", "B", "C", "C", "ĐSĐĐ", "ĐĐĐS", "ĐSĐS", "ĐDDS", "5", "69", "0,61", "58,3", "49,6", "2"],
+            "0102": ["B", "C", "C", "C", "D", "D", "B", "D", "B", "B", "B", "C", "C", "B", "D", "C", "D", "B", "ĐĐSĐ", "ĐĐĐS", "ĐĐSĐ", "ĐSDS", "2", "69", "58,3", "5", "49,6", "0,61"],
+            "0103": ["C", "C", "C", "B", "C", "B", "D", "D", "C", "B", "B", "C", "B", "D", "C", "D", "B", "B", "SĐĐĐ", "ĐĐĐS", "ĐĐSĐ", "SĐDS", "2", "0,61", "58,3", "49,6", "5", "69"],
+            "0104": ["C", "C", "C", "B", "C", "B", "D", "D", "C", "B", "B", "C", "B", "D", "C", "D", "B", "B", "ĐĐĐS", "SĐSĐ", "ĐĐSĐ", "SĐDD", "5", "2", "49,6", "0,61", "58,3", "69"],
         }
         df = pd.DataFrame(data)
         path = Path(save_path)
@@ -212,10 +214,13 @@ class MainWindow(QMainWindow):
 
         self.session_info = QTextEdit()
         self.session_info.setReadOnly(True)
+        self.exam_code_preview = QLabel("Mã đề trên phiếu trả lời mẫu: -")
+        self.exam_code_preview.setWordWrap(True)
 
         for btn in [btn_new_session, btn_load_template, btn_load_answers, btn_template_editor]:
             layout.addWidget(btn)
         layout.addWidget(self.session_info)
+        layout.addWidget(self.exam_code_preview)
         return w
 
     def _build_scan_tab(self) -> QWidget:
@@ -360,6 +365,7 @@ class MainWindow(QMainWindow):
         if not file_path:
             return
         self.answer_keys = AnswerKeyRepository.load_json(file_path)
+        self.imported_exam_codes = sorted({k.split("::", 1)[1] for k in self.answer_keys.keys.keys() if "::" in k})
         if self.session:
             self.session.answer_key_path = file_path
         self._refresh_session_info()
@@ -815,6 +821,9 @@ class MainWindow(QMainWindow):
             f"AnswerKey: {self.session.answer_key_path}\n"
             f"Students: {len(self.session.students)}"
         )
+        codes = ", ".join(self.imported_exam_codes) if self.imported_exam_codes else "-"
+        self.exam_code_preview.setText(f"Mã đề trên phiếu trả lời mẫu: {codes}")
+
 
 
 def run() -> None:
