@@ -5,12 +5,15 @@ from datetime import date
 from pathlib import Path
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QProgressBar,
@@ -41,6 +44,7 @@ class MainWindow(QMainWindow):
         self.answer_keys: AnswerKeyRepository | None = None
         self.scan_results = []
         self.scan_files: list[Path] = []
+        self.scan_blank_questions: dict[int, list[int]] = {}
 
         self.omr_processor = OMRProcessor()
         self.scoring_engine = ScoringEngine()
@@ -80,9 +84,41 @@ class MainWindow(QMainWindow):
         w = QWidget()
         layout = QVBoxLayout(w)
 
+        self.search_student_id = QLineEdit()
+        self.search_student_id.setPlaceholderText("Search STUDENT ID")
+        self.search_student_id.textChanged.connect(self._apply_scan_filter)
+
+        self.search_name = QLineEdit()
+        self.search_name.setPlaceholderText("Search Họ tên")
+        self.search_name.textChanged.connect(self._apply_scan_filter)
+
+        search_row = QHBoxLayout()
+        search_row.addWidget(self.search_student_id)
+        search_row.addWidget(self.search_name)
+
         self.scan_list = QListWidget()
         self.scan_list.currentRowChanged.connect(self._on_scan_selected)
         self.progress = QProgressBar()
+
+        self.scan_image_preview = QLabel("Chọn bài thi ở danh sách bên trái")
+        self.scan_image_preview.setAlignment(Qt.AlignCenter)
+        self.scan_image_preview.setMinimumHeight(260)
+        self.scan_result_preview = QTextEdit()
+        self.scan_result_preview.setReadOnly(True)
+        self.scan_result_preview.setPlaceholderText("Kết quả nhận dạng")
+
+        right_split = QSplitter(Qt.Vertical)
+        right_top = QWidget(); right_top_l = QVBoxLayout(right_top); right_top_l.addWidget(self.scan_image_preview)
+        right_bottom = QWidget(); right_bottom_l = QVBoxLayout(right_bottom); right_bottom_l.addWidget(self.scan_result_preview)
+        right_split.addWidget(right_top)
+        right_split.addWidget(right_bottom)
+        right_split.setSizes([360, 260])
+
+        lr_split = QSplitter(Qt.Horizontal)
+        left = QWidget(); left_l = QVBoxLayout(left); left_l.addLayout(search_row); left_l.addWidget(self.scan_list)
+        lr_split.addWidget(left)
+        lr_split.addWidget(right_split)
+        lr_split.setSizes([450, 750])
 
         btn_run_scan = QPushButton("Batch Scan Images")
         btn_run_scan.clicked.connect(self.run_batch_scan)
@@ -93,7 +129,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(btn_run_scan)
         layout.addWidget(btn_export)
         layout.addWidget(self.progress)
-        layout.addWidget(self.scan_list)
+        layout.addWidget(lr_split)
         return w
 
     def _build_correction_tab(self) -> QWidget:
@@ -188,8 +224,11 @@ class MainWindow(QMainWindow):
         self.scan_list.clear()
         self.error_list.clear()
         self.result_preview.clear()
+        self.scan_result_preview.clear()
         self.manual_edit.clear()
+        self.scan_image_preview.setText("Chọn bài thi ở danh sách bên trái")
         self.scan_files = [Path(p) for p in file_paths]
+        self.scan_blank_questions.clear()
 
         def on_progress(current: int, total: int, image_path: str):
             self.progress.setMaximum(total)
@@ -198,21 +237,104 @@ class MainWindow(QMainWindow):
 
         self.scan_results = self.omr_processor.process_batch(file_paths, self.template, on_progress)
         self.scan_list.clear()
+        duplicate_ids: dict[str, int] = {}
+        for res in self.scan_results:
+            sid = (res.student_id or "").strip()
+            if sid:
+                duplicate_ids[sid] = duplicate_ids.get(sid, 0) + 1
+
         for idx, result in enumerate(self.scan_results):
             rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
             total_errors = len(rec_errors) + len(result.issues)
-            self.scan_list.addItem(
-                f"{idx+1}. {Path(result.image_path).name} | ID:{result.student_id or '-'} | Code:{result.exam_code or '-'} | Errors:{total_errors}"
+            sid = (result.student_id or "").strip()
+            full_name = str(getattr(result, "full_name", "") or "-")
+            birth_date = str(getattr(result, "birth_date", "") or "-")
+            blank_questions = self._compute_blank_mcq_questions(result)
+            self.scan_blank_questions[idx] = blank_questions
+            status_parts: list[str] = []
+            if sid and duplicate_ids.get(sid, 0) > 1:
+                status_parts.append("trùng STUDENT ID")
+            if not (result.exam_code or "").strip() or "?" in (result.exam_code or ""):
+                status_parts.append("không tô exam code")
+            status = ", ".join(status_parts) if status_parts else "OK"
+            blank_txt = ",".join(str(q) for q in blank_questions) if blank_questions else "-"
+
+            text = (
+                f"{idx+1}. STUDENT ID: {sid or '-'} | Họ tên: {full_name} | Ngày sinh: {birth_date} | "
+                f"Nội dung: Câu không tô [{blank_txt}] | Status: {status}"
             )
+            item = QListWidgetItem(text)
+            item.setData(Qt.UserRole, {"student_id": sid, "full_name": full_name})
+            self.scan_list.addItem(item)
             for issue in result.issues:
                 self.error_list.addItem(f"{Path(result.image_path).name}: {issue.code} - {issue.message}")
             for err in rec_errors:
                 self.error_list.addItem(f"{Path(result.image_path).name}: RECOGNITION - {err}")
 
+        self._apply_scan_filter()
+
+    def _compute_blank_mcq_questions(self, result) -> list[int]:
+        expected: list[int] = []
+        if not self.template:
+            return expected
+        for z in self.template.zones:
+            if z.zone_type.value != "MCQ_BLOCK" or not z.grid:
+                continue
+            count = int(z.grid.question_count or z.grid.rows or 0)
+            start = int(z.grid.question_start)
+            expected.extend(range(start, start + max(0, count)))
+        if not expected:
+            return []
+        marked = set((result.mcq_answers or {}).keys())
+        return [q for q in sorted(set(expected)) if q not in marked]
+
+    def _apply_scan_filter(self) -> None:
+        sid_q = self.search_student_id.text().strip().lower()
+        name_q = self.search_name.text().strip().lower()
+        for i in range(self.scan_list.count()):
+            item = self.scan_list.item(i)
+            data = item.data(Qt.UserRole) or {}
+            sid = str(data.get("student_id", "")).lower()
+            full_name = str(data.get("full_name", "")).lower()
+            show = (sid_q in sid if sid_q else True) and (name_q in full_name if name_q else True)
+            item.setHidden(not show)
+
     def _on_scan_selected(self, index: int) -> None:
         if index < 0 or index >= len(self.scan_results):
             return
+        self._update_scan_preview(index)
         self._load_selected_result_for_correction()
+
+    def _update_scan_preview(self, index: int) -> None:
+        if index < 0 or index >= len(self.scan_results):
+            return
+        result = self.scan_results[index]
+        img_path = Path(result.image_path)
+        pix = QPixmap(str(img_path))
+        if pix.isNull():
+            self.scan_image_preview.setText(f"Cannot load image: {img_path.name}")
+        else:
+            self.scan_image_preview.setPixmap(
+                pix.scaled(
+                    self.scan_image_preview.width(),
+                    self.scan_image_preview.height(),
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation,
+                )
+            )
+
+        rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
+        payload = {
+            "student_id": result.student_id,
+            "exam_code": result.exam_code,
+            "mcq_answers": result.mcq_answers,
+            "true_false_answers": result.true_false_answers,
+            "numeric_answers": result.numeric_answers,
+            "blank_mcq_questions": self.scan_blank_questions.get(index, []),
+            "issues": [{"code": i.code, "message": i.message, "zone_id": i.zone_id} for i in result.issues],
+            "recognition_errors": rec_errors,
+        }
+        self.scan_result_preview.setPlainText(json.dumps(payload, ensure_ascii=False, indent=2))
 
     def _load_selected_result_for_correction(self) -> None:
         idx = self.scan_list.currentRow()
