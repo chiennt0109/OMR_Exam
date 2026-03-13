@@ -2239,35 +2239,54 @@ class MainWindow(QMainWindow):
             "TF": [q for q in sorted(set(expected_by_section["TF"])) if q not in set((result.true_false_answers or {}).keys())],
             "NUMERIC": [q for q in sorted(set(expected_by_section["NUMERIC"])) if q not in set((result.numeric_answers or {}).keys())],
         }
+        messages: list[str] = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            expected_set = set(expected.get(sec, []))
+            if not expected_set:
+                continue
+            actual_set = {int(q) for q in actual_map.get(sec, set())}
+            missing = sorted(expected_set - actual_set)
+            if missing:
+                messages.append(
+                    f"thiếu {sec} ({len(expected_set)-len(missing)}/{len(expected_set)}): {','.join(str(v) for v in missing)}"
+                )
+        return messages
 
     def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
-        expected_by_section: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = dict(template_expected)
         subject_key_name = self.active_batch_subject_key
         if not subject_key_name and self.session and self.session.subjects:
             subject_key_name = self.session.subjects[0]
         if self.answer_keys and subject_key_name:
             key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
             if key:
-                expected_by_section["MCQ"] = sorted(set(int(q) for q in (key.answers or {}).keys()))
-                expected_by_section["TF"] = sorted(set(int(q) for q in (key.true_false_answers or {}).keys()))
-                expected_by_section["NUMERIC"] = sorted(set(int(q) for q in (key.numeric_answers or {}).keys()))
-                return expected_by_section
-
-        if not self.template:
-            return expected_by_section
-        for z in self.template.zones:
-            if not z.grid:
-                continue
-            count = int(z.grid.question_count or z.grid.rows or 0)
-            start = int(z.grid.question_start)
-            rng = list(range(start, start + max(0, count)))
-            if z.zone_type.value == "MCQ_BLOCK":
-                expected_by_section["MCQ"].extend(rng)
-            elif z.zone_type.value == "TRUE_FALSE_BLOCK":
-                expected_by_section["TF"].extend(rng)
-            elif z.zone_type.value == "NUMERIC_BLOCK":
-                expected_by_section["NUMERIC"].extend(rng)
-        return {sec: sorted(set(vals)) for sec, vals in expected_by_section.items()}
+                key_sections = {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                }
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    # Only override when the answer key explicitly defines that section.
+                    # If key section is empty, keep template range to avoid trimming valid recognized data.
+                    if key_sections[sec]:
+                        expected_by_section[sec] = key_sections[sec]
+        return expected_by_section
 
     @staticmethod
     def _format_mcq_answers(answers: dict[int, str]) -> str:
