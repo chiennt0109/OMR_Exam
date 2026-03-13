@@ -1622,7 +1622,8 @@ class MainWindow(QMainWindow):
         if not subject_cfg:
             QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
             return
-        if not self.scan_results:
+        row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
+        if row_count <= 0:
             QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
             return
 
@@ -1647,7 +1648,7 @@ class MainWindow(QMainWindow):
                 if str(item.get("name", "")) == str(subject_cfg.get("name", "")) and str(item.get("block", "")) == str(subject_cfg.get("block", "")):
                     item["batch_saved"] = True
                     item["batch_saved_at"] = datetime.now().isoformat(timespec="seconds")
-                    item["batch_result_count"] = len(self.scan_results)
+                    item["batch_result_count"] = row_count
                     item["batch_saved_rows"] = [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
@@ -1688,7 +1689,7 @@ class MainWindow(QMainWindow):
                 cache_data[cache_key] = {
                     "batch_saved": True,
                     "batch_saved_at": datetime.now().isoformat(timespec="seconds"),
-                    "batch_result_count": len(self.scan_results),
+                    "batch_result_count": row_count,
                     "batch_saved_rows": [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
