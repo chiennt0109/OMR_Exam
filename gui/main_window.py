@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QStyle,
     QGroupBox,
     QStackedWidget,
+    QScrollArea,
 )
 
 from core.answer_key_importer import import_answer_key
@@ -433,8 +434,8 @@ class NewExamDialog(QDialog):
         lay.addLayout(form)
 
         lay.addWidget(QLabel("Các môn trong kỳ thi"))
-        self.subject_table = QTableWidget(0, 8)
-        self.subject_table.setHorizontalHeaderLabels(["Môn", "Khối", "Key", "Mã đề", "Chế độ điểm", "Tổng điểm", "Template", "Thao tác"])
+        self.subject_table = QTableWidget(0, 9)
+        self.subject_table.setHorizontalHeaderLabels(["Môn", "Khối", "Key", "Mã đề", "Chế độ điểm", "Tổng điểm", "Template", "Trạng thái", "Thao tác"])
         self.subject_table.verticalHeader().setVisible(False)
         self.subject_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.subject_table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -450,6 +451,7 @@ class NewExamDialog(QDialog):
         hdr.setSectionResizeMode(5, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(6, QHeaderView.Stretch)
         hdr.setSectionResizeMode(7, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(8, QHeaderView.ResizeToContents)
         lay.addWidget(self.subject_table)
 
         row = QHBoxLayout()
@@ -495,6 +497,8 @@ class NewExamDialog(QDialog):
             self.subject_table.setItem(row_idx, 4, QTableWidgetItem(str(mode or "-")))
             self.subject_table.setItem(row_idx, 5, QTableWidgetItem(str(total or "-")))
             self.subject_table.setItem(row_idx, 6, QTableWidgetItem(str(tpl or "-")))
+            status_text = "Đã nhận dạng" if bool(cfg.get("batch_saved")) else "-"
+            self.subject_table.setItem(row_idx, 7, QTableWidgetItem(status_text))
 
             btn_batch_scan = QPushButton("Nhận dạng")
             btn_batch_scan.setIcon(style.standardIcon(QStyle.SP_MediaPlay))
@@ -505,7 +509,7 @@ class NewExamDialog(QDialog):
             wrap_l = QHBoxLayout(wrap)
             wrap_l.setContentsMargins(0, 0, 0, 0)
             wrap_l.addWidget(btn_batch_scan)
-            self.subject_table.setCellWidget(row_idx, 7, wrap)
+            self.subject_table.setCellWidget(row_idx, 8, wrap)
         self.subject_table.resizeRowsToContents()
 
     def _current_subject_index(self) -> int:
@@ -931,6 +935,7 @@ class MainWindow(QMainWindow):
             "subject_configs": all_subjects,
         }
         self.batch_editor_return_session_id = session_id
+        selected_subject_index = int(payload.get("selected_subject_index", 0) or 0)
         scan_root = str(payload.get("scan_root") or (base_session.config or {}).get("scan_root", "") or "")
         scan_mode = str(payload.get("scan_mode") or (base_session.config or {}).get("scan_mode", "Ảnh trong thư mục gốc"))
         paper_part_count = int(payload.get("paper_part_count") or (base_session.config or {}).get("paper_part_count", 3) or 3)
@@ -945,7 +950,7 @@ class MainWindow(QMainWindow):
                 "scan_mode": scan_mode,
                 "scan_root": scan_root,
                 "paper_part_count": paper_part_count,
-                "subject_configs": [subject_cfg],
+                "subject_configs": all_subjects,
                 "subject_catalog": self.subject_catalog,
                 "block_catalog": self.block_catalog,
             },
@@ -956,7 +961,7 @@ class MainWindow(QMainWindow):
         self.session_dirty = True
         self._refresh_session_info()
         self._refresh_batch_subject_controls()
-        self.batch_subject_combo.setCurrentIndex(1)
+        self.batch_subject_combo.setCurrentIndex(max(1, selected_subject_index + 1))
         self.stack.setCurrentIndex(1)
         self.action_run_batch_scan()
 
@@ -1379,16 +1384,20 @@ class MainWindow(QMainWindow):
         self.batch_scan_folder_value = QLineEdit("-"); self.batch_scan_folder_value.setReadOnly(True)
         self.btn_batch_recognize = QPushButton("Nhận dạng theo môn")
         self.btn_batch_recognize.clicked.connect(self.action_run_batch_scan)
+        self.btn_save_batch_subject = QPushButton("Lưu Batch môn hiện tại")
+        self.btn_save_batch_subject.clicked.connect(self._save_batch_for_selected_subject)
+        self.btn_save_batch_subject.setEnabled(False)
+        self.btn_close_batch_view = QPushButton("Đóng Batch Scan")
+        self.btn_close_batch_view.clicked.connect(self._close_batch_scan_view)
+
         batch_form.addRow("Môn", self.batch_subject_combo)
         batch_form.addRow("Mẫu giấy dùng", self.batch_template_value)
         batch_form.addRow("Mã đề", self.batch_answer_codes_value)
         batch_form.addRow("Vùng STUDENT ID", self.batch_student_id_value)
         batch_form.addRow("Thư mục quét", self.batch_scan_folder_value)
         batch_form.addRow("", self.btn_batch_recognize)
-        self.btn_close_batch_view = QPushButton("Đóng Batch Scan")
-        self.btn_close_batch_view.clicked.connect(self._close_batch_scan_view)
+        batch_form.addRow("", self.btn_save_batch_subject)
         batch_form.addRow("", self.btn_close_batch_view)
-        layout.addWidget(batch_group)
 
         self.filter_column = QComboBox()
         self.filter_column.addItems(["STUDENT ID", "Họ tên", "Ngày sinh", "Nội dung", "Status"])
@@ -1420,6 +1429,11 @@ class MainWindow(QMainWindow):
         self.scan_image_preview = QLabel("Chọn bài thi ở danh sách bên trái")
         self.scan_image_preview.setAlignment(Qt.AlignCenter)
         self.scan_image_preview.setMinimumHeight(260)
+        self.scan_image_scroll = QScrollArea()
+        self.scan_image_scroll.setWidgetResizable(True)
+        self.scan_image_scroll.setAlignment(Qt.AlignCenter)
+        self.scan_image_scroll.setWidget(self.scan_image_preview)
+
         self.scan_result_preview = QTableWidget(0, 2)
         self.scan_result_preview.setHorizontalHeaderLabels(["Mục nhận dạng", "Kết quả"])
         self.scan_result_preview.verticalHeader().setVisible(False)
@@ -1427,17 +1441,21 @@ class MainWindow(QMainWindow):
         self.scan_result_preview.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.scan_result_preview.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
 
-        right_split = QSplitter(Qt.Vertical)
-        right_top = QWidget(); right_top_l = QVBoxLayout(right_top); right_top_l.setContentsMargins(0, 0, 0, 0); right_top_l.addWidget(self.scan_image_preview)
-        right_bottom = QWidget(); right_bottom_l = QVBoxLayout(right_bottom); right_bottom_l.setContentsMargins(0, 0, 0, 0); right_bottom_l.addWidget(self.scan_result_preview)
-        right_split.addWidget(right_top)
-        right_split.addWidget(right_bottom)
-        right_split.setSizes([420, 220])
+        left = QWidget()
+        left_l = QVBoxLayout(left)
+        left_l.addWidget(batch_group)
+        left_l.addLayout(search_row)
+        left_l.addWidget(self.scan_list)
+
+        right = QWidget()
+        right_l = QVBoxLayout(right)
+        right_l.setContentsMargins(0, 0, 0, 0)
+        right_l.addWidget(self.scan_image_scroll, 7)
+        right_l.addWidget(self.scan_result_preview, 3)
 
         self.scan_lr_split = QSplitter(Qt.Horizontal)
-        left = QWidget(); left_l = QVBoxLayout(left); left_l.addLayout(search_row); left_l.addWidget(self.scan_list)
         self.scan_lr_split.addWidget(left)
-        self.scan_lr_split.addWidget(right_split)
+        self.scan_lr_split.addWidget(right)
         self.scan_lr_split.setStretchFactor(0, 6)
         self.scan_lr_split.setStretchFactor(1, 4)
         self.scan_lr_split.setSizes([720, 480])
@@ -1483,6 +1501,53 @@ class MainWindow(QMainWindow):
         )
         dlg.exec()
         self.stack.setCurrentIndex(0)
+
+
+    def _save_batch_for_selected_subject(self) -> None:
+        subject_cfg = self._selected_batch_subject_config()
+        if not subject_cfg:
+            QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
+            return
+        if not self.scan_results:
+            QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
+            return
+
+        session_path = self.current_session_path
+        if not session_path and self.batch_editor_return_session_id:
+            p = self._session_path_from_id(self.batch_editor_return_session_id)
+            if p.exists():
+                session_path = p
+        if not session_path:
+            QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy kỳ thi để lưu trạng thái Batch theo môn.")
+            return
+
+        try:
+            ses = ExamSession.load_json(session_path)
+            cfg = ses.config or {}
+            subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
+            updated = False
+            for item in subject_cfgs:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("name", "")) == str(subject_cfg.get("name", "")) and str(item.get("block", "")) == str(subject_cfg.get("block", "")):
+                    item["batch_saved"] = True
+                    item["batch_saved_at"] = datetime.now().isoformat(timespec="seconds")
+                    item["batch_result_count"] = len(self.scan_results)
+                    updated = True
+                    break
+            if not updated:
+                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
+                return
+            ses.config = {**cfg, "subject_configs": subject_cfgs}
+            ses.save_json(session_path)
+
+            if self.session:
+                self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
+            self._refresh_batch_subject_controls()
+            self.btn_save_batch_subject.setEnabled(False)
+            QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
+        except Exception as exc:
+            QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu trạng thái Batch\n{exc}")
 
 
     def _build_correction_tab(self) -> QWidget:
@@ -1803,6 +1868,7 @@ class MainWindow(QMainWindow):
         self.scan_result_preview.setRowCount(0)
         self.manual_edit.clear()
         self.scan_image_preview.setText("Chọn bài thi ở danh sách bên trái")
+        self.btn_save_batch_subject.setEnabled(False)
         self.scan_files = [Path(p) for p in file_paths]
         self.scan_blank_questions.clear()
         self.scan_blank_summary.clear()
@@ -1859,6 +1925,7 @@ class MainWindow(QMainWindow):
             for err in rec_errors:
                 self.error_list.addItem(f"{Path(result.image_path).name}: RECOGNITION - {err}")
 
+        self.btn_save_batch_subject.setEnabled(True)
         self._apply_scan_filter()
 
     def _compute_blank_questions(self, result) -> dict[str, list[int]]:
@@ -1981,7 +2048,7 @@ class MainWindow(QMainWindow):
         if pix.isNull():
             self.scan_image_preview.setText(f"Cannot load image: {img_path.name}")
         else:
-            scaled = pix.scaledToWidth(max(1, self.scan_image_preview.width()), Qt.SmoothTransformation)
+            scaled = pix.scaledToWidth(max(1, self.scan_image_scroll.viewport().width() - 8), Qt.SmoothTransformation)
             self.scan_image_preview.setPixmap(scaled)
 
         rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
