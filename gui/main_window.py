@@ -1836,8 +1836,48 @@ class MainWindow(QMainWindow):
         cfg = self.batch_subject_combo.itemData(idx)
         return cfg if isinstance(cfg, dict) else None
 
+    def _batch_context_session_path(self) -> Path | None:
+        if self.current_session_path and self.current_session_path.exists():
+            return self.current_session_path
+        if self.batch_editor_return_session_id:
+            p = self._session_path_from_id(self.batch_editor_return_session_id)
+            if p.exists():
+                return p
+        return None
+
+    def _merge_saved_batch_snapshot(self, cfg: dict) -> dict:
+        merged = dict(cfg)
+        if merged.get("batch_saved_rows") and merged.get("batch_saved_preview"):
+            return merged
+
+        session_path = self._batch_context_session_path()
+        if not session_path:
+            return merged
+        try:
+            ses = ExamSession.load_json(session_path)
+        except Exception:
+            return merged
+
+        raw_cfgs = (ses.config or {}).get("subject_configs", [])
+        if not isinstance(raw_cfgs, list):
+            return merged
+
+        name = str(merged.get("name", ""))
+        block = str(merged.get("block", ""))
+        for item in raw_cfgs:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("name", "")) == name and str(item.get("block", "")) == block:
+                for k in ["batch_saved", "batch_saved_at", "batch_result_count", "batch_saved_rows", "batch_saved_preview"]:
+                    if k in item:
+                        merged[k] = item.get(k)
+                return merged
+        return merged
+
     def _on_batch_subject_changed(self, _index: int) -> None:
         cfg = self._selected_batch_subject_config()
+        if cfg:
+            cfg = self._merge_saved_batch_snapshot(cfg)
 
         # Refresh recognition grids below when switching subject to avoid stale cross-subject data.
         self.scan_results = []
@@ -1915,6 +1955,10 @@ class MainWindow(QMainWindow):
 
         if saved_rows:
             self.scan_image_preview.setText("Đã nạp nội dung Batch đã lưu cho môn này")
+        elif bool(cfg.get("batch_saved")):
+            self.scan_image_preview.setText(
+                f"Môn này đã lưu Batch ({cfg.get('batch_saved_at', '-')}) - Số bài: {cfg.get('batch_result_count', '-')}."
+            )
 
     def run_batch_scan(self) -> None:
         subject_cfg = self._resolve_subject_config_for_batch()
