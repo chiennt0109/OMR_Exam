@@ -1461,22 +1461,32 @@ class MainWindow(QMainWindow):
         self.batch_answer_codes_value = QLineEdit("-"); self.batch_answer_codes_value.setReadOnly(True)
         self.batch_student_id_value = QLineEdit("-"); self.batch_student_id_value.setReadOnly(True)
         self.batch_scan_folder_value = QLineEdit("-"); self.batch_scan_folder_value.setReadOnly(True)
-        self.btn_batch_recognize = QPushButton("Nhận dạng theo môn")
+        style = self.style()
+        self.btn_batch_recognize = QPushButton("Nhận dạng")
+        self.btn_batch_recognize.setIcon(style.standardIcon(QStyle.SP_MediaPlay))
         self.btn_batch_recognize.clicked.connect(self.action_run_batch_scan)
-        self.btn_save_batch_subject = QPushButton("Lưu Batch môn hiện tại")
+        self.btn_save_batch_subject = QPushButton("Lưu")
+        self.btn_save_batch_subject.setIcon(style.standardIcon(QStyle.SP_DialogSaveButton))
         self.btn_save_batch_subject.clicked.connect(self._save_batch_for_selected_subject)
         self.btn_save_batch_subject.setEnabled(False)
-        self.btn_close_batch_view = QPushButton("Đóng Batch Scan")
+        self.btn_close_batch_view = QPushButton("Đóng")
+        self.btn_close_batch_view.setIcon(style.standardIcon(QStyle.SP_DialogCloseButton))
         self.btn_close_batch_view.clicked.connect(self._close_batch_scan_view)
+        for b in [self.btn_batch_recognize, self.btn_save_batch_subject, self.btn_close_batch_view]:
+            b.setMaximumWidth(140)
+
+        action_row = QHBoxLayout()
+        action_row.addWidget(self.btn_batch_recognize)
+        action_row.addWidget(self.btn_save_batch_subject)
+        action_row.addWidget(self.btn_close_batch_view)
+        action_row.addStretch()
 
         batch_form.addRow("Môn", self.batch_subject_combo)
         batch_form.addRow("Mẫu giấy dùng", self.batch_template_value)
         batch_form.addRow("Mã đề", self.batch_answer_codes_value)
         batch_form.addRow("Vùng STUDENT ID", self.batch_student_id_value)
         batch_form.addRow("Thư mục quét", self.batch_scan_folder_value)
-        batch_form.addRow("", self.btn_batch_recognize)
-        batch_form.addRow("", self.btn_save_batch_subject)
-        batch_form.addRow("", self.btn_close_batch_view)
+        batch_form.addRow("", action_row)
 
         self.filter_column = QComboBox()
         self.filter_column.addItems(["STUDENT ID", "Họ tên", "Ngày sinh", "Nội dung", "Status"])
@@ -1550,36 +1560,38 @@ class MainWindow(QMainWindow):
         return w
 
     def _close_batch_scan_view(self) -> None:
+        if QMessageBox.question(
+            self,
+            "Đóng Batch Scan",
+            "Đóng màn hình Batch Scan để quay lại màn hình xem kỳ thi?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        ) != QMessageBox.Yes:
+            return
+
         if self.batch_editor_return_payload is None:
             self.stack.setCurrentIndex(0)
             return
+
         payload = dict(self.batch_editor_return_payload)
         session_id = self.batch_editor_return_session_id
         self.batch_editor_return_payload = None
         self.batch_editor_return_session_id = None
 
-        base_session = self.session
-        if session_id:
-            p = self._session_path_from_id(session_id)
-            if p.exists():
-                try:
-                    base_session = ExamSession.load_json(p)
-                except Exception:
-                    pass
+        if not session_id:
+            self.stack.setCurrentIndex(0)
+            return
+        p = self._session_path_from_id(session_id)
+        if not p.exists():
+            self.stack.setCurrentIndex(0)
+            return
+        try:
+            session = ExamSession.load_json(p)
+        except Exception:
+            self.stack.setCurrentIndex(0)
+            return
+        self._open_embedded_exam_editor(session_id, session, payload)
 
-        cb = None
-        if base_session is not None and session_id:
-            cb = lambda x, sid=session_id, bs=base_session: self._open_batch_scan_from_exam_editor(sid, bs, x)
-
-        dlg = NewExamDialog(
-            self.subject_catalog,
-            self.block_catalog,
-            data=payload,
-            parent=self,
-            on_batch_scan_subject=cb,
-        )
-        dlg.exec()
-        self.stack.setCurrentIndex(0)
 
 
     def _save_batch_for_selected_subject(self) -> None:
@@ -1612,6 +1624,23 @@ class MainWindow(QMainWindow):
                     item["batch_saved"] = True
                     item["batch_saved_at"] = datetime.now().isoformat(timespec="seconds")
                     item["batch_result_count"] = len(self.scan_results)
+                    item["batch_saved_rows"] = [
+                        {
+                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
+                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
+                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
+                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
+                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                        }
+                        for r in range(self.scan_list.rowCount())
+                    ]
+                    item["batch_saved_preview"] = [
+                        {
+                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
+                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
+                        }
+                        for r in range(self.scan_result_preview.rowCount())
+                    ]
                     updated = True
                     break
             if not updated:
@@ -1859,6 +1888,33 @@ class MainWindow(QMainWindow):
             tpl_for_view = self.template
         has_sid = "Có" if (tpl_for_view and any(z.zone_type.value == "STUDENT_ID_BLOCK" for z in tpl_for_view.zones)) else "Không"
         self.batch_student_id_value.setText(has_sid)
+
+        saved_rows = cfg.get("batch_saved_rows", []) if isinstance(cfg.get("batch_saved_rows", []), list) else []
+        for row in saved_rows:
+            if not isinstance(row, dict):
+                continue
+            r = self.scan_list.rowCount()
+            self.scan_list.insertRow(r)
+            self.scan_list.setItem(r, 0, QTableWidgetItem(str(row.get("student_id", "-"))))
+            self.scan_list.setItem(r, 1, QTableWidgetItem(str(row.get("full_name", "-"))))
+            self.scan_list.setItem(r, 2, QTableWidgetItem(str(row.get("birth_date", "-"))))
+            self.scan_list.setItem(r, 3, QTableWidgetItem(str(row.get("content", "-"))))
+            item_status = QTableWidgetItem(str(row.get("status", "-")))
+            if item_status.text() != "OK":
+                item_status.setForeground(Qt.red)
+            self.scan_list.setItem(r, 4, item_status)
+
+        saved_preview = cfg.get("batch_saved_preview", []) if isinstance(cfg.get("batch_saved_preview", []), list) else []
+        for row in saved_preview:
+            if not isinstance(row, dict):
+                continue
+            r = self.scan_result_preview.rowCount()
+            self.scan_result_preview.insertRow(r)
+            self.scan_result_preview.setItem(r, 0, QTableWidgetItem(str(row.get("label", ""))))
+            self.scan_result_preview.setItem(r, 1, QTableWidgetItem(str(row.get("value", ""))))
+
+        if saved_rows:
+            self.scan_image_preview.setText("Đã nạp nội dung Batch đã lưu cho môn này")
 
     def run_batch_scan(self) -> None:
         subject_cfg = self._resolve_subject_config_for_batch()
