@@ -646,6 +646,13 @@ class MainWindow(QMainWindow):
         self._refresh_batch_subject_controls()
         self.stack.setCurrentIndex(0)
 
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "scan_list"):
+            idx = self.scan_list.currentRow()
+            if idx >= 0:
+                self._update_scan_preview(idx)
+
     def _confirm(self, title: str, message: str) -> bool:
         return (
             QMessageBox.question(
@@ -745,20 +752,14 @@ class MainWindow(QMainWindow):
         central = QWidget()
         root_layout = QVBoxLayout(central)
 
-        group_session = QGroupBox("Exam Session")
-        l1 = QVBoxLayout(group_session); l1.addWidget(self._build_session_tab())
-        group_scan = QGroupBox("OMR Scan")
+        # Keep only Batch Scan UI visible in workspace.
+        group_scan = QGroupBox("Batch Scan")
         l2 = QVBoxLayout(group_scan); l2.addWidget(self._build_scan_tab())
-        group_correction = QGroupBox("Error Correction")
-        l3 = QVBoxLayout(group_correction); l3.addWidget(self._build_correction_tab())
+        root_layout.addWidget(group_scan)
 
-        main_split = QSplitter(Qt.Vertical)
-        main_split.addWidget(group_session)
-        main_split.addWidget(group_scan)
-        main_split.addWidget(group_correction)
-        main_split.setSizes([220, 420, 260])
-
-        root_layout.addWidget(main_split)
+        # Initialize hidden widgets still used by existing logic.
+        self._hidden_session_tab = self._build_session_tab()
+        self._hidden_correction_tab = self._build_correction_tab()
         return central
 
     def _session_id_for_row(self, row_idx: int) -> str | None:
@@ -1405,17 +1406,19 @@ class MainWindow(QMainWindow):
         self.scan_result_preview.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
 
         right_split = QSplitter(Qt.Vertical)
-        right_top = QWidget(); right_top_l = QVBoxLayout(right_top); right_top_l.addWidget(self.scan_image_preview)
-        right_bottom = QWidget(); right_bottom_l = QVBoxLayout(right_bottom); right_bottom_l.addWidget(self.scan_result_preview)
+        right_top = QWidget(); right_top_l = QVBoxLayout(right_top); right_top_l.setContentsMargins(0, 0, 0, 0); right_top_l.addWidget(self.scan_image_preview)
+        right_bottom = QWidget(); right_bottom_l = QVBoxLayout(right_bottom); right_bottom_l.setContentsMargins(0, 0, 0, 0); right_bottom_l.addWidget(self.scan_result_preview)
         right_split.addWidget(right_top)
         right_split.addWidget(right_bottom)
-        right_split.setSizes([360, 260])
+        right_split.setSizes([420, 220])
 
-        lr_split = QSplitter(Qt.Horizontal)
+        self.scan_lr_split = QSplitter(Qt.Horizontal)
         left = QWidget(); left_l = QVBoxLayout(left); left_l.addLayout(search_row); left_l.addWidget(self.scan_list)
-        lr_split.addWidget(left)
-        lr_split.addWidget(right_split)
-        lr_split.setSizes([450, 750])
+        self.scan_lr_split.addWidget(left)
+        self.scan_lr_split.addWidget(right_split)
+        self.scan_lr_split.setStretchFactor(0, 6)
+        self.scan_lr_split.setStretchFactor(1, 4)
+        self.scan_lr_split.setSizes([720, 480])
 
         self.score_preview_table = QTableWidget(0, 8)
         self.score_preview_table.setHorizontalHeaderLabels(["Student ID", "Name", "Subject", "Exam Code", "Correct", "Wrong", "Blank", "Score"])
@@ -1423,9 +1426,8 @@ class MainWindow(QMainWindow):
         self.score_preview_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
 
         layout.addWidget(self.progress)
-        layout.addWidget(lr_split)
-        layout.addWidget(QLabel("Bảng điểm (xem trước trước khi export)"))
-        layout.addWidget(self.score_preview_table)
+        layout.addWidget(self.scan_lr_split)
+        self.score_preview_table.setVisible(False)
         return w
 
     def _build_correction_tab(self) -> QWidget:
@@ -1924,14 +1926,8 @@ class MainWindow(QMainWindow):
         if pix.isNull():
             self.scan_image_preview.setText(f"Cannot load image: {img_path.name}")
         else:
-            self.scan_image_preview.setPixmap(
-                pix.scaled(
-                    self.scan_image_preview.width(),
-                    self.scan_image_preview.height(),
-                    Qt.KeepAspectRatio,
-                    Qt.SmoothTransformation,
-                )
-            )
+            scaled = pix.scaledToWidth(max(1, self.scan_image_preview.width()), Qt.SmoothTransformation)
+            self.scan_image_preview.setPixmap(scaled)
 
         rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
         blank_map = self.scan_blank_summary.get(index, {"MCQ": [], "TF": [], "NUMERIC": []})
