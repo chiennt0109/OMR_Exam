@@ -525,7 +525,7 @@ class NewExamDialog(QDialog):
         cfg = dict(self.subject_configs[idx])
         cfg["template_path"] = self._normalize_template_path(str(cfg.get("template_path", "")))
         cfg["scan_folder"] = str(cfg.get("scan_folder", "") or self.scan_root.text().strip())
-        self.on_batch_scan_subject(
+        proceed = self.on_batch_scan_subject(
             {
                 "exam_name": self.exam_name.text().strip(),
                 "common_template": self.common_template.text().strip(),
@@ -537,6 +537,10 @@ class NewExamDialog(QDialog):
                 "subject_config": cfg,
             }
         )
+        if proceed is False:
+            return
+        if proceed is True:
+            return
         self.reject()
 
     @staticmethod
@@ -648,6 +652,14 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.addWidget(self._build_exam_list_page())
         self.stack.addWidget(self._build_workspace_page())
+        self.exam_editor_page = QWidget()
+        self.exam_editor_layout = QVBoxLayout(self.exam_editor_page)
+        self.exam_editor_layout.setContentsMargins(0, 0, 0, 0)
+        self.stack.addWidget(self.exam_editor_page)
+        self.embedded_exam_dialog: NewExamDialog | None = None
+        self.embedded_exam_session_id: str | None = None
+        self.embedded_exam_session: ExamSession | None = None
+        self.embedded_exam_original_payload: dict | None = None
         self.setCentralWidget(self.stack)
 
         self._build_menu()
@@ -863,8 +875,8 @@ class MainWindow(QMainWindow):
         path = self._session_path_from_id(session_id)
         if not path.exists():
             QMessageBox.warning(self, "Sửa kỳ thi", "Không tìm thấy kỳ thi trong kho lưu trữ hệ thống.")
-            return
-        if not self._confirm("Sửa kỳ thi", "Bạn có chắc muốn sửa kỳ thi này?"):
+            return False
+        if not self._confirm("Xem kỳ thi", "Bạn có chắc muốn xem kỳ thi này?"):
             return
         try:
             session = ExamSession.load_json(path)
@@ -877,16 +889,46 @@ class MainWindow(QMainWindow):
                 "paper_part_count": cfg.get("paper_part_count", 3),
                 "subject_configs": cfg.get("subject_configs", []),
             }
-            dlg = NewExamDialog(
-                self.subject_catalog,
-                self.block_catalog,
-                data=payload,
-                parent=self,
-                on_batch_scan_subject=lambda x: self._open_batch_scan_from_exam_editor(session_id, session, x),
-            )
-            if dlg.exec() != QDialog.Accepted:
-                return
-            edited = dlg.payload()
+            self._open_embedded_exam_editor(session_id, session, payload)
+        except Exception as exc:
+            QMessageBox.warning(self, "Sửa kỳ thi", f"Không thể sửa kỳ thi\n{exc}")
+
+    def _open_embedded_exam_editor(self, session_id: str, session: ExamSession, payload: dict) -> None:
+        while self.exam_editor_layout.count():
+            item = self.exam_editor_layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+
+        self.embedded_exam_session_id = session_id
+        self.embedded_exam_session = session
+        self.embedded_exam_original_payload = dict(payload)
+
+        dlg = NewExamDialog(
+            self.subject_catalog,
+            self.block_catalog,
+            data=payload,
+            parent=self,
+            on_batch_scan_subject=lambda x: self._handle_batch_request_from_editor(x),
+        )
+        dlg.setWindowFlags(Qt.Widget)
+        dlg.accepted.connect(self._save_embedded_exam_editor)
+        dlg.rejected.connect(self._close_embedded_exam_editor)
+        self.embedded_exam_dialog = dlg
+        self.exam_editor_layout.addWidget(dlg)
+        self.stack.setCurrentIndex(2)
+
+    def _save_embedded_exam_editor(self) -> bool:
+        if not self.embedded_exam_dialog or not self.embedded_exam_session_id:
+            return False
+        edited = self.embedded_exam_dialog.payload()
+        session_id = self.embedded_exam_session_id
+        path = self._session_path_from_id(session_id)
+        if not path.exists():
+            QMessageBox.warning(self, "Sửa kỳ thi", "Không tìm thấy kỳ thi trong kho lưu trữ hệ thống.")
+            return
+        try:
+            session = ExamSession.load_json(path)
             session.exam_name = edited.get("exam_name", session.exam_name)
             session.template_path = edited.get("common_template", session.template_path)
             session.subjects = [
@@ -904,16 +946,103 @@ class MainWindow(QMainWindow):
                 "block_catalog": self.block_catalog,
             }
             session.save_json(path)
+            self.embedded_exam_original_payload = edited
             self._upsert_session_registry(session_id, session.exam_name)
             self._save_session_registry()
             self._refresh_exam_list()
-            if self.current_session_path and self.current_session_path == path:
-                self.session = session
-                self._refresh_session_info()
-                self._refresh_batch_subject_controls()
-            QMessageBox.information(self, "Sửa kỳ thi", "Đã cập nhật thông số kỳ thi.")
+            QMessageBox.information(self, "Xem kỳ thi", "Đã lưu thông số kỳ thi.")
+            if self.embedded_exam_dialog:
+                self.embedded_exam_dialog.show()
+            return True
         except Exception as exc:
-            QMessageBox.warning(self, "Sửa kỳ thi", f"Không thể sửa kỳ thi:\n{exc}")
+            QMessageBox.warning(self, "Sửa kỳ thi", f"Không thể sửa kỳ thi\n{exc}")
+            return False
+
+    def _close_embedded_exam_editor(self) -> None:
+        self.embedded_exam_dialog = None
+        self.embedded_exam_session = None
+        self.embedded_exam_session_id = None
+        self.embedded_exam_original_payload = None
+        self.stack.setCurrentIndex(0)
+
+    @staticmethod
+    def _payload_changed(a: dict | None, b: dict | None) -> bool:
+        return json.dumps(a or {}, ensure_ascii=False, sort_keys=True) != json.dumps(b or {}, ensure_ascii=False, sort_keys=True)
+
+    def _handle_batch_request_from_editor(self, batch_payload: dict) -> bool:
+        if not self.embedded_exam_dialog or not self.embedded_exam_session or not self.embedded_exam_session_id:
+            return False
+
+        current_payload = self.embedded_exam_dialog.payload()
+        if self._payload_changed(current_payload, self.embedded_exam_original_payload):
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Xác nhận")
+            msg.setText("Dữ liệu đã thay đổi. Bạn muốn lưu trước khi chuyển sang nhận dạng?")
+            msg.setStandardButtons(QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
+            msg.setDefaultButton(QMessageBox.Save)
+            ch = msg.exec()
+            if ch == QMessageBox.Cancel:
+                return False
+            if ch == QMessageBox.Save and not self._save_embedded_exam_editor():
+                return False
+
+        session_id = self.embedded_exam_session_id
+        base_session = self.embedded_exam_session
+        self._close_embedded_exam_editor()
+        if not session_id or not base_session:
+            return False
+        self._open_batch_scan_from_exam_editor(session_id, base_session, batch_payload)
+        return True
+
+
+    def _open_batch_scan_from_exam_editor(self, session_id: str, base_session: ExamSession, payload: dict) -> None:
+        subject_cfg = dict(payload.get("subject_config") or {})
+        if not subject_cfg:
+            QMessageBox.warning(self, "Batch Scan", "Không tìm thấy cấu hình môn để nhận dạng.")
+            return
+
+        exam_name = str(payload.get("exam_name") or base_session.exam_name or "Kỳ thi")
+        common_template = str(payload.get("common_template") or base_session.template_path or "")
+        all_subjects = payload.get("subject_configs")
+        if not isinstance(all_subjects, list) or not all_subjects:
+            all_subjects = list((base_session.config or {}).get("subject_configs", []))
+        self.batch_editor_return_payload = {
+            "exam_name": exam_name,
+            "common_template": common_template,
+            "scan_root": str(payload.get("scan_root") or (base_session.config or {}).get("scan_root", "") or ""),
+            "scan_mode": str(payload.get("scan_mode") or (base_session.config or {}).get("scan_mode", "Ảnh trong thư mục gốc")),
+            "paper_part_count": int(payload.get("paper_part_count") or (base_session.config or {}).get("paper_part_count", 3) or 3),
+            "subject_configs": all_subjects,
+        }
+        self.batch_editor_return_session_id = session_id
+        selected_subject_index = int(payload.get("selected_subject_index", 0) or 0)
+        scan_root = str(payload.get("scan_root") or (base_session.config or {}).get("scan_root", "") or "")
+        scan_mode = str(payload.get("scan_mode") or (base_session.config or {}).get("scan_mode", "Ảnh trong thư mục gốc"))
+        paper_part_count = int(payload.get("paper_part_count") or (base_session.config or {}).get("paper_part_count", 3) or 3)
+
+        self.session = ExamSession(
+            exam_name=exam_name,
+            exam_date=str(date.today()),
+            subjects=[f"{subject_cfg.get('name', '')}_{subject_cfg.get('block', '')}"],
+            template_path=common_template,
+            answer_key_path=str(base_session.answer_key_path or ""),
+            config={
+                "scan_mode": scan_mode,
+                "scan_root": scan_root,
+                "paper_part_count": paper_part_count,
+                "subject_configs": all_subjects,
+                "subject_catalog": self.subject_catalog,
+                "block_catalog": self.block_catalog,
+            },
+        )
+
+        self.current_session_path = None
+        self.current_session_id = None
+        self.session_dirty = True
+        self._refresh_session_info()
+        self._refresh_batch_subject_controls()
+        self.batch_subject_combo.setCurrentIndex(max(1, selected_subject_index + 1))
+        self.stack.setCurrentIndex(1)
 
     def _open_batch_scan_from_exam_editor(self, session_id: str, base_session: ExamSession, payload: dict) -> None:
         subject_cfg = dict(payload.get("subject_config") or {})
