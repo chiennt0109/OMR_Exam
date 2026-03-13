@@ -67,12 +67,50 @@ class SubjectConfigDialog(QDialog):
             "NUMERIC": {"per_question": 1.0},
         }
 
+    @staticmethod
+    def _to_float(text: str, fallback: float = 0.0) -> float:
+        try:
+            return float((text or "").strip().replace(",", "."))
+        except Exception:
+            return fallback
+
+    @staticmethod
+    def _template_question_counts(template_path: str) -> dict[str, int]:
+        counts = {"MCQ": 0, "TF": 0, "NUMERIC": 0}
+        if not template_path:
+            return counts
+        path = Path(template_path)
+        if not path.exists():
+            return counts
+        try:
+            tpl = Template.load_json(path)
+        except Exception:
+            return counts
+        for z in tpl.zones:
+            if not z.grid:
+                continue
+            c = int(z.grid.question_count or z.grid.rows or 0)
+            if z.zone_type.value == "MCQ_BLOCK":
+                counts["MCQ"] += max(0, c)
+            elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                counts["TF"] += max(0, c)
+            elif z.zone_type.value == "NUMERIC_BLOCK":
+                counts["NUMERIC"] += max(0, c)
+        return counts
+
+    @staticmethod
+    def _template_part_count(template_path: str, fallback: int = 3) -> int:
+        counts = SubjectConfigDialog._template_question_counts(template_path)
+        parts = sum(1 for k in counts if counts[k] > 0)
+        return parts if parts > 0 else fallback
+
     def __init__(
         self,
         data: dict | None = None,
         subject_options: list[str] | None = None,
         block_options: list[str] | None = None,
         paper_part_count: int = 3,
+        common_template_path: str = "",
         parent=None,
     ):
         super().__init__(parent)
@@ -81,7 +119,9 @@ class SubjectConfigDialog(QDialog):
         subject_options = subject_options or []
         block_options = block_options or ["10", "11", "12"]
 
-        self.answer_key_data: dict = dict(data.get("imported_answer_key", {}))
+        self.common_template_path = common_template_path
+        self.paper_part_count_default = paper_part_count
+        self.answer_key_data: dict = dict(data.get("imported_answer_keys", {}))
 
         lay = QVBoxLayout(self)
         form = QFormLayout()
@@ -97,12 +137,13 @@ class SubjectConfigDialog(QDialog):
         self.scan_folder = QLineEdit(str(data.get("scan_folder", "")))
         self.answer_key = QLineEdit(str(data.get("answer_key_path", "")))
         self.answer_key_key = QLineEdit(str(data.get("answer_key_key", ""))); self.answer_key_key.setReadOnly(True)
+        self.answer_codes = QLineEdit(", ".join(sorted((data.get("imported_answer_keys") or {}).keys()))); self.answer_codes.setReadOnly(True)
 
-        # One scoring mode only, text fields instead of JSON.
+        self.paper_part_label = QLabel(str(paper_part_count))
+
         self.score_mode = QComboBox(); self.score_mode.addItems(["Điểm theo phần", "Điểm theo câu"])
         self.score_mode.setCurrentText(str(data.get("score_mode", "Điểm theo phần")))
 
-        # Section-mode inputs
         sec = data.get("section_scores", self.default_section_scores())
         self.sec_mcq_total = QLineEdit(str((sec.get("MCQ") or {}).get("total_points", 3.0)))
         self.sec_tf_total = QLineEdit(str((sec.get("TF") or {}).get("total_points", 2.0)))
@@ -112,7 +153,6 @@ class SubjectConfigDialog(QDialog):
         self.sec_tf_4 = QLineEdit(str(((sec.get("TF") or {}).get("rule_per_question") or {}).get("4", 1.0)))
         self.sec_numeric_total = QLineEdit(str((sec.get("NUMERIC") or {}).get("total_points", 2.0)))
 
-        # Question-mode inputs
         qsc = data.get("question_scores", self.default_question_scores())
         self.q_mcq = QLineEdit(str((qsc.get("MCQ") or {}).get("per_question", 0.25)))
         self.q_tf_1 = QLineEdit(str((qsc.get("TF") or {}).get("1", 0.1)))
@@ -120,6 +160,8 @@ class SubjectConfigDialog(QDialog):
         self.q_tf_3 = QLineEdit(str((qsc.get("TF") or {}).get("3", 0.5)))
         self.q_tf_4 = QLineEdit(str((qsc.get("TF") or {}).get("4", 1.0)))
         self.q_numeric = QLineEdit(str((qsc.get("NUMERIC") or {}).get("per_question", 1.0)))
+
+        self.total_score = QLineEdit(); self.total_score.setReadOnly(True)
 
         row_tpl = QHBoxLayout(); row_tpl.addWidget(self.template_path); b_tpl = QPushButton("..."); row_tpl.addWidget(b_tpl)
         b_tpl.clicked.connect(self._browse_template)
@@ -134,7 +176,8 @@ class SubjectConfigDialog(QDialog):
         form.addRow("Thư mục bài thi môn", row_scan)
         form.addRow("Đáp án môn", row_key)
         form.addRow("Mã đáp án môn_khối", self.answer_key_key)
-        form.addRow("Số phần giấy thi", QLabel(str(paper_part_count)))
+        form.addRow("Các mã đề của môn", self.answer_codes)
+        form.addRow("Số phần giấy thi", self.paper_part_label)
         form.addRow("Cách nhập điểm", self.score_mode)
 
         self.section_group = QGroupBox("Điểm theo phần")
@@ -156,6 +199,8 @@ class SubjectConfigDialog(QDialog):
         q_form.addRow("TF đúng 4 ý", self.q_tf_4)
         q_form.addRow("NUMERIC điểm/câu", self.q_numeric)
 
+        form.addRow("Tổng điểm bài thi", self.total_score)
+
         lay.addLayout(form)
         lay.addWidget(self.section_group)
         lay.addWidget(self.question_group)
@@ -163,7 +208,21 @@ class SubjectConfigDialog(QDialog):
         self.subject_name.currentTextChanged.connect(self._update_answer_key_key)
         self.block_name.currentTextChanged.connect(self._update_answer_key_key)
         self.score_mode.currentTextChanged.connect(self._refresh_score_mode_ui)
+        self.template_path.textChanged.connect(self._update_paper_parts)
+
+        for w in [self.sec_mcq_total, self.sec_tf_total, self.sec_tf_1, self.sec_tf_2, self.sec_tf_3, self.sec_tf_4, self.sec_numeric_total,
+                  self.q_mcq, self.q_tf_1, self.q_tf_2, self.q_tf_3, self.q_tf_4, self.q_numeric]:
+            w.textChanged.connect(self._update_total_score)
+
         self._update_answer_key_key()
+        self._update_paper_parts()
+        self._refresh_score_mode_ui()
+
+        # Lock window size to avoid resize jumps when toggling score mode.
+        self.section_group.setVisible(True)
+        self.question_group.setVisible(True)
+        self.adjustSize()
+        self.setFixedSize(self.sizeHint())
         self._refresh_score_mode_ui()
 
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -171,10 +230,43 @@ class SubjectConfigDialog(QDialog):
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
 
+    def _update_paper_parts(self) -> None:
+        tpl = self.template_path.text().strip() or self.common_template_path
+        part_count = self._template_part_count(tpl, self.paper_part_count_default)
+        self.paper_part_label.setText(str(part_count))
+        self._update_total_score()
+
+    def _question_counts(self) -> dict[str, int]:
+        tpl = self.template_path.text().strip() or self.common_template_path
+        return self._template_question_counts(tpl)
+
     def _refresh_score_mode_ui(self) -> None:
         section_mode = self.score_mode.currentText() == "Điểm theo phần"
         self.section_group.setVisible(section_mode)
         self.question_group.setVisible(not section_mode)
+        self._update_total_score()
+
+    def _update_total_score(self) -> None:
+        if self.score_mode.currentText() == "Điểm theo phần":
+            total = (
+                self._to_float(self.sec_mcq_total.text())
+                + self._to_float(self.sec_tf_total.text())
+                + self._to_float(self.sec_numeric_total.text())
+            )
+        else:
+            counts = self._question_counts()
+            tf_max = max(
+                self._to_float(self.q_tf_1.text()),
+                self._to_float(self.q_tf_2.text()),
+                self._to_float(self.q_tf_3.text()),
+                self._to_float(self.q_tf_4.text()),
+            )
+            total = (
+                self._to_float(self.q_mcq.text()) * counts.get("MCQ", 0)
+                + tf_max * counts.get("TF", 0)
+                + self._to_float(self.q_numeric.text()) * counts.get("NUMERIC", 0)
+            )
+        self.total_score.setText(f"{round(total, 4)}")
 
     def _update_answer_key_key(self) -> None:
         subject = self.subject_name.currentText().strip()
@@ -205,35 +297,21 @@ class SubjectConfigDialog(QDialog):
         if dlg.exec() != QDialog.Accepted:
             return
         edited_package = dlg.result_answer_key()
-        key_name = self.answer_key_key.text().strip()
-        exam_codes = sorted(edited_package.exam_keys.keys())
-        if not exam_codes:
+        if not edited_package.exam_keys:
             QMessageBox.warning(self, "Import đáp án", "Không có mã đề nào trong file đáp án.")
             return
 
-        selected_code = key_name if key_name in edited_package.exam_keys else exam_codes[0]
-        if key_name not in edited_package.exam_keys and len(exam_codes) > 1:
-            pick, ok = QInputDialog.getItem(
-                self,
-                "Chọn mã đáp án",
-                "Không tìm thấy mã đáp án môn_khối trùng khớp. Chọn mã đề để gắn cho môn này:",
-                exam_codes,
-                0,
-                False,
-            )
-            if not ok:
-                return
-            selected_code = pick
-
-        selected = edited_package.exam_keys[selected_code]
-        self.answer_key_data = {
-            "exam_code": selected_code,
-            "mcq_answers": selected.mcq_answers,
-            "true_false_answers": selected.true_false_answers,
-            "numeric_answers": selected.numeric_answers,
-        }
+        # One subject-block can have multiple exam codes.
+        self.answer_key_data = {}
+        for code, key in edited_package.exam_keys.items():
+            self.answer_key_data[code] = {
+                "mcq_answers": key.mcq_answers,
+                "true_false_answers": key.true_false_answers,
+                "numeric_answers": key.numeric_answers,
+            }
+        self.answer_codes.setText(", ".join(sorted(self.answer_key_data.keys())))
         self.answer_key.setText(path)
-        QMessageBox.information(self, "Import đáp án", f"Đã gắn đáp án mã '{selected_code}' cho môn đang cấu hình.")
+        QMessageBox.information(self, "Import đáp án", "Đã gắn toàn bộ mã đề của file đáp án cho môn đang cấu hình.")
 
     def payload(self) -> dict:
         def f(v: str, label: str) -> float:
@@ -273,10 +351,12 @@ class SubjectConfigDialog(QDialog):
             "scan_folder": self.scan_folder.text().strip(),
             "answer_key_path": self.answer_key.text().strip(),
             "answer_key_key": self.answer_key_key.text().strip(),
-            "imported_answer_key": self.answer_key_data,
+            "imported_answer_keys": self.answer_key_data,
             "score_mode": self.score_mode.currentText(),
             "section_scores": section_scores,
             "question_scores": question_scores,
+            "total_exam_points": self._to_float(self.total_score.text()),
+            "paper_part_count": int(self.paper_part_label.text() or self.paper_part_count_default),
         }
 
 
@@ -345,13 +425,16 @@ class NewExamDialog(QDialog):
             tpl = cfg.get("template_path") or "[dùng mẫu chung]"
             key = cfg.get("answer_key_key", "")
             mode = cfg.get("score_mode", "Điểm theo phần")
-            self.subject_list.addItem(f"{cfg.get('name','')} - Khối {cfg.get('block','')} — Key: {key} — {mode} — Template: {tpl}")
+            total = cfg.get("total_exam_points", "-")
+            codes = ",".join(sorted((cfg.get("imported_answer_keys") or {}).keys()))
+            self.subject_list.addItem(f"{cfg.get('name','')} - Khối {cfg.get('block','')} — Key: {key} — Mã đề: {codes or '-'} — {mode} — Tổng:{total} — Template: {tpl}")
 
     def _add_subject(self) -> None:
         dlg = SubjectConfigDialog(
             subject_options=self.subject_options,
             block_options=self.block_options,
             paper_part_count=int(self.paper_part_count.currentText()),
+            common_template_path=self.common_template.text().strip(),
             parent=self,
         )
         if dlg.exec() != QDialog.Accepted:
@@ -368,6 +451,7 @@ class NewExamDialog(QDialog):
             subject_options=self.subject_options,
             block_options=self.block_options,
             paper_part_count=int(self.paper_part_count.currentText()),
+            common_template_path=self.common_template.text().strip(),
             parent=self,
         )
         if dlg.exec() != QDialog.Accepted:
