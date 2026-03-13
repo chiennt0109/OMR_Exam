@@ -2591,16 +2591,17 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No selection", "Chọn bài thi cần sửa trước.")
             return
         if idx >= len(self.scan_results):
-            sid = self.scan_list.item(idx, 0).text() if self.scan_list.item(idx, 0) else "-"
+            sid_item_existing = self.scan_list.item(idx, 0)
+            sid = sid_item_existing.text() if sid_item_existing else "-"
             content = self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else "-"
-            status = self.scan_list.item(idx, 4).text() if self.scan_list.item(idx, 4) else "-"
-            exam_code = ""
-            for r in range(self.scan_result_preview.rowCount()):
-                k = self.scan_result_preview.item(r, 0)
-                v = self.scan_result_preview.item(r, 1)
-                if k and v and k.text().strip().lower() in {"exam code", "mã đề"}:
-                    exam_code = v.text().strip()
-                    break
+            exam_code = str(sid_item_existing.data(Qt.UserRole + 1) if sid_item_existing else "").strip()
+            if not exam_code:
+                for r in range(self.scan_result_preview.rowCount()):
+                    k = self.scan_result_preview.item(r, 0)
+                    v = self.scan_result_preview.item(r, 1)
+                    if k and v and k.text().strip().lower() in {"exam code", "mã đề"}:
+                        exam_code = v.text().strip()
+                        break
             dlg = QDialog(self)
             dlg.setWindowTitle("Sửa bài thi đã lưu")
             lay = QVBoxLayout(dlg)
@@ -2621,16 +2622,18 @@ class MainWindow(QMainWindow):
                 return
             old_item = self.scan_list.item(idx, 0)
             old_img = str(old_item.data(Qt.UserRole) if old_item else "")
+            old_exam_code = str(old_item.data(Qt.UserRole + 1) if old_item else "").strip()
+            new_exam_code = inp_code.text().strip() or old_exam_code
             sid_item = QTableWidgetItem(inp_sid.text().strip() or "-")
             sid_item.setData(Qt.UserRole, old_img)
+            sid_item.setData(Qt.UserRole + 1, new_exam_code)
             self.scan_list.setItem(idx, 0, sid_item)
             self.scan_list.setItem(idx, 3, QTableWidgetItem(txt_content.toPlainText().strip() or "-"))
-            sid_item.setData(Qt.UserRole + 1, inp_code.text().strip())
             self._refresh_row_status(idx)
             for r in range(self.scan_result_preview.rowCount()):
                 k = self.scan_result_preview.item(r, 0)
                 if k and k.text().strip().lower() in {"exam code", "mã đề"}:
-                    self.scan_result_preview.setItem(r, 1, QTableWidgetItem(inp_code.text().strip() or "-"))
+                    self.scan_result_preview.setItem(r, 1, QTableWidgetItem(new_exam_code or "-"))
                     break
             self.btn_save_batch_subject.setEnabled(True)
             return
