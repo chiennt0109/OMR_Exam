@@ -33,7 +33,6 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QToolBar,
     QStyle,
-    QToolButton,
     QGroupBox,
     QStackedWidget,
 )
@@ -548,6 +547,7 @@ class MainWindow(QMainWindow):
         self.scan_last_adjustment: dict[int, str] = {}
         self.score_rows = []
         self.imported_exam_codes: list[str] = []
+        self.active_batch_subject_key: str | None = None
         self.subject_catalog: list[str] = ["Toán", "Ngữ văn", "Tiếng Anh", "Vật lý", "Hóa học", "Sinh học"]
         self.block_catalog: list[str] = ["10", "11", "12"]
 
@@ -936,21 +936,21 @@ class MainWindow(QMainWindow):
         self.addToolBar(toolbar)
 
         style = self.style()
-        toolbar.addAction(style.standardIcon(QStyle.SP_FileIcon), "Tạo mới\nTệp", self.action_create_session)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Mở DS\nTệp", self.action_open_session)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Lưu\nTệp", self.action_save_session)
+        toolbar.addAction(style.standardIcon(QStyle.SP_FileIcon), "Tạo mới", self.action_create_session)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Mở DS", self.action_open_session)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Lưu", self.action_save_session)
         toolbar.addSeparator()
-        toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogContentsView), "Mẫu thi\nKỳ thi", self.action_load_template)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DirIcon), "Đáp án\nKỳ thi", self.action_load_answer_keys)
-        toolbar.addAction(style.standardIcon(QStyle.SP_ArrowDown), "Nhập đáp án\nKỳ thi", self.action_import_answer_key)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DriveFDIcon), "Mẫu file\nKỳ thi", self.action_export_answer_key_sample)
+        toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogContentsView), "Mẫu thi", self.action_load_template)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DirIcon), "Đáp án", self.action_load_answer_keys)
+        toolbar.addAction(style.standardIcon(QStyle.SP_ArrowDown), "Nhập đáp án", self.action_import_answer_key)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DriveFDIcon), "Mẫu file", self.action_export_answer_key_sample)
         toolbar.addSeparator()
-        toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Quét\nXử lý", self.action_run_batch_scan)
-        toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Sửa bài\nXử lý", self.action_edit_selected_scan)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogApplyButton), "Hiệu chỉnh\nXử lý", self.action_apply_manual_correction)
+        toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Quét", self.action_run_batch_scan)
+        toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Sửa bài", self.action_edit_selected_scan)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogApplyButton), "Hiệu chỉnh", self.action_apply_manual_correction)
         toolbar.addSeparator()
-        toolbar.addAction(style.standardIcon(QStyle.SP_CommandLink), "Tính điểm\nChấm", self.action_calculate_scores)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Xuất KQ\nChấm", self.action_export_results)
+        toolbar.addAction(style.standardIcon(QStyle.SP_CommandLink), "Tính điểm", self.action_calculate_scores)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Xuất KQ", self.action_export_results)
 
     def open_session(self) -> None:
         if self.session and self.session_dirty:
@@ -1393,14 +1393,89 @@ class MainWindow(QMainWindow):
         self.editor = TemplateEditorWindow()
         self.editor.show()
 
+    def _subject_configs_in_session(self) -> list[dict]:
+        if not self.session:
+            return []
+        cfg = self.session.config or {}
+        raw = cfg.get("subject_configs", [])
+        return raw if isinstance(raw, list) else []
+
+    def _choose_subject_config_for_batch(self) -> dict | None:
+        subject_cfgs = self._subject_configs_in_session()
+        if not subject_cfgs:
+            return None
+        labels = [f"{x.get('name', '-')}-Khối {x.get('block', '-')}" for x in subject_cfgs]
+        choice, ok = QInputDialog.getItem(self, "Chọn môn để quét", "Danh sách môn trong kỳ thi:", labels, 0, False)
+        if not ok:
+            return None
+        idx = labels.index(choice)
+        return subject_cfgs[idx] if 0 <= idx < len(subject_cfgs) else None
+
     def run_batch_scan(self) -> None:
+        subject_cfg = self._choose_subject_config_for_batch()
+        if self.session and self._subject_configs_in_session() and not subject_cfg:
+            return
+
+        # Resolve template, scan folder and answer keys from selected subject config in session.
+        template_path = ""
+        scan_folder = ""
+        answer_key_key = None
+        if subject_cfg:
+            template_path = str(subject_cfg.get("template_path", "") or "")
+            scan_folder = str(subject_cfg.get("scan_folder", "") or "")
+            answer_key_key = str(subject_cfg.get("answer_key_key", "") or "")
+            if not template_path:
+                template_path = str(self.session.template_path if self.session else "")
+            if not scan_folder and self.session:
+                scan_folder = str((self.session.config or {}).get("scan_root", "") or "")
+
+            imported_keys = subject_cfg.get("imported_answer_keys", {}) or {}
+            if imported_keys and answer_key_key:
+                repo = AnswerKeyRepository()
+                for exam_code, kd in imported_keys.items():
+                    repo.upsert(SubjectKey(
+                        subject=answer_key_key,
+                        exam_code=str(exam_code),
+                        answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
+                        true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
+                        numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
+                    ))
+                self.answer_keys = repo
+                self.imported_exam_codes = sorted(str(k) for k in imported_keys.keys())
+                self.active_batch_subject_key = answer_key_key
+
+        if template_path:
+            tp = Path(template_path)
+            if tp.exists():
+                try:
+                    self.template = Template.load_json(tp)
+                except Exception:
+                    self.template = None
+
         if not self.template:
-            QMessageBox.warning(self, "Missing template", "Load template first.")
+            QMessageBox.warning(self, "Missing template", "Không tìm thấy mẫu giấy thi của môn đã chọn.")
             return
-        folder = QFileDialog.getExistingDirectory(self, "Select folder containing scanned sheets")
-        if not folder:
-            return
-        directory = Path(folder)
+
+        if not scan_folder:
+            scan_folder = QFileDialog.getExistingDirectory(self, "Chọn thư mục ảnh bài thi môn")
+            if not scan_folder:
+                return
+
+        has_exam_code_zone = any(z.zone_type.value == "EXAM_CODE_BLOCK" for z in self.template.zones)
+        has_student_id_zone = any(z.zone_type.value == "STUDENT_ID_BLOCK" for z in self.template.zones)
+        codes = ", ".join(self.imported_exam_codes) if self.imported_exam_codes else "-"
+        QMessageBox.information(
+            self,
+            "Batch Scan",
+            f"Môn: {subject_cfg.get('name','-') if subject_cfg else '-'}\n"
+            f"Template: {template_path or '[đang dùng mẫu đã nạp]'}\n"
+            f"Thư mục quét: {scan_folder}\n"
+            f"Mã đề khả dụng: {codes}\n"
+            f"Vùng EXAM_CODE: {'Có' if has_exam_code_zone else 'Không'}\n"
+            f"Vùng STUDENT_ID: {'Có' if has_student_id_zone else 'Không'}"
+        )
+
+        directory = Path(scan_folder)
         file_paths = sorted(
             [
                 str(p)
@@ -1493,12 +1568,16 @@ class MainWindow(QMainWindow):
             elif z.zone_type.value == "NUMERIC_BLOCK":
                 expected_by_section["NUMERIC"].extend(rng)
 
-        if self.answer_keys and self.session and self.session.subjects:
-            key = self.answer_keys.get(self.session.subjects[0], result.exam_code or "")
-            if key:
-                key_questions = set(key.answers.keys())
-                for sec in expected_by_section:
-                    expected_by_section[sec] = [q for q in expected_by_section[sec] if q in key_questions]
+        if self.answer_keys:
+            subject_key_name = self.active_batch_subject_key
+            if not subject_key_name and self.session and self.session.subjects:
+                subject_key_name = self.session.subjects[0]
+            if subject_key_name:
+                key = self.answer_keys.get(subject_key_name, result.exam_code or "")
+                if key:
+                    key_questions = set(key.answers.keys())
+                    for sec in expected_by_section:
+                        expected_by_section[sec] = [q for q in expected_by_section[sec] if q in key_questions]
 
         return {
             "MCQ": [q for q in sorted(set(expected_by_section["MCQ"])) if q not in set((result.mcq_answers or {}).keys())],
