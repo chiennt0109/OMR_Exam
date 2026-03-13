@@ -89,12 +89,14 @@ class SubjectConfigDialog(QDialog):
         for z in tpl.zones:
             if not z.grid:
                 continue
-            c = int(z.grid.question_count or z.grid.rows or 0)
             if z.zone_type.value == "MCQ_BLOCK":
+                c = int(z.grid.question_count or z.grid.rows or 0)
                 counts["MCQ"] += max(0, c)
             elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                c = int(z.metadata.get("questions_per_block", 0) or z.grid.question_count or (z.grid.rows // max(1, int(z.metadata.get("statements_per_question", 4)))) or 0)
                 counts["TF"] += max(0, c)
             elif z.zone_type.value == "NUMERIC_BLOCK":
+                c = int(z.metadata.get("questions_per_block", z.metadata.get("total_questions", 0)) or z.grid.question_count or 0)
                 counts["NUMERIC"] += max(0, c)
         return counts
 
@@ -361,22 +363,24 @@ class SubjectConfigDialog(QDialog):
 
 
 class NewExamDialog(QDialog):
-    def __init__(self, subject_options: list[str], block_options: list[str], parent=None):
+    def __init__(self, subject_options: list[str], block_options: list[str], data: dict | None = None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Tạo kỳ thi mới")
+        data = data or {}
+        self.setWindowTitle("Sửa kỳ thi" if data else "Tạo kỳ thi mới")
         self.resize(860, 640)
-        self.subject_configs: list[dict] = []
+        self.subject_configs: list[dict] = list(data.get("subject_configs", []))
         self.subject_options = subject_options
         self.block_options = block_options
 
         lay = QVBoxLayout(self)
         form = QFormLayout()
 
-        self.exam_name = QLineEdit()
-        self.common_template = QLineEdit()
-        self.scan_root = QLineEdit()
+        self.exam_name = QLineEdit(str(data.get("exam_name", "")))
+        self.common_template = QLineEdit(str(data.get("common_template", "")))
+        self.scan_root = QLineEdit(str(data.get("scan_root", "")))
         self.scan_mode = QComboBox(); self.scan_mode.addItems(["Ảnh trong thư mục gốc", "Ảnh theo phòng thi (thư mục con)"])
-        self.paper_part_count = QComboBox(); self.paper_part_count.addItems(["1", "2", "3", "4", "5"]); self.paper_part_count.setCurrentText("3")
+        self.scan_mode.setCurrentText(str(data.get("scan_mode", "Ảnh trong thư mục gốc")))
+        self.paper_part_count = QComboBox(); self.paper_part_count.addItems(["1", "2", "3", "4", "5"]); self.paper_part_count.setCurrentText(str(data.get("paper_part_count", "3")))
 
         row_tpl = QHBoxLayout(); row_tpl.addWidget(self.common_template); btn_tpl = QPushButton("..."); row_tpl.addWidget(btn_tpl)
         btn_tpl.clicked.connect(self._browse_common_template)
@@ -408,6 +412,8 @@ class NewExamDialog(QDialog):
         bb.accepted.connect(self._validate_and_accept)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
+
+        self._refresh_subject_list()
 
     def _browse_common_template(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Chọn giấy thi dùng chung", "", "JSON (*.json)")
@@ -570,8 +576,20 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(w)
         layout.addWidget(QLabel("Danh sách các kỳ thi"))
 
-        self.exam_list_widget = QListWidget()
-        layout.addWidget(self.exam_list_widget)
+        self.exam_list_table = QTableWidget(0, 6)
+        self.exam_list_table.setHorizontalHeaderLabels(["STT", "Tên kỳ thi", "Số môn", "Thư mục quét", "Môn học", "Đường dẫn"])
+        self.exam_list_table.verticalHeader().setVisible(False)
+        self.exam_list_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.exam_list_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.exam_list_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        hdr = self.exam_list_table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(3, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(4, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(5, QHeaderView.Stretch)
+        layout.addWidget(self.exam_list_table)
 
         row = QHBoxLayout()
         btn_open = QPushButton("Mở")
@@ -610,16 +628,41 @@ class MainWindow(QMainWindow):
         return central
 
     def _refresh_exam_list(self) -> None:
-        self.exam_list_widget.clear()
-        for row in self.session_registry:
+        self.exam_list_table.setRowCount(len(self.session_registry))
+        for idx, row in enumerate(self.session_registry):
             name = str(row.get("name") or Path(str(row.get("path"))).stem)
             suffix = " [MẶC ĐỊNH]" if bool(row.get("default")) else ""
-            item = QListWidgetItem(f"{name}{suffix} — {row.get('path')}")
-            item.setData(Qt.UserRole, row.get("path"))
-            self.exam_list_widget.addItem(item)
+            path = Path(str(row.get("path", "")))
+            subject_text = "-"
+            subject_count = "0"
+            scan_root = "-"
+            if path.exists():
+                try:
+                    ses = ExamSession.load_json(path)
+                    cfg = ses.config or {}
+                    subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
+                    subject_count = str(len(subject_cfgs))
+                    subject_text = ", ".join(f"{x.get('name','?')}-{x.get('block','?')}" for x in subject_cfgs[:4])
+                    if len(subject_cfgs) > 4:
+                        subject_text += f" ...(+{len(subject_cfgs)-4})"
+                    scan_root = str(cfg.get("scan_root", "") or "-")
+                except Exception:
+                    pass
+            self.exam_list_table.setItem(idx, 0, QTableWidgetItem(str(idx + 1)))
+            path_item = QTableWidgetItem(f"{name}{suffix}")
+            path_item.setData(Qt.UserRole, row.get("path"))
+            self.exam_list_table.setItem(idx, 1, path_item)
+            self.exam_list_table.setItem(idx, 2, QTableWidgetItem(subject_count))
+            self.exam_list_table.setItem(idx, 3, QTableWidgetItem(scan_root))
+            self.exam_list_table.setItem(idx, 4, QTableWidgetItem(subject_text or "-"))
+            self.exam_list_table.setItem(idx, 5, QTableWidgetItem(str(row.get("path", ""))))
+        self.exam_list_table.resizeRowsToContents()
 
     def _selected_registry_path(self) -> Path | None:
-        item = self.exam_list_widget.currentItem()
+        row = self.exam_list_table.currentRow()
+        if row < 0:
+            return None
+        item = self.exam_list_table.item(row, 1)
         if not item:
             return None
         path = item.data(Qt.UserRole)
@@ -641,7 +684,47 @@ class MainWindow(QMainWindow):
             return
         if not self._confirm("Sửa kỳ thi", f"Bạn có chắc muốn sửa kỳ thi này?\n{path}"):
             return
-        self._open_session_path(path)
+        try:
+            session = ExamSession.load_json(path)
+            cfg = session.config or {}
+            payload = {
+                "exam_name": session.exam_name,
+                "common_template": session.template_path,
+                "scan_root": cfg.get("scan_root", ""),
+                "scan_mode": cfg.get("scan_mode", "Ảnh trong thư mục gốc"),
+                "paper_part_count": cfg.get("paper_part_count", 3),
+                "subject_configs": cfg.get("subject_configs", []),
+            }
+            dlg = NewExamDialog(self.subject_catalog, self.block_catalog, data=payload, parent=self)
+            if dlg.exec() != QDialog.Accepted:
+                return
+            edited = dlg.payload()
+            session.exam_name = edited.get("exam_name", session.exam_name)
+            session.template_path = edited.get("common_template", session.template_path)
+            session.subjects = [
+                f"{str(x.get('name', '')).strip()}_{str(x.get('block', '')).strip()}"
+                for x in edited.get("subject_configs", [])
+                if str(x.get("name", "")).strip()
+            ] or session.subjects
+            session.config = {
+                **(session.config or {}),
+                "scan_mode": edited.get("scan_mode", "Ảnh trong thư mục gốc"),
+                "scan_root": edited.get("scan_root", ""),
+                "paper_part_count": edited.get("paper_part_count", 3),
+                "subject_configs": edited.get("subject_configs", []),
+                "subject_catalog": self.subject_catalog,
+                "block_catalog": self.block_catalog,
+            }
+            session.save_json(path)
+            self._upsert_session_registry(path, session.exam_name)
+            self._save_session_registry()
+            self._refresh_exam_list()
+            if self.current_session_path and self.current_session_path == path:
+                self.session = session
+                self._refresh_session_info()
+            QMessageBox.information(self, "Sửa kỳ thi", "Đã cập nhật thông số kỳ thi.")
+        except Exception as exc:
+            QMessageBox.warning(self, "Sửa kỳ thi", f"Không thể sửa kỳ thi:\n{exc}")
 
     def _delete_selected_registry_session(self) -> None:
         path = self._selected_registry_path()
@@ -852,7 +935,7 @@ class MainWindow(QMainWindow):
     def action_create_session(self) -> None:
         if not self._confirm("Tạo kỳ thi mới", "Bạn có chắc muốn tạo kỳ thi mới?"):
             return
-        dlg = NewExamDialog(self.subject_catalog, self.block_catalog, self)
+        dlg = NewExamDialog(self.subject_catalog, self.block_catalog, parent=self)
         if dlg.exec() != QDialog.Accepted:
             return
         self.create_session(dlg.payload())
