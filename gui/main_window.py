@@ -2207,13 +2207,9 @@ class MainWindow(QMainWindow):
                 avail_codes = self._available_exam_codes()
                 if avail_codes and exam_code_text not in avail_codes:
                     status_parts.append("lỗi mã đề")
+            status_parts.extend(self._count_mismatch_status_parts(result))
             status = ", ".join(status_parts) if status_parts else "OK"
-            content_parts = []
-            for sec in ["MCQ", "TF", "NUMERIC"]:
-                vals = blank_map.get(sec, [])
-                if vals:
-                    content_parts.append(f"{sec}:{','.join(str(v) for v in vals)}")
-            content_text = " | ".join(content_parts) if content_parts else "-"
+            content_text = self._build_recognition_content_text(result, blank_map)
 
             self.scan_list.insertRow(idx)
             sid_item = QTableWidgetItem(sid or "-")
@@ -2235,7 +2231,26 @@ class MainWindow(QMainWindow):
         self._apply_scan_filter()
 
     def _compute_blank_questions(self, result) -> dict[str, list[int]]:
+        expected_by_section = self._expected_questions_by_section(result)
+        return {
+            "MCQ": [q for q in sorted(set(expected_by_section["MCQ"])) if q not in set((result.mcq_answers or {}).keys())],
+            "TF": [q for q in sorted(set(expected_by_section["TF"])) if q not in set((result.true_false_answers or {}).keys())],
+            "NUMERIC": [q for q in sorted(set(expected_by_section["NUMERIC"])) if q not in set((result.numeric_answers or {}).keys())],
+        }
+
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
         expected_by_section: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        subject_key_name = self.active_batch_subject_key
+        if not subject_key_name and self.session and self.session.subjects:
+            subject_key_name = self.session.subjects[0]
+        if self.answer_keys and subject_key_name:
+            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
+            if key:
+                expected_by_section["MCQ"] = sorted(set(int(q) for q in (key.answers or {}).keys()))
+                expected_by_section["TF"] = sorted(set(int(q) for q in (key.true_false_answers or {}).keys()))
+                expected_by_section["NUMERIC"] = sorted(set(int(q) for q in (key.numeric_answers or {}).keys()))
+                return expected_by_section
+
         if not self.template:
             return expected_by_section
         for z in self.template.zones:
@@ -2250,23 +2265,67 @@ class MainWindow(QMainWindow):
                 expected_by_section["TF"].extend(rng)
             elif z.zone_type.value == "NUMERIC_BLOCK":
                 expected_by_section["NUMERIC"].extend(rng)
+        return {sec: sorted(set(vals)) for sec, vals in expected_by_section.items()}
 
-        if self.answer_keys:
-            subject_key_name = self.active_batch_subject_key
-            if not subject_key_name and self.session and self.session.subjects:
-                subject_key_name = self.session.subjects[0]
-            if subject_key_name:
-                key = self.answer_keys.get(subject_key_name, result.exam_code or "")
-                if key:
-                    key_questions = set(key.answers.keys())
-                    for sec in expected_by_section:
-                        expected_by_section[sec] = [q for q in expected_by_section[sec] if q in key_questions]
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
 
-        return {
-            "MCQ": [q for q in sorted(set(expected_by_section["MCQ"])) if q not in set((result.mcq_answers or {}).keys())],
-            "TF": [q for q in sorted(set(expected_by_section["TF"])) if q not in set((result.true_false_answers or {}).keys())],
-            "NUMERIC": [q for q in sorted(set(expected_by_section["NUMERIC"])) if q not in set((result.numeric_answers or {}).keys())],
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        parts = [
+            f"MCQ: {self._format_mcq_answers(result.mcq_answers or {})}",
+            f"TF: {self._format_tf_answers(result.true_false_answers or {})}",
+            f"NUM: {self._format_numeric_answers(result.numeric_answers or {})}",
+        ]
+        blank_parts = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            vals = blank_map.get(sec, [])
+            if vals:
+                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        if blank_parts:
+            parts.append(" | ".join(blank_parts))
+        return " | ".join(parts)
+
+    def _count_mismatch_status_parts(self, result) -> list[str]:
+        expected = self._expected_questions_by_section(result)
+        actual_map = {
+            "MCQ": set((result.mcq_answers or {}).keys()),
+            "TF": set((result.true_false_answers or {}).keys()),
+            "NUMERIC": set((result.numeric_answers or {}).keys()),
         }
+        messages: list[str] = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            expected_set = set(expected.get(sec, []))
+            if not expected_set:
+                continue
+            actual_set = {int(q) for q in actual_map.get(sec, set())}
+            missing = sorted(expected_set - actual_set)
+            extras = sorted(actual_set - expected_set)
+            if missing:
+                messages.append(
+                    f"thiếu {sec} ({len(expected_set)-len(missing)}/{len(expected_set)}): {','.join(str(v) for v in missing)}"
+                )
+            if extras:
+                messages.append(f"thừa {sec}: {','.join(str(v) for v in extras)}")
+        return messages
 
     def _apply_scan_filter(self) -> None:
         value = self.search_value.text().strip().lower()
@@ -2386,6 +2445,7 @@ class MainWindow(QMainWindow):
             avail_codes = self._available_exam_codes()
             if avail_codes and exam_code_text not in avail_codes:
                 status_parts.append("lỗi mã đề")
+        status_parts.extend(self._count_mismatch_status_parts(res))
         edits = self.scan_manual_adjustments.get(idx, [])
         if edits:
             status_parts.append("đã chỉnh sửa: " + "; ".join(edits))
@@ -2450,9 +2510,9 @@ class MainWindow(QMainWindow):
             ("Họ tên", str(getattr(result, "full_name", "") or "-")),
             ("Ngày sinh", str(getattr(result, "birth_date", "") or "-")),
             ("Exam code", result.exam_code or "-"),
-            ("MCQ", self._compact_value(json.dumps(result.mcq_answers, ensure_ascii=False), 160)),
-            ("TF", self._compact_value(json.dumps(result.true_false_answers, ensure_ascii=False), 160)),
-            ("NUM", self._compact_value(json.dumps(result.numeric_answers, ensure_ascii=False), 160)),
+            ("MCQ", self._compact_value(self._format_mcq_answers(result.mcq_answers or {}), 220)),
+            ("TF", self._compact_value(self._format_tf_answers(result.true_false_answers or {}), 220)),
+            ("NUM", self._compact_value(self._format_numeric_answers(result.numeric_answers or {}), 220)),
             ("MCQ không tô", ", ".join(str(x) for x in blank_map.get("MCQ", [])) or "-"),
             ("TF không tô", ", ".join(str(x) for x in blank_map.get("TF", [])) or "-"),
             ("NUMERIC không tô", ", ".join(str(x) for x in blank_map.get("NUMERIC", [])) or "-"),
