@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -377,21 +377,21 @@ class MainWindow(QMainWindow):
         if not (res.exam_code or "").strip() or "?" in (res.exam_code or ""):
             status_parts.append("không tô exam code")
         edits = self.scan_manual_adjustments.get(idx, [])
-        latest = self.scan_last_adjustment.get(idx, "")
-        if latest:
-            status_parts.append("điều chỉnh gần nhất: " + latest)
-        elif edits:
-            status_parts.append("đã chỉnh sửa")
+        if edits:
+            status_parts.append("đã chỉnh sửa: " + "; ".join(edits))
         return ", ".join(status_parts) if status_parts else "OK"
 
     def _record_adjustment(self, idx: int, details: list[str], source: str) -> None:
         if not details:
             return
-        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        message = f"[{stamp}] ({source}) " + "; ".join(details)
+        message = f"({source}) " + "; ".join(details)
         self.scan_edit_history.setdefault(idx, []).append(message)
         self.scan_last_adjustment[idx] = message
         self.scan_manual_adjustments[idx] = sorted(set(self.scan_manual_adjustments.get(idx, []) + details))
+
+    def _refresh_all_statuses(self) -> None:
+        for row_idx in range(self.scan_list.rowCount()):
+            self._refresh_row_status(row_idx)
 
     def _on_scan_cell_clicked(self, row: int, col: int) -> None:
         if row < 0:
@@ -544,21 +544,27 @@ class MainWindow(QMainWindow):
         try:
             payload = json.loads(txt.toPlainText().strip() or "{}")
             if isinstance(payload.get("mcq_answers"), dict):
-                res.mcq_answers = {int(k): str(v) for k, v in payload["mcq_answers"].items()}
-                changes.append("mcq_answers updated")
+                new_mcq_answers = {int(k): str(v) for k, v in payload["mcq_answers"].items()}
+                if new_mcq_answers != (res.mcq_answers or {}):
+                    res.mcq_answers = new_mcq_answers
+                    changes.append("mcq_answers updated")
             if isinstance(payload.get("true_false_answers"), dict):
-                res.true_false_answers = payload["true_false_answers"]
-                changes.append("true_false_answers updated")
+                new_tf_answers = payload["true_false_answers"]
+                if new_tf_answers != (res.true_false_answers or {}):
+                    res.true_false_answers = new_tf_answers
+                    changes.append("true_false_answers updated")
             if isinstance(payload.get("numeric_answers"), dict):
-                res.numeric_answers = {int(k): str(v) for k, v in payload["numeric_answers"].items()}
-                changes.append("numeric_answers updated")
+                new_numeric_answers = {int(k): str(v) for k, v in payload["numeric_answers"].items()}
+                if new_numeric_answers != (res.numeric_answers or {}):
+                    res.numeric_answers = new_numeric_answers
+                    changes.append("numeric_answers updated")
         except Exception as exc:
             QMessageBox.warning(self, "Invalid JSON", f"Dữ liệu nhận dạng không hợp lệ:\n{exc}")
             return
 
         if changes:
             self._record_adjustment(idx, changes, "dialog_edit")
-            self._refresh_row_status(idx)
+            self._refresh_all_statuses()
             self._update_scan_preview(idx)
             self._load_selected_result_for_correction()
 
@@ -589,20 +595,26 @@ class MainWindow(QMainWindow):
                 changes.append(f"exam_code: '{res.exam_code or ''}' -> '{new_code}'")
             res.exam_code = new_code
         if isinstance(patch.get("mcq_answers"), dict):
-            res.mcq_answers = {int(k): str(v) for k, v in patch["mcq_answers"].items()}
-            changes.append("mcq_answers updated")
+            new_mcq_answers = {int(k): str(v) for k, v in patch["mcq_answers"].items()}
+            if new_mcq_answers != (res.mcq_answers or {}):
+                res.mcq_answers = new_mcq_answers
+                changes.append("mcq_answers updated")
         if isinstance(patch.get("numeric_answers"), dict):
-            res.numeric_answers = {int(k): str(v) for k, v in patch["numeric_answers"].items()}
-            changes.append("numeric_answers updated")
+            new_numeric_answers = {int(k): str(v) for k, v in patch["numeric_answers"].items()}
+            if new_numeric_answers != (res.numeric_answers or {}):
+                res.numeric_answers = new_numeric_answers
+                changes.append("numeric_answers updated")
         if isinstance(patch.get("true_false_answers"), dict):
-            res.true_false_answers = patch["true_false_answers"]
-            changes.append("true_false_answers updated")
+            new_tf_answers = patch["true_false_answers"]
+            if new_tf_answers != (res.true_false_answers or {}):
+                res.true_false_answers = new_tf_answers
+                changes.append("true_false_answers updated")
 
         sid = (res.student_id or "").strip() or "-"
         self.scan_list.setItem(idx, 0, QTableWidgetItem(sid))
         if changes:
             self._record_adjustment(idx, changes, "manual_json")
-        self._refresh_row_status(idx)
+        self._refresh_all_statuses()
         self._update_scan_preview(idx)
         self._load_selected_result_for_correction()
         QMessageBox.information(self, "Correction", "Manual correction applied to selected scan.")
