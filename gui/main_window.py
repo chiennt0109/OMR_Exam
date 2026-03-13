@@ -47,6 +47,198 @@ from models.exam_session import ExamSession
 from models.template import Template
 
 
+class SubjectConfigDialog(QDialog):
+    def __init__(self, data: dict | None = None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Cấu hình môn học")
+        data = data or {}
+
+        lay = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.subject_name = QLineEdit(str(data.get("name", "")))
+        self.template_path = QLineEdit(str(data.get("template_path", "")))
+        self.scan_folder = QLineEdit(str(data.get("scan_folder", "")))
+        self.answer_key = QLineEdit(str(data.get("answer_key_path", "")))
+        self.section_mode = QComboBox(); self.section_mode.addItems(["Tự tính điểm từng câu", "Nhập điểm từng phần"])
+        self.question_mode = QComboBox(); self.question_mode.addItems(["Tự tính điểm cả phần", "Nhập điểm từng câu"])
+        self.section_mode.setCurrentText(str(data.get("section_mode", "Tự tính điểm từng câu")))
+        self.question_mode.setCurrentText(str(data.get("question_mode", "Tự tính điểm cả phần")))
+        self.section_scores = QTextEdit(json.dumps(data.get("section_scores", {}), ensure_ascii=False, indent=2))
+        self.question_scores = QTextEdit(json.dumps(data.get("question_scores", {}), ensure_ascii=False, indent=2))
+
+        row_tpl = QHBoxLayout(); row_tpl.addWidget(self.template_path); btn_tpl = QPushButton("..."); row_tpl.addWidget(btn_tpl)
+        btn_tpl.clicked.connect(self._browse_template)
+        row_scan = QHBoxLayout(); row_scan.addWidget(self.scan_folder); btn_scan = QPushButton("..."); row_scan.addWidget(btn_scan)
+        btn_scan.clicked.connect(self._browse_scan_folder)
+        row_key = QHBoxLayout(); row_key.addWidget(self.answer_key); btn_key = QPushButton("..."); row_key.addWidget(btn_key)
+        btn_key.clicked.connect(self._browse_answer_key)
+
+        form.addRow("Tên môn", self.subject_name)
+        form.addRow("Giấy thi riêng (tùy chọn)", row_tpl)
+        form.addRow("Thư mục bài thi môn", row_scan)
+        form.addRow("Đáp án môn", row_key)
+        form.addRow("Điểm theo phần", self.section_mode)
+        form.addRow("Điểm theo câu", self.question_mode)
+        form.addRow("Section scores (JSON)", self.section_scores)
+        form.addRow("Question scores (JSON)", self.question_scores)
+        lay.addLayout(form)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def _browse_template(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Chọn giấy thi", "", "JSON (*.json)")
+        if path:
+            self.template_path.setText(path)
+
+    def _browse_scan_folder(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Chọn thư mục bài thi môn")
+        if path:
+            self.scan_folder.setText(path)
+
+    def _browse_answer_key(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Chọn đáp án môn", "", "Answer files (*.json *.xlsx *.csv)")
+        if path:
+            self.answer_key.setText(path)
+
+    def payload(self) -> dict:
+        try:
+            section_scores = json.loads(self.section_scores.toPlainText().strip() or "{}")
+            question_scores = json.loads(self.question_scores.toPlainText().strip() or "{}")
+        except Exception as exc:
+            raise ImportError(f"JSON cấu hình điểm không hợp lệ: {exc}") from exc
+        return {
+            "name": self.subject_name.text().strip(),
+            "template_path": self.template_path.text().strip(),
+            "scan_folder": self.scan_folder.text().strip(),
+            "answer_key_path": self.answer_key.text().strip(),
+            "section_mode": self.section_mode.currentText(),
+            "question_mode": self.question_mode.currentText(),
+            "section_scores": section_scores,
+            "question_scores": question_scores,
+        }
+
+
+class NewExamDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Tạo kỳ thi mới")
+        self.resize(860, 640)
+        self.subject_configs: list[dict] = []
+
+        lay = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.exam_name = QLineEdit()
+        self.common_template = QLineEdit()
+        self.scan_root = QLineEdit()
+        self.scan_mode = QComboBox(); self.scan_mode.addItems(["Ảnh trong thư mục gốc", "Ảnh theo phòng thi (thư mục con)"])
+
+        row_tpl = QHBoxLayout(); row_tpl.addWidget(self.common_template); btn_tpl = QPushButton("..."); row_tpl.addWidget(btn_tpl)
+        btn_tpl.clicked.connect(self._browse_common_template)
+        row_scan = QHBoxLayout(); row_scan.addWidget(self.scan_root); btn_scan = QPushButton("..."); row_scan.addWidget(btn_scan)
+        btn_scan.clicked.connect(self._browse_scan_root)
+
+        form.addRow("Tên kỳ thi", self.exam_name)
+        form.addRow("Giấy thi dùng chung", row_tpl)
+        form.addRow("Thư mục gốc bài thi", row_scan)
+        form.addRow("Cơ chế thư mục bài thi", self.scan_mode)
+        lay.addLayout(form)
+
+        lay.addWidget(QLabel("Các môn trong kỳ thi"))
+        self.subject_list = QListWidget()
+        lay.addWidget(self.subject_list)
+
+        row = QHBoxLayout()
+        b_add = QPushButton("Thêm môn")
+        b_edit = QPushButton("Sửa môn")
+        b_del = QPushButton("Xoá môn")
+        b_add.clicked.connect(self._add_subject)
+        b_edit.clicked.connect(self._edit_subject)
+        b_del.clicked.connect(self._delete_subject)
+        row.addWidget(b_add); row.addWidget(b_edit); row.addWidget(b_del)
+        lay.addLayout(row)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self._validate_and_accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def _browse_common_template(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Chọn giấy thi dùng chung", "", "JSON (*.json)")
+        if path:
+            self.common_template.setText(path)
+
+    def _browse_scan_root(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Chọn thư mục gốc bài thi")
+        if path:
+            self.scan_root.setText(path)
+
+    def _refresh_subject_list(self) -> None:
+        self.subject_list.clear()
+        for cfg in self.subject_configs:
+            tpl = cfg.get("template_path") or "[dùng mẫu chung]"
+            self.subject_list.addItem(f"{cfg.get('name','')} — Template: {tpl}")
+
+    def _add_subject(self) -> None:
+        dlg = SubjectConfigDialog(parent=self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        try:
+            payload = dlg.payload()
+        except ImportError as exc:
+            QMessageBox.warning(self, "Lỗi", str(exc))
+            return
+        self.subject_configs.append(payload)
+        self._refresh_subject_list()
+
+    def _edit_subject(self) -> None:
+        idx = self.subject_list.currentRow()
+        if idx < 0 or idx >= len(self.subject_configs):
+            return
+        dlg = SubjectConfigDialog(self.subject_configs[idx], self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        try:
+            self.subject_configs[idx] = dlg.payload()
+        except ImportError as exc:
+            QMessageBox.warning(self, "Lỗi", str(exc))
+            return
+        self._refresh_subject_list()
+
+    def _delete_subject(self) -> None:
+        idx = self.subject_list.currentRow()
+        if idx < 0 or idx >= len(self.subject_configs):
+            return
+        del self.subject_configs[idx]
+        self._refresh_subject_list()
+
+    def _validate_and_accept(self) -> None:
+        if not self.exam_name.text().strip():
+            QMessageBox.warning(self, "Thiếu dữ liệu", "Vui lòng nhập tên kỳ thi.")
+            return
+        if not self.subject_configs:
+            QMessageBox.warning(self, "Thiếu dữ liệu", "Vui lòng thêm ít nhất 1 môn học.")
+            return
+        for cfg in self.subject_configs:
+            if not cfg.get("name"):
+                QMessageBox.warning(self, "Thiếu dữ liệu", "Mỗi môn phải có tên.")
+                return
+        self.accept()
+
+    def payload(self) -> dict:
+        return {
+            "exam_name": self.exam_name.text().strip(),
+            "common_template": self.common_template.text().strip(),
+            "scan_root": self.scan_root.text().strip(),
+            "scan_mode": self.scan_mode.currentText(),
+            "subject_configs": self.subject_configs,
+        }
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -69,6 +261,7 @@ class MainWindow(QMainWindow):
         self.omr_processor = OMRProcessor()
         self.scoring_engine = ScoringEngine()
         self.current_session_path: Path | None = None
+        self.session_dirty = False
 
         self.session_registry_path = Path.home() / ".omr_exam_sessions.json"
         self.session_registry: list[dict[str, str | bool]] = self._load_session_registry()
@@ -230,6 +423,10 @@ class MainWindow(QMainWindow):
                 if p.exists() and p.suffix.lower() == ".json":
                     self.answer_keys = AnswerKeyRepository.load_json(p)
                     self.imported_exam_codes = sorted({k.split("::", 1)[1] for k in self.answer_keys.keys.keys() if "::" in k})
+            self._upsert_session_registry(path, self.session.exam_name if self.session else None)
+            self._save_session_registry()
+            self._refresh_exam_list()
+            self.session_dirty = False
             self._refresh_session_info()
             self.stack.setCurrentIndex(1)
             QMessageBox.information(self, "Open session", "Đã mở kỳ thi thành công.")
@@ -252,6 +449,9 @@ class MainWindow(QMainWindow):
 
         act_save_as = file_menu.addAction("Lưu dưới tên khác")
         act_save_as.triggered.connect(self.action_save_session_as)
+
+        act_close_current = file_menu.addAction("Đóng kỳ thi hiện tại")
+        act_close_current.triggered.connect(self.action_close_current_session)
 
         file_menu.addSeparator()
         act_manage_template = file_menu.addAction("Quản lý mẫu giấy thi")
@@ -300,6 +500,9 @@ class MainWindow(QMainWindow):
         toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Export", self.action_export_results)
 
     def open_session(self) -> None:
+        if self.session and self.session_dirty:
+            if not self._confirm("Dữ liệu chưa lưu", "Kỳ thi hiện tại có thay đổi chưa lưu. Vẫn mở kỳ thi khác?"):
+                return
         file_path, _ = QFileDialog.getOpenFileName(self, "Mở kỳ thi cũ", "", "Exam Session JSON (*.json)")
         if not file_path:
             return
@@ -316,6 +519,7 @@ class MainWindow(QMainWindow):
             self._upsert_session_registry(self.current_session_path, self.session.exam_name if self.session else None)
             self._save_session_registry()
             self._refresh_exam_list()
+            self.session_dirty = False
             QMessageBox.information(self, "Save session", f"Đã lưu kỳ thi:\n{self.current_session_path}")
         except Exception as exc:
             QMessageBox.warning(self, "Save session", f"Không thể lưu kỳ thi:\n{exc}")
@@ -331,6 +535,26 @@ class MainWindow(QMainWindow):
             self.current_session_path = self.current_session_path.with_suffix(".json")
         self.save_session()
 
+    def close_current_session(self) -> None:
+        if self.session_dirty:
+            if not self._confirm("Dữ liệu chưa lưu", "Kỳ thi hiện tại có thay đổi chưa lưu. Vẫn đóng?"):
+                return
+        self.session = None
+        self.template = None
+        self.answer_keys = None
+        self.scan_results = []
+        self.current_session_path = None
+        self.session_dirty = False
+        self.session_info.clear()
+        self.exam_code_preview.setText("Mã đề trên phiếu trả lời mẫu: -")
+        self.scan_list.setRowCount(0)
+        self.score_preview_table.setRowCount(0)
+        self.error_list.clear()
+        self.result_preview.clear()
+        self.scan_result_preview.setRowCount(0)
+        self.manual_edit.clear()
+        self.stack.setCurrentIndex(0)
+
     def manage_subjects(self) -> None:
         if not self.session:
             self.create_session()
@@ -343,12 +567,17 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Quản lý môn học", "Danh sách môn học không được để trống.")
             return
         self.session.subjects = subjects
+        self.session_dirty = True
         self._refresh_session_info()
 
     def action_create_session(self) -> None:
-        if self._confirm("Tạo kỳ thi mới", "Bạn có chắc muốn tạo kỳ thi mới?"):
-            self.create_session()
-            self.stack.setCurrentIndex(1)
+        if not self._confirm("Tạo kỳ thi mới", "Bạn có chắc muốn tạo kỳ thi mới?"):
+            return
+        dlg = NewExamDialog(self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        self.create_session(dlg.payload())
+        self.stack.setCurrentIndex(1)
 
     def action_open_session(self) -> None:
         if self._confirm("Mở kỳ thi", "Bạn có chắc muốn mở kỳ thi?"):
@@ -361,6 +590,10 @@ class MainWindow(QMainWindow):
     def action_save_session_as(self) -> None:
         if self._confirm("Lưu dưới tên khác", "Bạn có chắc muốn lưu kỳ thi dưới tên khác?"):
             self.save_session_as()
+
+    def action_close_current_session(self) -> None:
+        if self._confirm("Đóng kỳ thi", "Bạn có chắc muốn đóng kỳ thi hiện tại?"):
+            self.close_current_session()
 
     def action_manage_template(self) -> None:
         if self._confirm("Quản lý mẫu giấy thi", "Mở trình quản lý mẫu giấy thi?"):
@@ -461,6 +694,7 @@ class MainWindow(QMainWindow):
 
         if self.session:
             self.session.answer_key_path = file_path
+        self.session_dirty = True
         self._refresh_session_info()
         QMessageBox.information(self, "Import successful", f"Imported {imported_count} exam code(s) into current session.")
 
@@ -620,15 +854,35 @@ class MainWindow(QMainWindow):
         layout.addWidget(splitter)
         return w
 
-    def create_session(self) -> None:
+    def create_session(self, payload: dict | None = None) -> None:
+        payload = payload or {}
+        exam_name = str(payload.get("exam_name", "Untitled Exam"))
+        common_template = str(payload.get("common_template", ""))
+        subject_cfgs = payload.get("subject_configs", [])
+        subjects = [str(x.get("name", "")).strip() for x in subject_cfgs if str(x.get("name", "")).strip()]
+        if not subjects:
+            subjects = ["General"]
+
         self.session = ExamSession(
-            exam_name="Untitled Exam",
+            exam_name=exam_name,
             exam_date=str(date.today()),
-            subjects=["General"],
-            template_path="",
+            subjects=subjects,
+            template_path=common_template,
             answer_key_path="",
+            config={
+                "scan_mode": payload.get("scan_mode", "Ảnh trong thư mục gốc"),
+                "scan_root": payload.get("scan_root", ""),
+                "subject_configs": subject_cfgs,
+            },
         )
-        self.session_info.setPlainText("Session created. Load template and answer key.")
+        if common_template and Path(common_template).exists():
+            try:
+                self.template = Template.load_json(common_template)
+            except Exception:
+                self.template = None
+        self.current_session_path = None
+        self.session_dirty = True
+        self._refresh_session_info()
 
     def load_template(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(self, "Load Template", "", "JSON (*.json)")
@@ -637,6 +891,7 @@ class MainWindow(QMainWindow):
         self.template = Template.load_json(file_path)
         if self.session:
             self.session.template_path = file_path
+        self.session_dirty = True
         self._refresh_session_info()
 
     def load_answer_keys(self) -> None:
@@ -647,6 +902,7 @@ class MainWindow(QMainWindow):
         self.imported_exam_codes = sorted({k.split("::", 1)[1] for k in self.answer_keys.keys.keys() if "::" in k})
         if self.session:
             self.session.answer_key_path = file_path
+        self.session_dirty = True
         self._refresh_session_info()
 
     def open_template_editor(self) -> None:
@@ -1102,6 +1358,13 @@ class MainWindow(QMainWindow):
         )
         codes = ", ".join(self.imported_exam_codes) if self.imported_exam_codes else "-"
         self.exam_code_preview.setText(f"Mã đề trên phiếu trả lời mẫu: {codes}")
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        if self.session_dirty:
+            if not self._confirm("Thoát", "Kỳ thi hiện tại có thay đổi chưa lưu. Bạn vẫn muốn thoát?"):
+                event.ignore()
+                return
+        event.accept()
 
 
 

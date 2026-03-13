@@ -24,6 +24,7 @@ class ExamSession:
     template_path: str
     answer_key_path: str
     students: list[Student] = field(default_factory=list)
+    config: dict[str, Any] = field(default_factory=dict)
 
     def add_student(self, student: Student) -> None:
         self.students.append(student)
@@ -70,6 +71,7 @@ class ExamSession:
                 {"student_id": s.student_id, "name": s.name, "extra": s.extra}
                 for s in self.students
             ],
+            "config": self.config,
         }
 
     @classmethod
@@ -82,6 +84,7 @@ class ExamSession:
             answer_key_path=data["answer_key_path"],
         )
         session.students = [Student(**s) for s in data.get("students", [])]
+        session.config = dict(data.get("config", {}))
         return session
 
     def save_json(self, path: str | Path) -> None:
