@@ -114,6 +114,19 @@ class SubjectConfigDialog(QDialog):
         return counts
 
     @staticmethod
+    def _answer_key_question_counts(answer_key_data: dict) -> dict[str, int]:
+        counts = {"MCQ": 0, "TF": 0, "NUMERIC": 0}
+        if not isinstance(answer_key_data, dict) or not answer_key_data:
+            return counts
+        # Total score is defined per one exam code; use the first code as representative.
+        first_code = sorted(answer_key_data.keys())[0]
+        key_data = answer_key_data.get(first_code, {}) or {}
+        counts["MCQ"] = len(key_data.get("mcq_answers", {}) or {})
+        counts["TF"] = len(key_data.get("true_false_answers", {}) or {})
+        counts["NUMERIC"] = len(key_data.get("numeric_answers", {}) or {})
+        return counts
+
+    @staticmethod
     def _template_part_count(template_path: str, fallback: int = 3) -> int:
         counts = SubjectConfigDialog._template_question_counts(template_path)
         parts = sum(1 for k in counts if counts[k] > 0)
@@ -252,6 +265,9 @@ class SubjectConfigDialog(QDialog):
         self._update_total_score()
 
     def _question_counts(self) -> dict[str, int]:
+        key_counts = self._answer_key_question_counts(self.answer_key_data)
+        if any(key_counts.values()):
+            return key_counts
         tpl = self.template_path.text().strip() or self.common_template_path
         return self._template_question_counts(tpl)
 
@@ -326,6 +342,7 @@ class SubjectConfigDialog(QDialog):
             }
         self.answer_codes.setText(", ".join(sorted(self.answer_key_data.keys())))
         self.answer_key.setText(path)
+        self._update_total_score()
         QMessageBox.information(self, "Import đáp án", "Đã gắn toàn bộ mã đề của file đáp án cho môn đang cấu hình.")
 
     def payload(self) -> dict:
