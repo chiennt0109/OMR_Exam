@@ -9,7 +9,11 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QHeaderView,
     QHBoxLayout,
     QLabel,
@@ -607,7 +611,3 @@ def run() -> None:
 
 if __name__ == "__main__":
     run()
-    QComboBox,
-    QDialog,
-    QDialogButtonBox,
-    QFormLayout,
