@@ -93,10 +93,23 @@ class SubjectConfigDialog(QDialog):
                 c = int(z.grid.question_count or z.grid.rows or 0)
                 counts["MCQ"] += max(0, c)
             elif z.zone_type.value == "TRUE_FALSE_BLOCK":
-                c = int(z.metadata.get("questions_per_block", 0) or z.grid.question_count or (z.grid.rows // max(1, int(z.metadata.get("statements_per_question", 4)))) or 0)
+                # TF grid usually has rows = questions * statements_per_question.
+                # `grid.question_count` can be stale/legacy in some templates, so derive from rows first.
+                spq = max(1, int(z.metadata.get("statements_per_question", 4) or 4))
+                from_rows = int((z.grid.rows or 0) // spq)
+                from_meta = int(z.metadata.get("questions_per_block", 0) or 0)
+                from_grid = int(z.grid.question_count or 0)
+                candidates = [x for x in [from_rows, from_meta, from_grid] if x > 0]
+                c = min(candidates) if candidates else 0
                 counts["TF"] += max(0, c)
             elif z.zone_type.value == "NUMERIC_BLOCK":
-                c = int(z.metadata.get("questions_per_block", z.metadata.get("total_questions", 0)) or z.grid.question_count or 0)
+                # Numeric grid usually has cols = questions * digits_per_answer.
+                dpa = max(1, int(z.metadata.get("digits_per_answer", 3) or 3))
+                from_cols = int((z.grid.cols or 0) // dpa)
+                from_meta = int(z.metadata.get("questions_per_block", z.metadata.get("total_questions", 0)) or 0)
+                from_grid = int(z.grid.question_count or 0)
+                candidates = [x for x in [from_cols, from_meta, from_grid] if x > 0]
+                c = min(candidates) if candidates else 0
                 counts["NUMERIC"] += max(0, c)
         return counts
 
