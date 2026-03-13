@@ -567,6 +567,7 @@ class MainWindow(QMainWindow):
 
         self._build_menu()
         self._refresh_exam_list()
+        self._refresh_batch_subject_controls()
         self.stack.setCurrentIndex(0)
 
     def _confirm(self, title: str, message: str) -> bool:
@@ -817,6 +818,7 @@ class MainWindow(QMainWindow):
             if self.current_session_path and self.current_session_path == path:
                 self.session = session
                 self._refresh_session_info()
+                self._refresh_batch_subject_controls()
             QMessageBox.information(self, "Sửa kỳ thi", "Đã cập nhật thông số kỳ thi.")
         except Exception as exc:
             QMessageBox.warning(self, "Sửa kỳ thi", f"Không thể sửa kỳ thi:\n{exc}")
@@ -880,6 +882,7 @@ class MainWindow(QMainWindow):
             self._refresh_exam_list()
             self.session_dirty = False
             self._refresh_session_info()
+            self._refresh_batch_subject_controls()
             self.stack.setCurrentIndex(1)
             QMessageBox.information(self, "Open session", "Đã mở kỳ thi thành công.")
         except Exception as exc:
@@ -1002,6 +1005,7 @@ class MainWindow(QMainWindow):
         self.result_preview.clear()
         self.scan_result_preview.setRowCount(0)
         self.manual_edit.clear()
+        self._refresh_batch_subject_controls()
         self.stack.setCurrentIndex(0)
 
     def manage_subjects(self) -> None:
@@ -1165,6 +1169,8 @@ class MainWindow(QMainWindow):
             self.session.answer_key_path = file_path
         self.session_dirty = True
         self._refresh_session_info()
+        self._refresh_batch_subject_controls()
+        self._refresh_batch_subject_controls()
         QMessageBox.information(self, "Import successful", f"Imported {imported_count} exam code(s) into current session.")
 
     def export_answer_key_sample(self) -> None:
@@ -1223,6 +1229,24 @@ class MainWindow(QMainWindow):
     def _build_scan_tab(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
+
+        batch_group = QGroupBox("Nhận dạng theo môn đã cấu hình")
+        batch_form = QFormLayout(batch_group)
+        self.batch_subject_combo = QComboBox()
+        self.batch_subject_combo.currentIndexChanged.connect(self._on_batch_subject_changed)
+        self.batch_template_value = QLineEdit("-"); self.batch_template_value.setReadOnly(True)
+        self.batch_answer_codes_value = QLineEdit("-"); self.batch_answer_codes_value.setReadOnly(True)
+        self.batch_student_id_value = QLineEdit("-"); self.batch_student_id_value.setReadOnly(True)
+        self.batch_scan_folder_value = QLineEdit("-"); self.batch_scan_folder_value.setReadOnly(True)
+        self.btn_batch_recognize = QPushButton("Nhận dạng theo môn")
+        self.btn_batch_recognize.clicked.connect(self.action_run_batch_scan)
+        batch_form.addRow("Môn", self.batch_subject_combo)
+        batch_form.addRow("Mẫu giấy dùng", self.batch_template_value)
+        batch_form.addRow("Mã đề", self.batch_answer_codes_value)
+        batch_form.addRow("Vùng STUDENT ID", self.batch_student_id_value)
+        batch_form.addRow("Thư mục quét", self.batch_scan_folder_value)
+        batch_form.addRow("", self.btn_batch_recognize)
+        layout.addWidget(batch_group)
 
         self.filter_column = QComboBox()
         self.filter_column.addItems(["STUDENT ID", "Họ tên", "Ngày sinh", "Nội dung", "Status"])
@@ -1360,6 +1384,7 @@ class MainWindow(QMainWindow):
         self.current_session_id = None
         self.session_dirty = True
         self._refresh_session_info()
+        self._refresh_batch_subject_controls()
 
     def load_template(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(self, "Load Template", "", "JSON (*.json)")
@@ -1370,6 +1395,7 @@ class MainWindow(QMainWindow):
             self.session.template_path = file_path
         self.session_dirty = True
         self._refresh_session_info()
+        self._refresh_batch_subject_controls()
 
     def load_answer_keys(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(self, "Load Answer Keys", "", "JSON (*.json)")
@@ -1393,20 +1419,57 @@ class MainWindow(QMainWindow):
         raw = cfg.get("subject_configs", [])
         return raw if isinstance(raw, list) else []
 
-    def _choose_subject_config_for_batch(self) -> dict | None:
-        subject_cfgs = self._subject_configs_in_session()
-        if not subject_cfgs:
+    def _refresh_batch_subject_controls(self) -> None:
+        if not hasattr(self, "batch_subject_combo"):
+            return
+        self.batch_subject_combo.blockSignals(True)
+        self.batch_subject_combo.clear()
+        self.batch_subject_combo.addItem("[Chọn môn]")
+        for cfg in self._subject_configs_in_session():
+            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
+            self.batch_subject_combo.addItem(label, cfg)
+        self.batch_subject_combo.blockSignals(False)
+        self._on_batch_subject_changed(self.batch_subject_combo.currentIndex())
+
+    def _selected_batch_subject_config(self) -> dict | None:
+        if not hasattr(self, "batch_subject_combo"):
             return None
-        labels = [f"{x.get('name', '-')}-Khối {x.get('block', '-')}" for x in subject_cfgs]
-        choice, ok = QInputDialog.getItem(self, "Chọn môn để quét", "Danh sách môn trong kỳ thi:", labels, 0, False)
-        if not ok:
+        idx = self.batch_subject_combo.currentIndex()
+        if idx <= 0:
             return None
-        idx = labels.index(choice)
-        return subject_cfgs[idx] if 0 <= idx < len(subject_cfgs) else None
+        cfg = self.batch_subject_combo.itemData(idx)
+        return cfg if isinstance(cfg, dict) else None
+
+    def _on_batch_subject_changed(self, _index: int) -> None:
+        cfg = self._selected_batch_subject_config()
+        if not cfg:
+            self.batch_template_value.setText("-")
+            self.batch_answer_codes_value.setText("-")
+            self.batch_student_id_value.setText("-")
+            self.batch_scan_folder_value.setText("-")
+            return
+        template_path = str(cfg.get("template_path", "") or (self.session.template_path if self.session else "") or "-")
+        scan_folder = str(cfg.get("scan_folder", "") or ((self.session.config or {}).get("scan_root", "") if self.session else "") or "-")
+        codes = ", ".join(sorted((cfg.get("imported_answer_keys") or {}).keys())) or "-"
+        self.batch_template_value.setText(template_path)
+        self.batch_answer_codes_value.setText(codes)
+        self.batch_scan_folder_value.setText(scan_folder)
+        tpl_for_view = None
+        tp = Path(template_path) if template_path and template_path != "-" else None
+        if tp and tp.exists():
+            try:
+                tpl_for_view = Template.load_json(tp)
+            except Exception:
+                tpl_for_view = self.template
+        else:
+            tpl_for_view = self.template
+        has_sid = "Có" if (tpl_for_view and any(z.zone_type.value == "STUDENT_ID_BLOCK" for z in tpl_for_view.zones)) else "Không"
+        self.batch_student_id_value.setText(has_sid)
 
     def run_batch_scan(self) -> None:
-        subject_cfg = self._choose_subject_config_for_batch()
+        subject_cfg = self._selected_batch_subject_config()
         if self.session and self._subject_configs_in_session() and not subject_cfg:
+            QMessageBox.warning(self, "Batch Scan", "Vui lòng chọn môn trong khung 'Nhận dạng theo môn đã cấu hình'.")
             return
 
         # Resolve template, scan folder and answer keys from selected subject config in session.
@@ -1469,6 +1532,12 @@ class MainWindow(QMainWindow):
         )
 
         directory = Path(scan_folder)
+        if not directory.exists():
+            QMessageBox.warning(self, "Batch Scan", "Thư mục quét trong cấu hình môn không tồn tại. Vui lòng chọn lại.")
+            scan_folder = QFileDialog.getExistingDirectory(self, "Chọn thư mục ảnh bài thi môn")
+            if not scan_folder:
+                return
+            directory = Path(scan_folder)
         file_paths = sorted(
             [
                 str(p)
