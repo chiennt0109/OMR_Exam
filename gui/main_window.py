@@ -1419,13 +1419,51 @@ class MainWindow(QMainWindow):
         raw = cfg.get("subject_configs", [])
         return raw if isinstance(raw, list) else []
 
+    def _effective_subject_configs_for_batch(self) -> list[dict]:
+        cfgs = self._subject_configs_in_session()
+        if cfgs:
+            return cfgs
+        # Fallback for older sessions without subject_configs.
+        if not self.session:
+            return []
+        scan_root = str((self.session.config or {}).get("scan_root", "") or "")
+        out: list[dict] = []
+        for raw in (self.session.subjects or ["General"]):
+            subject = str(raw)
+            name, block = (subject.split("_", 1) + [""])[:2] if "_" in subject else (subject, "")
+            out.append({
+                "name": name,
+                "block": block,
+                "template_path": str(self.session.template_path or ""),
+                "scan_folder": scan_root,
+                "answer_key_key": subject,
+                "imported_answer_keys": {},
+            })
+        return out
+
+    def _resolve_subject_config_for_batch(self) -> dict | None:
+        cfg = self._selected_batch_subject_config()
+        if cfg:
+            return cfg
+        cfgs = self._effective_subject_configs_for_batch()
+        if not cfgs:
+            return None
+        if len(cfgs) == 1:
+            return cfgs[0]
+        labels = [f"{x.get('name', '-')}-Khối {x.get('block', '-') or '-'}" for x in cfgs]
+        choice, ok = QInputDialog.getItem(self, "Chọn môn để nhận dạng", "Danh sách môn trong kỳ thi:", labels, 0, False)
+        if not ok:
+            return None
+        idx = labels.index(choice)
+        return cfgs[idx] if 0 <= idx < len(cfgs) else None
+
     def _refresh_batch_subject_controls(self) -> None:
         if not hasattr(self, "batch_subject_combo"):
             return
         self.batch_subject_combo.blockSignals(True)
         self.batch_subject_combo.clear()
         self.batch_subject_combo.addItem("[Chọn môn]")
-        for cfg in self._subject_configs_in_session():
+        for cfg in self._effective_subject_configs_for_batch():
             label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
             self.batch_subject_combo.addItem(label, cfg)
         self.batch_subject_combo.blockSignals(False)
@@ -1467,9 +1505,9 @@ class MainWindow(QMainWindow):
         self.batch_student_id_value.setText(has_sid)
 
     def run_batch_scan(self) -> None:
-        subject_cfg = self._selected_batch_subject_config()
-        if self.session and self._subject_configs_in_session() and not subject_cfg:
-            QMessageBox.warning(self, "Batch Scan", "Vui lòng chọn môn trong khung 'Nhận dạng theo môn đã cấu hình'.")
+        subject_cfg = self._resolve_subject_config_for_batch()
+        if self.session and not subject_cfg:
+            QMessageBox.warning(self, "Batch Scan", "Không có môn nào để nhận dạng trong kỳ thi hiện tại.")
             return
 
         # Resolve template, scan folder and answer keys from selected subject config in session.
@@ -1509,7 +1547,7 @@ class MainWindow(QMainWindow):
                     self.template = None
 
         if not self.template:
-            QMessageBox.warning(self, "Missing template", "Không tìm thấy mẫu giấy thi của môn đã chọn.")
+            QMessageBox.warning(self, "Missing template", "Không tìm thấy mẫu giấy theo môn/kỳ thi. Hãy cấu hình mẫu giấy trong môn hoặc trong kỳ thi.")
             return
 
         if not scan_folder:
