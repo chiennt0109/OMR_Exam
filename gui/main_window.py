@@ -528,9 +528,12 @@ class NewExamDialog(QDialog):
                 "scan_root": self.scan_root.text().strip(),
                 "scan_mode": self.scan_mode.currentText(),
                 "paper_part_count": int(self.paper_part_count.currentText()),
+                "subject_configs": list(self.subject_configs),
+                "selected_subject_index": idx,
                 "subject_config": cfg,
             }
         )
+        self.reject()
 
     @staticmethod
     def _normalize_template_path(path_text: str) -> str:
@@ -626,6 +629,8 @@ class MainWindow(QMainWindow):
         self.active_batch_subject_key: str | None = None
         self.subject_catalog: list[str] = ["Toán", "Ngữ văn", "Tiếng Anh", "Vật lý", "Hóa học", "Sinh học"]
         self.block_catalog: list[str] = ["10", "11", "12"]
+        self.batch_editor_return_payload: dict | None = None
+        self.batch_editor_return_session_id: str | None = None
 
         self.omr_processor = OMRProcessor()
         self.scoring_engine = ScoringEngine()
@@ -730,7 +735,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Danh sách các kỳ thi"))
 
         self.exam_list_table = QTableWidget(0, 9)
-        self.exam_list_table.setHorizontalHeaderLabels(["STT", "Tên kỳ thi", "Số môn", "Thư mục quét", "Môn học", "Trạng thái", "Sửa", "Xoá", "Mặc định"])
+        self.exam_list_table.setHorizontalHeaderLabels(["STT", "Tên kỳ thi", "Số môn", "Thư mục quét", "Môn học", "Trạng thái", "Xem", "Xoá", "Mặc định"])
         self.exam_list_table.verticalHeader().setVisible(False)
         self.exam_list_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.exam_list_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -812,7 +817,7 @@ class MainWindow(QMainWindow):
             self.exam_list_table.setItem(idx, 4, QTableWidgetItem(subject_text or "-"))
             self.exam_list_table.setItem(idx, 5, QTableWidgetItem(status))
 
-            b_edit = self._make_row_icon_button(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Sửa kỳ thi", lambda _=False, s=sid: self._edit_registry_session_by_id(s))
+            b_edit = self._make_row_icon_button(style.standardIcon(QStyle.SP_DialogOpenButton), "Xem kỳ thi", lambda _=False, s=sid: self._edit_registry_session_by_id(s))
             b_del = self._make_row_icon_button(style.standardIcon(QStyle.SP_TrashIcon), "Xoá kỳ thi", lambda _=False, s=sid: self._delete_registry_session_by_id(s))
             b_def = self._make_row_icon_button(style.standardIcon(QStyle.SP_DialogApplyButton), "Đặt mặc định", lambda _=False, s=sid: self._set_default_registry_session_by_id(s))
             edit_wrap = QWidget(); e_l = QHBoxLayout(edit_wrap); e_l.setContentsMargins(0, 0, 0, 0); e_l.addWidget(b_edit)
@@ -873,7 +878,7 @@ class MainWindow(QMainWindow):
                 self.block_catalog,
                 data=payload,
                 parent=self,
-                on_batch_scan_subject=lambda x: self._open_batch_scan_from_exam_editor(session, x),
+                on_batch_scan_subject=lambda x: self._open_batch_scan_from_exam_editor(session_id, session, x),
             )
             if dlg.exec() != QDialog.Accepted:
                 return
@@ -906,7 +911,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Sửa kỳ thi", f"Không thể sửa kỳ thi:\n{exc}")
 
-    def _open_batch_scan_from_exam_editor(self, base_session: ExamSession, payload: dict) -> None:
+    def _open_batch_scan_from_exam_editor(self, session_id: str, base_session: ExamSession, payload: dict) -> None:
         subject_cfg = dict(payload.get("subject_config") or {})
         if not subject_cfg:
             QMessageBox.warning(self, "Batch Scan", "Không tìm thấy cấu hình môn để nhận dạng.")
@@ -914,6 +919,18 @@ class MainWindow(QMainWindow):
 
         exam_name = str(payload.get("exam_name") or base_session.exam_name or "Kỳ thi")
         common_template = str(payload.get("common_template") or base_session.template_path or "")
+        all_subjects = payload.get("subject_configs")
+        if not isinstance(all_subjects, list) or not all_subjects:
+            all_subjects = list((base_session.config or {}).get("subject_configs", []))
+        self.batch_editor_return_payload = {
+            "exam_name": exam_name,
+            "common_template": common_template,
+            "scan_root": str(payload.get("scan_root") or (base_session.config or {}).get("scan_root", "") or ""),
+            "scan_mode": str(payload.get("scan_mode") or (base_session.config or {}).get("scan_mode", "Ảnh trong thư mục gốc")),
+            "paper_part_count": int(payload.get("paper_part_count") or (base_session.config or {}).get("paper_part_count", 3) or 3),
+            "subject_configs": all_subjects,
+        }
+        self.batch_editor_return_session_id = session_id
         scan_root = str(payload.get("scan_root") or (base_session.config or {}).get("scan_root", "") or "")
         scan_mode = str(payload.get("scan_mode") or (base_session.config or {}).get("scan_mode", "Ảnh trong thư mục gốc"))
         paper_part_count = int(payload.get("paper_part_count") or (base_session.config or {}).get("paper_part_count", 3) or 3)
@@ -1001,6 +1018,8 @@ class MainWindow(QMainWindow):
             self._save_session_registry()
             self._refresh_exam_list()
             self.session_dirty = False
+            self.batch_editor_return_payload = None
+            self.batch_editor_return_session_id = None
             self._refresh_session_info()
             self._refresh_batch_subject_controls()
             self.stack.setCurrentIndex(1)
@@ -1060,7 +1079,7 @@ class MainWindow(QMainWindow):
         style = self.style()
         # Session actions
         toolbar.addAction(style.standardIcon(QStyle.SP_FileIcon), "Tạo mới", self.action_create_session)
-        toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Sửa", self._edit_selected_registry_session)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Xem", self._edit_selected_registry_session)
         toolbar.addAction(style.standardIcon(QStyle.SP_TrashIcon), "Xoá", self._delete_selected_registry_session)
         toolbar.addSeparator()
         # Workflow actions
@@ -1366,6 +1385,9 @@ class MainWindow(QMainWindow):
         batch_form.addRow("Vùng STUDENT ID", self.batch_student_id_value)
         batch_form.addRow("Thư mục quét", self.batch_scan_folder_value)
         batch_form.addRow("", self.btn_batch_recognize)
+        self.btn_close_batch_view = QPushButton("Đóng Batch Scan")
+        self.btn_close_batch_view.clicked.connect(self._close_batch_scan_view)
+        batch_form.addRow("", self.btn_close_batch_view)
         layout.addWidget(batch_group)
 
         self.filter_column = QComboBox()
@@ -1429,6 +1451,39 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.scan_lr_split)
         self.score_preview_table.setVisible(False)
         return w
+
+    def _close_batch_scan_view(self) -> None:
+        if self.batch_editor_return_payload is None:
+            self.stack.setCurrentIndex(0)
+            return
+        payload = dict(self.batch_editor_return_payload)
+        session_id = self.batch_editor_return_session_id
+        self.batch_editor_return_payload = None
+        self.batch_editor_return_session_id = None
+
+        base_session = self.session
+        if session_id:
+            p = self._session_path_from_id(session_id)
+            if p.exists():
+                try:
+                    base_session = ExamSession.load_json(p)
+                except Exception:
+                    pass
+
+        cb = None
+        if base_session is not None and session_id:
+            cb = lambda x, sid=session_id, bs=base_session: self._open_batch_scan_from_exam_editor(sid, bs, x)
+
+        dlg = NewExamDialog(
+            self.subject_catalog,
+            self.block_catalog,
+            data=payload,
+            parent=self,
+            on_batch_scan_subject=cb,
+        )
+        dlg.exec()
+        self.stack.setCurrentIndex(0)
+
 
     def _build_correction_tab(self) -> QWidget:
         w = QWidget()
