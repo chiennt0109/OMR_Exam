@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -54,6 +54,8 @@ class MainWindow(QMainWindow):
         self.scan_blank_questions: dict[int, list[int]] = {}
         self.scan_blank_summary: dict[int, dict[str, list[int]]] = {}
         self.scan_manual_adjustments: dict[int, list[str]] = {}
+        self.scan_edit_history: dict[int, list[str]] = {}
+        self.scan_last_adjustment: dict[int, str] = {}
 
         self.omr_processor = OMRProcessor()
         self.scoring_engine = ScoringEngine()
@@ -117,6 +119,7 @@ class MainWindow(QMainWindow):
         self.scan_list.horizontalHeader().sectionClicked.connect(self._on_scan_header_clicked)
         self.scan_list.itemSelectionChanged.connect(self._on_scan_selected)
         self.scan_list.cellDoubleClicked.connect(self._open_edit_selected_scan)
+        self.scan_list.cellClicked.connect(self._on_scan_cell_clicked)
         self.progress = QProgressBar()
 
         self.scan_image_preview = QLabel("Chọn bài thi ở danh sách bên trái")
@@ -256,6 +259,8 @@ class MainWindow(QMainWindow):
         self.scan_blank_questions.clear()
         self.scan_blank_summary.clear()
         self.scan_manual_adjustments.clear()
+        self.scan_edit_history.clear()
+        self.scan_last_adjustment.clear()
 
         def on_progress(current: int, total: int, image_path: str):
             self.progress.setMaximum(total)
@@ -372,9 +377,40 @@ class MainWindow(QMainWindow):
         if not (res.exam_code or "").strip() or "?" in (res.exam_code or ""):
             status_parts.append("không tô exam code")
         edits = self.scan_manual_adjustments.get(idx, [])
-        if edits:
-            status_parts.append("đã chỉnh sửa: " + "; ".join(edits))
+        latest = self.scan_last_adjustment.get(idx, "")
+        if latest:
+            status_parts.append("điều chỉnh gần nhất: " + latest)
+        elif edits:
+            status_parts.append("đã chỉnh sửa")
         return ", ".join(status_parts) if status_parts else "OK"
+
+    def _record_adjustment(self, idx: int, details: list[str], source: str) -> None:
+        if not details:
+            return
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        message = f"[{stamp}] ({source}) " + "; ".join(details)
+        self.scan_edit_history.setdefault(idx, []).append(message)
+        self.scan_last_adjustment[idx] = message
+        self.scan_manual_adjustments[idx] = sorted(set(self.scan_manual_adjustments.get(idx, []) + details))
+
+    def _on_scan_cell_clicked(self, row: int, col: int) -> None:
+        if row < 0:
+            return
+        if col not in (3, 4):
+            return
+        history = self.scan_edit_history.get(row, [])
+        if not history:
+            QMessageBox.information(self, "Lịch sử sửa", "Chưa có điều chỉnh nào cho bài thi này.")
+            return
+        latest = self.scan_last_adjustment.get(row, history[-1])
+        QMessageBox.information(
+            self,
+            "Lịch sử sửa bài",
+            "Điều chỉnh gần nhất:\n"
+            + latest
+            + "\n\nToàn bộ lịch sử:\n"
+            + "\n".join(history),
+        )
 
     def _refresh_row_status(self, idx: int) -> None:
         status = self._status_text_for_row(idx)
@@ -495,30 +531,32 @@ class MainWindow(QMainWindow):
         new_sid = inp_sid.text().strip()
         new_code = inp_code.text().strip()
         if new_sid != (res.student_id or ""):
+            old_sid = res.student_id or ""
             res.student_id = new_sid
             self.scan_list.setItem(idx, 0, QTableWidgetItem(new_sid or "-"))
-            changes.append("student_id")
+            changes.append(f"student_id: '{old_sid}' -> '{new_sid}'")
         if new_code != (res.exam_code or ""):
+            old_code = res.exam_code or ""
             res.exam_code = new_code
-            changes.append("exam_code")
+            changes.append(f"exam_code: '{old_code}' -> '{new_code}'")
 
         try:
             payload = json.loads(txt.toPlainText().strip() or "{}")
             if isinstance(payload.get("mcq_answers"), dict):
                 res.mcq_answers = {int(k): str(v) for k, v in payload["mcq_answers"].items()}
-                changes.append("mcq_answers")
+                changes.append("mcq_answers updated")
             if isinstance(payload.get("true_false_answers"), dict):
                 res.true_false_answers = payload["true_false_answers"]
-                changes.append("true_false_answers")
+                changes.append("true_false_answers updated")
             if isinstance(payload.get("numeric_answers"), dict):
                 res.numeric_answers = {int(k): str(v) for k, v in payload["numeric_answers"].items()}
-                changes.append("numeric_answers")
+                changes.append("numeric_answers updated")
         except Exception as exc:
             QMessageBox.warning(self, "Invalid JSON", f"Dữ liệu nhận dạng không hợp lệ:\n{exc}")
             return
 
         if changes:
-            self.scan_manual_adjustments[idx] = sorted(set(self.scan_manual_adjustments.get(idx, []) + changes))
+            self._record_adjustment(idx, changes, "dialog_edit")
             self._refresh_row_status(idx)
             self._update_scan_preview(idx)
             self._load_selected_result_for_correction()
@@ -542,27 +580,27 @@ class MainWindow(QMainWindow):
         if "student_id" in patch:
             new_sid = str(patch["student_id"])
             if new_sid != (res.student_id or ""):
-                changes.append("student_id")
+                changes.append(f"student_id: '{res.student_id or ''}' -> '{new_sid}'")
             res.student_id = new_sid
         if "exam_code" in patch:
             new_code = str(patch["exam_code"])
             if new_code != (res.exam_code or ""):
-                changes.append("exam_code")
+                changes.append(f"exam_code: '{res.exam_code or ''}' -> '{new_code}'")
             res.exam_code = new_code
         if isinstance(patch.get("mcq_answers"), dict):
             res.mcq_answers = {int(k): str(v) for k, v in patch["mcq_answers"].items()}
-            changes.append("mcq_answers")
+            changes.append("mcq_answers updated")
         if isinstance(patch.get("numeric_answers"), dict):
             res.numeric_answers = {int(k): str(v) for k, v in patch["numeric_answers"].items()}
-            changes.append("numeric_answers")
+            changes.append("numeric_answers updated")
         if isinstance(patch.get("true_false_answers"), dict):
             res.true_false_answers = patch["true_false_answers"]
-            changes.append("true_false_answers")
+            changes.append("true_false_answers updated")
 
         sid = (res.student_id or "").strip() or "-"
         self.scan_list.setItem(idx, 0, QTableWidgetItem(sid))
         if changes:
-            self.scan_manual_adjustments[idx] = sorted(set(self.scan_manual_adjustments.get(idx, []) + changes))
+            self._record_adjustment(idx, changes, "manual_json")
         self._refresh_row_status(idx)
         self._update_scan_preview(idx)
         self._load_selected_result_for_correction()
