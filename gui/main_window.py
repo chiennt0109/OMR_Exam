@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QToolBar,
     QStyle,
+    QToolButton,
     QGroupBox,
     QStackedWidget,
 )
@@ -553,6 +554,7 @@ class MainWindow(QMainWindow):
         self.omr_processor = OMRProcessor()
         self.scoring_engine = ScoringEngine()
         self.current_session_path: Path | None = None
+        self.current_session_id: str | None = None
         self.session_dirty = False
 
         self.session_registry_path = Path.home() / ".omr_exam_sessions.json"
@@ -579,35 +581,72 @@ class MainWindow(QMainWindow):
             == QMessageBox.Yes
         )
 
+    def _session_storage_dir(self) -> Path:
+        d = Path.home() / ".omr_exam" / "sessions"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _generate_session_id(self, seed: str = "") -> str:
+        raw = f"{seed}-{datetime.now().isoformat()}"
+        return str(abs(hash(raw)))
+
+    def _session_path_from_id(self, session_id: str) -> Path:
+        return self._session_storage_dir() / f"{session_id}.json"
+
     def _load_session_registry(self) -> list[dict[str, str | bool]]:
         if not self.session_registry_path.exists():
             return []
         try:
             data = json.loads(self.session_registry_path.read_text(encoding="utf-8"))
-            if isinstance(data, list):
-                return [x for x in data if isinstance(x, dict) and x.get("path")]
+            if not isinstance(data, list):
+                return []
+            rows: list[dict[str, str | bool]] = []
+            for x in data:
+                if not isinstance(x, dict):
+                    continue
+                # migrate legacy format containing raw path
+                if x.get("session_id"):
+                    rows.append({
+                        "name": str(x.get("name") or "Kỳ thi"),
+                        "session_id": str(x.get("session_id")),
+                        "default": bool(x.get("default", False)),
+                    })
+                elif x.get("path"):
+                    try:
+                        old_path = Path(str(x.get("path")))
+                        if old_path.exists():
+                            sid = self._generate_session_id(str(x.get("name") or old_path.stem))
+                            new_path = self._session_path_from_id(sid)
+                            new_path.write_text(old_path.read_text(encoding="utf-8"), encoding="utf-8")
+                            rows.append({
+                                "name": str(x.get("name") or old_path.stem),
+                                "session_id": sid,
+                                "default": bool(x.get("default", False)),
+                            })
+                    except Exception:
+                        continue
+            return rows
         except Exception:
             return []
-        return []
 
     def _save_session_registry(self) -> None:
+        self.session_registry_path.parent.mkdir(parents=True, exist_ok=True)
         self.session_registry_path.write_text(json.dumps(self.session_registry, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def _upsert_session_registry(self, path: Path, name: str | None = None) -> None:
-        p = str(path)
+    def _upsert_session_registry(self, session_id: str, name: str | None = None) -> None:
         for row in self.session_registry:
-            if row.get("path") == p:
-                row["name"] = name or row.get("name") or path.stem
+            if row.get("session_id") == session_id:
+                row["name"] = name or row.get("name") or "Kỳ thi"
                 return
-        self.session_registry.append({"name": name or path.stem, "path": p, "default": False})
+        self.session_registry.append({"name": name or "Kỳ thi", "session_id": session_id, "default": False})
 
     def _build_exam_list_page(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
         layout.addWidget(QLabel("Danh sách các kỳ thi"))
 
-        self.exam_list_table = QTableWidget(0, 6)
-        self.exam_list_table.setHorizontalHeaderLabels(["STT", "Tên kỳ thi", "Số môn", "Thư mục quét", "Môn học", "Đường dẫn"])
+        self.exam_list_table = QTableWidget(0, 9)
+        self.exam_list_table.setHorizontalHeaderLabels(["STT", "Tên kỳ thi", "Số môn", "Thư mục quét", "Môn học", "Trạng thái", "Sửa", "Xoá", "Mặc định"])
         self.exam_list_table.verticalHeader().setVisible(False)
         self.exam_list_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.exam_list_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -618,23 +657,11 @@ class MainWindow(QMainWindow):
         hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(3, QHeaderView.Stretch)
         hdr.setSectionResizeMode(4, QHeaderView.Stretch)
-        hdr.setSectionResizeMode(5, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(6, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(7, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(8, QHeaderView.ResizeToContents)
         layout.addWidget(self.exam_list_table)
-
-        row = QHBoxLayout()
-        btn_open = QPushButton("Mở")
-        btn_open.clicked.connect(self._open_selected_registry_session)
-        btn_edit = QPushButton("Sửa")
-        btn_edit.clicked.connect(self._edit_selected_registry_session)
-        btn_delete = QPushButton("Xoá")
-        btn_delete.clicked.connect(self._delete_selected_registry_session)
-        btn_default = QPushButton("Đặt mặc định")
-        btn_default.clicked.connect(self._set_default_selected_registry_session)
-        btn_new = QPushButton("Tạo kỳ thi mới")
-        btn_new.clicked.connect(self.action_create_session)
-        for b in [btn_open, btn_edit, btn_delete, btn_default, btn_new]:
-            row.addWidget(b)
-        layout.addLayout(row)
         return w
 
     def _build_workspace_page(self) -> QWidget:
@@ -657,16 +684,32 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(main_split)
         return central
 
+    def _session_id_for_row(self, row_idx: int) -> str | None:
+        item = self.exam_list_table.item(row_idx, 1)
+        if not item:
+            return None
+        sid = item.data(Qt.UserRole)
+        return str(sid) if sid else None
+
+    def _make_row_icon_button(self, icon, tooltip: str, cb):
+        btn = QPushButton()
+        btn.setIcon(icon)
+        btn.setToolTip(tooltip)
+        btn.setFlat(True)
+        btn.clicked.connect(cb)
+        return btn
+
     def _refresh_exam_list(self) -> None:
         self.exam_list_table.setRowCount(len(self.session_registry))
+        style = self.style()
         for idx, row in enumerate(self.session_registry):
-            name = str(row.get("name") or Path(str(row.get("path"))).stem)
-            suffix = " [MẶC ĐỊNH]" if bool(row.get("default")) else ""
-            path = Path(str(row.get("path", "")))
+            sid = str(row.get("session_id", ""))
+            path = self._session_path_from_id(sid) if sid else Path()
+            name = str(row.get("name") or f"Kỳ thi {idx+1}")
             subject_text = "-"
             subject_count = "0"
             scan_root = "-"
-            if path.exists():
+            if sid and path.exists():
                 try:
                     ses = ExamSession.load_json(path)
                     cfg = ses.config or {}
@@ -678,41 +721,63 @@ class MainWindow(QMainWindow):
                     scan_root = str(cfg.get("scan_root", "") or "-")
                 except Exception:
                     pass
+            status = "Mặc định" if bool(row.get("default")) else "Thường"
+            if sid and not path.exists():
+                status = "Không tìm thấy"
+
             self.exam_list_table.setItem(idx, 0, QTableWidgetItem(str(idx + 1)))
-            path_item = QTableWidgetItem(f"{name}{suffix}")
-            path_item.setData(Qt.UserRole, row.get("path"))
-            self.exam_list_table.setItem(idx, 1, path_item)
+            name_item = QTableWidgetItem(name)
+            name_item.setData(Qt.UserRole, sid)
+            self.exam_list_table.setItem(idx, 1, name_item)
             self.exam_list_table.setItem(idx, 2, QTableWidgetItem(subject_count))
             self.exam_list_table.setItem(idx, 3, QTableWidgetItem(scan_root))
             self.exam_list_table.setItem(idx, 4, QTableWidgetItem(subject_text or "-"))
-            self.exam_list_table.setItem(idx, 5, QTableWidgetItem(str(row.get("path", ""))))
+            self.exam_list_table.setItem(idx, 5, QTableWidgetItem(status))
+
+            b_edit = self._make_row_icon_button(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Sửa kỳ thi", lambda _=False, s=sid: self._edit_registry_session_by_id(s))
+            b_del = self._make_row_icon_button(style.standardIcon(QStyle.SP_TrashIcon), "Xoá kỳ thi", lambda _=False, s=sid: self._delete_registry_session_by_id(s))
+            b_def = self._make_row_icon_button(style.standardIcon(QStyle.SP_DialogApplyButton), "Đặt mặc định", lambda _=False, s=sid: self._set_default_registry_session_by_id(s))
+            edit_wrap = QWidget(); e_l = QHBoxLayout(edit_wrap); e_l.setContentsMargins(0, 0, 0, 0); e_l.addWidget(b_edit)
+            del_wrap = QWidget(); d_l = QHBoxLayout(del_wrap); d_l.setContentsMargins(0, 0, 0, 0); d_l.addWidget(b_del)
+            def_wrap = QWidget(); f_l = QHBoxLayout(def_wrap); f_l.setContentsMargins(0, 0, 0, 0); f_l.addWidget(b_def)
+            self.exam_list_table.setCellWidget(idx, 6, edit_wrap)
+            self.exam_list_table.setCellWidget(idx, 7, del_wrap)
+            self.exam_list_table.setCellWidget(idx, 8, def_wrap)
+
         self.exam_list_table.resizeRowsToContents()
 
     def _selected_registry_path(self) -> Path | None:
         row = self.exam_list_table.currentRow()
         if row < 0:
             return None
-        item = self.exam_list_table.item(row, 1)
-        if not item:
+        sid = self._session_id_for_row(row)
+        if not sid:
             return None
-        path = item.data(Qt.UserRole)
-        return Path(path) if path else None
+        return self._session_path_from_id(sid)
 
     def _open_selected_registry_session(self) -> None:
         path = self._selected_registry_path()
         if not path:
             QMessageBox.warning(self, "Mở kỳ thi", "Chọn kỳ thi trong danh sách trước.")
             return
-        if not self._confirm("Mở kỳ thi", f"Bạn có chắc muốn mở kỳ thi này?\n{path}"):
+        if not self._confirm("Mở kỳ thi", "Bạn có chắc muốn mở kỳ thi này?"):
             return
         self._open_session_path(path)
 
     def _edit_selected_registry_session(self) -> None:
-        path = self._selected_registry_path()
-        if not path:
+        row = self.exam_list_table.currentRow()
+        sid = self._session_id_for_row(row) if row >= 0 else None
+        if not sid:
             QMessageBox.warning(self, "Sửa kỳ thi", "Chọn kỳ thi trong danh sách trước.")
             return
-        if not self._confirm("Sửa kỳ thi", f"Bạn có chắc muốn sửa kỳ thi này?\n{path}"):
+        self._edit_registry_session_by_id(sid)
+
+    def _edit_registry_session_by_id(self, session_id: str) -> None:
+        path = self._session_path_from_id(session_id)
+        if not path.exists():
+            QMessageBox.warning(self, "Sửa kỳ thi", "Không tìm thấy kỳ thi trong kho lưu trữ hệ thống.")
+            return
+        if not self._confirm("Sửa kỳ thi", "Bạn có chắc muốn sửa kỳ thi này?"):
             return
         try:
             session = ExamSession.load_json(path)
@@ -746,7 +811,7 @@ class MainWindow(QMainWindow):
                 "block_catalog": self.block_catalog,
             }
             session.save_json(path)
-            self._upsert_session_registry(path, session.exam_name)
+            self._upsert_session_registry(session_id, session.exam_name)
             self._save_session_registry()
             self._refresh_exam_list()
             if self.current_session_path and self.current_session_path == path:
@@ -757,25 +822,39 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Sửa kỳ thi", f"Không thể sửa kỳ thi:\n{exc}")
 
     def _delete_selected_registry_session(self) -> None:
-        path = self._selected_registry_path()
-        if not path:
+        row = self.exam_list_table.currentRow()
+        sid = self._session_id_for_row(row) if row >= 0 else None
+        if not sid:
             QMessageBox.warning(self, "Xoá kỳ thi", "Chọn kỳ thi trong danh sách trước.")
             return
-        if not self._confirm("Xoá kỳ thi", f"Bạn có chắc muốn xoá kỳ thi khỏi danh sách?\n{path}"):
+        self._delete_registry_session_by_id(sid)
+
+    def _delete_registry_session_by_id(self, session_id: str) -> None:
+        if not self._confirm("Xoá kỳ thi", "Bạn có chắc muốn xoá kỳ thi khỏi danh sách?"):
             return
-        self.session_registry = [x for x in self.session_registry if x.get("path") != str(path)]
+        session_path = self._session_path_from_id(session_id)
+        if session_path.exists():
+            try:
+                session_path.unlink()
+            except Exception:
+                pass
+        self.session_registry = [x for x in self.session_registry if str(x.get("session_id")) != session_id]
         self._save_session_registry()
         self._refresh_exam_list()
 
     def _set_default_selected_registry_session(self) -> None:
-        path = self._selected_registry_path()
-        if not path:
+        row = self.exam_list_table.currentRow()
+        sid = self._session_id_for_row(row) if row >= 0 else None
+        if not sid:
             QMessageBox.warning(self, "Đặt mặc định", "Chọn kỳ thi trong danh sách trước.")
             return
-        if not self._confirm("Đặt mặc định", f"Đặt kỳ thi này làm mặc định?\n{path}"):
+        self._set_default_registry_session_by_id(sid)
+
+    def _set_default_registry_session_by_id(self, session_id: str) -> None:
+        if not self._confirm("Đặt mặc định", "Đặt kỳ thi này làm mặc định?"):
             return
         for row in self.session_registry:
-            row["default"] = row.get("path") == str(path)
+            row["default"] = str(row.get("session_id")) == session_id
         self._save_session_registry()
         self._refresh_exam_list()
 
@@ -783,6 +862,7 @@ class MainWindow(QMainWindow):
         try:
             self.session = ExamSession.load_json(path)
             self.current_session_path = path
+            self.current_session_id = path.stem
             if self.session.template_path:
                 t = Path(self.session.template_path)
                 if t.exists():
@@ -795,7 +875,7 @@ class MainWindow(QMainWindow):
                 if p.exists() and p.suffix.lower() == ".json":
                     self.answer_keys = AnswerKeyRepository.load_json(p)
                     self.imported_exam_codes = sorted({k.split("::", 1)[1] for k in self.answer_keys.keys.keys() if "::" in k})
-            self._upsert_session_registry(path, self.session.exam_name if self.session else None)
+            self._upsert_session_registry(path.stem, self.session.exam_name if self.session else None)
             self._save_session_registry()
             self._refresh_exam_list()
             self.session_dirty = False
@@ -811,7 +891,7 @@ class MainWindow(QMainWindow):
         act_new.setShortcut(QKeySequence("Ctrl+N"))
         act_new.triggered.connect(self.action_create_session)
 
-        act_open = file_menu.addAction("Mở kỳ thi cũ")
+        act_open = file_menu.addAction("Mở từ danh sách")
         act_open.setShortcut(QKeySequence("Ctrl+O"))
         act_open.triggered.connect(self.action_open_session)
 
@@ -852,59 +932,62 @@ class MainWindow(QMainWindow):
 
         toolbar = QToolBar("Ribbon")
         toolbar.setMovable(False)
+        toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
         self.addToolBar(toolbar)
 
         style = self.style()
-        toolbar.addAction(style.standardIcon(QStyle.SP_FileIcon), "New", self.action_create_session)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Open", self.action_open_session)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Save", self.action_save_session)
+        toolbar.addAction(style.standardIcon(QStyle.SP_FileIcon), "Tạo mới\nTệp", self.action_create_session)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Mở DS\nTệp", self.action_open_session)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Lưu\nTệp", self.action_save_session)
         toolbar.addSeparator()
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Load Template", self.action_load_template)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Load Keys", self.action_load_answer_keys)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Import Key", self.action_import_answer_key)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DriveFDIcon), "Export Sample", self.action_export_answer_key_sample)
+        toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogContentsView), "Mẫu thi\nKỳ thi", self.action_load_template)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DirIcon), "Đáp án\nKỳ thi", self.action_load_answer_keys)
+        toolbar.addAction(style.standardIcon(QStyle.SP_ArrowDown), "Nhập đáp án\nKỳ thi", self.action_import_answer_key)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DriveFDIcon), "Mẫu file\nKỳ thi", self.action_export_answer_key_sample)
         toolbar.addSeparator()
-        toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Batch Scan", self.action_run_batch_scan)
-        toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Edit Selected", self.action_edit_selected_scan)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogApplyButton), "Apply Correction", self.action_apply_manual_correction)
+        toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Quét\nXử lý", self.action_run_batch_scan)
+        toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Sửa bài\nXử lý", self.action_edit_selected_scan)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogApplyButton), "Hiệu chỉnh\nXử lý", self.action_apply_manual_correction)
         toolbar.addSeparator()
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogApplyButton), "Calculate Scores", self.action_calculate_scores)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Export", self.action_export_results)
+        toolbar.addAction(style.standardIcon(QStyle.SP_CommandLink), "Tính điểm\nChấm", self.action_calculate_scores)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Xuất KQ\nChấm", self.action_export_results)
 
     def open_session(self) -> None:
         if self.session and self.session_dirty:
             if not self._confirm("Dữ liệu chưa lưu", "Kỳ thi hiện tại có thay đổi chưa lưu. Vẫn mở kỳ thi khác?"):
                 return
-        file_path, _ = QFileDialog.getOpenFileName(self, "Mở kỳ thi cũ", "", "Exam Session JSON (*.json)")
-        if not file_path:
-            return
-        self._open_session_path(Path(file_path))
+        row = self.exam_list_table.currentRow()
+        if row >= 0:
+            path = self._selected_registry_path()
+            if path:
+                self._open_session_path(path)
+                return
+        default_rows = [x for x in self.session_registry if bool(x.get("default"))]
+        if default_rows:
+            sid = str(default_rows[0].get("session_id", ""))
+            if sid:
+                self._open_session_path(self._session_path_from_id(sid))
+                return
+        QMessageBox.information(self, "Mở kỳ thi", "Vui lòng chọn kỳ thi trong danh sách để mở.")
 
     def save_session(self) -> None:
         if not self.session:
             self.create_session()
-        if not self.current_session_path:
-            self.save_session_as()
-            return
+        if not self.current_session_id:
+            self.current_session_id = self._generate_session_id(self.session.exam_name if self.session else "exam")
+            self.current_session_path = self._session_path_from_id(self.current_session_id)
         try:
             self.session.save_json(self.current_session_path)
-            self._upsert_session_registry(self.current_session_path, self.session.exam_name if self.session else None)
+            self._upsert_session_registry(self.current_session_id, self.session.exam_name if self.session else None)
             self._save_session_registry()
             self._refresh_exam_list()
             self.session_dirty = False
-            QMessageBox.information(self, "Save session", f"Đã lưu kỳ thi:\n{self.current_session_path}")
+            QMessageBox.information(self, "Save session", "Đã lưu kỳ thi vào kho hệ thống.")
         except Exception as exc:
             QMessageBox.warning(self, "Save session", f"Không thể lưu kỳ thi:\n{exc}")
 
     def save_session_as(self) -> None:
-        if not self.session:
-            self.create_session()
-        file_path, _ = QFileDialog.getSaveFileName(self, "Lưu kỳ thi", "exam_session.json", "Exam Session JSON (*.json)")
-        if not file_path:
-            return
-        self.current_session_path = Path(file_path)
-        if self.current_session_path.suffix.lower() != ".json":
-            self.current_session_path = self.current_session_path.with_suffix(".json")
+        # System-managed storage only.
         self.save_session()
 
     def close_current_session(self) -> None:
@@ -916,6 +999,7 @@ class MainWindow(QMainWindow):
         self.answer_keys = None
         self.scan_results = []
         self.current_session_path = None
+        self.current_session_id = None
         self.session_dirty = False
         self.session_info.clear()
         self.exam_code_preview.setText("Mã đề trên phiếu trả lời mẫu: -")
@@ -1280,6 +1364,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 self.template = None
         self.current_session_path = None
+        self.current_session_id = None
         self.session_dirty = True
         self._refresh_session_info()
 
