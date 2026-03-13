@@ -306,6 +306,8 @@ class TemplateEditorWindow(QMainWindow):
         self.preview_ok = False
         self.test_ok = False
         self._sync = False
+        self.template_file_path: str | None = None
+        self._original_pixmap: QPixmap | None = None
 
         self.canvas = TemplateCanvas()
         self.canvas.selection_changed.connect(self._load_props)
@@ -313,21 +315,41 @@ class TemplateEditorWindow(QMainWindow):
 
         scroll = QScrollArea(); scroll.setWidgetResizable(False); scroll.setWidget(self.canvas)
 
+        # Grouped actions (menu style like office apps)
+        self.act_load_blank = QAction("Load Blank Paper", self); self.act_load_blank.triggered.connect(self.load_image)
+        self.act_open_template = QAction("Open Template", self); self.act_open_template.triggered.connect(self.open_template)
+        self.act_save = QAction("Save", self); self.act_save.triggered.connect(self.save_template)
+        self.act_save_as = QAction("Save As", self); self.act_save_as.triggered.connect(self.save_template_as)
+
+        self.act_preview = QAction("Preview", self); self.act_preview.triggered.connect(self.preview_template)
+        self.act_test_recognition = QAction("Test Recognition", self); self.act_test_recognition.triggered.connect(self.test_recognition)
+
+        self.act_copy = QAction("Copy Block", self); self.act_copy.triggered.connect(self.copy_block)
+        self.act_paste = QAction("Paste Block", self); self.act_paste.triggered.connect(self.paste_block)
+        self.act_duplicate = QAction("Duplicate Block", self); self.act_duplicate.triggered.connect(self.duplicate_block)
+        self.act_delete = QAction("Delete Block", self); self.act_delete.triggered.connect(self.delete_selected_block)
+        self.act_snap_grid = QAction("Snap Grid", self); self.act_snap_grid.triggered.connect(self.snap_grid_to_detected_bubbles)
+        self.act_zoom_in = QAction("Zoom +", self); self.act_zoom_in.triggered.connect(lambda: self.canvas.set_zoom(self.canvas.zoom * 1.15))
+        self.act_zoom_out = QAction("Zoom -", self); self.act_zoom_out.triggered.connect(lambda: self.canvas.set_zoom(self.canvas.zoom / 1.15))
+
+        self._build_menus()
+
         toolbar = QToolBar("Template")
         self.addToolBar(toolbar)
-        for label, fn in [
-            ("Load Blank Paper", self.load_image),
-            ("Open Template", self.open_template),
-            ("Preview", self.preview_template),
-            ("Test Recognition", self.test_recognition),
-            ("Save Template", self.save_template),
-            ("Copy Block", self.copy_block),
-            ("Paste Block", self.paste_block),
-            ("Duplicate Block", self.duplicate_block),
-            ("Delete Block", self.delete_selected_block),
-            ("Snap Grid", self.snap_grid_to_detected_bubbles),
+        for act in [
+            self.act_load_blank,
+            self.act_open_template,
+            self.act_save,
+            self.act_save_as,
+            self.act_preview,
+            self.act_test_recognition,
+            self.act_copy,
+            self.act_paste,
+            self.act_duplicate,
+            self.act_delete,
+            self.act_snap_grid,
         ]:
-            a = QAction(label, self); a.triggered.connect(fn); toolbar.addAction(a)
+            toolbar.addAction(act)
 
         self.anchor_btn = QPushButton("Add Anchor"); self.anchor_btn.setCheckable(True)
         self.anchor_btn.toggled.connect(lambda c: setattr(self.canvas, "add_anchor_mode", c))
@@ -338,8 +360,8 @@ class TemplateEditorWindow(QMainWindow):
         self.zone_type.currentTextChanged.connect(self._on_zone_type_changed)
         toolbar.addWidget(self.zone_type)
 
-        zin = QAction("Zoom +", self); zin.triggered.connect(lambda: self.canvas.set_zoom(self.canvas.zoom * 1.15)); toolbar.addAction(zin)
-        zout = QAction("Zoom -", self); zout.triggered.connect(lambda: self.canvas.set_zoom(self.canvas.zoom / 1.15)); toolbar.addAction(zout)
+        toolbar.addAction(self.act_zoom_in)
+        toolbar.addAction(self.act_zoom_out)
 
         self.result_box = QTextEdit(); self.result_box.setReadOnly(True); self.result_box.setMaximumHeight(160)
         self.prop_panel = self._build_prop_panel()
@@ -348,6 +370,31 @@ class TemplateEditorWindow(QMainWindow):
         left = QVBoxLayout(); left.addWidget(scroll); left.addWidget(self.result_box)
         layout.addLayout(left, 1); layout.addWidget(self.prop_panel)
         self.setCentralWidget(center)
+
+    def _build_menus(self) -> None:
+        menu = self.menuBar()
+
+        m_file = menu.addMenu("File")
+        m_file.addAction(self.act_load_blank)
+        m_file.addAction(self.act_open_template)
+        m_file.addSeparator()
+        m_file.addAction(self.act_save)
+        m_file.addAction(self.act_save_as)
+
+        m_edit = menu.addMenu("Edit")
+        m_edit.addAction(self.act_copy)
+        m_edit.addAction(self.act_paste)
+        m_edit.addAction(self.act_duplicate)
+        m_edit.addAction(self.act_delete)
+
+        m_recog = menu.addMenu("Recognition")
+        m_recog.addAction(self.act_preview)
+        m_recog.addAction(self.act_test_recognition)
+        m_recog.addAction(self.act_snap_grid)
+
+        m_view = menu.addMenu("View")
+        m_view.addAction(self.act_zoom_in)
+        m_view.addAction(self.act_zoom_out)
 
     def _build_prop_panel(self) -> QWidget:
         w = QWidget(); w.setFixedWidth(360)
@@ -517,6 +564,8 @@ class TemplateEditorWindow(QMainWindow):
             return
         self.template = Template(Path(path).stem, path, pix.width(), pix.height())
         self.canvas.set_template(self.template, pix)
+        self._original_pixmap = pix
+        self.template_file_path = None
         self.preview_ok = False; self.test_ok = False
 
     def open_template(self):
@@ -555,6 +604,8 @@ class TemplateEditorWindow(QMainWindow):
         tpl.height = pix.height()
         self.template = tpl
         self.canvas.set_template(self.template, pix)
+        self._original_pixmap = pix
+        self.template_file_path = path
         self.preview_ok = False
         self.test_ok = False
         self.result_box.setPlainText("Template loaded. You can preview, adjust and save again.")
@@ -676,6 +727,12 @@ class TemplateEditorWindow(QMainWindow):
         if not path:
             return
 
+        bg = QPixmap(path)
+        if not bg.isNull() and self.template:
+            bg = bg.scaled(self.template.width, self.template.height, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            self.canvas.pixmap = bg
+            self.canvas.resize(int(bg.width() * self.canvas.zoom), int(bg.height() * self.canvas.zoom))
+
         res = self.omr.process_image(path, self.template)
         self.result_box.setPlainText(
             f"Student ID: {res.student_id or '-'}\nExam Code: {res.exam_code or '-'}\n"
@@ -707,6 +764,12 @@ class TemplateEditorWindow(QMainWindow):
         self.test_ok = True
 
     def save_template(self):
+        self._save_template(save_as=False)
+
+    def save_template_as(self):
+        self._save_template(save_as=True)
+
+    def _save_template(self, save_as: bool):
         if not self.template:
             return
         if not self.preview_ok:
@@ -718,6 +781,9 @@ class TemplateEditorWindow(QMainWindow):
         errs = self._validate_template()
         if errs:
             QMessageBox.warning(self, "Validation", "\n".join(errs)); return
-        path, _ = QFileDialog.getSaveFileName(self, "Save Template", "template.json", "JSON (*.json)")
+        path = self.template_file_path
+        if save_as or not path:
+            path, _ = QFileDialog.getSaveFileName(self, "Save Template", path or "template.json", "JSON (*.json)")
         if path:
             self.template.save_json(path)
+            self.template_file_path = path
