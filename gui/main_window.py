@@ -5,7 +5,7 @@ from datetime import date
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -26,13 +26,13 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
-    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
     QInputDialog,
     QToolBar,
     QStyle,
+    QGroupBox,
 )
 
 from core.answer_key_importer import import_answer_key
@@ -66,45 +66,149 @@ class MainWindow(QMainWindow):
 
         self.omr_processor = OMRProcessor()
         self.scoring_engine = ScoringEngine()
+        self.current_session_path: Path | None = None
 
-        self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
+        central = QWidget()
+        root_layout = QVBoxLayout(central)
 
-        self.tabs.addTab(self._build_session_tab(), "Exam Session")
-        self.tabs.addTab(self._build_scan_tab(), "OMR Scan")
-        self.tabs.addTab(self._build_correction_tab(), "Error Correction")
+        group_session = QGroupBox("Exam Session")
+        l1 = QVBoxLayout(group_session); l1.addWidget(self._build_session_tab())
+        group_scan = QGroupBox("OMR Scan")
+        l2 = QVBoxLayout(group_scan); l2.addWidget(self._build_scan_tab())
+        group_correction = QGroupBox("Error Correction")
+        l3 = QVBoxLayout(group_correction); l3.addWidget(self._build_correction_tab())
+
+        main_split = QSplitter(Qt.Vertical)
+        main_split.addWidget(group_session)
+        main_split.addWidget(group_scan)
+        main_split.addWidget(group_correction)
+        main_split.setSizes([220, 420, 260])
+
+        root_layout.addWidget(main_split)
+        self.setCentralWidget(central)
 
         self._build_menu()
 
     def _build_menu(self) -> None:
+        file_menu = self.menuBar().addMenu("File")
+        act_new = file_menu.addAction("Tạo kỳ thi mới")
+        act_new.setShortcut(QKeySequence("Ctrl+N"))
+        act_new.triggered.connect(self.create_session)
+
+        act_open = file_menu.addAction("Mở kỳ thi cũ")
+        act_open.setShortcut(QKeySequence("Ctrl+O"))
+        act_open.triggered.connect(self.open_session)
+
+        act_save = file_menu.addAction("Lưu kỳ thi")
+        act_save.setShortcut(QKeySequence("Ctrl+S"))
+        act_save.triggered.connect(self.save_session)
+
+        act_save_as = file_menu.addAction("Lưu dưới tên khác")
+        act_save_as.triggered.connect(self.save_session_as)
+
+        file_menu.addSeparator()
+        act_manage_template = file_menu.addAction("Quản lý mẫu giấy thi")
+        act_manage_template.triggered.connect(self.open_template_editor)
+
+        act_manage_subject = file_menu.addAction("Quản lý môn học")
+        act_manage_subject.triggered.connect(self.manage_subjects)
+
+        file_menu.addSeparator()
+        act_exit = file_menu.addAction("Thoát")
+        act_exit.triggered.connect(self.close)
+
         exam_menu = self.menuBar().addMenu("Exam")
-        action_import_answer_key = exam_menu.addAction("Import Answer Key")
-        action_import_answer_key.triggered.connect(self.import_answer_key_file)
-        action_export_sample = exam_menu.addAction("Export Answer Key Sample")
-        action_export_sample.triggered.connect(self.export_answer_key_sample)
+        exam_menu.addAction("Load Template JSON", self.load_template)
+        exam_menu.addAction("Load Answer Keys JSON", self.load_answer_keys)
+        exam_menu.addAction("Import Answer Key", self.import_answer_key_file)
+        exam_menu.addAction("Export Answer Key Sample", self.export_answer_key_sample)
+        exam_menu.addAction("Batch Scan Images", self.run_batch_scan)
+        exam_menu.addAction("Sửa bài thi được chọn", self._open_edit_selected_scan)
+        exam_menu.addAction("Load Selected Scan Result", self._load_selected_result_for_correction)
+        exam_menu.addAction("Apply Manual Correction", self.apply_manual_correction)
 
         scoring_menu = self.menuBar().addMenu("Scoring")
-        action_preview_scores = scoring_menu.addAction("Calculate & Preview Scores")
-        action_preview_scores.triggered.connect(self.calculate_scores)
-        action_export_results = scoring_menu.addAction("Export Results")
-        action_export_results.triggered.connect(self.export_results)
+        scoring_menu.addAction("Calculate & Preview Scores", self.calculate_scores)
+        scoring_menu.addAction("Export Results", self.export_results)
 
-        toolbar = QToolBar("Word-like Ribbon")
+        toolbar = QToolBar("Ribbon")
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
 
         style = self.style()
-        act_import = toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Import Key")
-        act_import.triggered.connect(self.import_answer_key_file)
-        act_export_sample = toolbar.addAction(style.standardIcon(QStyle.SP_DriveFDIcon), "Export Sample")
-        act_export_sample.triggered.connect(self.export_answer_key_sample)
+        toolbar.addAction(style.standardIcon(QStyle.SP_FileIcon), "New", self.create_session)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Open", self.open_session)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Save", self.save_session)
         toolbar.addSeparator()
-        act_scan = toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Batch Scan")
-        act_scan.triggered.connect(self.run_batch_scan)
-        act_score = toolbar.addAction(style.standardIcon(QStyle.SP_DialogApplyButton), "Calculate Scores")
-        act_score.triggered.connect(self.calculate_scores)
-        act_export = toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Export")
-        act_export.triggered.connect(self.export_results)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Load Template", self.load_template)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Load Keys", self.load_answer_keys)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Import Key", self.import_answer_key_file)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DriveFDIcon), "Export Sample", self.export_answer_key_sample)
+        toolbar.addSeparator()
+        toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Batch Scan", self.run_batch_scan)
+        toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Edit Selected", self._open_edit_selected_scan)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogApplyButton), "Apply Correction", self.apply_manual_correction)
+        toolbar.addSeparator()
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogApplyButton), "Calculate Scores", self.calculate_scores)
+        toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Export", self.export_results)
+
+    def open_session(self) -> None:
+        file_path, _ = QFileDialog.getOpenFileName(self, "Mở kỳ thi cũ", "", "Exam Session JSON (*.json)")
+        if not file_path:
+            return
+        try:
+            self.session = ExamSession.load_json(file_path)
+            self.current_session_path = Path(file_path)
+            if self.session.template_path:
+                t = Path(self.session.template_path)
+                if t.exists():
+                    self.template = Template.load_json(t)
+            if self.session.answer_key_path:
+                p = Path(self.session.answer_key_path)
+                if p.exists() and p.suffix.lower() == ".json":
+                    self.answer_keys = AnswerKeyRepository.load_json(p)
+                    self.imported_exam_codes = sorted({k.split("::", 1)[1] for k in self.answer_keys.keys.keys() if "::" in k})
+            self._refresh_session_info()
+            QMessageBox.information(self, "Open session", "Đã mở kỳ thi cũ thành công.")
+        except Exception as exc:
+            QMessageBox.warning(self, "Open session", f"Không thể mở kỳ thi:\n{exc}")
+
+    def save_session(self) -> None:
+        if not self.session:
+            self.create_session()
+        if not self.current_session_path:
+            self.save_session_as()
+            return
+        try:
+            self.session.save_json(self.current_session_path)
+            QMessageBox.information(self, "Save session", f"Đã lưu kỳ thi:\n{self.current_session_path}")
+        except Exception as exc:
+            QMessageBox.warning(self, "Save session", f"Không thể lưu kỳ thi:\n{exc}")
+
+    def save_session_as(self) -> None:
+        if not self.session:
+            self.create_session()
+        file_path, _ = QFileDialog.getSaveFileName(self, "Lưu kỳ thi", "exam_session.json", "Exam Session JSON (*.json)")
+        if not file_path:
+            return
+        self.current_session_path = Path(file_path)
+        if self.current_session_path.suffix.lower() != ".json":
+            self.current_session_path = self.current_session_path.with_suffix(".json")
+        self.save_session()
+
+    def manage_subjects(self) -> None:
+        if not self.session:
+            self.create_session()
+        current = ", ".join(self.session.subjects)
+        text, ok = QInputDialog.getText(self, "Quản lý môn học", "Nhập danh sách môn (phân tách bằng dấu phẩy):", text=current)
+        if not ok:
+            return
+        subjects = [x.strip() for x in text.split(",") if x.strip()]
+        if not subjects:
+            QMessageBox.warning(self, "Quản lý môn học", "Danh sách môn học không được để trống.")
+            return
+        self.session.subjects = subjects
+        self._refresh_session_info()
 
     def import_answer_key_file(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
@@ -200,25 +304,11 @@ class MainWindow(QMainWindow):
         w = QWidget()
         layout = QVBoxLayout(w)
 
-        btn_new_session = QPushButton("Create New Session")
-        btn_new_session.clicked.connect(self.create_session)
-
-        btn_load_template = QPushButton("Load Template JSON")
-        btn_load_template.clicked.connect(self.load_template)
-
-        btn_load_answers = QPushButton("Load Answer Keys JSON")
-        btn_load_answers.clicked.connect(self.load_answer_keys)
-
-        btn_template_editor = QPushButton("Open Template Editor")
-        btn_template_editor.clicked.connect(self.open_template_editor)
-
         self.session_info = QTextEdit()
         self.session_info.setReadOnly(True)
         self.exam_code_preview = QLabel("Mã đề trên phiếu trả lời mẫu: -")
         self.exam_code_preview.setWordWrap(True)
 
-        for btn in [btn_new_session, btn_load_template, btn_load_answers, btn_template_editor]:
-            layout.addWidget(btn)
         layout.addWidget(self.session_info)
         layout.addWidget(self.exam_code_preview)
         return w
@@ -277,26 +367,11 @@ class MainWindow(QMainWindow):
         lr_split.addWidget(right_split)
         lr_split.setSizes([450, 750])
 
-        btn_run_scan = QPushButton("Batch Scan Images")
-        btn_run_scan.clicked.connect(self.run_batch_scan)
-        btn_edit_scan = QPushButton("Sửa bài thi được chọn")
-        btn_edit_scan.clicked.connect(self._open_edit_selected_scan)
-
-        btn_score = QPushButton("Calculate & Preview Scores")
-        btn_score.clicked.connect(self.calculate_scores)
-
-        btn_export = QPushButton("Export Scoring Results")
-        btn_export.clicked.connect(self.export_results)
-
         self.score_preview_table = QTableWidget(0, 8)
         self.score_preview_table.setHorizontalHeaderLabels(["Student ID", "Name", "Subject", "Exam Code", "Correct", "Wrong", "Blank", "Score"])
         self.score_preview_table.verticalHeader().setVisible(False)
         self.score_preview_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
 
-        layout.addWidget(btn_run_scan)
-        layout.addWidget(btn_edit_scan)
-        layout.addWidget(btn_score)
-        layout.addWidget(btn_export)
         layout.addWidget(self.progress)
         layout.addWidget(lr_split)
         layout.addWidget(QLabel("Bảng điểm (xem trước trước khi export)"))
