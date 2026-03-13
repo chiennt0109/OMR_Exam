@@ -2200,8 +2200,13 @@ class MainWindow(QMainWindow):
             status_parts: list[str] = []
             if sid and duplicate_ids.get(sid, 0) > 1:
                 status_parts.append("trùng STUDENT ID")
-            if not (result.exam_code or "").strip() or "?" in (result.exam_code or ""):
+            exam_code_text = (result.exam_code or "").strip()
+            if not exam_code_text or "?" in exam_code_text:
                 status_parts.append("không tô exam code")
+            else:
+                avail_codes = self._available_exam_codes()
+                if avail_codes and exam_code_text not in avail_codes:
+                    status_parts.append("lỗi mã đề")
             status = ", ".join(status_parts) if status_parts else "OK"
             content_parts = []
             for sec in ["MCQ", "TF", "NUMERIC"]:
@@ -2361,6 +2366,9 @@ class MainWindow(QMainWindow):
             return
         self._update_scan_preview_from_saved_row(index)
 
+    def _available_exam_codes(self) -> set[str]:
+        return {str(x).strip() for x in (self.imported_exam_codes or []) if str(x).strip()}
+
     def _status_text_for_row(self, idx: int) -> str:
         if idx < 0 or idx >= len(self.scan_results):
             return "OK"
@@ -2371,8 +2379,13 @@ class MainWindow(QMainWindow):
             dup = sum(1 for r in self.scan_results if (r.student_id or "").strip() == sid)
             if dup > 1:
                 status_parts.append("trùng STUDENT ID")
-        if not (res.exam_code or "").strip() or "?" in (res.exam_code or ""):
+        exam_code_text = (res.exam_code or "").strip()
+        if not exam_code_text or "?" in exam_code_text:
             status_parts.append("không tô exam code")
+        else:
+            avail_codes = self._available_exam_codes()
+            if avail_codes and exam_code_text not in avail_codes:
+                status_parts.append("lỗi mã đề")
         edits = self.scan_manual_adjustments.get(idx, [])
         if edits:
             status_parts.append("đã chỉnh sửa: " + "; ".join(edits))
@@ -2482,8 +2495,55 @@ class MainWindow(QMainWindow):
 
     def _open_edit_selected_scan(self, *_args) -> None:
         idx = self.scan_list.currentRow()
-        if idx < 0 or idx >= len(self.scan_results):
+        if idx < 0:
             QMessageBox.warning(self, "No selection", "Chọn bài thi cần sửa trước.")
+            return
+        if idx >= len(self.scan_results):
+            sid = self.scan_list.item(idx, 0).text() if self.scan_list.item(idx, 0) else "-"
+            content = self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else "-"
+            status = self.scan_list.item(idx, 4).text() if self.scan_list.item(idx, 4) else "-"
+            exam_code = ""
+            for r in range(self.scan_result_preview.rowCount()):
+                k = self.scan_result_preview.item(r, 0)
+                v = self.scan_result_preview.item(r, 1)
+                if k and v and k.text().strip().lower() in {"exam code", "mã đề"}:
+                    exam_code = v.text().strip()
+                    break
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Sửa bài thi đã lưu")
+            lay = QVBoxLayout(dlg)
+            form = QFormLayout()
+            inp_sid = QLineEdit(sid)
+            inp_code = QLineEdit(exam_code)
+            inp_status = QLineEdit(status)
+            txt_content = QTextEdit(content)
+            form.addRow("Student ID", inp_sid)
+            form.addRow("Exam Code", inp_code)
+            form.addRow("Status", inp_status)
+            lay.addLayout(form)
+            lay.addWidget(QLabel("Nội dung"))
+            lay.addWidget(txt_content)
+            buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+            buttons.accepted.connect(dlg.accept)
+            buttons.rejected.connect(dlg.reject)
+            lay.addWidget(buttons)
+            if dlg.exec() != QDialog.Accepted:
+                return
+            old_item = self.scan_list.item(idx, 0)
+            old_img = str(old_item.data(Qt.UserRole) if old_item else "")
+            sid_item = QTableWidgetItem(inp_sid.text().strip() or "-")
+            sid_item.setData(Qt.UserRole, old_img)
+            self.scan_list.setItem(idx, 0, sid_item)
+            self.scan_list.setItem(idx, 3, QTableWidgetItem(txt_content.toPlainText().strip() or "-"))
+            st_item = QTableWidgetItem(inp_status.text().strip() or "-")
+            if st_item.text() != "OK":
+                st_item.setForeground(Qt.red)
+            self.scan_list.setItem(idx, 4, st_item)
+            for r in range(self.scan_result_preview.rowCount()):
+                k = self.scan_result_preview.item(r, 0)
+                if k and k.text().strip().lower() in {"exam code", "mã đề"}:
+                    self.scan_result_preview.setItem(r, 1, QTableWidgetItem(inp_code.text().strip() or "-"))
+                    break
             return
         res = self.scan_results[idx]
 
@@ -2526,7 +2586,9 @@ class MainWindow(QMainWindow):
         if new_sid != (res.student_id or ""):
             old_sid = res.student_id or ""
             res.student_id = new_sid
-            self.scan_list.setItem(idx, 0, QTableWidgetItem(new_sid or "-"))
+            sid_item = QTableWidgetItem(new_sid or "-")
+            sid_item.setData(Qt.UserRole, str(res.image_path))
+            self.scan_list.setItem(idx, 0, sid_item)
             changes.append(f"student_id: '{old_sid}' -> '{new_sid}'")
         if new_code != (res.exam_code or ""):
             old_code = res.exam_code or ""
