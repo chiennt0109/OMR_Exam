@@ -396,11 +396,12 @@ class MainWindow(QMainWindow):
     def _on_scan_cell_clicked(self, row: int, col: int) -> None:
         if row < 0:
             return
-        if col not in (3, 4):
+        # Only show edit history when clicking the Status column.
+        if col != 4:
             return
         history = self.scan_edit_history.get(row, [])
         if not history:
-            QMessageBox.information(self, "Lịch sử sửa", "Chưa có điều chỉnh nào cho bài thi này.")
+            QMessageBox.information(self, "Lịch sử sửa", "Chưa có lịch sử điều chỉnh trong Status cho bài thi này.")
             return
         latest = self.scan_last_adjustment.get(row, history[-1])
         QMessageBox.information(
