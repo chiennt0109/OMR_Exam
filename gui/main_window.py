@@ -1044,6 +1044,56 @@ class MainWindow(QMainWindow):
         self.batch_subject_combo.setCurrentIndex(max(1, selected_subject_index + 1))
         self.stack.setCurrentIndex(1)
 
+    def _open_batch_scan_from_exam_editor(self, session_id: str, base_session: ExamSession, payload: dict) -> None:
+        subject_cfg = dict(payload.get("subject_config") or {})
+        if not subject_cfg:
+            QMessageBox.warning(self, "Batch Scan", "Không tìm thấy cấu hình môn để nhận dạng.")
+            return
+
+        exam_name = str(payload.get("exam_name") or base_session.exam_name or "Kỳ thi")
+        common_template = str(payload.get("common_template") or base_session.template_path or "")
+        all_subjects = payload.get("subject_configs")
+        if not isinstance(all_subjects, list) or not all_subjects:
+            all_subjects = list((base_session.config or {}).get("subject_configs", []))
+        self.batch_editor_return_payload = {
+            "exam_name": exam_name,
+            "common_template": common_template,
+            "scan_root": str(payload.get("scan_root") or (base_session.config or {}).get("scan_root", "") or ""),
+            "scan_mode": str(payload.get("scan_mode") or (base_session.config or {}).get("scan_mode", "Ảnh trong thư mục gốc")),
+            "paper_part_count": int(payload.get("paper_part_count") or (base_session.config or {}).get("paper_part_count", 3) or 3),
+            "subject_configs": all_subjects,
+        }
+        self.batch_editor_return_session_id = session_id
+        selected_subject_index = int(payload.get("selected_subject_index", 0) or 0)
+        scan_root = str(payload.get("scan_root") or (base_session.config or {}).get("scan_root", "") or "")
+        scan_mode = str(payload.get("scan_mode") or (base_session.config or {}).get("scan_mode", "Ảnh trong thư mục gốc"))
+        paper_part_count = int(payload.get("paper_part_count") or (base_session.config or {}).get("paper_part_count", 3) or 3)
+
+        self.session = ExamSession(
+            exam_name=exam_name,
+            exam_date=str(date.today()),
+            subjects=[f"{subject_cfg.get('name', '')}_{subject_cfg.get('block', '')}"],
+            template_path=common_template,
+            answer_key_path=str(base_session.answer_key_path or ""),
+            config={
+                "scan_mode": scan_mode,
+                "scan_root": scan_root,
+                "paper_part_count": paper_part_count,
+                "subject_configs": all_subjects,
+                "subject_catalog": self.subject_catalog,
+                "block_catalog": self.block_catalog,
+            },
+        )
+
+        self.current_session_path = None
+        self.current_session_id = None
+        self.session_dirty = True
+        self._refresh_session_info()
+        self._refresh_batch_subject_controls()
+        self.batch_subject_combo.setCurrentIndex(max(1, selected_subject_index + 1))
+        self.stack.setCurrentIndex(1)
+        self.action_run_batch_scan()
+
     def _delete_selected_registry_session(self) -> None:
         row = self.exam_list_table.currentRow()
         sid = self._session_id_for_row(row) if row >= 0 else None
