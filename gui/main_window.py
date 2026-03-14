@@ -486,6 +486,20 @@ class NewExamDialog(QDialog):
 
         self._refresh_subject_list()
 
+    @staticmethod
+    def _normalized_student_id_for_match(student_id: str) -> str:
+        sid = str(student_id or "").strip()
+        if not sid:
+            return ""
+        compact = sid.replace(" ", "")
+        if compact.endswith(".0"):
+            prefix = compact[:-2]
+            if prefix.isdigit():
+                compact = prefix
+        if compact.isdigit():
+            compact = compact.lstrip("0") or "0"
+        return compact.upper()
+
     def _browse_common_template(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Chọn giấy thi dùng chung", "", "JSON (*.json)")
         if path:
@@ -503,9 +517,9 @@ class NewExamDialog(QDialog):
         try:
             import pandas as pd
             if Path(path).suffix.lower() in {".xlsx", ".xls"}:
-                df = pd.read_excel(path)
+                df = pd.read_excel(path, dtype=str)
             else:
-                df = pd.read_csv(path)
+                df = pd.read_csv(path, dtype=str, keep_default_na=False)
         except Exception as exc:
             QMessageBox.warning(self, "Danh sách học sinh", f"Không đọc được file học sinh:\n{exc}")
             return
@@ -576,11 +590,43 @@ class NewExamDialog(QDialog):
             QMessageBox.warning(self, "Danh sách học sinh", "Không có dòng hợp lệ (thiếu Số báo danh/Họ tên).")
             return
 
-        self.student_rows = out
+        action_text = "thay thế"
+        if self.student_rows:
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Danh sách học sinh")
+            msg.setText(
+                f"Đã import được {len(out)} học sinh từ file mới.\n"
+                "Bạn muốn thêm vào danh sách hiện tại hay thay thế toàn bộ?"
+            )
+            btn_append = msg.addButton("Thêm vào", QMessageBox.AcceptRole)
+            btn_replace = msg.addButton("Thay thế", QMessageBox.DestructiveRole)
+            msg.addButton(QMessageBox.Cancel)
+            msg.exec()
+            clicked = msg.clickedButton()
+            if clicked == btn_append:
+                action_text = "thêm vào"
+                merged: dict[str, dict] = {}
+                for row in self.student_rows:
+                    sid_key = self._normalized_student_id_for_match(str(row.get("student_id", "") or ""))
+                    merged[sid_key or str(row.get("student_id", "") or "")] = row
+                for row in out:
+                    sid_key = self._normalized_student_id_for_match(str(row.get("student_id", "") or ""))
+                    merged[sid_key or str(row.get("student_id", "") or "")] = row
+                self.student_rows = list(merged.values())
+            elif clicked == btn_replace:
+                self.student_rows = out
+            else:
+                return
+        else:
+            self.student_rows = out
         self.student_list_path_value = path
         self.student_list_path.setText(path)
-        self.student_count_label.setText(f"{len(out)} học sinh")
-        QMessageBox.information(self, "Danh sách học sinh", f"Đã import {len(out)} học sinh.")
+        self.student_count_label.setText(f"{len(self.student_rows)} học sinh")
+        QMessageBox.information(
+            self,
+            "Danh sách học sinh",
+            f"Đã {action_text} danh sách học sinh. Tổng hiện tại: {len(self.student_rows)} học sinh.",
+        )
 
     def _refresh_subject_list(self) -> None:
         self.subject_table.setRowCount(len(self.subject_configs))
@@ -1465,6 +1511,23 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Save session", "Đã lưu kỳ thi vào kho hệ thống.")
         except Exception as exc:
             QMessageBox.warning(self, "Save session", f"Không thể lưu kỳ thi:\n{exc}")
+
+    def _persist_session_quietly(self) -> bool:
+        if not self.session:
+            return False
+        if not self.current_session_id:
+            self.current_session_id = self._generate_session_id(self.session.exam_name if self.session else "exam")
+            self.current_session_path = self._session_path_from_id(self.current_session_id)
+        try:
+            self.session.save_json(self.current_session_path)
+            self._upsert_session_registry(self.current_session_id, self.session.exam_name if self.session else None)
+            self._save_session_registry()
+            self._refresh_exam_list()
+            self.session_dirty = False
+            return True
+        except Exception:
+            self.session_dirty = True
+            return False
 
     def save_session_as(self) -> None:
         # System-managed storage only.
@@ -2420,8 +2483,17 @@ class MainWindow(QMainWindow):
         sid = str(student_id or "").strip()
         if not sid or not self.session:
             return {}
+        normalized_sid = self._normalized_student_id_for_match(sid)
         for s in (self.session.students or []):
-            if str(getattr(s, "student_id", "") or "").strip() == sid:
+            candidate = str(getattr(s, "student_id", "") or "").strip()
+            if candidate == sid:
+                return {
+                    "name": str(getattr(s, "name", "") or ""),
+                    "birth_date": str((getattr(s, "extra", {}) or {}).get("birth_date", "") or ""),
+                    "class_name": str((getattr(s, "extra", {}) or {}).get("class_name", "") or ""),
+                    "exam_room": str((getattr(s, "extra", {}) or {}).get("exam_room", "") or ""),
+                }
+            if normalized_sid and self._normalized_student_id_for_match(candidate) == normalized_sid:
                 return {
                     "name": str(getattr(s, "name", "") or ""),
                     "birth_date": str((getattr(s, "extra", {}) or {}).get("birth_date", "") or ""),
@@ -2429,6 +2501,20 @@ class MainWindow(QMainWindow):
                     "exam_room": str((getattr(s, "extra", {}) or {}).get("exam_room", "") or ""),
                 }
         return {}
+
+    @staticmethod
+    def _normalized_student_id_for_match(student_id: str) -> str:
+        sid = str(student_id or "").strip()
+        if not sid:
+            return ""
+        compact = sid.replace(" ", "")
+        if compact.endswith(".0"):
+            prefix = compact[:-2]
+            if prefix.isdigit():
+                compact = prefix
+        if compact.isdigit():
+            compact = compact.lstrip("0") or "0"
+        return compact.upper()
 
     @staticmethod
     def _normalize_template_path(path_text: str) -> str:
@@ -2890,11 +2976,90 @@ class MainWindow(QMainWindow):
                     "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
                 }
                 for sec in ["MCQ", "TF", "NUMERIC"]:
-                    # Only override when the answer key explicitly defines that section.
-                    # If key section is empty, keep template range to avoid trimming valid recognized data.
-                    if key_sections[sec]:
+                    if not key_sections[sec]:
+                        continue
+                    template_set = set(template_expected.get(sec, []))
+                    key_set = set(key_sections[sec])
+                    if template_set:
+                        overlap = sorted(template_set & key_set)
+                        # If answer key numbering does not align with template numbering, keep template scope.
+                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
+                        if overlap:
+                            expected_by_section[sec] = overlap
+                    else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        blank_parts = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            vals = blank_map.get(sec, [])
+            if vals:
+                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        return " | ".join(blank_parts) if blank_parts else ""
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+
+    def _count_mismatch_status_parts(self, result) -> list[str]:
+        expected = self._expected_questions_by_section(result)
+        actual_map = {
+            "MCQ": set((result.mcq_answers or {}).keys()),
+            "TF": set((result.true_false_answers or {}).keys()),
+            "NUMERIC": set((result.numeric_answers or {}).keys()),
+        }
+        messages: list[str] = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            expected_set = set(expected.get(sec, []))
+            if not expected_set:
+                continue
+            actual_set = {int(q) for q in actual_map.get(sec, set())}
+            missing = sorted(expected_set - actual_set)
+            if missing:
+                messages.append(
+                    f"thiếu {sec} ({len(expected_set)-len(missing)}/{len(expected_set)}): {','.join(str(v) for v in missing)}"
+                )
+        return messages
+
+    def _apply_scan_filter(self) -> None:
+        value = self.search_value.text().strip().lower()
+        col = self.filter_column.currentIndex()
+        for i in range(self.scan_list.rowCount()):
+            item = self.scan_list.item(i, col)
+            cell = (item.text() if item else "").lower()
+            show = value in cell if value else True
+            self.scan_list.setRowHidden(i, not show)
 
     @staticmethod
     def _format_mcq_answers(answers: dict[int, str]) -> str:
@@ -5746,6 +5911,8 @@ class MainWindow(QMainWindow):
             cfg["scoring_results"] = dict(self.scoring_results_by_subject)
             self.session.config = cfg
             self.session_dirty = True
+            if not self._persist_session_quietly():
+                QMessageBox.warning(self, "Scoring", "Không thể tự động lưu kết quả chấm điểm. Vui lòng dùng nút Lưu kỳ thi.")
         self._refresh_scoring_phase_table()
 
         formula_text = ""
