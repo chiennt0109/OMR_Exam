@@ -24,6 +24,8 @@ class ScoreResult:
     mcq_correct: int = 0
     tf_correct: int = 0
     numeric_correct: int = 0
+    tf_compare: str = ""
+    numeric_compare: str = ""
 
 
 class ScoringEngine:
@@ -73,6 +75,16 @@ class ScoringEngine:
         if text.startswith("+"):
             text = text[1:]
         return text
+
+    def _build_tf_compare_text(self, key_tf: str, marked_tf: str, q_no: int) -> str:
+        if not key_tf and not marked_tf:
+            return ""
+        return f"Q{q_no}:{key_tf or '-'}|{marked_tf or '-'}"
+
+    def _build_numeric_compare_text(self, key_num: str, marked_num: str, q_no: int) -> str:
+        if not key_num and not marked_num:
+            return ""
+        return f"Q{q_no}:{key_num or '-'}|{marked_num or '-'}"
 
     def _tf_to_canonical_string(self, value: object) -> str:
         if isinstance(value, dict):
@@ -150,6 +162,8 @@ class ScoringEngine:
         correct = wrong = blank = 0
         score = 0.0
         mcq_correct = tf_correct = numeric_correct = 0
+        tf_compare_items: list[str] = []
+        numeric_compare_items: list[str] = []
         profile = self._score_profile(subject_key, subject_config)
 
         for q_no, key_answer in subject_key.answers.items():
@@ -178,6 +192,7 @@ class ScoringEngine:
             marked_tf = self._tf_to_canonical_string(marked)
             if not key_tf:
                 continue
+            tf_compare_items.append(self._build_tf_compare_text(key_tf, marked_tf, q_no))
             if not marked_tf:
                 blank += 1
                 continue
@@ -200,6 +215,7 @@ class ScoringEngine:
                 continue
             norm_marked = self._normalize_numeric_text(marked)
             norm_key = self._normalize_numeric_text(key_answer)
+            numeric_compare_items.append(self._build_numeric_compare_text(norm_key, norm_marked, q_no))
             if norm_marked and norm_key and norm_marked == norm_key:
                 correct += 1
                 numeric_correct += 1
@@ -219,6 +235,8 @@ class ScoringEngine:
             mcq_correct=mcq_correct,
             tf_correct=tf_correct,
             numeric_correct=numeric_correct,
+            tf_compare="; ".join(x for x in tf_compare_items if x),
+            numeric_compare="; ".join(x for x in numeric_compare_items if x),
         )
 
     def export_csv(self, rows: list[ScoreResult], output_path: str | Path) -> None:
