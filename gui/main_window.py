@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.answer_key_importer import import_answer_key
-from core.omr_engine import OMRProcessor
+from core.omr_engine import OMRProcessor, OMRResult
 from core.scoring_engine import ScoringEngine
 from editor.template_editor import TemplateEditorWindow
 from gui.import_answer_key_dialog import ImportAnswerKeyDialog
@@ -1120,6 +1120,23 @@ class MainWindow(QMainWindow):
             self.scoring_phases = list(cfg.get("scoring_phases", [])) if isinstance(cfg.get("scoring_phases", []), list) else []
             self.scoring_results_by_subject = dict(cfg.get("scoring_results", {})) if isinstance(cfg.get("scoring_results", {}), dict) else {}
             self.scan_results_by_subject = {}
+            for sc in (cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []):
+                if not isinstance(sc, dict):
+                    continue
+                key = self._subject_key_from_cfg(sc)
+                rows = sc.get("batch_saved_results", [])
+                if not isinstance(rows, list) or not rows:
+                    continue
+                restored: list[OMRResult] = []
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    try:
+                        restored.append(self._deserialize_omr_result(row))
+                    except Exception:
+                        continue
+                if restored:
+                    self.scan_results_by_subject[key] = restored
             self.subject_catalog = list(cfg.get("subject_catalog", self.subject_catalog)) or self.subject_catalog
             self.block_catalog = list(cfg.get("block_catalog", self.block_catalog)) or self.block_catalog
             if self.session.answer_key_path:
@@ -1703,6 +1720,11 @@ class MainWindow(QMainWindow):
         except Exception:
             self.stack.setCurrentIndex(0)
             return
+        cfg = session.config or {}
+        payload["subject_configs"] = cfg.get("subject_configs", payload.get("subject_configs", []))
+        payload["scan_root"] = cfg.get("scan_root", payload.get("scan_root", ""))
+        payload["scan_mode"] = cfg.get("scan_mode", payload.get("scan_mode", "Ảnh trong thư mục gốc"))
+        payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
         self._open_embedded_exam_editor(session_id, session, payload)
 
     def _show_batch_scan_panel(self) -> None:
@@ -1728,6 +1750,73 @@ class MainWindow(QMainWindow):
             if self._subject_key_from_cfg(cfg) == key_norm:
                 return cfg
         return None
+
+    @staticmethod
+    def _serialize_omr_result(result: OMRResult) -> dict:
+        return {
+            "image_path": str(getattr(result, "image_path", "") or ""),
+            "student_id": str(getattr(result, "student_id", "") or ""),
+            "exam_code": str(getattr(result, "exam_code", "") or ""),
+            "mcq_answers": {int(k): str(v) for k, v in (getattr(result, "mcq_answers", {}) or {}).items()},
+            "true_false_answers": {int(k): dict(v) for k, v in (getattr(result, "true_false_answers", {}) or {}).items()},
+            "numeric_answers": {int(k): str(v) for k, v in (getattr(result, "numeric_answers", {}) or {}).items()},
+            "confidence_scores": {str(k): float(v) for k, v in (getattr(result, "confidence_scores", {}) or {}).items()},
+            "recognition_errors": [str(x) for x in (getattr(result, "recognition_errors", []) or [])],
+            "processing_time_sec": float(getattr(result, "processing_time_sec", 0.0) or 0.0),
+            "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
+            "full_name": str(getattr(result, "full_name", "") or ""),
+            "birth_date": str(getattr(result, "birth_date", "") or ""),
+        }
+
+    @staticmethod
+    def _deserialize_omr_result(payload: dict) -> OMRResult:
+        result = OMRResult(
+            image_path=str(payload.get("image_path", "") or ""),
+            student_id=str(payload.get("student_id", "") or ""),
+            exam_code=str(payload.get("exam_code", "") or ""),
+            mcq_answers={int(k): str(v) for k, v in (payload.get("mcq_answers", {}) or {}).items()},
+            true_false_answers={int(k): dict(v) for k, v in (payload.get("true_false_answers", {}) or {}).items()},
+            numeric_answers={int(k): str(v) for k, v in (payload.get("numeric_answers", {}) or {}).items()},
+            confidence_scores={str(k): float(v) for k, v in (payload.get("confidence_scores", {}) or {}).items()},
+            recognition_errors=[str(x) for x in (payload.get("recognition_errors", []) or [])],
+            processing_time_sec=float(payload.get("processing_time_sec", 0.0) or 0.0),
+            debug_image_path=str(payload.get("debug_image_path", "") or ""),
+        )
+        setattr(result, "full_name", str(payload.get("full_name", "") or ""))
+        setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
+        result.sync_legacy_aliases()
+        return result
+
+    def _is_subject_marked_batched(self, cfg: dict) -> bool:
+        key = self._subject_key_from_cfg(cfg)
+        if self.scan_results_by_subject.get(key):
+            return True
+        merged = self._merge_saved_batch_snapshot(cfg)
+        if bool(merged.get("batch_saved")):
+            return True
+        if isinstance(merged.get("batch_saved_rows", []), list) and merged.get("batch_saved_rows"):
+            return True
+        if isinstance(merged.get("batch_saved_results", []), list) and merged.get("batch_saved_results"):
+            return True
+        return False
+
+    def _cached_subject_scans_from_config(self, subject_key: str) -> list[OMRResult]:
+        cfg = self._subject_config_by_subject_key(subject_key)
+        if not cfg:
+            return []
+        merged = self._merge_saved_batch_snapshot(cfg)
+        cached = merged.get("batch_saved_results", [])
+        if not isinstance(cached, list) or not cached:
+            return []
+        out: list[OMRResult] = []
+        for item in cached:
+            if not isinstance(item, dict):
+                continue
+            try:
+                out.append(self._deserialize_omr_result(item))
+            except Exception:
+                continue
+        return out
 
     def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
         if self.answer_keys and any(str(k).startswith(f"{subject_key}::") for k in self.answer_keys.keys.keys()):
@@ -1803,7 +1892,7 @@ class MainWindow(QMainWindow):
         out: list[str] = []
         for cfg in self._subject_configs_for_scoring():
             key = self._subject_key_from_cfg(cfg)
-            if bool(cfg.get("batch_saved")) or bool(self.scan_results_by_subject.get(key)):
+            if self._is_subject_marked_batched(cfg):
                 out.append(key)
         return out
 
@@ -1885,13 +1974,21 @@ class MainWindow(QMainWindow):
             ses = ExamSession.load_json(session_path)
             cfg = ses.config or {}
             subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
+            subject_key = self._subject_key_from_cfg(subject_cfg)
+            saved_results = [
+                self._serialize_omr_result(x)
+                for x in (self.scan_results_by_subject.get(subject_key) or self.scan_results or [])
+            ]
+            timestamp = datetime.now().isoformat(timespec="seconds")
             updated = False
             for item in subject_cfgs:
                 if not isinstance(item, dict):
                     continue
-                if str(item.get("name", "")) == str(subject_cfg.get("name", "")) and str(item.get("block", "")) == str(subject_cfg.get("block", "")):
+                same_name_block = str(item.get("name", "")).strip() == str(subject_cfg.get("name", "")).strip() and str(item.get("block", "")).strip() == str(subject_cfg.get("block", "")).strip()
+                same_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
+                if same_name_block or same_key:
                     item["batch_saved"] = True
-                    item["batch_saved_at"] = datetime.now().isoformat(timespec="seconds")
+                    item["batch_saved_at"] = timestamp
                     item["batch_result_count"] = row_count
                     item["batch_saved_rows"] = [
                         {
@@ -1913,6 +2010,7 @@ class MainWindow(QMainWindow):
                         }
                         for r in range(self.scan_result_preview.rowCount())
                     ]
+                    item["batch_saved_results"] = saved_results
                     updated = True
                     break
             if not updated:
@@ -1932,7 +2030,7 @@ class MainWindow(QMainWindow):
                 cache_key = f"{str(subject_cfg.get('name','')).strip().lower()}::{str(subject_cfg.get('block','')).strip().lower()}::{str(subject_cfg.get('answer_key_key','')).strip().lower()}"
                 cache_data[cache_key] = {
                     "batch_saved": True,
-                    "batch_saved_at": datetime.now().isoformat(timespec="seconds"),
+                    "batch_saved_at": timestamp,
                     "batch_result_count": row_count,
                     "batch_saved_rows": [
                         {
@@ -1954,6 +2052,7 @@ class MainWindow(QMainWindow):
                         }
                         for r in range(self.scan_result_preview.rowCount())
                     ],
+                    "batch_saved_results": saved_results,
                 }
                 cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
             except Exception:
@@ -1961,6 +2060,9 @@ class MainWindow(QMainWindow):
 
             if self.session:
                 self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
+            self.scan_results_by_subject[subject_key] = list(self.scan_results_by_subject.get(subject_key) or self.scan_results or [])
+            if isinstance(self.batch_editor_return_payload, dict):
+                self.batch_editor_return_payload["subject_configs"] = subject_cfgs
             self._refresh_batch_subject_controls()
             self.btn_save_batch_subject.setEnabled(False)
             QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
@@ -2193,7 +2295,7 @@ class MainWindow(QMainWindow):
                 break
 
         if found:
-            for k in ["batch_saved", "batch_saved_at", "batch_result_count", "batch_saved_rows", "batch_saved_preview"]:
+            for k in ["batch_saved", "batch_saved_at", "batch_result_count", "batch_saved_rows", "batch_saved_preview", "batch_saved_results"]:
                 if k in found:
                     merged[k] = found.get(k)
 
@@ -2211,6 +2313,7 @@ class MainWindow(QMainWindow):
                         merged["batch_saved"] = bool(payload.get("batch_saved", True))
                         merged["batch_saved_at"] = payload.get("batch_saved_at", merged.get("batch_saved_at", "-"))
                         merged["batch_result_count"] = payload.get("batch_result_count", merged.get("batch_result_count", "-"))
+                        merged["batch_saved_results"] = payload.get("batch_saved_results", merged.get("batch_saved_results", []))
             except Exception:
                 pass
         return merged
@@ -2535,6 +2638,112 @@ class MainWindow(QMainWindow):
                     # Only override when the answer key explicitly defines that section.
                     # If key section is empty, keep template range to avoid trimming valid recognized data.
                     if key_sections[sec]:
+                        expected_by_section[sec] = key_sections[sec]
+        return expected_by_section
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        blank_parts = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            vals = blank_map.get(sec, [])
+            if vals:
+                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        return " | ".join(blank_parts) if blank_parts else ""
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+
+    def _count_mismatch_status_parts(self, result) -> list[str]:
+        expected = self._expected_questions_by_section(result)
+        actual_map = {
+            "MCQ": set((result.mcq_answers or {}).keys()),
+            "TF": set((result.true_false_answers or {}).keys()),
+            "NUMERIC": set((result.numeric_answers or {}).keys()),
+        }
+        messages: list[str] = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            expected_set = set(expected.get(sec, []))
+            if not expected_set:
+                continue
+            actual_set = {int(q) for q in actual_map.get(sec, set())}
+            missing = sorted(expected_set - actual_set)
+            if missing:
+                messages.append(
+                    f"thiếu {sec} ({len(expected_set)-len(missing)}/{len(expected_set)}): {','.join(str(v) for v in missing)}"
+                )
+        return messages
+
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = dict(template_expected)
+        subject_key_name = self.active_batch_subject_key
+        if not subject_key_name and self.session and self.session.subjects:
+            subject_key_name = self.session.subjects[0]
+        if self.answer_keys and subject_key_name:
+            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
+            if key:
+                key_sections = {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                }
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    if not key_sections[sec]:
+                        continue
+                    template_set = set(template_expected.get(sec, []))
+                    key_set = set(key_sections[sec])
+                    if template_set:
+                        overlap = sorted(template_set & key_set)
+                        # If answer key numbering does not align with template numbering, keep template scope.
+                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
+                        if overlap:
+                            expected_by_section[sec] = overlap
+                    else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
 
@@ -4122,6 +4331,10 @@ class MainWindow(QMainWindow):
     def calculate_scores(self, subject_key: str = "", mode: str = "Tính lại toàn bộ", note: str = "") -> list:
         subject = (subject_key or self._resolve_preferred_scoring_subject() or "General").strip()
         subject_scans = self.scan_results_by_subject.get(subject, [])
+        if not subject_scans:
+            subject_scans = self._cached_subject_scans_from_config(subject)
+            if subject_scans:
+                self.scan_results_by_subject[subject] = list(subject_scans)
         if not subject_scans and self.scan_results:
             cfg = self._selected_batch_subject_config()
             current_key = self._subject_key_from_cfg(cfg) if cfg else ""
