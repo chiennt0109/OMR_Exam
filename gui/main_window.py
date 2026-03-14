@@ -633,6 +633,8 @@ class MainWindow(QMainWindow):
         self.scan_edit_history: dict[int, list[str]] = {}
         self.scan_last_adjustment: dict[int, str] = {}
         self.score_rows = []
+        self.scoring_results_by_subject: dict[str, dict[str, dict]] = {}
+        self.scoring_phases: list[dict] = []
         self.imported_exam_codes: list[str] = []
         self.active_batch_subject_key: str | None = None
         self.subject_catalog: list[str] = ["Toán", "Ngữ văn", "Tiếng Anh", "Vật lý", "Hóa học", "Sinh học"]
@@ -1097,6 +1099,8 @@ class MainWindow(QMainWindow):
                 if t.exists():
                     self.template = Template.load_json(t)
             cfg = self.session.config or {}
+            self.scoring_phases = list(cfg.get("scoring_phases", [])) if isinstance(cfg.get("scoring_phases", []), list) else []
+            self.scoring_results_by_subject = dict(cfg.get("scoring_results", {})) if isinstance(cfg.get("scoring_results", {}), dict) else {}
             self.subject_catalog = list(cfg.get("subject_catalog", self.subject_catalog)) or self.subject_catalog
             self.block_catalog = list(cfg.get("block_catalog", self.block_catalog)) or self.block_catalog
             if self.session.answer_key_path:
@@ -1112,6 +1116,7 @@ class MainWindow(QMainWindow):
             self.batch_editor_return_session_id = None
             self._refresh_session_info()
             self._refresh_batch_subject_controls()
+            self._refresh_scoring_phase_table()
             self.stack.setCurrentIndex(1)
             QMessageBox.information(self, "Open session", "Đã mở kỳ thi thành công.")
         except Exception as exc:
@@ -1202,6 +1207,11 @@ class MainWindow(QMainWindow):
             self.current_session_id = self._generate_session_id(self.session.exam_name if self.session else "exam")
             self.current_session_path = self._session_path_from_id(self.current_session_id)
         try:
+            if self.session:
+                cfg = dict(self.session.config or {})
+                cfg["scoring_phases"] = list(self.scoring_phases)
+                cfg["scoring_results"] = dict(self.scoring_results_by_subject)
+                self.session.config = cfg
             self.session.save_json(self.current_session_path)
             self._upsert_session_registry(self.current_session_id, self.session.exam_name if self.session else None)
             self._save_session_registry()
@@ -1223,6 +1233,8 @@ class MainWindow(QMainWindow):
         self.template = None
         self.answer_keys = None
         self.scan_results = []
+        self.scoring_phases = []
+        self.scoring_results_by_subject = {}
         self.current_session_path = None
         self.current_session_id = None
         self.session_dirty = False
@@ -1343,7 +1355,7 @@ class MainWindow(QMainWindow):
 
     def action_calculate_scores(self) -> None:
         if self._confirm("Calculate Scores", "Bạn có chắc muốn chấm điểm?"):
-            self.calculate_scores()
+            self._open_scoring_view()
 
     def action_export_results(self) -> None:
         if self._confirm("Export Results", "Bạn có chắc muốn export kết quả?"):
@@ -1577,9 +1589,46 @@ class MainWindow(QMainWindow):
         self.score_preview_table.verticalHeader().setVisible(False)
         self.score_preview_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
 
+        self.scoring_subject_combo = QComboBox()
+        self.scoring_mode_combo = QComboBox()
+        self.scoring_mode_combo.addItems(["Tính lại toàn bộ", "Chỉ tính bài chưa có điểm"])
+        self.scoring_phase_note = QLineEdit()
+        self.scoring_phase_note.setPlaceholderText("Ghi chú pha chấm điểm (tuỳ chọn)")
+        self.btn_scoring_run = QPushButton("Chấm điểm")
+        self.btn_scoring_run.clicked.connect(self._run_scoring_from_panel)
+        self.btn_scoring_back = QPushButton("Quay lại Batch Scan")
+        self.btn_scoring_back.clicked.connect(self._show_batch_scan_panel)
+        scoring_top = QHBoxLayout()
+        scoring_top.addWidget(QLabel("Môn"))
+        scoring_top.addWidget(self.scoring_subject_combo, 2)
+        scoring_top.addWidget(QLabel("Cơ chế"))
+        scoring_top.addWidget(self.scoring_mode_combo, 2)
+        scoring_top.addWidget(self.scoring_phase_note, 3)
+        scoring_top.addWidget(self.btn_scoring_run)
+        scoring_top.addWidget(self.btn_scoring_back)
+
+        self.scoring_phase_table = QTableWidget(0, 5)
+        self.scoring_phase_table.setHorizontalHeaderLabels(["Thời gian", "Môn", "Cơ chế", "Số bài", "Ghi chú"])
+        self.scoring_phase_table.verticalHeader().setVisible(False)
+        self.scoring_phase_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.scoring_phase_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.scoring_phase_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.scoring_phase_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.scoring_phase_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.scoring_phase_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+
+        self.scoring_panel = QWidget()
+        scoring_panel_layout = QVBoxLayout(self.scoring_panel)
+        scoring_panel_layout.setContentsMargins(0, 0, 0, 0)
+        scoring_panel_layout.addLayout(scoring_top)
+        scoring_panel_layout.addWidget(self.score_preview_table, 7)
+        scoring_panel_layout.addWidget(QLabel("Lịch sử pha chấm điểm"))
+        scoring_panel_layout.addWidget(self.scoring_phase_table, 3)
+
         layout.addWidget(self.progress)
         layout.addWidget(self.scan_lr_split)
-        self.score_preview_table.setVisible(False)
+        layout.addWidget(self.scoring_panel)
+        self.scoring_panel.setVisible(False)
         return w
 
     def _close_batch_scan_view(self) -> None:
@@ -1614,6 +1663,85 @@ class MainWindow(QMainWindow):
             self.stack.setCurrentIndex(0)
             return
         self._open_embedded_exam_editor(session_id, session, payload)
+
+    def _show_batch_scan_panel(self) -> None:
+        if hasattr(self, "scan_lr_split"):
+            self.scan_lr_split.setVisible(True)
+        if hasattr(self, "scoring_panel"):
+            self.scoring_panel.setVisible(False)
+
+    def _show_scoring_panel(self) -> None:
+        if hasattr(self, "scan_lr_split"):
+            self.scan_lr_split.setVisible(False)
+        if hasattr(self, "scoring_panel"):
+            self.scoring_panel.setVisible(True)
+
+    def _subject_configs_for_scoring(self) -> list[dict]:
+        return self._effective_subject_configs_for_batch()
+
+    @staticmethod
+    def _subject_key_from_cfg(cfg: dict) -> str:
+        key = str(cfg.get("answer_key_key", "") or "").strip()
+        if key:
+            return key
+        name = str(cfg.get("name", "") or "").strip()
+        block = str(cfg.get("block", "") or "").strip()
+        return f"{name}_{block}" if name and block else (name or "General")
+
+    def _resolve_preferred_scoring_subject(self) -> str:
+        if self.stack.currentIndex() == 1:
+            cfg = self._selected_batch_subject_config()
+            if cfg:
+                return self._subject_key_from_cfg(cfg)
+        cfgs = self._subject_configs_for_scoring()
+        if cfgs:
+            return self._subject_key_from_cfg(cfgs[0])
+        if self.session and self.session.subjects:
+            return str(self.session.subjects[0])
+        return "General"
+
+    def _populate_scoring_subjects(self, preferred_key: str = "") -> None:
+        if not hasattr(self, "scoring_subject_combo"):
+            return
+        self.scoring_subject_combo.blockSignals(True)
+        self.scoring_subject_combo.clear()
+        for cfg in self._subject_configs_for_scoring():
+            key = self._subject_key_from_cfg(cfg)
+            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
+            self.scoring_subject_combo.addItem(label, key)
+        if self.scoring_subject_combo.count() == 0:
+            fallback = self._resolve_preferred_scoring_subject()
+            self.scoring_subject_combo.addItem(fallback, fallback)
+        pick = preferred_key or self._resolve_preferred_scoring_subject()
+        for i in range(self.scoring_subject_combo.count()):
+            if str(self.scoring_subject_combo.itemData(i)) == pick:
+                self.scoring_subject_combo.setCurrentIndex(i)
+                break
+        self.scoring_subject_combo.blockSignals(False)
+
+    def _open_scoring_view(self) -> None:
+        self.stack.setCurrentIndex(1)
+        self._populate_scoring_subjects(self._resolve_preferred_scoring_subject())
+        self._refresh_scoring_phase_table()
+        self._show_scoring_panel()
+
+    def _refresh_scoring_phase_table(self) -> None:
+        if not hasattr(self, "scoring_phase_table"):
+            return
+        self.scoring_phase_table.setRowCount(0)
+        for i, p in enumerate(self.scoring_phases[-100:]):
+            self.scoring_phase_table.insertRow(i)
+            self.scoring_phase_table.setItem(i, 0, QTableWidgetItem(str(p.get("timestamp", "-"))))
+            self.scoring_phase_table.setItem(i, 1, QTableWidgetItem(str(p.get("subject", "-"))))
+            self.scoring_phase_table.setItem(i, 2, QTableWidgetItem(str(p.get("mode", "-"))))
+            self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
+            self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
+
+    def _run_scoring_from_panel(self) -> None:
+        subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
+        mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
+        note = self.scoring_phase_note.text().strip() if hasattr(self, "scoring_phase_note") else ""
+        self.calculate_scores(subject_key=subject_key or self._resolve_preferred_scoring_subject(), mode=mode, note=note)
 
 
 
@@ -1788,8 +1916,12 @@ class MainWindow(QMainWindow):
                 "subject_configs": subject_cfgs,
                 "subject_catalog": self.subject_catalog,
                 "block_catalog": self.block_catalog,
+                "scoring_phases": [],
+                "scoring_results": {},
             },
         )
+        self.scoring_phases = []
+        self.scoring_results_by_subject = {}
         if common_template and Path(common_template).exists():
             try:
                 self.template = Template.load_json(common_template)
@@ -2456,6 +2588,112 @@ class MainWindow(QMainWindow):
                 )
         return messages
 
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = dict(template_expected)
+        subject_key_name = self.active_batch_subject_key
+        if not subject_key_name and self.session and self.session.subjects:
+            subject_key_name = self.session.subjects[0]
+        if self.answer_keys and subject_key_name:
+            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
+            if key:
+                key_sections = {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                }
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    if not key_sections[sec]:
+                        continue
+                    template_set = set(template_expected.get(sec, []))
+                    key_set = set(key_sections[sec])
+                    if template_set:
+                        overlap = sorted(template_set & key_set)
+                        # If answer key numbering does not align with template numbering, keep template scope.
+                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
+                        if overlap:
+                            expected_by_section[sec] = overlap
+                    else:
+                        expected_by_section[sec] = key_sections[sec]
+        return expected_by_section
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        blank_parts = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            vals = blank_map.get(sec, [])
+            if vals:
+                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        return " | ".join(blank_parts) if blank_parts else ""
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+
+    def _count_mismatch_status_parts(self, result) -> list[str]:
+        expected = self._expected_questions_by_section(result)
+        actual_map = {
+            "MCQ": set((result.mcq_answers or {}).keys()),
+            "TF": set((result.true_false_answers or {}).keys()),
+            "NUMERIC": set((result.numeric_answers or {}).keys()),
+        }
+        messages: list[str] = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            expected_set = set(expected.get(sec, []))
+            if not expected_set:
+                continue
+            actual_set = {int(q) for q in actual_map.get(sec, set())}
+            missing = sorted(expected_set - actual_set)
+            if missing:
+                messages.append(
+                    f"thiếu {sec} ({len(expected_set)-len(missing)}/{len(expected_set)}): {','.join(str(v) for v in missing)}"
+                )
+        return messages
+
     def _apply_scan_filter(self) -> None:
         value = self.search_value.text().strip().lower()
         col = self.filter_column.currentIndex()
@@ -2915,20 +3153,25 @@ class MainWindow(QMainWindow):
         self._load_selected_result_for_correction()
         QMessageBox.information(self, "Correction", "Manual correction applied to selected scan.")
 
-    def calculate_scores(self) -> list:
+    def calculate_scores(self, subject_key: str = "", mode: str = "Tính lại toàn bộ", note: str = "") -> list:
         if not self.scan_results or not self.answer_keys:
             QMessageBox.warning(self, "Missing data", "Run scans and load/import answer keys first.")
             return []
 
-        subject = self.session.subjects[0] if self.session else "General"
+        subject = (subject_key or self._resolve_preferred_scoring_subject() or "General").strip()
+        mode_text = (mode or "Tính lại toàn bộ").strip()
+        prev_subject_scores = self.scoring_results_by_subject.get(subject, {})
         rows = []
         missing = 0
         for scan in self.scan_results:
+            sid = (scan.student_id or "").strip()
+            if mode_text == "Chỉ tính bài chưa có điểm" and sid and sid in prev_subject_scores:
+                continue
             key = self.answer_keys.get(subject, scan.exam_code)
             if not key:
                 missing += 1
                 continue
-            rows.append(self.scoring_engine.score(scan, key))
+            rows.append(self.scoring_engine.score(scan, key, student_name=str(getattr(scan, "full_name", "") or "")))
 
         self.score_rows = rows
         self.score_preview_table.setRowCount(0)
@@ -2942,6 +3185,40 @@ class MainWindow(QMainWindow):
             self.score_preview_table.setItem(i, 5, QTableWidgetItem(str(r.wrong)))
             self.score_preview_table.setItem(i, 6, QTableWidgetItem(str(r.blank)))
             self.score_preview_table.setItem(i, 7, QTableWidgetItem(str(r.score)))
+
+        subject_scores = dict(prev_subject_scores)
+        for r in rows:
+            sid_key = (r.student_id or "").strip()
+            if sid_key:
+                subject_scores[sid_key] = {
+                    "student_id": r.student_id,
+                    "name": r.name,
+                    "subject": r.subject,
+                    "exam_code": r.exam_code,
+                    "correct": r.correct,
+                    "wrong": r.wrong,
+                    "blank": r.blank,
+                    "score": r.score,
+                }
+        self.scoring_results_by_subject[subject] = subject_scores
+        phase = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "subject": subject,
+            "mode": mode_text,
+            "count": len(rows),
+            "missing": missing,
+            "note": note,
+        }
+        self.scoring_phases.append(phase)
+        if len(self.scoring_phases) > 500:
+            self.scoring_phases = self.scoring_phases[-500:]
+        if self.session:
+            cfg = dict(self.session.config or {})
+            cfg["scoring_phases"] = list(self.scoring_phases)
+            cfg["scoring_results"] = dict(self.scoring_results_by_subject)
+            self.session.config = cfg
+            self.session_dirty = True
+        self._refresh_scoring_phase_table()
 
         if missing:
             QMessageBox.information(self, "Scoring preview", f"Calculated {len(rows)} result(s). Missing key for {missing} scan(s).")
