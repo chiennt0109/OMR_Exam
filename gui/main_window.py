@@ -933,10 +933,49 @@ class MainWindow(QMainWindow):
     def _confirm_before_switching_work(self, target_text: str) -> bool:
         if not self._has_pending_unsaved_work():
             return True
-        return self._confirm(
+        return self._handle_pending_changes_before_switch(target_text)
+
+    def _prompt_save_changes_word_style(self, title: str, message: str) -> str:
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Warning)
+        msg.setWindowTitle(title)
+        msg.setText(message)
+        msg.setInformativeText("Bạn muốn lưu thay đổi trước khi tiếp tục không?")
+        msg.setStandardButtons(QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
+        msg.setDefaultButton(QMessageBox.Save)
+        choice = msg.exec()
+        if choice == QMessageBox.Save:
+            return "save"
+        if choice == QMessageBox.Discard:
+            return "discard"
+        return "cancel"
+
+    def _save_current_work(self) -> bool:
+        if self.stack.currentIndex() == 2 and self.embedded_exam_dialog:
+            return bool(self._save_embedded_exam_editor())
+
+        if hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled():
+            self._save_batch_for_selected_subject()
+            if self.btn_save_batch_subject.isEnabled():
+                return False
+
+        if self.session and self.session_dirty:
+            self.save_session()
+            return not self.session_dirty
+        return True
+
+    def _handle_pending_changes_before_switch(self, target_text: str) -> bool:
+        if not self._has_pending_unsaved_work():
+            return True
+        choice = self._prompt_save_changes_word_style(
             "Dữ liệu chưa lưu",
-            f"Có dữ liệu chưa lưu. Bạn vẫn muốn chuyển sang {target_text}?",
+            f"Bạn đang có dữ liệu chưa lưu. Trước khi chuyển sang {target_text}, bạn có muốn lưu không?",
         )
+        if choice == "cancel":
+            return False
+        if choice == "discard":
+            return True
+        return self._save_current_work()
 
     def _session_storage_dir(self) -> Path:
         d = Path.home() / ".omr_exam" / "sessions"
@@ -1658,6 +1697,8 @@ class MainWindow(QMainWindow):
             self.manage_subjects()
 
     def action_exit(self) -> None:
+        if not self._confirm_before_switching_work("thoát ứng dụng"):
+            return
         if self._confirm("Thoát", "Bạn có chắc muốn thoát ứng dụng?"):
             self.close()
 
@@ -1961,8 +2002,10 @@ class MainWindow(QMainWindow):
         self.scoring_phase_note.setPlaceholderText("Ghi chú pha chấm điểm (tuỳ chọn)")
         self.btn_scoring_run = QPushButton("Chấm điểm")
         self.btn_scoring_run.clicked.connect(self._run_scoring_from_panel)
+        self.btn_scoring_save = QPushButton("Lưu điểm")
+        self.btn_scoring_save.clicked.connect(self._save_current_work)
         self.btn_scoring_back = QPushButton("Quay lại Batch Scan")
-        self.btn_scoring_back.clicked.connect(self._show_batch_scan_panel)
+        self.btn_scoring_back.clicked.connect(self._back_to_batch_scan)
         scoring_top = QHBoxLayout()
         scoring_top.addWidget(QLabel("Môn"))
         scoring_top.addWidget(self.scoring_subject_combo, 2)
@@ -1970,6 +2013,7 @@ class MainWindow(QMainWindow):
         scoring_top.addWidget(self.scoring_mode_combo, 2)
         scoring_top.addWidget(self.scoring_phase_note, 3)
         scoring_top.addWidget(self.btn_scoring_run)
+        scoring_top.addWidget(self.btn_scoring_save)
         scoring_top.addWidget(self.btn_scoring_back)
 
         self.scoring_phase_table = QTableWidget(0, 5, self.scoring_panel)
@@ -2046,6 +2090,11 @@ class MainWindow(QMainWindow):
             self.scan_lr_split.setVisible(False)
         if hasattr(self, "scoring_panel"):
             self.scoring_panel.setVisible(True)
+
+    def _back_to_batch_scan(self) -> None:
+        if not self._confirm_before_switching_work("Batch Scan"):
+            return
+        self._show_batch_scan_panel()
 
     def _subject_configs_for_scoring(self) -> list[dict]:
         return self._effective_subject_configs_for_batch()
@@ -5482,6 +5531,112 @@ class MainWindow(QMainWindow):
                 )
         return messages
 
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = dict(template_expected)
+        subject_key_name = self.active_batch_subject_key
+        if not subject_key_name and self.session and self.session.subjects:
+            subject_key_name = self.session.subjects[0]
+        if self.answer_keys and subject_key_name:
+            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
+            if key:
+                key_sections = {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                }
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    if not key_sections[sec]:
+                        continue
+                    template_set = set(template_expected.get(sec, []))
+                    key_set = set(key_sections[sec])
+                    if template_set:
+                        overlap = sorted(template_set & key_set)
+                        # If answer key numbering does not align with template numbering, keep template scope.
+                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
+                        if overlap:
+                            expected_by_section[sec] = overlap
+                    else:
+                        expected_by_section[sec] = key_sections[sec]
+        return expected_by_section
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        blank_parts = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            vals = blank_map.get(sec, [])
+            if vals:
+                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        return " | ".join(blank_parts) if blank_parts else ""
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+
+    def _count_mismatch_status_parts(self, result) -> list[str]:
+        expected = self._expected_questions_by_section(result)
+        actual_map = {
+            "MCQ": set((result.mcq_answers or {}).keys()),
+            "TF": set((result.true_false_answers or {}).keys()),
+            "NUMERIC": set((result.numeric_answers or {}).keys()),
+        }
+        messages: list[str] = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            expected_set = set(expected.get(sec, []))
+            if not expected_set:
+                continue
+            actual_set = {int(q) for q in actual_map.get(sec, set())}
+            missing = sorted(expected_set - actual_set)
+            if missing:
+                messages.append(
+                    f"thiếu {sec} ({len(expected_set)-len(missing)}/{len(expected_set)}): {','.join(str(v) for v in missing)}"
+                )
+        return messages
+
     def _apply_scan_filter(self) -> None:
         value = self.search_value.text().strip().lower()
         col = self.filter_column.currentIndex()
@@ -6108,8 +6263,15 @@ class MainWindow(QMainWindow):
         self.exam_code_preview.setText(f"Mã đề trên phiếu trả lời mẫu: {codes}")
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
-        if self.session_dirty:
-            if not self._confirm("Thoát", "Kỳ thi hiện tại có thay đổi chưa lưu. Bạn vẫn muốn thoát?"):
+        if self._has_pending_unsaved_work():
+            choice = self._prompt_save_changes_word_style(
+                "Thoát ứng dụng",
+                "Bạn muốn lưu thay đổi trước khi thoát không?",
+            )
+            if choice == "cancel":
+                event.ignore()
+                return
+            if choice == "save" and not self._save_current_work():
                 event.ignore()
                 return
         event.accept()
