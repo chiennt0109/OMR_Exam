@@ -44,7 +44,7 @@ from core.scoring_engine import ScoringEngine
 from editor.template_editor import TemplateEditorWindow
 from gui.import_answer_key_dialog import ImportAnswerKeyDialog
 from models.answer_key import AnswerKeyRepository, SubjectKey
-from models.exam_session import ExamSession
+from models.exam_session import ExamSession, Student
 from models.template import Template
 
 
@@ -409,6 +409,8 @@ class NewExamDialog(QDialog):
         self.setWindowTitle("Sửa kỳ thi" if data else "Tạo kỳ thi mới")
         self.resize(860, 640)
         self.subject_configs: list[dict] = list(data.get("subject_configs", []))
+        self.student_list_path_value = str(data.get("student_list_path", "") or "")
+        self.student_rows: list[dict] = list(data.get("students", [])) if isinstance(data.get("students", []), list) else []
         self.on_batch_scan_subject = on_batch_scan_subject
         self.on_save_exam = on_save_exam
         self.stay_open_on_save = bool(stay_open_on_save)
@@ -421,6 +423,9 @@ class NewExamDialog(QDialog):
         self.exam_name = QLineEdit(str(data.get("exam_name", "")))
         self.common_template = QLineEdit(str(data.get("common_template", "")))
         self.scan_root = QLineEdit(str(data.get("scan_root", "")))
+        self.student_list_path = QLineEdit(self.student_list_path_value)
+        self.student_list_path.setReadOnly(True)
+        self.student_count_label = QLabel(f"{len(self.student_rows)} học sinh")
         self.scan_mode = QComboBox(); self.scan_mode.addItems(["Ảnh trong thư mục gốc", "Ảnh theo phòng thi (thư mục con)"])
         self.scan_mode.setCurrentText(str(data.get("scan_mode", "Ảnh trong thư mục gốc")))
         self.paper_part_count = QComboBox(); self.paper_part_count.addItems(["1", "2", "3", "4", "5"]); self.paper_part_count.setCurrentText(str(data.get("paper_part_count", "3")))
@@ -429,10 +434,16 @@ class NewExamDialog(QDialog):
         btn_tpl.clicked.connect(self._browse_common_template)
         row_scan = QHBoxLayout(); row_scan.addWidget(self.scan_root); btn_scan = QPushButton("..."); row_scan.addWidget(btn_scan)
         btn_scan.clicked.connect(self._browse_scan_root)
+        row_students = QHBoxLayout(); row_students.addWidget(self.student_list_path)
+        btn_students = QPushButton("Import Excel...")
+        row_students.addWidget(btn_students)
+        row_students.addWidget(self.student_count_label)
+        btn_students.clicked.connect(self._import_student_list)
 
         form.addRow("Tên kỳ thi", self.exam_name)
         form.addRow("Giấy thi dùng chung", row_tpl)
         form.addRow("Thư mục gốc bài thi", row_scan)
+        form.addRow("Danh sách học sinh", row_students)
         form.addRow("Cơ chế thư mục bài thi", self.scan_mode)
         form.addRow("Số phần trên giấy thi", self.paper_part_count)
         lay.addLayout(form)
@@ -484,6 +495,92 @@ class NewExamDialog(QDialog):
         path = QFileDialog.getExistingDirectory(self, "Chọn thư mục gốc bài thi")
         if path:
             self.scan_root.setText(path)
+
+    def _import_student_list(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import danh sách học sinh", "", "Excel/CSV (*.xlsx *.xls *.csv)")
+        if not path:
+            return
+        try:
+            import pandas as pd
+            if Path(path).suffix.lower() in {".xlsx", ".xls"}:
+                df = pd.read_excel(path)
+            else:
+                df = pd.read_csv(path)
+        except Exception as exc:
+            QMessageBox.warning(self, "Danh sách học sinh", f"Không đọc được file học sinh:\n{exc}")
+            return
+        if df.empty:
+            QMessageBox.warning(self, "Danh sách học sinh", "File học sinh rỗng.")
+            return
+
+        columns = [str(c) for c in df.columns]
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Mapping cột danh sách học sinh")
+        lay = QVBoxLayout(dlg)
+        frm = QFormLayout()
+        c_sid = QComboBox(); c_sid.addItems(columns)
+        c_name = QComboBox(); c_name.addItems(columns)
+        c_birth = QComboBox(); c_birth.addItems(["[Không dùng]"] + columns)
+        c_class = QComboBox(); c_class.addItems(["[Không dùng]"] + columns)
+        c_room = QComboBox(); c_room.addItems(["[Không dùng]"] + columns)
+        # best-effort default picks
+        lower_cols = {x.lower(): x for x in columns}
+        for key, cb in [
+            ("studentid", c_sid), ("sobaodanh", c_sid), ("student_id", c_sid),
+            ("name", c_name), ("hoten", c_name), ("họ tên", c_name),
+        ]:
+            if key in lower_cols:
+                cb.setCurrentText(lower_cols[key])
+        frm.addRow("Số báo danh (bắt buộc)", c_sid)
+        frm.addRow("Họ tên (bắt buộc)", c_name)
+        frm.addRow("Ngày sinh", c_birth)
+        frm.addRow("Lớp", c_class)
+        frm.addRow("Phòng thi", c_room)
+        lay.addLayout(frm)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        sid_col = c_sid.currentText().strip()
+        name_col = c_name.currentText().strip()
+        if not sid_col or not name_col:
+            QMessageBox.warning(self, "Danh sách học sinh", "Bắt buộc map cột Số báo danh và Họ tên.")
+            return
+
+        def _col_value(row_obj, col_name: str) -> str:
+            if not col_name or col_name == "[Không dùng]":
+                return ""
+            v = row_obj.get(col_name, "")
+            return "" if v is None else str(v).strip()
+
+        out: list[dict] = []
+        for _, row_obj in df.iterrows():
+            sid = _col_value(row_obj, sid_col)
+            name = _col_value(row_obj, name_col)
+            if not sid or not name:
+                continue
+            out.append(
+                {
+                    "student_id": sid,
+                    "name": name,
+                    "birth_date": _col_value(row_obj, c_birth.currentText()),
+                    "class_name": _col_value(row_obj, c_class.currentText()),
+                    "exam_room": _col_value(row_obj, c_room.currentText()),
+                }
+            )
+
+        if not out:
+            QMessageBox.warning(self, "Danh sách học sinh", "Không có dòng hợp lệ (thiếu Số báo danh/Họ tên).")
+            return
+
+        self.student_rows = out
+        self.student_list_path_value = path
+        self.student_list_path.setText(path)
+        self.student_count_label.setText(f"{len(out)} học sinh")
+        QMessageBox.information(self, "Danh sách học sinh", f"Đã import {len(out)} học sinh.")
 
     def _refresh_subject_list(self) -> None:
         self.subject_table.setRowCount(len(self.subject_configs))
@@ -691,6 +788,8 @@ class NewExamDialog(QDialog):
             "exam_name": self.exam_name.text().strip(),
             "common_template": self.common_template.text().strip(),
             "scan_root": self.scan_root.text().strip(),
+            "student_list_path": self.student_list_path_value,
+            "students": self.student_rows,
             "scan_mode": self.scan_mode.currentText(),
             "paper_part_count": int(self.paper_part_count.currentText()),
             "subject_configs": self.subject_configs,
@@ -975,6 +1074,17 @@ class MainWindow(QMainWindow):
                 "exam_name": session.exam_name,
                 "common_template": session.template_path,
                 "scan_root": cfg.get("scan_root", ""),
+                "student_list_path": cfg.get("student_list_path", ""),
+                "students": [
+                    {
+                        "student_id": s.student_id,
+                        "name": s.name,
+                        "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
+                        "class_name": str((s.extra or {}).get("class_name", "") or ""),
+                        "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
+                    }
+                    for s in (session.students or [])
+                ],
                 "scan_mode": cfg.get("scan_mode", "Ảnh trong thư mục gốc"),
                 "paper_part_count": cfg.get("paper_part_count", 3),
                 "subject_configs": cfg.get("subject_configs", []),
@@ -1027,10 +1137,25 @@ class MainWindow(QMainWindow):
                 for x in edited.get("subject_configs", [])
                 if str(x.get("name", "")).strip()
             ] or session.subjects
+            incoming_students = edited.get("students", []) if isinstance(edited.get("students", []), list) else []
+            session.students = [
+                Student(
+                    student_id=str(x.get("student_id", "") or "").strip(),
+                    name=str(x.get("name", "") or "").strip(),
+                    extra={
+                        "birth_date": str(x.get("birth_date", "") or ""),
+                        "class_name": str(x.get("class_name", "") or ""),
+                        "exam_room": str(x.get("exam_room", "") or ""),
+                    },
+                )
+                for x in incoming_students
+                if str(x.get("student_id", "") or "").strip() and str(x.get("name", "") or "").strip()
+            ]
             session.config = {
                 **(session.config or {}),
                 "scan_mode": edited.get("scan_mode", "Ảnh trong thư mục gốc"),
                 "scan_root": edited.get("scan_root", ""),
+                "student_list_path": edited.get("student_list_path", ""),
                 "paper_part_count": edited.get("paper_part_count", 3),
                 "subject_configs": edited.get("subject_configs", []),
                 "subject_catalog": self.subject_catalog,
@@ -1107,6 +1232,17 @@ class MainWindow(QMainWindow):
             "exam_name": exam_name,
             "common_template": common_template,
             "scan_root": str(payload.get("scan_root") or (base_session.config or {}).get("scan_root", "") or ""),
+            "student_list_path": str(payload.get("student_list_path") or (base_session.config or {}).get("student_list_path", "") or ""),
+            "students": list(payload.get("students", [])) if isinstance(payload.get("students", []), list) else [
+                {
+                    "student_id": s.student_id,
+                    "name": s.name,
+                    "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
+                    "class_name": str((s.extra or {}).get("class_name", "") or ""),
+                    "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
+                }
+                for s in (base_session.students or [])
+            ],
             "scan_mode": str(payload.get("scan_mode") or (base_session.config or {}).get("scan_mode", "Ảnh trong thư mục gốc")),
             "paper_part_count": int(payload.get("paper_part_count") or (base_session.config or {}).get("paper_part_count", 3) or 3),
             "subject_configs": all_subjects,
@@ -1123,9 +1259,11 @@ class MainWindow(QMainWindow):
             subjects=[f"{subject_cfg.get('name', '')}_{subject_cfg.get('block', '')}"],
             template_path=common_template,
             answer_key_path=str(base_session.answer_key_path or ""),
+            students=list(base_session.students or []),
             config={
                 "scan_mode": scan_mode,
                 "scan_root": scan_root,
+                "student_list_path": str(payload.get("student_list_path") or (base_session.config or {}).get("student_list_path", "") or ""),
                 "paper_part_count": paper_part_count,
                 "subject_configs": all_subjects,
                 "subject_catalog": self.subject_catalog,
@@ -1792,6 +1930,17 @@ class MainWindow(QMainWindow):
         cfg = session.config or {}
         payload["subject_configs"] = cfg.get("subject_configs", payload.get("subject_configs", []))
         payload["scan_root"] = cfg.get("scan_root", payload.get("scan_root", ""))
+        payload["student_list_path"] = cfg.get("student_list_path", payload.get("student_list_path", ""))
+        payload["students"] = [
+            {
+                "student_id": s.student_id,
+                "name": s.name,
+                "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
+                "class_name": str((s.extra or {}).get("class_name", "") or ""),
+                "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
+            }
+            for s in (session.students or [])
+        ]
         payload["scan_mode"] = cfg.get("scan_mode", payload.get("scan_mode", "Ảnh trong thư mục gốc"))
         payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
         self._open_embedded_exam_editor(session_id, session, payload)
@@ -2196,9 +2345,23 @@ class MainWindow(QMainWindow):
             subjects=subjects,
             template_path=common_template,
             answer_key_path="",
+            students=[
+                Student(
+                    student_id=str(x.get("student_id", "") or "").strip(),
+                    name=str(x.get("name", "") or "").strip(),
+                    extra={
+                        "birth_date": str(x.get("birth_date", "") or ""),
+                        "class_name": str(x.get("class_name", "") or ""),
+                        "exam_room": str(x.get("exam_room", "") or ""),
+                    },
+                )
+                for x in (payload.get("students", []) if isinstance(payload.get("students", []), list) else [])
+                if str(x.get("student_id", "") or "").strip() and str(x.get("name", "") or "").strip()
+            ],
             config={
                 "scan_mode": payload.get("scan_mode", "Ảnh trong thư mục gốc"),
                 "scan_root": payload.get("scan_root", ""),
+                "student_list_path": payload.get("student_list_path", ""),
                 "paper_part_count": payload.get("paper_part_count", 3),
                 "subject_configs": subject_cfgs,
                 "subject_catalog": self.subject_catalog,
@@ -2252,6 +2415,20 @@ class MainWindow(QMainWindow):
         cfg = self.session.config or {}
         raw = cfg.get("subject_configs", [])
         return raw if isinstance(raw, list) else []
+
+    def _student_profile_by_id(self, student_id: str) -> dict:
+        sid = str(student_id or "").strip()
+        if not sid or not self.session:
+            return {}
+        for s in (self.session.students or []):
+            if str(getattr(s, "student_id", "") or "").strip() == sid:
+                return {
+                    "name": str(getattr(s, "name", "") or ""),
+                    "birth_date": str((getattr(s, "extra", {}) or {}).get("birth_date", "") or ""),
+                    "class_name": str((getattr(s, "extra", {}) or {}).get("class_name", "") or ""),
+                    "exam_room": str((getattr(s, "extra", {}) or {}).get("exam_room", "") or ""),
+                }
+        return {}
 
     @staticmethod
     def _normalize_template_path(path_text: str) -> str:
@@ -2621,6 +2798,15 @@ class MainWindow(QMainWindow):
             rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
             total_errors = len(rec_errors) + len(result.issues)
             sid = (result.student_id or "").strip()
+            profile = self._student_profile_by_id(sid)
+            if profile.get("name"):
+                setattr(result, "full_name", profile.get("name"))
+            if profile.get("birth_date"):
+                setattr(result, "birth_date", profile.get("birth_date"))
+            if profile.get("class_name"):
+                setattr(result, "class_name", profile.get("class_name"))
+            if profile.get("exam_room"):
+                setattr(result, "exam_room", profile.get("exam_room"))
             full_name = str(getattr(result, "full_name", "") or "-")
             birth_date = str(getattr(result, "birth_date", "") or "-")
             self._trim_result_answers_to_expected_scope(result)
@@ -2707,6 +2893,112 @@ class MainWindow(QMainWindow):
                     # Only override when the answer key explicitly defines that section.
                     # If key section is empty, keep template range to avoid trimming valid recognized data.
                     if key_sections[sec]:
+                        expected_by_section[sec] = key_sections[sec]
+        return expected_by_section
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        blank_parts = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            vals = blank_map.get(sec, [])
+            if vals:
+                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        return " | ".join(blank_parts) if blank_parts else ""
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+
+    def _count_mismatch_status_parts(self, result) -> list[str]:
+        expected = self._expected_questions_by_section(result)
+        actual_map = {
+            "MCQ": set((result.mcq_answers or {}).keys()),
+            "TF": set((result.true_false_answers or {}).keys()),
+            "NUMERIC": set((result.numeric_answers or {}).keys()),
+        }
+        messages: list[str] = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            expected_set = set(expected.get(sec, []))
+            if not expected_set:
+                continue
+            actual_set = {int(q) for q in actual_map.get(sec, set())}
+            missing = sorted(expected_set - actual_set)
+            if missing:
+                messages.append(
+                    f"thiếu {sec} ({len(expected_set)-len(missing)}/{len(expected_set)}): {','.join(str(v) for v in missing)}"
+                )
+        return messages
+
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = dict(template_expected)
+        subject_key_name = self.active_batch_subject_key
+        if not subject_key_name and self.session and self.session.subjects:
+            subject_key_name = self.session.subjects[0]
+        if self.answer_keys and subject_key_name:
+            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
+            if key:
+                key_sections = {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                }
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    if not key_sections[sec]:
+                        continue
+                    template_set = set(template_expected.get(sec, []))
+                    key_set = set(key_sections[sec])
+                    if template_set:
+                        overlap = sorted(template_set & key_set)
+                        # If answer key numbering does not align with template numbering, keep template scope.
+                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
+                        if overlap:
+                            expected_by_section[sec] = overlap
+                    else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
 
@@ -5379,6 +5671,11 @@ class MainWindow(QMainWindow):
         missing = 0
         for scan in subject_scans:
             sid = (scan.student_id or "").strip()
+            profile = self._student_profile_by_id(sid)
+            if profile.get("name") and not str(getattr(scan, "full_name", "") or "").strip():
+                setattr(scan, "full_name", profile.get("name"))
+            if profile.get("birth_date") and not str(getattr(scan, "birth_date", "") or "").strip():
+                setattr(scan, "birth_date", profile.get("birth_date"))
             if mode_text == "Chỉ tính bài chưa có điểm" and sid and sid in prev_subject_scores:
                 continue
             key = self.answer_keys.get(subject, scan.exam_code)
