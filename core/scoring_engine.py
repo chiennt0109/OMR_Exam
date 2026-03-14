@@ -20,6 +20,9 @@ class ScoreResult:
     wrong: int
     blank: int
     score: float
+    mcq_correct: int = 0
+    tf_correct: int = 0
+    numeric_correct: int = 0
 
 
 class ScoringEngine:
@@ -81,11 +84,24 @@ class ScoringEngine:
             "mcq_per": mcq_per,
             "num_per": num_per,
             "tf_points": tf_points_by_correct,
+            "mode": mode,
         }
+
+    def describe_formula(self, subject_key: SubjectKey, subject_config: dict | None = None) -> str:
+        profile = self._score_profile(subject_key, subject_config)
+        tf_map = profile.get("tf_points", {}) or {}
+        tf_desc = ", ".join([f"{k} ý={v:g}" for k, v in sorted(tf_map.items()) if isinstance(k, int)])
+        return (
+            f"Công thức ({profile.get('mode', 'Điểm theo phần')}): "
+            f"Điểm = (MCQ_đúng × {profile['mcq_per']:g}) + "
+            f"(NUMERIC_đúng × {profile['num_per']:g}) + "
+            f"Σ điểm_TF_theo_số_ý_đúng; TF: [{tf_desc}]"
+        )
 
     def score(self, omr: OMRResult, subject_key: SubjectKey, student_name: str = "", subject_config: dict | None = None) -> ScoreResult:
         correct = wrong = blank = 0
         score = 0.0
+        mcq_correct = tf_correct = numeric_correct = 0
         profile = self._score_profile(subject_key, subject_config)
 
         for q_no, key_answer in subject_key.answers.items():
@@ -97,6 +113,7 @@ class ScoringEngine:
                 continue
             if marked == key_answer:
                 correct += 1
+                mcq_correct += 1
                 score += profile["mcq_per"]
             else:
                 wrong += 1
@@ -118,6 +135,7 @@ class ScoringEngine:
             score += profile["tf_points"].get(matched, 0.0)
             if matched == len(key_map):
                 correct += 1
+                tf_correct += 1
             else:
                 wrong += 1
 
@@ -130,6 +148,7 @@ class ScoringEngine:
                 continue
             if str(marked).strip() == str(key_answer).strip():
                 correct += 1
+                numeric_correct += 1
                 score += profile["num_per"]
             else:
                 wrong += 1
@@ -143,6 +162,9 @@ class ScoringEngine:
             wrong=wrong,
             blank=blank,
             score=round(score, 4),
+            mcq_correct=mcq_correct,
+            tf_correct=tf_correct,
+            numeric_correct=numeric_correct,
         )
 
     def export_csv(self, rows: list[ScoreResult], output_path: str | Path) -> None:
