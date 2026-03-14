@@ -38,10 +38,11 @@ class ScoringEngine:
         return text not in {"", "-", "?"}
 
     @staticmethod
-    def _is_countable_tf_key(value: dict[str, bool] | None) -> bool:
-        if not isinstance(value, dict) or not value:
-            return False
-        return any(k in value for k in ["a", "b", "c", "d"])
+    def _is_countable_tf_key(value: object) -> bool:
+        if isinstance(value, dict) and value:
+            return any(str(k).lower() in {"a", "b", "c", "d"} for k in value.keys())
+        text = str(value or "").strip()
+        return text not in {"", "-", "?"}
 
     @staticmethod
     def _to_float(value: object, default: float = 0.0) -> float:
@@ -71,15 +72,30 @@ class ScoringEngine:
         text = text.replace(" ", "").replace(",", ".")
         if text.startswith("+"):
             text = text[1:]
-        # Keep only one decimal separator format and normalize by Decimal.
-        try:
-            dec = Decimal(text)
-        except (InvalidOperation, ValueError):
-            return text
-        norm = format(dec.normalize(), "f")
-        if "." in norm:
-            norm = norm.rstrip("0").rstrip(".")
-        return "0" if norm in {"", "-0"} else norm
+        return text
+
+    def _tf_to_canonical_string(self, value: object) -> str:
+        if isinstance(value, dict):
+            out: list[str] = []
+            for opt in ["a", "b", "c", "d"]:
+                if opt not in value:
+                    continue
+                parsed = self._to_bool_mark(value.get(opt))
+                if parsed is None:
+                    continue
+                out.append("Đ" if parsed else "S")
+            return "".join(out)
+
+        raw = str(value or "").strip().upper().replace(" ", "")
+        if not raw:
+            return ""
+        chars: list[str] = []
+        for ch in raw:
+            parsed = self._to_bool_mark(ch)
+            if parsed is None:
+                continue
+            chars.append("Đ" if parsed else "S")
+        return "".join(chars)
 
     def _score_profile(self, subject_key: SubjectKey, subject_config: dict | None) -> dict:
         cfg = subject_config if isinstance(subject_config, dict) else {}
@@ -158,26 +174,18 @@ class ScoringEngine:
                 blank += 1
                 continue
 
-            key_map = {
-                str(k).lower(): parsed
-                for k, v in (key_answer or {}).items()
-                if str(k).lower() in {"a", "b", "c", "d"}
-                for parsed in [self._to_bool_mark(v)]
-                if parsed is not None
-            }
-            marked_map = {
-                str(k).lower(): parsed
-                for k, v in (marked or {}).items()
-                if str(k).lower() in {"a", "b", "c", "d"}
-                for parsed in [self._to_bool_mark(v)]
-                if parsed is not None
-            }
-            if not key_map:
+            key_tf = self._tf_to_canonical_string(key_answer)
+            marked_tf = self._tf_to_canonical_string(marked)
+            if not key_tf:
+                continue
+            if not marked_tf:
+                blank += 1
                 continue
 
-            matched = sum(1 for opt, val in key_map.items() if opt in marked_map and marked_map.get(opt) == val)
+            compare_len = min(len(key_tf), len(marked_tf))
+            matched = sum(1 for i in range(compare_len) if key_tf[i] == marked_tf[i])
             score += profile["tf_points"].get(matched, 0.0)
-            if matched == len(key_map):
+            if len(key_tf) == len(marked_tf) and matched == len(key_tf):
                 correct += 1
                 tf_correct += 1
             else:
