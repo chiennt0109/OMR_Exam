@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
+from decimal import Decimal, InvalidOperation
 import csv
 import json
 from pathlib import Path
