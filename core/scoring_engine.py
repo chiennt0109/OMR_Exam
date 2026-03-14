@@ -23,11 +23,30 @@ class ScoreResult:
 
 
 class ScoringEngine:
+    @staticmethod
+    def _is_countable_mcq_key(value: str | None) -> bool:
+        text = str(value or "").strip()
+        return text not in {"", "-", "?"}
+
+    @staticmethod
+    def _is_countable_numeric_key(value: str | None) -> bool:
+        text = str(value or "").strip()
+        return text not in {"", "-", "?"}
+
+    @staticmethod
+    def _is_countable_tf_key(value: dict[str, bool] | None) -> bool:
+        if not isinstance(value, dict) or not value:
+            return False
+        # Count only when at least one option is explicitly defined.
+        return any(k in value for k in ["a", "b", "c", "d"])
+
     def score(self, omr: OMRResult, subject_key: SubjectKey, student_name: str = "") -> ScoreResult:
         correct = wrong = blank = 0
         score = 0.0
 
         for q_no, key_answer in subject_key.answers.items():
+            if not self._is_countable_mcq_key(key_answer):
+                continue
             marked = (omr.mcq_answers or {}).get(q_no)
             if not marked:
                 blank += 1
@@ -39,6 +58,8 @@ class ScoringEngine:
                 wrong += 1
 
         for q_no, key_answer in (subject_key.true_false_answers or {}).items():
+            if not self._is_countable_tf_key(key_answer):
+                continue
             marked = (omr.true_false_answers or {}).get(q_no)
             if not marked:
                 blank += 1
@@ -50,6 +71,8 @@ class ScoringEngine:
                 wrong += 1
 
         for q_no, key_answer in (subject_key.numeric_answers or {}).items():
+            if not self._is_countable_numeric_key(key_answer):
+                continue
             marked = (omr.numeric_answers or {}).get(q_no)
             if marked is None or str(marked).strip() == "":
                 blank += 1
