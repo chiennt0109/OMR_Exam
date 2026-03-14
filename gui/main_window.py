@@ -1679,6 +1679,60 @@ class MainWindow(QMainWindow):
     def _subject_configs_for_scoring(self) -> list[dict]:
         return self._effective_subject_configs_for_batch()
 
+    def _subject_config_by_subject_key(self, subject_key: str) -> dict | None:
+        key_norm = str(subject_key or "").strip()
+        if not key_norm:
+            return None
+        for cfg in self._subject_configs_for_scoring():
+            if self._subject_key_from_cfg(cfg) == key_norm:
+                return cfg
+        return None
+
+    def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
+        if self.answer_keys and any(str(k).startswith(f"{subject_key}::") for k in self.answer_keys.keys.keys()):
+            return True
+        cfg = self._subject_config_by_subject_key(subject_key)
+        if not cfg:
+            return self.answer_keys is not None
+
+        imported_keys = cfg.get("imported_answer_keys", {}) or {}
+        if isinstance(imported_keys, dict) and imported_keys:
+            repo = AnswerKeyRepository()
+            for exam_code, kd in imported_keys.items():
+                repo.upsert(
+                    SubjectKey(
+                        subject=subject_key,
+                        exam_code=str(exam_code),
+                        answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
+                        true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
+                        numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
+                    )
+                )
+            self.answer_keys = repo
+            self.imported_exam_codes = sorted(str(k) for k in imported_keys.keys())
+            self.active_batch_subject_key = subject_key
+            return True
+
+        answer_key_path = str(cfg.get("answer_key_path", "") or (self.session.answer_key_path if self.session else "") or "")
+        if answer_key_path:
+            pth = Path(answer_key_path)
+            if pth.exists() and pth.suffix.lower() == ".json":
+                try:
+                    self.answer_keys = AnswerKeyRepository.load_json(pth)
+                    all_codes: set[str] = set()
+                    for key_name in self.answer_keys.keys.keys():
+                        parts = str(key_name).split("::", 1)
+                        if len(parts) == 2 and parts[0] == subject_key:
+                            all_codes.add(parts[1])
+                    if all_codes:
+                        self.imported_exam_codes = sorted(all_codes)
+                    self.active_batch_subject_key = subject_key
+                    return True
+                except Exception:
+                    pass
+
+        return self.answer_keys is not None
+
     @staticmethod
     def _subject_key_from_cfg(cfg: dict) -> str:
         key = str(cfg.get("answer_key_key", "") or "").strip()
@@ -2694,6 +2748,112 @@ class MainWindow(QMainWindow):
                 )
         return messages
 
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = dict(template_expected)
+        subject_key_name = self.active_batch_subject_key
+        if not subject_key_name and self.session and self.session.subjects:
+            subject_key_name = self.session.subjects[0]
+        if self.answer_keys and subject_key_name:
+            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
+            if key:
+                key_sections = {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                }
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    if not key_sections[sec]:
+                        continue
+                    template_set = set(template_expected.get(sec, []))
+                    key_set = set(key_sections[sec])
+                    if template_set:
+                        overlap = sorted(template_set & key_set)
+                        # If answer key numbering does not align with template numbering, keep template scope.
+                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
+                        if overlap:
+                            expected_by_section[sec] = overlap
+                    else:
+                        expected_by_section[sec] = key_sections[sec]
+        return expected_by_section
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        blank_parts = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            vals = blank_map.get(sec, [])
+            if vals:
+                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        return " | ".join(blank_parts) if blank_parts else ""
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+
+    def _count_mismatch_status_parts(self, result) -> list[str]:
+        expected = self._expected_questions_by_section(result)
+        actual_map = {
+            "MCQ": set((result.mcq_answers or {}).keys()),
+            "TF": set((result.true_false_answers or {}).keys()),
+            "NUMERIC": set((result.numeric_answers or {}).keys()),
+        }
+        messages: list[str] = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            expected_set = set(expected.get(sec, []))
+            if not expected_set:
+                continue
+            actual_set = {int(q) for q in actual_map.get(sec, set())}
+            missing = sorted(expected_set - actual_set)
+            if missing:
+                messages.append(
+                    f"thiếu {sec} ({len(expected_set)-len(missing)}/{len(expected_set)}): {','.join(str(v) for v in missing)}"
+                )
+        return messages
+
     def _apply_scan_filter(self) -> None:
         value = self.search_value.text().strip().lower()
         col = self.filter_column.currentIndex()
@@ -3154,11 +3314,15 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Correction", "Manual correction applied to selected scan.")
 
     def calculate_scores(self, subject_key: str = "", mode: str = "Tính lại toàn bộ", note: str = "") -> list:
-        if not self.scan_results or not self.answer_keys:
+        if not self.scan_results:
             QMessageBox.warning(self, "Missing data", "Run scans and load/import answer keys first.")
             return []
 
         subject = (subject_key or self._resolve_preferred_scoring_subject() or "General").strip()
+        self._ensure_answer_keys_for_subject(subject)
+        if not self.answer_keys:
+            QMessageBox.warning(self, "Missing data", "Run scans and load/import answer keys first.")
+            return []
         mode_text = (mode or "Tính lại toàn bộ").strip()
         prev_subject_scores = self.scoring_results_by_subject.get(subject, {})
         rows = []
