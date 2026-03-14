@@ -556,6 +556,56 @@ class NewExamDialog(QDialog):
             return ""
         return t
 
+    @staticmethod
+    def _subject_identity_changed(old_cfg: dict, new_cfg: dict) -> bool:
+        def _norm(v: object) -> str:
+            return str(v or "").strip().lower()
+        watched = ["template_path", "scan_folder", "name", "block", "answer_key_key"]
+        return any(_norm(old_cfg.get(k)) != _norm(new_cfg.get(k)) for k in watched)
+
+    @staticmethod
+    def _copy_noncritical_subject_updates(old_cfg: dict, new_cfg: dict) -> dict:
+        merged = dict(old_cfg)
+        merged.update(new_cfg)
+        # Preserve batch/scoring artifacts when identity is unchanged.
+        for k in [
+            "batch_saved",
+            "batch_saved_at",
+            "batch_result_count",
+            "batch_saved_rows",
+            "batch_saved_preview",
+            "batch_saved_results",
+        ]:
+            if k in old_cfg:
+                merged[k] = old_cfg.get(k)
+        return merged
+
+    def _confirm_subject_identity_change(self, old_cfg: dict, new_cfg: dict) -> str:
+        has_existing_batch = bool(old_cfg.get("batch_saved")) or bool(old_cfg.get("batch_saved_rows")) or bool(old_cfg.get("batch_saved_results"))
+        if not has_existing_batch:
+            return "apply"
+
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Môn đã có dữ liệu nhận dạng")
+        msg.setIcon(QMessageBox.Warning)
+        msg.setText(
+            "Bạn đã thay đổi thông tin ảnh hưởng đến nhận dạng/chấm điểm (mẫu giấy, thư mục quét, tên môn, khối hoặc mã đáp án môn_khối)."
+        )
+        msg.setInformativeText(
+            "Giữ dữ liệu Batch cũ có thể làm sai kết quả.\n"
+            "Yes: Xóa trạng thái/dữ liệu nhận dạng của môn này và áp dụng thay đổi.\n"
+            "No: Vẫn giữ dữ liệu nhận dạng cũ và áp dụng thay đổi.\n"
+            "Cancel: Hủy chỉnh sửa."
+        )
+        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
+        msg.setDefaultButton(QMessageBox.Yes)
+        ch = msg.exec()
+        if ch == QMessageBox.Cancel:
+            return "cancel"
+        if ch == QMessageBox.Yes:
+            return "reset"
+        return "apply"
+
     def _add_subject(self) -> None:
         dlg = SubjectConfigDialog(
             subject_options=self.subject_options,
@@ -583,7 +633,28 @@ class NewExamDialog(QDialog):
         )
         if dlg.exec() != QDialog.Accepted:
             return
-        self.subject_configs[idx] = dlg.payload()
+        old_cfg = dict(self.subject_configs[idx])
+        edited = dlg.payload()
+
+        if not self._subject_identity_changed(old_cfg, edited):
+            self.subject_configs[idx] = self._copy_noncritical_subject_updates(old_cfg, edited)
+            self._refresh_subject_list()
+            return
+
+        decision = self._confirm_subject_identity_change(old_cfg, edited)
+        if decision == "cancel":
+            return
+        if decision == "reset":
+            updated = dict(edited)
+            updated["batch_saved"] = False
+            updated["batch_saved_at"] = "-"
+            updated["batch_result_count"] = 0
+            updated["batch_saved_rows"] = []
+            updated["batch_saved_preview"] = []
+            updated["batch_saved_results"] = []
+            self.subject_configs[idx] = updated
+        else:
+            self.subject_configs[idx] = dict(old_cfg) | dict(edited)
         self._refresh_subject_list()
 
     def _delete_subject(self) -> None:
@@ -1383,17 +1454,16 @@ class MainWindow(QMainWindow):
             self.export_answer_key_sample()
 
     def action_run_batch_scan(self) -> None:
-        if self._confirm("Batch Scan", "Bạn có chắc muốn mở màn hình Batch Scan?"):
-            if not self.session:
-                QMessageBox.warning(self, "Batch Scan", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
-                return
-            cfgs = self._effective_subject_configs_for_batch()
-            if not cfgs:
-                QMessageBox.warning(self, "Batch Scan", "Kỳ thi hiện tại chưa có môn thi để nhận dạng.")
-                return
-            self.stack.setCurrentIndex(1)
-            self._show_batch_scan_panel()
-            self._refresh_batch_subject_controls()
+        if not self.session:
+            QMessageBox.warning(self, "Batch Scan", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
+            return
+        cfgs = self._effective_subject_configs_for_batch()
+        if not cfgs:
+            QMessageBox.warning(self, "Batch Scan", "Kỳ thi hiện tại chưa có môn thi để nhận dạng.")
+            return
+        self.stack.setCurrentIndex(1)
+        self._show_batch_scan_panel()
+        self._refresh_batch_subject_controls()
 
     def action_execute_batch_scan(self) -> None:
         if self._confirm("Batch Scan", "Bạn có chắc muốn chạy Batch Scan?"):
@@ -1412,8 +1482,7 @@ class MainWindow(QMainWindow):
             self.apply_manual_correction()
 
     def action_calculate_scores(self) -> None:
-        if self._confirm("Calculate Scores", "Bạn có chắc muốn chấm điểm?"):
-            self._open_scoring_view()
+        self._open_scoring_view()
 
     def action_export_results(self) -> None:
         if self._confirm("Export Results", "Bạn có chắc muốn export kết quả?"):
@@ -1699,15 +1768,6 @@ class MainWindow(QMainWindow):
         return w
 
     def _close_batch_scan_view(self) -> None:
-        if QMessageBox.question(
-            self,
-            "Đóng Batch Scan",
-            "Đóng màn hình Batch Scan để quay lại màn hình xem kỳ thi?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        ) != QMessageBox.Yes:
-            return
-
         if self.batch_editor_return_payload is None:
             self.stack.setCurrentIndex(0)
             return
@@ -2647,6 +2707,112 @@ class MainWindow(QMainWindow):
                     # Only override when the answer key explicitly defines that section.
                     # If key section is empty, keep template range to avoid trimming valid recognized data.
                     if key_sections[sec]:
+                        expected_by_section[sec] = key_sections[sec]
+        return expected_by_section
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        blank_parts = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            vals = blank_map.get(sec, [])
+            if vals:
+                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        return " | ".join(blank_parts) if blank_parts else ""
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+
+    def _count_mismatch_status_parts(self, result) -> list[str]:
+        expected = self._expected_questions_by_section(result)
+        actual_map = {
+            "MCQ": set((result.mcq_answers or {}).keys()),
+            "TF": set((result.true_false_answers or {}).keys()),
+            "NUMERIC": set((result.numeric_answers or {}).keys()),
+        }
+        messages: list[str] = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            expected_set = set(expected.get(sec, []))
+            if not expected_set:
+                continue
+            actual_set = {int(q) for q in actual_map.get(sec, set())}
+            missing = sorted(expected_set - actual_set)
+            if missing:
+                messages.append(
+                    f"thiếu {sec} ({len(expected_set)-len(missing)}/{len(expected_set)}): {','.join(str(v) for v in missing)}"
+                )
+        return messages
+
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = dict(template_expected)
+        subject_key_name = self.active_batch_subject_key
+        if not subject_key_name and self.session and self.session.subjects:
+            subject_key_name = self.session.subjects[0]
+        if self.answer_keys and subject_key_name:
+            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
+            if key:
+                key_sections = {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                }
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    if not key_sections[sec]:
+                        continue
+                    template_set = set(template_expected.get(sec, []))
+                    key_set = set(key_sections[sec])
+                    if template_set:
+                        overlap = sorted(template_set & key_set)
+                        # If answer key numbering does not align with template numbering, keep template scope.
+                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
+                        if overlap:
+                            expected_by_section[sec] = overlap
+                    else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
 
