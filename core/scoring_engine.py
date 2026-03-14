@@ -86,13 +86,48 @@ class ScoringEngine:
             return ""
         return f"Q{q_no}:{key_num or '-'}|{marked_num or '-'}"
 
+    @staticmethod
+    def _aligned_marked_answers(key_answers: dict, marked_answers: object) -> dict[int, object]:
+        if not isinstance(key_answers, dict) or not key_answers:
+            return {}
+        if not isinstance(marked_answers, dict) or not marked_answers:
+            return {}
+
+        key_qs = sorted(int(k) for k in key_answers.keys())
+        raw_marked: dict[int, object] = {}
+        for mk, mv in marked_answers.items():
+            try:
+                raw_marked[int(mk)] = mv
+            except Exception:
+                continue
+        if not raw_marked:
+            return {}
+
+        aligned: dict[int, object] = {}
+        used_marked: set[int] = set()
+
+        # Prefer exact question-number matches first.
+        for q in key_qs:
+            if q in raw_marked:
+                aligned[q] = raw_marked[q]
+                used_marked.add(q)
+
+        # Fallback by positional order for remaining questions (handles shifted numbering like key 13.. vs scan 1..).
+        remaining_marked_qs = [q for q in sorted(raw_marked.keys()) if q not in used_marked]
+        missing_key_qs = [q for q in key_qs if q not in aligned]
+        for kq, mq in zip(missing_key_qs, remaining_marked_qs):
+            aligned[kq] = raw_marked[mq]
+
+        return aligned
+
     def _tf_to_canonical_string(self, value: object) -> str:
         if isinstance(value, dict):
             out: list[str] = []
+            normalized = {str(k).lower(): v for k, v in value.items()}
             for opt in ["a", "b", "c", "d"]:
-                if opt not in value:
+                if opt not in normalized:
                     continue
-                parsed = self._to_bool_mark(value.get(opt))
+                parsed = self._to_bool_mark(normalized.get(opt))
                 if parsed is None:
                     continue
                 out.append("Đ" if parsed else "S")
@@ -165,6 +200,8 @@ class ScoringEngine:
         tf_compare_items: list[str] = []
         numeric_compare_items: list[str] = []
         profile = self._score_profile(subject_key, subject_config)
+        aligned_tf_marked = self._aligned_marked_answers(subject_key.true_false_answers or {}, omr.true_false_answers or {})
+        aligned_numeric_marked = self._aligned_marked_answers(subject_key.numeric_answers or {}, omr.numeric_answers or {})
 
         for q_no, key_answer in subject_key.answers.items():
             if not self._is_countable_mcq_key(key_answer):
@@ -183,7 +220,7 @@ class ScoringEngine:
         for q_no, key_answer in (subject_key.true_false_answers or {}).items():
             if not self._is_countable_tf_key(key_answer):
                 continue
-            marked = (omr.true_false_answers or {}).get(q_no)
+            marked = aligned_tf_marked.get(q_no)
             key_tf = self._tf_to_canonical_string(key_answer)
             marked_tf = self._tf_to_canonical_string(marked)
             if not key_tf:
@@ -205,7 +242,7 @@ class ScoringEngine:
         for q_no, key_answer in (subject_key.numeric_answers or {}).items():
             if not self._is_countable_numeric_key(key_answer):
                 continue
-            marked = (omr.numeric_answers or {}).get(q_no)
+            marked = aligned_numeric_marked.get(q_no)
             norm_marked = self._normalize_numeric_text(marked)
             norm_key = self._normalize_numeric_text(key_answer)
             numeric_compare_items.append(self._build_numeric_compare_text(norm_key, norm_marked, q_no))

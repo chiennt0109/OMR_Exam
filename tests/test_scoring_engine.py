@@ -112,6 +112,33 @@ class ScoringEngineTests(unittest.TestCase):
         self.assertIn("Q16:ĐĐĐS|-", row.tf_compare)
         self.assertIn("Q18:1347|-", row.numeric_compare)
 
+    def test_shifted_question_numbers_still_show_marked_compare(self):
+        key = SubjectKey(
+            subject="Hoa_hoc_11",
+            exam_code="0112",
+            answers={},
+            true_false_answers={13: "ĐĐĐS", 14: "ĐSĐĐ"},
+            numeric_answers={16: "1347", 17: "40"},
+        )
+        omr = OMRResult(
+            image_path="x.png",
+            true_false_answers={1: "ĐĐĐS", 2: "ĐSĐĐ"},
+            numeric_answers={1: "1347", 2: "40"},
+        )
+        cfg = {
+            "score_mode": "Điểm theo câu",
+            "question_scores": {
+                "TF": {"1": 0.1, "2": 0.25, "3": 0.5, "4": 1.0},
+                "NUMERIC": {"per_question": 1.0},
+            },
+        }
+
+        row = self.engine.score(omr, key, subject_config=cfg)
+        self.assertIn("Q13:ĐĐĐS|ĐĐĐS", row.tf_compare)
+        self.assertIn("Q14:ĐSĐĐ|ĐSĐĐ", row.tf_compare)
+        self.assertIn("Q16:1347|1347", row.numeric_compare)
+        self.assertIn("Q17:40|40", row.numeric_compare)
+
 
 if __name__ == "__main__":
     unittest.main()
