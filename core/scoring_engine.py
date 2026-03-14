@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
+from decimal import Decimal, InvalidOperation
 import csv
 import json
 from pathlib import Path
@@ -48,6 +49,37 @@ class ScoringEngine:
             return float(str(value).strip().replace(",", "."))
         except Exception:
             return default
+
+    @staticmethod
+    def _to_bool_mark(value: object) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        text = str(value or "").strip().upper()
+        if not text:
+            return None
+        if text in {"1", "T", "TRUE", "D", "Đ"}:
+            return True
+        if text in {"0", "F", "FALSE", "S"}:
+            return False
+        return None
+
+    @staticmethod
+    def _normalize_numeric_text(value: object) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        text = text.replace(" ", "").replace(",", ".")
+        if text.startswith("+"):
+            text = text[1:]
+        # Keep only one decimal separator format and normalize by Decimal.
+        try:
+            dec = Decimal(text)
+        except (InvalidOperation, ValueError):
+            return text
+        norm = format(dec.normalize(), "f")
+        if "." in norm:
+            norm = norm.rstrip("0").rstrip(".")
+        return "0" if norm in {"", "-0"} else norm
 
     def _score_profile(self, subject_key: SubjectKey, subject_config: dict | None) -> dict:
         cfg = subject_config if isinstance(subject_config, dict) else {}
@@ -126,8 +158,20 @@ class ScoringEngine:
                 blank += 1
                 continue
 
-            key_map = {str(k).lower(): bool(v) for k, v in (key_answer or {}).items() if str(k).lower() in {"a", "b", "c", "d"}}
-            marked_map = {str(k).lower(): bool(v) for k, v in (marked or {}).items() if str(k).lower() in {"a", "b", "c", "d"}}
+            key_map = {
+                str(k).lower(): parsed
+                for k, v in (key_answer or {}).items()
+                if str(k).lower() in {"a", "b", "c", "d"}
+                for parsed in [self._to_bool_mark(v)]
+                if parsed is not None
+            }
+            marked_map = {
+                str(k).lower(): parsed
+                for k, v in (marked or {}).items()
+                if str(k).lower() in {"a", "b", "c", "d"}
+                for parsed in [self._to_bool_mark(v)]
+                if parsed is not None
+            }
             if not key_map:
                 continue
 
@@ -146,7 +190,9 @@ class ScoringEngine:
             if marked is None or str(marked).strip() == "":
                 blank += 1
                 continue
-            if str(marked).strip() == str(key_answer).strip():
+            norm_marked = self._normalize_numeric_text(marked)
+            norm_key = self._normalize_numeric_text(key_answer)
+            if norm_marked and norm_key and norm_marked == norm_key:
                 correct += 1
                 numeric_correct += 1
                 score += profile["num_per"]
