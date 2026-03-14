@@ -1061,6 +1061,18 @@ class MainWindow(QMainWindow):
                 return
         self.session_registry.append({"name": name or "Kỳ thi", "session_id": session_id, "default": False})
 
+    def _session_name_exists(self, exam_name: str, exclude_session_id: str = "") -> bool:
+        name_norm = str(exam_name or "").strip().casefold()
+        if not name_norm:
+            return False
+        for row in self.session_registry:
+            sid = str(row.get("session_id", "") or "")
+            if exclude_session_id and sid == exclude_session_id:
+                continue
+            if str(row.get("name", "") or "").strip().casefold() == name_norm:
+                return True
+        return False
+
     def _build_exam_list_page(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
@@ -1398,8 +1410,8 @@ class MainWindow(QMainWindow):
             },
         )
 
-        self.current_session_path = None
-        self.current_session_id = None
+        self.current_session_id = session_id
+        self.current_session_path = self._session_path_from_id(session_id)
         self.session_dirty = True
         self._refresh_session_info()
         self._refresh_batch_subject_controls()
@@ -1611,8 +1623,53 @@ class MainWindow(QMainWindow):
             return False
 
     def save_session_as(self) -> None:
-        # System-managed storage only.
-        self.save_session()
+        if not self.session:
+            self.create_session()
+        if not self.session:
+            return
+
+        current_name = str(self.session.exam_name or "").strip() or "Kỳ thi"
+        while True:
+            new_name, ok = QInputDialog.getText(
+                self,
+                "Lưu dưới tên khác",
+                "Nhập tên kỳ thi mới:",
+                text=current_name,
+            )
+            if not ok:
+                return
+            new_name = str(new_name or "").strip()
+            if not new_name:
+                QMessageBox.warning(self, "Lưu dưới tên khác", "Tên kỳ thi không được để trống.")
+                continue
+            if self._session_name_exists(new_name):
+                QMessageBox.warning(self, "Lưu dưới tên khác", "Tên kỳ thi đã tồn tại. Vui lòng chọn tên khác.")
+                continue
+            break
+
+        old_session_id = self.current_session_id
+        old_session_path = self.current_session_path
+        old_session_name = self.session.exam_name
+        self.session.exam_name = new_name
+        self.current_session_id = self._generate_session_id(new_name)
+        self.current_session_path = self._session_path_from_id(self.current_session_id)
+
+        try:
+            cfg = dict(self.session.config or {})
+            cfg["scoring_phases"] = list(self.scoring_phases)
+            cfg["scoring_results"] = dict(self.scoring_results_by_subject)
+            self.session.config = cfg
+            self.session.save_json(self.current_session_path)
+            self._upsert_session_registry(self.current_session_id, self.session.exam_name)
+            self._save_session_registry()
+            self._refresh_exam_list()
+            self.session_dirty = False
+            QMessageBox.information(self, "Lưu dưới tên khác", "Đã lưu thành kỳ thi mới trong kho hệ thống.")
+        except Exception as exc:
+            self.current_session_id = old_session_id
+            self.current_session_path = old_session_path
+            self.session.exam_name = old_session_name
+            QMessageBox.warning(self, "Lưu dưới tên khác", f"Không thể lưu kỳ thi:\n{exc}")
 
     def close_current_session(self) -> None:
         if self.session_dirty:
@@ -3161,6 +3218,112 @@ class MainWindow(QMainWindow):
             cell = (item.text() if item else "").lower()
             show = value in cell if value else True
             self.scan_list.setRowHidden(i, not show)
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        blank_parts = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            vals = blank_map.get(sec, [])
+            if vals:
+                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        return " | ".join(blank_parts) if blank_parts else ""
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+
+    def _count_mismatch_status_parts(self, result) -> list[str]:
+        expected = self._expected_questions_by_section(result)
+        actual_map = {
+            "MCQ": set((result.mcq_answers or {}).keys()),
+            "TF": set((result.true_false_answers or {}).keys()),
+            "NUMERIC": set((result.numeric_answers or {}).keys()),
+        }
+        messages: list[str] = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            expected_set = set(expected.get(sec, []))
+            if not expected_set:
+                continue
+            actual_set = {int(q) for q in actual_map.get(sec, set())}
+            missing = sorted(expected_set - actual_set)
+            if missing:
+                messages.append(
+                    f"thiếu {sec} ({len(expected_set)-len(missing)}/{len(expected_set)}): {','.join(str(v) for v in missing)}"
+                )
+        return messages
+
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = dict(template_expected)
+        subject_key_name = self.active_batch_subject_key
+        if not subject_key_name and self.session and self.session.subjects:
+            subject_key_name = self.session.subjects[0]
+        if self.answer_keys and subject_key_name:
+            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
+            if key:
+                key_sections = {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                }
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    if not key_sections[sec]:
+                        continue
+                    template_set = set(template_expected.get(sec, []))
+                    key_set = set(key_sections[sec])
+                    if template_set:
+                        overlap = sorted(template_set & key_set)
+                        # If answer key numbering does not align with template numbering, keep template scope.
+                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
+                        if overlap:
+                            expected_by_section[sec] = overlap
+                    else:
+                        expected_by_section[sec] = key_sections[sec]
+        return expected_by_section
 
     @staticmethod
     def _format_mcq_answers(answers: dict[int, str]) -> str:
