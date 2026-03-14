@@ -184,10 +184,6 @@ class ScoringEngine:
             if not self._is_countable_tf_key(key_answer):
                 continue
             marked = (omr.true_false_answers or {}).get(q_no)
-            if not marked:
-                blank += 1
-                continue
-
             key_tf = self._tf_to_canonical_string(key_answer)
             marked_tf = self._tf_to_canonical_string(marked)
             if not key_tf:
@@ -210,12 +206,12 @@ class ScoringEngine:
             if not self._is_countable_numeric_key(key_answer):
                 continue
             marked = (omr.numeric_answers or {}).get(q_no)
-            if marked is None or str(marked).strip() == "":
-                blank += 1
-                continue
             norm_marked = self._normalize_numeric_text(marked)
             norm_key = self._normalize_numeric_text(key_answer)
             numeric_compare_items.append(self._build_numeric_compare_text(norm_key, norm_marked, q_no))
+            if marked is None or str(marked).strip() == "":
+                blank += 1
+                continue
             if norm_marked and norm_key and norm_marked == norm_key:
                 correct += 1
                 numeric_correct += 1
@@ -235,8 +231,8 @@ class ScoringEngine:
             mcq_correct=mcq_correct,
             tf_correct=tf_correct,
             numeric_correct=numeric_correct,
-            tf_compare="; ".join(x for x in tf_compare_items if x),
-            numeric_compare="; ".join(x for x in numeric_compare_items if x),
+            tf_compare="; ".join(x for x in tf_compare_items if x) or "[Không có TF trong đáp án hoặc dữ liệu nhận dạng]",
+            numeric_compare="; ".join(x for x in numeric_compare_items if x) or "[Không có NUMERIC trong đáp án hoặc dữ liệu nhận dạng]",
         )
 
     def export_csv(self, rows: list[ScoreResult], output_path: str | Path) -> None:

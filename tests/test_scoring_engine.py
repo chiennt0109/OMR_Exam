@@ -34,6 +34,7 @@ class ScoringEngineTests(unittest.TestCase):
         self.assertEqual(row.tf_correct, 1)
         self.assertEqual(row.correct, 1)
         self.assertAlmostEqual(row.score, 1.0, places=4)
+        self.assertIn("Q16:ĐĐĐS|ĐĐĐS", row.tf_compare)
 
     def test_tf_partial_string_matching_by_position(self):
         key = SubjectKey(
@@ -85,6 +86,31 @@ class ScoringEngineTests(unittest.TestCase):
         self.assertEqual(row.correct, 2)
         self.assertEqual(row.wrong, 2)
         self.assertAlmostEqual(row.score, 2.0, places=4)
+
+    def test_compare_columns_still_have_debug_when_marked_missing(self):
+        key = SubjectKey(
+            subject="Hoa_hoc_11",
+            exam_code="0113",
+            answers={},
+            true_false_answers={16: "ĐĐĐS"},
+            numeric_answers={18: "1347"},
+        )
+        omr = OMRResult(
+            image_path="x.png",
+            true_false_answers={},
+            numeric_answers={},
+        )
+        cfg = {
+            "score_mode": "Điểm theo câu",
+            "question_scores": {
+                "TF": {"1": 0.1, "2": 0.25, "3": 0.5, "4": 1.0},
+                "NUMERIC": {"per_question": 1.0},
+            },
+        }
+
+        row = self.engine.score(omr, key, subject_config=cfg)
+        self.assertIn("Q16:ĐĐĐS|-", row.tf_compare)
+        self.assertIn("Q18:1347|-", row.numeric_compare)
 
 
 if __name__ == "__main__":
