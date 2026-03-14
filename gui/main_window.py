@@ -626,6 +626,7 @@ class MainWindow(QMainWindow):
         self.template: Template | None = None
         self.answer_keys: AnswerKeyRepository | None = None
         self.scan_results = []
+        self.scan_results_by_subject: dict[str, list] = {}
         self.scan_files: list[Path] = []
         self.scan_blank_questions: dict[int, list[int]] = {}
         self.scan_blank_summary: dict[int, dict[str, list[int]]] = {}
@@ -1101,6 +1102,7 @@ class MainWindow(QMainWindow):
             cfg = self.session.config or {}
             self.scoring_phases = list(cfg.get("scoring_phases", [])) if isinstance(cfg.get("scoring_phases", []), list) else []
             self.scoring_results_by_subject = dict(cfg.get("scoring_results", {})) if isinstance(cfg.get("scoring_results", {}), dict) else {}
+            self.scan_results_by_subject = {}
             self.subject_catalog = list(cfg.get("subject_catalog", self.subject_catalog)) or self.subject_catalog
             self.block_catalog = list(cfg.get("block_catalog", self.block_catalog)) or self.block_catalog
             if self.session.answer_key_path:
@@ -1233,8 +1235,10 @@ class MainWindow(QMainWindow):
         self.template = None
         self.answer_keys = None
         self.scan_results = []
+        self.scan_results_by_subject = {}
         self.scoring_phases = []
         self.scoring_results_by_subject = {}
+        self.scan_results_by_subject = {}
         self.current_session_path = None
         self.current_session_id = None
         self.session_dirty = False
@@ -1338,8 +1342,17 @@ class MainWindow(QMainWindow):
             self.export_answer_key_sample()
 
     def action_run_batch_scan(self) -> None:
-        if self._confirm("Batch Scan", "Bạn có chắc muốn chạy Batch Scan?"):
-            self.run_batch_scan()
+        if self._confirm("Batch Scan", "Bạn có chắc muốn mở màn hình Batch Scan?"):
+            if not self.session:
+                QMessageBox.warning(self, "Batch Scan", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
+                return
+            cfgs = self._effective_subject_configs_for_batch()
+            if not cfgs:
+                QMessageBox.warning(self, "Batch Scan", "Kỳ thi hiện tại chưa có môn thi để nhận dạng.")
+                return
+            self.stack.setCurrentIndex(1)
+            self._show_batch_scan_panel()
+            self._refresh_batch_subject_controls()
 
     def action_edit_selected_scan(self) -> None:
         if self._confirm("Sửa bài thi", "Bạn có chắc muốn sửa bài thi được chọn?"):
@@ -1697,7 +1710,7 @@ class MainWindow(QMainWindow):
 
         imported_keys = cfg.get("imported_answer_keys", {}) or {}
         if isinstance(imported_keys, dict) and imported_keys:
-            repo = AnswerKeyRepository()
+            repo = self.answer_keys or AnswerKeyRepository()
             for exam_code, kd in imported_keys.items():
                 repo.upsert(
                     SubjectKey(
@@ -1718,7 +1731,11 @@ class MainWindow(QMainWindow):
             pth = Path(answer_key_path)
             if pth.exists() and pth.suffix.lower() == ".json":
                 try:
-                    self.answer_keys = AnswerKeyRepository.load_json(pth)
+                    loaded = AnswerKeyRepository.load_json(pth)
+                    repo = self.answer_keys or AnswerKeyRepository()
+                    for key_obj in loaded.keys.values():
+                        repo.upsert(key_obj)
+                    self.answer_keys = repo
                     all_codes: set[str] = set()
                     for key_name in self.answer_keys.keys.keys():
                         parts = str(key_name).split("::", 1)
@@ -1754,13 +1771,24 @@ class MainWindow(QMainWindow):
             return str(self.session.subjects[0])
         return "General"
 
+    def _eligible_scoring_subject_keys(self) -> list[str]:
+        out: list[str] = []
+        for cfg in self._subject_configs_for_scoring():
+            key = self._subject_key_from_cfg(cfg)
+            if bool(cfg.get("batch_saved")) or bool(self.scan_results_by_subject.get(key)):
+                out.append(key)
+        return out
+
     def _populate_scoring_subjects(self, preferred_key: str = "") -> None:
         if not hasattr(self, "scoring_subject_combo"):
             return
         self.scoring_subject_combo.blockSignals(True)
         self.scoring_subject_combo.clear()
+        eligible = set(self._eligible_scoring_subject_keys())
         for cfg in self._subject_configs_for_scoring():
             key = self._subject_key_from_cfg(cfg)
+            if eligible and key not in eligible:
+                continue
             label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
             self.scoring_subject_combo.addItem(label, key)
         if self.scoring_subject_combo.count() == 0:
@@ -1774,6 +1802,12 @@ class MainWindow(QMainWindow):
         self.scoring_subject_combo.blockSignals(False)
 
     def _open_scoring_view(self) -> None:
+        if not self.session:
+            QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
+            return
+        if not self._eligible_scoring_subject_keys():
+            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
+            return
         self.stack.setCurrentIndex(1)
         self._populate_scoring_subjects(self._resolve_preferred_scoring_subject())
         self._refresh_scoring_phase_table()
@@ -2374,6 +2408,8 @@ class MainWindow(QMainWindow):
             self.progress.setValue(current)
 
         self.scan_results = self.omr_processor.process_batch(file_paths, self.template, on_progress)
+        subject_key_for_results = self._subject_key_from_cfg(subject_cfg) if subject_cfg else self._resolve_preferred_scoring_subject()
+        self.scan_results_by_subject[subject_key_for_results] = list(self.scan_results)
         self.scan_list.setRowCount(0)
         duplicate_ids: dict[str, int] = {}
         for res in self.scan_results:
@@ -2471,6 +2507,112 @@ class MainWindow(QMainWindow):
                     # Only override when the answer key explicitly defines that section.
                     # If key section is empty, keep template range to avoid trimming valid recognized data.
                     if key_sections[sec]:
+                        expected_by_section[sec] = key_sections[sec]
+        return expected_by_section
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        blank_parts = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            vals = blank_map.get(sec, [])
+            if vals:
+                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        return " | ".join(blank_parts) if blank_parts else ""
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+
+    def _count_mismatch_status_parts(self, result) -> list[str]:
+        expected = self._expected_questions_by_section(result)
+        actual_map = {
+            "MCQ": set((result.mcq_answers or {}).keys()),
+            "TF": set((result.true_false_answers or {}).keys()),
+            "NUMERIC": set((result.numeric_answers or {}).keys()),
+        }
+        messages: list[str] = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            expected_set = set(expected.get(sec, []))
+            if not expected_set:
+                continue
+            actual_set = {int(q) for q in actual_map.get(sec, set())}
+            missing = sorted(expected_set - actual_set)
+            if missing:
+                messages.append(
+                    f"thiếu {sec} ({len(expected_set)-len(missing)}/{len(expected_set)}): {','.join(str(v) for v in missing)}"
+                )
+        return messages
+
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = dict(template_expected)
+        subject_key_name = self.active_batch_subject_key
+        if not subject_key_name and self.session and self.session.subjects:
+            subject_key_name = self.session.subjects[0]
+        if self.answer_keys and subject_key_name:
+            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
+            if key:
+                key_sections = {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                }
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    if not key_sections[sec]:
+                        continue
+                    template_set = set(template_expected.get(sec, []))
+                    key_set = set(key_sections[sec])
+                    if template_set:
+                        overlap = sorted(template_set & key_set)
+                        # If answer key numbering does not align with template numbering, keep template scope.
+                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
+                        if overlap:
+                            expected_by_section[sec] = overlap
+                    else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
 
@@ -3314,20 +3456,27 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Correction", "Manual correction applied to selected scan.")
 
     def calculate_scores(self, subject_key: str = "", mode: str = "Tính lại toàn bộ", note: str = "") -> list:
-        if not self.scan_results:
-            QMessageBox.warning(self, "Missing data", "Run scans and load/import answer keys first.")
+        subject = (subject_key or self._resolve_preferred_scoring_subject() or "General").strip()
+        subject_scans = self.scan_results_by_subject.get(subject, [])
+        if not subject_scans and self.scan_results:
+            cfg = self._selected_batch_subject_config()
+            current_key = self._subject_key_from_cfg(cfg) if cfg else ""
+            if current_key == subject:
+                subject_scans = list(self.scan_results)
+                self.scan_results_by_subject[subject] = list(subject_scans)
+        if not subject_scans:
+            QMessageBox.warning(self, "Missing data", "Môn này chưa có dữ liệu Batch Scan để tính điểm.")
             return []
 
-        subject = (subject_key or self._resolve_preferred_scoring_subject() or "General").strip()
         self._ensure_answer_keys_for_subject(subject)
         if not self.answer_keys:
-            QMessageBox.warning(self, "Missing data", "Run scans and load/import answer keys first.")
+            QMessageBox.warning(self, "Missing data", "Không tìm thấy đáp án cho môn đã chọn. Vui lòng kiểm tra cấu hình môn.")
             return []
         mode_text = (mode or "Tính lại toàn bộ").strip()
         prev_subject_scores = self.scoring_results_by_subject.get(subject, {})
         rows = []
         missing = 0
-        for scan in self.scan_results:
+        for scan in subject_scans:
             sid = (scan.student_id or "").strip()
             if mode_text == "Chỉ tính bài chưa có điểm" and sid and sid in prev_subject_scores:
                 continue
