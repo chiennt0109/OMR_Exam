@@ -20,43 +20,201 @@ class ScoreResult:
     wrong: int
     blank: int
     score: float
+    mcq_correct: int = 0
+    tf_correct: int = 0
+    numeric_correct: int = 0
+    tf_compare: str = ""
+    numeric_compare: str = ""
 
 
 class ScoringEngine:
-    def score(self, omr: OMRResult, subject_key: SubjectKey, student_name: str = "") -> ScoreResult:
+    @staticmethod
+    def _is_countable_mcq_key(value: str | None) -> bool:
+        text = str(value or "").strip()
+        return text not in {"", "-", "?"}
+
+    @staticmethod
+    def _is_countable_numeric_key(value: str | None) -> bool:
+        text = str(value or "").strip()
+        return text not in {"", "-", "?"}
+
+    @staticmethod
+    def _is_countable_tf_key(value: object) -> bool:
+        if isinstance(value, dict) and value:
+            return any(str(k).lower() in {"a", "b", "c", "d"} for k in value.keys())
+        text = str(value or "").strip()
+        return text not in {"", "-", "?"}
+
+    @staticmethod
+    def _to_float(value: object, default: float = 0.0) -> float:
+        try:
+            return float(str(value).strip().replace(",", "."))
+        except Exception:
+            return default
+
+    @staticmethod
+    def _to_bool_mark(value: object) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        text = str(value or "").strip().upper()
+        if not text:
+            return None
+        if text in {"1", "T", "TRUE", "D", "Đ"}:
+            return True
+        if text in {"0", "F", "FALSE", "S"}:
+            return False
+        return None
+
+    @staticmethod
+    def _normalize_numeric_text(value: object) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        text = text.replace(" ", "").replace(",", ".")
+        if text.startswith("+"):
+            text = text[1:]
+        return text
+
+    def _build_tf_compare_text(self, key_tf: str, marked_tf: str, q_no: int) -> str:
+        if not key_tf and not marked_tf:
+            return ""
+        return f"Q{q_no}:{key_tf or '-'}|{marked_tf or '-'}"
+
+    def _build_numeric_compare_text(self, key_num: str, marked_num: str, q_no: int) -> str:
+        if not key_num and not marked_num:
+            return ""
+        return f"Q{q_no}:{key_num or '-'}|{marked_num or '-'}"
+
+    def _tf_to_canonical_string(self, value: object) -> str:
+        if isinstance(value, dict):
+            out: list[str] = []
+            for opt in ["a", "b", "c", "d"]:
+                if opt not in value:
+                    continue
+                parsed = self._to_bool_mark(value.get(opt))
+                if parsed is None:
+                    continue
+                out.append("Đ" if parsed else "S")
+            return "".join(out)
+
+        raw = str(value or "").strip().upper().replace(" ", "")
+        if not raw:
+            return ""
+        chars: list[str] = []
+        for ch in raw:
+            parsed = self._to_bool_mark(ch)
+            if parsed is None:
+                continue
+            chars.append("Đ" if parsed else "S")
+        return "".join(chars)
+
+    def _score_profile(self, subject_key: SubjectKey, subject_config: dict | None) -> dict:
+        cfg = subject_config if isinstance(subject_config, dict) else {}
+        mode = str(cfg.get("score_mode", "") or "").strip() or "Điểm theo phần"
+        section_scores = cfg.get("section_scores", {}) if isinstance(cfg.get("section_scores", {}), dict) else {}
+        question_scores = cfg.get("question_scores", {}) if isinstance(cfg.get("question_scores", {}), dict) else {}
+
+        mcq_count = sum(1 for _, ans in (subject_key.answers or {}).items() if self._is_countable_mcq_key(ans))
+        num_count = sum(1 for _, ans in (subject_key.numeric_answers or {}).items() if self._is_countable_numeric_key(ans))
+
+        mcq_default = subject_key.points_for_question(1)
+        num_default = subject_key.points_for_question(1)
+
+        if mode == "Điểm theo câu":
+            mcq_per = self._to_float(((question_scores.get("MCQ", {}) or {}).get("per_question", mcq_default)), mcq_default)
+            num_per = self._to_float(((question_scores.get("NUMERIC", {}) or {}).get("per_question", num_default)), num_default)
+            tf_map_raw = (question_scores.get("TF", {}) or {})
+        else:
+            mcq_total = self._to_float(((section_scores.get("MCQ", {}) or {}).get("total_points", 0.0)), 0.0)
+            num_total = self._to_float(((section_scores.get("NUMERIC", {}) or {}).get("total_points", 0.0)), 0.0)
+            mcq_per = (mcq_total / mcq_count) if mcq_count > 0 and mcq_total > 0 else mcq_default
+            num_per = (num_total / num_count) if num_count > 0 and num_total > 0 else num_default
+            tf_map_raw = ((section_scores.get("TF", {}) or {}).get("rule_per_question", {}) or {})
+
+        tf_points_by_correct = {
+            int(k): self._to_float(v, 0.0)
+            for k, v in (tf_map_raw.items() if isinstance(tf_map_raw, dict) else [])
+            if str(k).strip().isdigit()
+        }
+        if not tf_points_by_correct:
+            tf_points_by_correct = {0: 0.0, 1: 0.1, 2: 0.25, 3: 0.5, 4: 1.0}
+
+        return {
+            "mcq_per": mcq_per,
+            "num_per": num_per,
+            "tf_points": tf_points_by_correct,
+            "mode": mode,
+        }
+
+    def describe_formula(self, subject_key: SubjectKey, subject_config: dict | None = None) -> str:
+        profile = self._score_profile(subject_key, subject_config)
+        tf_map = profile.get("tf_points", {}) or {}
+        tf_desc = ", ".join([f"{k} ý={v:g}" for k, v in sorted(tf_map.items()) if isinstance(k, int)])
+        return (
+            f"Công thức ({profile.get('mode', 'Điểm theo phần')}): "
+            f"Điểm = (MCQ_đúng × {profile['mcq_per']:g}) + "
+            f"(NUMERIC_đúng × {profile['num_per']:g}) + "
+            f"Σ điểm_TF_theo_số_ý_đúng; TF: [{tf_desc}]"
+        )
+
+    def score(self, omr: OMRResult, subject_key: SubjectKey, student_name: str = "", subject_config: dict | None = None) -> ScoreResult:
         correct = wrong = blank = 0
         score = 0.0
+        mcq_correct = tf_correct = numeric_correct = 0
+        tf_compare_items: list[str] = []
+        numeric_compare_items: list[str] = []
+        profile = self._score_profile(subject_key, subject_config)
 
         for q_no, key_answer in subject_key.answers.items():
+            if not self._is_countable_mcq_key(key_answer):
+                continue
             marked = (omr.mcq_answers or {}).get(q_no)
             if not marked:
                 blank += 1
                 continue
             if marked == key_answer:
                 correct += 1
-                score += subject_key.points_for_question(q_no)
+                mcq_correct += 1
+                score += profile["mcq_per"]
             else:
                 wrong += 1
 
         for q_no, key_answer in (subject_key.true_false_answers or {}).items():
+            if not self._is_countable_tf_key(key_answer):
+                continue
             marked = (omr.true_false_answers or {}).get(q_no)
-            if not marked:
+            key_tf = self._tf_to_canonical_string(key_answer)
+            marked_tf = self._tf_to_canonical_string(marked)
+            if not key_tf:
+                continue
+            tf_compare_items.append(self._build_tf_compare_text(key_tf, marked_tf, q_no))
+            if not marked_tf:
                 blank += 1
                 continue
-            if marked == key_answer:
+
+            compare_len = min(len(key_tf), len(marked_tf))
+            matched = sum(1 for i in range(compare_len) if key_tf[i] == marked_tf[i])
+            score += profile["tf_points"].get(matched, 0.0)
+            if len(key_tf) == len(marked_tf) and matched == len(key_tf):
                 correct += 1
-                score += subject_key.points_for_question(q_no)
+                tf_correct += 1
             else:
                 wrong += 1
 
         for q_no, key_answer in (subject_key.numeric_answers or {}).items():
+            if not self._is_countable_numeric_key(key_answer):
+                continue
             marked = (omr.numeric_answers or {}).get(q_no)
+            norm_marked = self._normalize_numeric_text(marked)
+            norm_key = self._normalize_numeric_text(key_answer)
+            numeric_compare_items.append(self._build_numeric_compare_text(norm_key, norm_marked, q_no))
             if marked is None or str(marked).strip() == "":
                 blank += 1
                 continue
-            if str(marked).strip() == str(key_answer).strip():
+            if norm_marked and norm_key and norm_marked == norm_key:
                 correct += 1
-                score += subject_key.points_for_question(q_no)
+                numeric_correct += 1
+                score += profile["num_per"]
             else:
                 wrong += 1
 
@@ -68,7 +226,12 @@ class ScoringEngine:
             correct=correct,
             wrong=wrong,
             blank=blank,
-            score=round(score, 2),
+            score=round(score, 4),
+            mcq_correct=mcq_correct,
+            tf_correct=tf_correct,
+            numeric_correct=numeric_correct,
+            tf_compare="; ".join(x for x in tf_compare_items if x) or "[Không có TF trong đáp án hoặc dữ liệu nhận dạng]",
+            numeric_compare="; ".join(x for x in numeric_compare_items if x) or "[Không có NUMERIC trong đáp án hoặc dữ liệu nhận dạng]",
         )
 
     def export_csv(self, rows: list[ScoreResult], output_path: str | Path) -> None:
