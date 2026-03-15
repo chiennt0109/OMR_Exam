@@ -442,7 +442,10 @@ class OMRProcessor:
 
         for candidate in candidates:
             if candidate == "one_side":
-                coarse_img, coarse_bin = self._fallback_align_page_contour(image, template)
+                # One-side ruler templates are sensitive to page warping artifacts.
+                # Use a conservative coarse alignment that falls back to plain resize
+                # when contour homography looks non-physical.
+                coarse_img, coarse_bin = self._fallback_align_page_contour(image, template, conservative=True)
                 refined_img, refined_bin = self._refine_alignment_with_one_side_anchors(coarse_img, coarse_bin, template)
                 return refined_img, refined_bin
 
@@ -566,7 +569,7 @@ class OMRProcessor:
 
         return refined, refined_bin
 
-    def _fallback_align_page_contour(self, image: np.ndarray, template: Template) -> tuple[np.ndarray, np.ndarray]:
+    def _fallback_align_page_contour(self, image: np.ndarray, template: Template, conservative: bool = False) -> tuple[np.ndarray, np.ndarray]:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
         edges = cv2.Canny(blur, 50, 150)
@@ -586,6 +589,29 @@ class OMRProcessor:
             dtype=np.float32,
         )
         h = cv2.getPerspectiveTransform(src, dst)
+        if conservative:
+            # Gate perspective warps aggressively for one-side profile to avoid
+            # visible stretch/keystone distortions in recognition preview.
+            h64 = h.astype(np.float64)
+            if abs(float(h64[2, 0])) > 1.2e-4 or abs(float(h64[2, 1])) > 1.2e-4:
+                resized = cv2.resize(image, (template.width, template.height))
+                return resized, self._preprocess(resized)["binary"]
+
+            corners = np.array(
+                [[[0.0, 0.0]], [[template.width - 1.0, 0.0]], [[template.width - 1.0, template.height - 1.0]], [[0.0, template.height - 1.0]]],
+                dtype=np.float32,
+            )
+            warped_corners = cv2.perspectiveTransform(corners, h64.astype(np.float32)).reshape(4, 2)
+            warped_area = abs(float(cv2.contourArea(warped_corners.astype(np.float32))))
+            base_area = float(template.width * template.height)
+            if base_area <= 0:
+                resized = cv2.resize(image, (template.width, template.height))
+                return resized, self._preprocess(resized)["binary"]
+            area_ratio = warped_area / base_area
+            if area_ratio < 0.96 or area_ratio > 1.04:
+                resized = cv2.resize(image, (template.width, template.height))
+                return resized, self._preprocess(resized)["binary"]
+
         aligned = cv2.warpPerspective(image, h, (template.width, template.height))
         return aligned, cv2.warpPerspective(self._preprocess(image)["binary"], h, (template.width, template.height))
 
