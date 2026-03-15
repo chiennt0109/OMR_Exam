@@ -9013,9 +9013,7 @@ class MainWindow(QMainWindow):
                         numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
                     ))
                 self.answer_keys = repo
-                self.imported_exam_codes = sorted(
-                    str(k) for k in imported_answer_keys_map.keys()
-                )
+                self.imported_exam_codes = sorted(str(k) for k in imported_answer_keys_map.keys())
                 self.active_batch_subject_key = answer_key_key
             else:
                 # Fallback: load answer keys from subject path or exam/session path if available.
@@ -9041,6 +9039,114 @@ class MainWindow(QMainWindow):
             candidate_folder = str(self.batch_scan_folder_value.text() or "").strip()
             if candidate_folder and candidate_folder != "-":
                 scan_folder = candidate_folder
+
+        template_path = subject_template_path or exam_template_path
+        if not template_path:
+            QMessageBox.warning(self, "Batch Scan", "Chưa cấu hình mẫu giấy để nhận dạng.")
+            return
+        template_file = Path(template_path)
+        if not template_file.exists():
+            QMessageBox.warning(self, "Batch Scan", f"Không tìm thấy mẫu giấy\n{template_path}")
+            return
+        try:
+            self.template = Template.load_json(template_file)
+        except Exception as exc:
+            QMessageBox.warning(self, "Batch Scan", f"Không thể tải mẫu giấy\n{exc}")
+            return
+
+        scan_folder = str(scan_folder or "").strip()
+        if not scan_folder:
+            QMessageBox.warning(self, "Batch Scan", "Chưa chọn thư mục quét.")
+            return
+        scan_dir = Path(scan_folder)
+        if not scan_dir.exists() or not scan_dir.is_dir():
+            QMessageBox.warning(self, "Batch Scan", f"Không tìm thấy thư mục quét\n{scan_folder}")
+            return
+
+        scan_mode = str((subject_cfg or {}).get("scan_mode", "") or (self.session.config or {}).get("scan_mode", "") if self.session else "")
+        image_exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
+        if "thư mục con" in scan_mode.lower() or "sub" in scan_mode.lower():
+            file_paths = [str(p) for p in sorted(scan_dir.rglob("*")) if p.is_file() and p.suffix.lower() in image_exts]
+        else:
+            file_paths = [str(p) for p in sorted(scan_dir.iterdir()) if p.is_file() and p.suffix.lower() in image_exts]
+
+        if not file_paths:
+            QMessageBox.warning(self, "Batch Scan", "Không tìm thấy ảnh bài thi trong thư mục quét.")
+            return
+
+        self.scan_list.setRowCount(0)
+        self.error_list.clear()
+        self.result_preview.clear()
+        self.scan_result_preview.setRowCount(0)
+        self.manual_edit.clear()
+        self.scan_image_preview.setText("Chọn bài thi ở danh sách bên trái")
+        self.btn_save_batch_subject.setEnabled(False)
+        self.scan_files = [Path(p) for p in file_paths]
+        self.scan_blank_questions.clear()
+        self.scan_blank_summary.clear()
+        self.scan_manual_adjustments.clear()
+        self.scan_edit_history.clear()
+        self.scan_last_adjustment.clear()
+
+        def on_progress(current: int, total: int, image_path: str):
+            self.progress.setMaximum(total)
+            self.progress.setValue(current)
+            QApplication.processEvents()
+
+        self.scan_results = self.omr_processor.process_batch(file_paths, self.template, on_progress)
+        subject_key_for_results = self._subject_key_from_cfg(subject_cfg) if subject_cfg else self._resolve_preferred_scoring_subject()
+        self.scan_results_by_subject[subject_key_for_results] = list(self.scan_results)
+        self.scan_list.setRowCount(0)
+        duplicate_ids: dict[str, int] = {}
+        for res in self.scan_results:
+            sid = (res.student_id or "").strip()
+            if sid:
+                duplicate_ids[sid] = duplicate_ids.get(sid, 0) + 1
+
+        for idx, result in enumerate(self.scan_results):
+            rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
+            sid = (result.student_id or "").strip()
+            profile = self._student_profile_by_id(sid)
+            if profile.get("name"):
+                setattr(result, "full_name", profile.get("name"))
+            if profile.get("birth_date"):
+                setattr(result, "birth_date", profile.get("birth_date"))
+            if profile.get("class_name"):
+                setattr(result, "class_name", profile.get("class_name"))
+            if profile.get("exam_room"):
+                setattr(result, "exam_room", profile.get("exam_room"))
+            full_name = str(getattr(result, "full_name", "") or "-")
+            birth_date = str(getattr(result, "birth_date", "") or "-")
+            self._trim_result_answers_to_expected_scope(result)
+            blank_map = self._compute_blank_questions(result)
+            blank_questions = blank_map.get("MCQ", [])
+            self.scan_blank_questions[idx] = blank_questions
+            self.scan_blank_summary[idx] = blank_map
+            exam_code_text = (result.exam_code or "").strip()
+            status_parts = self._status_parts_for_row(sid, exam_code_text, duplicate_ids.get(sid, 0))
+            status = ", ".join(status_parts) if status_parts else "OK"
+            content_text = self._build_recognition_content_text(result, blank_map)
+
+            self.scan_list.insertRow(idx)
+            sid_item = QTableWidgetItem(sid or "-")
+            sid_item.setData(Qt.UserRole, str(result.image_path))
+            sid_item.setData(Qt.UserRole + 1, exam_code_text)
+            sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(result))
+            self.scan_list.setItem(idx, 0, sid_item)
+            self.scan_list.setItem(idx, 1, QTableWidgetItem(full_name))
+            self.scan_list.setItem(idx, 2, QTableWidgetItem(birth_date))
+            self.scan_list.setItem(idx, 3, QTableWidgetItem(content_text))
+            status_item = QTableWidgetItem(status)
+            if status != "OK":
+                status_item.setForeground(Qt.red)
+            self.scan_list.setItem(idx, 4, status_item)
+            for issue in result.issues:
+                self.error_list.addItem(f"{Path(result.image_path).name}: {issue.code} - {issue.message}")
+            for err in rec_errors:
+                self.error_list.addItem(f"{Path(result.image_path).name}: RECOGNITION - {err}")
+
+        self.btn_save_batch_subject.setEnabled(True)
+        self._apply_scan_filter()
 
     @staticmethod
     def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
