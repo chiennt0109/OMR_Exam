@@ -375,7 +375,8 @@ class OMRProcessor:
             idx = np.linspace(0, len(tpl_side) - 1, n).astype(int)
             tpl_side = tpl_side[idx]
 
-        # Robust affine from row markers.
+        # Robust affine from row markers (used only to estimate stable shift;
+        # keep rendering geometry unchanged to avoid stretch artifacts).
         m, inliers = cv2.estimateAffinePartial2D(det_side, tpl_side, method=cv2.RANSAC, ransacReprojThreshold=3.0)
         if m is None:
             return aligned, aligned_binary
@@ -384,28 +385,34 @@ class OMRProcessor:
 
         sx = float(np.hypot(m[0, 0], m[1, 0]))
         sy = float(np.hypot(m[0, 1], m[1, 1]))
-        if sx < 0.92 or sx > 1.08 or sy < 0.90 or sy > 1.10:
+        # Reject any noticeable scaling to preserve original sheet geometry.
+        if sx < 0.985 or sx > 1.015 or sy < 0.985 or sy > 1.015:
             return aligned, aligned_binary
         if abs(float(m[0, 2])) > template.width * 0.10 or abs(float(m[1, 2])) > template.height * 0.12:
             return aligned, aligned_binary
 
+        # Use translation-only correction from matched anchors to avoid stretch.
+        dx = float(np.median(tpl_side[:, 0] - det_side[:, 0]))
+        dy = float(np.median(tpl_side[:, 1] - det_side[:, 1]))
+        m_shift = np.array([[1.0, 0.0, dx], [0.0, 1.0, dy]], dtype=np.float32)
+
         # Improvement gate on y-fit.
-        probe = cv2.transform(det_side.reshape(1, -1, 2), m).reshape(-1, 2)
+        probe = cv2.transform(det_side.reshape(1, -1, 2), m_shift).reshape(-1, 2)
         base_err = float(np.mean(np.abs(det_side[:, 1] - tpl_side[:, 1])))
         new_err = float(np.mean(np.abs(probe[:, 1] - tpl_side[:, 1])))
-        if new_err > base_err - 0.4:
+        if new_err > base_err - 0.2:
             return aligned, aligned_binary
 
         refined = cv2.warpAffine(
             aligned,
-            m,
+            m_shift,
             (template.width, template.height),
             flags=cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_REPLICATE,
         )
         refined_bin = cv2.warpAffine(
             aligned_binary,
-            m,
+            m_shift,
             (template.width, template.height),
             flags=cv2.INTER_NEAREST,
             borderMode=cv2.BORDER_REPLICATE,
