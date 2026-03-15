@@ -906,6 +906,7 @@ class MainWindow(QMainWindow):
         self.embedded_exam_original_payload: dict | None = None
         self.preview_zoom_factor = 1.0
         self.preview_source_pixmap = QPixmap()
+        self.preview_rotation_by_index: dict[int, int] = {}
         self.preview_drag_active = False
         self.preview_last_pos = None
         self.setCentralWidget(self.stack)
@@ -9100,6 +9101,7 @@ class MainWindow(QMainWindow):
         self.scan_manual_adjustments.clear()
         self.scan_edit_history.clear()
         self.scan_last_adjustment.clear()
+        self.preview_rotation_by_index.clear()
 
         def on_progress(current: int, total: int, image_path: str):
             self.progress.setMaximum(total)
@@ -9329,6 +9331,7 @@ class MainWindow(QMainWindow):
         self.scan_manual_adjustments.clear()
         self.scan_edit_history.clear()
         self.scan_last_adjustment.clear()
+        self.preview_rotation_by_index.clear()
 
         def on_progress(current: int, total: int, image_path: str):
             self.progress.setMaximum(total)
@@ -11057,36 +11060,12 @@ class MainWindow(QMainWindow):
     def _rotate_selected_scan(self, degrees: int) -> None:
         idx = self._selected_active_scan_index()
         if idx < 0:
-            QMessageBox.warning(self, "Rotate image", "Chọn một bài thi đã nhận dạng để xoay ảnh.")
             return
-        res = self.scan_results[idx]
-        src_path = Path(str(res.image_path or "")).expanduser()
-        if not src_path.exists():
-            QMessageBox.warning(self, "Rotate image", f"Không tìm thấy ảnh nguồn:\n{src_path}")
-            return
-        pix = QPixmap(str(src_path))
-        if pix.isNull():
-            QMessageBox.warning(self, "Rotate image", "Không thể mở ảnh để xoay.")
-            return
-        rotated = pix.transformed(QTransform().rotate(float(degrees)), Qt.SmoothTransformation)
-        suffix = src_path.suffix if src_path.suffix else ".png"
-        direction = "cw" if degrees > 0 else "ccw"
-        dst_path = src_path.with_name(f"{src_path.stem}_rot{abs(int(degrees))}_{direction}{suffix}")
-        if not rotated.save(str(dst_path)):
-            QMessageBox.warning(self, "Rotate image", "Không thể lưu ảnh đã xoay.")
-            return
-        res.image_path = str(dst_path)
-        sid_item = self.scan_list.item(idx, 0)
-        if sid_item:
-            sid_item.setData(Qt.UserRole, str(dst_path))
-            self.scan_list.setItem(idx, 0, sid_item)
+        current = int(self.preview_rotation_by_index.get(idx, 0) or 0)
+        self.preview_rotation_by_index[idx] = (current + int(degrees)) % 360
         self._update_scan_preview(idx)
         self.btn_save_batch_subject.setEnabled(True)
-        QMessageBox.information(
-            self,
-            "Rotate image",
-            "Đã tạo ảnh xoay mới cho bài thi đang chọn. Hãy bấm 'Nhận dạng lại ảnh chọn' để cập nhật kết quả.",
-        )
+
 
     def _rebuild_error_list(self) -> None:
         self.error_list.clear()
@@ -11130,7 +11109,29 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Nhận dạng lại", f"Không tìm thấy ảnh để nhận dạng lại:\n{image_path or '-'}")
             return
 
-        new_result = self.omr_processor.process_image(image_path, self.template)
+        process_path = image_path
+        rotation = int(self.preview_rotation_by_index.get(idx, 0) or 0) % 360
+        temp_rotated_path = None
+        if rotation:
+            pix = QPixmap(image_path)
+            if pix.isNull():
+                QMessageBox.warning(self, "Nhận dạng lại", "Không thể mở ảnh để xoay tạm thời trước khi nhận dạng lại.")
+                return
+            rotated = pix.transformed(QTransform().rotate(float(rotation)), Qt.SmoothTransformation)
+            temp_rotated_path = str(Path(image_path).with_name(f".{Path(image_path).stem}_tmp_rerun_{rotation}.png"))
+            if not rotated.save(temp_rotated_path):
+                QMessageBox.warning(self, "Nhận dạng lại", "Không thể tạo ảnh xoay tạm thời để nhận dạng lại.")
+                return
+            process_path = temp_rotated_path
+
+        new_result = self.omr_processor.process_image(process_path, self.template)
+        if temp_rotated_path:
+            try:
+                Path(temp_rotated_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+        new_result.image_path = image_path
+
         sid = (new_result.student_id or "").strip()
         profile = self._student_profile_by_id(sid)
         if profile.get("name"):
@@ -11416,6 +11417,9 @@ class MainWindow(QMainWindow):
             self.preview_source_pixmap = QPixmap()
             self.scan_image_preview.setText(f"Cannot load image: {img_path.name}")
         else:
+            rotation = int(self.preview_rotation_by_index.get(index, 0) or 0) % 360
+            if rotation:
+                pix = pix.transformed(QTransform().rotate(float(rotation)), Qt.SmoothTransformation)
             self.preview_source_pixmap = pix
             self._render_preview_pixmap()
 
@@ -11426,6 +11430,7 @@ class MainWindow(QMainWindow):
             ("Họ tên", str(getattr(result, "full_name", "") or "-")),
             ("Ngày sinh", str(getattr(result, "birth_date", "") or "-")),
             ("Exam code", result.exam_code or "-"),
+            ("Xoay tạm", f"{int(self.preview_rotation_by_index.get(index, 0) or 0)%360}°"),
             ("Nhận dạng ngắn", self._compact_value(self._short_recognition_text_for_result(result), 220)),
             ("MCQ", self._compact_value(self._format_mcq_answers(result.mcq_answers or {}), 220)),
             ("TF", self._compact_value(self._format_tf_answers(result.true_false_answers or {}), 220)),
