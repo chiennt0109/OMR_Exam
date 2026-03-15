@@ -79,6 +79,22 @@ class AnswerKeyImporterTests(unittest.TestCase):
                 import_answer_key(path)
             self.assertIn("Row 2", str(cm.exception))
 
+    def test_import_numeric_values_with_four_characters_not_misread_as_tf(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "numeric_len4.csv"
+            pd.DataFrame(
+                {
+                    "Question": [27, 28],
+                    "3001": ["22", "4,44"],
+                    "3002": ["4,44", "0,36"],
+                    "3003": ["0,36", "35,4"],
+                    "3004": ["35,4", "4,44"],
+                }
+            ).to_csv(path, index=False)
+            package = import_answer_key(path)
+            self.assertEqual(package.exam_keys["3001"].numeric_answers[27], "22")
+            self.assertEqual(package.exam_keys["3001"].numeric_answers[28], "4,44")
+
 
 if __name__ == "__main__":
     unittest.main()
