@@ -5,7 +5,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QEvent
-from PySide6.QtGui import QKeySequence, QPixmap
+from PySide6.QtGui import QKeySequence, QPixmap, QTransform
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -906,6 +906,8 @@ class MainWindow(QMainWindow):
         self.embedded_exam_original_payload: dict | None = None
         self.preview_zoom_factor = 1.0
         self.preview_source_pixmap = QPixmap()
+        self.preview_drag_active = False
+        self.preview_last_pos = None
         self.setCentralWidget(self.stack)
 
         self._build_menu()
@@ -2055,6 +2057,17 @@ class MainWindow(QMainWindow):
         zoom_row.addWidget(self.btn_zoom_out)
         zoom_row.addWidget(self.btn_zoom_reset)
         zoom_row.addWidget(self.btn_zoom_in)
+        self.btn_rotate_left = QPushButton("⟲ 90°")
+        self.btn_rotate_left.setToolTip("Xoay trái ảnh đang chọn")
+        self.btn_rotate_left.clicked.connect(lambda: self._rotate_selected_scan(-90))
+        self.btn_rotate_right = QPushButton("⟳ 90°")
+        self.btn_rotate_right.setToolTip("Xoay phải ảnh đang chọn")
+        self.btn_rotate_right.clicked.connect(lambda: self._rotate_selected_scan(90))
+        self.btn_rerecognize_selected = QPushButton("Nhận dạng lại ảnh chọn")
+        self.btn_rerecognize_selected.clicked.connect(self._rerecognize_selected_scan)
+        zoom_row.addWidget(self.btn_rotate_left)
+        zoom_row.addWidget(self.btn_rotate_right)
+        zoom_row.addWidget(self.btn_rerecognize_selected)
         zoom_row.addStretch()
 
         self.scan_result_preview = QTableWidget(0, 2)
@@ -11010,7 +11023,157 @@ class MainWindow(QMainWindow):
                 else:
                     self._zoom_preview_out()
                 return True
+        if hasattr(self, "scan_image_scroll") and obj == self.scan_image_scroll.viewport():
+            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton and not self.preview_source_pixmap.isNull():
+                self.preview_drag_active = True
+                self.preview_last_pos = event.position().toPoint()
+                self.scan_image_scroll.viewport().setCursor(Qt.ClosedHandCursor)
+                return True
+            if event.type() == QEvent.MouseMove and self.preview_drag_active and self.preview_last_pos is not None:
+                pos = event.position().toPoint()
+                dx = pos.x() - self.preview_last_pos.x()
+                dy = pos.y() - self.preview_last_pos.y()
+                self.preview_last_pos = pos
+                self.scan_image_scroll.horizontalScrollBar().setValue(
+                    self.scan_image_scroll.horizontalScrollBar().value() - dx
+                )
+                self.scan_image_scroll.verticalScrollBar().setValue(
+                    self.scan_image_scroll.verticalScrollBar().value() - dy
+                )
+                return True
+            if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
+                self.preview_drag_active = False
+                self.preview_last_pos = None
+                self.scan_image_scroll.viewport().unsetCursor()
+                return True
         return super().eventFilter(obj, event)
+
+    def _selected_active_scan_index(self) -> int:
+        idx = self.scan_list.currentRow()
+        if idx < 0 or idx >= len(self.scan_results):
+            return -1
+        return idx
+
+    def _rotate_selected_scan(self, degrees: int) -> None:
+        idx = self._selected_active_scan_index()
+        if idx < 0:
+            QMessageBox.warning(self, "Rotate image", "Chọn một bài thi đã nhận dạng để xoay ảnh.")
+            return
+        res = self.scan_results[idx]
+        src_path = Path(str(res.image_path or "")).expanduser()
+        if not src_path.exists():
+            QMessageBox.warning(self, "Rotate image", f"Không tìm thấy ảnh nguồn:\n{src_path}")
+            return
+        pix = QPixmap(str(src_path))
+        if pix.isNull():
+            QMessageBox.warning(self, "Rotate image", "Không thể mở ảnh để xoay.")
+            return
+        rotated = pix.transformed(QTransform().rotate(float(degrees)), Qt.SmoothTransformation)
+        suffix = src_path.suffix if src_path.suffix else ".png"
+        direction = "cw" if degrees > 0 else "ccw"
+        dst_path = src_path.with_name(f"{src_path.stem}_rot{abs(int(degrees))}_{direction}{suffix}")
+        if not rotated.save(str(dst_path)):
+            QMessageBox.warning(self, "Rotate image", "Không thể lưu ảnh đã xoay.")
+            return
+        res.image_path = str(dst_path)
+        sid_item = self.scan_list.item(idx, 0)
+        if sid_item:
+            sid_item.setData(Qt.UserRole, str(dst_path))
+            self.scan_list.setItem(idx, 0, sid_item)
+        self._update_scan_preview(idx)
+        self.btn_save_batch_subject.setEnabled(True)
+        QMessageBox.information(
+            self,
+            "Rotate image",
+            "Đã tạo ảnh xoay mới cho bài thi đang chọn. Hãy bấm 'Nhận dạng lại ảnh chọn' để cập nhật kết quả.",
+        )
+
+    def _rebuild_error_list(self) -> None:
+        self.error_list.clear()
+        for result in self.scan_results:
+            rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
+            for issue in result.issues:
+                self.error_list.addItem(f"{Path(result.image_path).name}: {issue.code} - {issue.message}")
+            for err in rec_errors:
+                self.error_list.addItem(f"{Path(result.image_path).name}: RECOGNITION - {err}")
+
+    def _update_scan_row_from_result(self, idx: int, result) -> None:
+        if idx < 0 or idx >= self.scan_list.rowCount():
+            return
+        sid = (result.student_id or "").strip()
+        exam_code_text = (result.exam_code or "").strip()
+        sid_item = QTableWidgetItem(sid or "-")
+        sid_item.setData(Qt.UserRole, str(result.image_path))
+        sid_item.setData(Qt.UserRole + 1, exam_code_text)
+        sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(result))
+        self.scan_list.setItem(idx, 0, sid_item)
+        self.scan_list.setItem(idx, 1, QTableWidgetItem(str(getattr(result, "full_name", "") or "-")))
+        self.scan_list.setItem(idx, 2, QTableWidgetItem(str(getattr(result, "birth_date", "") or "-")))
+        self.scan_list.setItem(
+            idx,
+            3,
+            QTableWidgetItem(self._build_recognition_content_text(result, self.scan_blank_summary.get(idx, {"MCQ": [], "TF": [], "NUMERIC": []}))),
+        )
+
+    def _rerecognize_selected_scan(self) -> None:
+        idx = self._selected_active_scan_index()
+        if idx < 0:
+            QMessageBox.warning(self, "Nhận dạng lại", "Chọn một bài thi trong danh sách bên trái trước.")
+            return
+        if not self.template:
+            QMessageBox.warning(self, "Nhận dạng lại", "Chưa có template đang dùng. Vui lòng chạy nhận dạng theo môn trước.")
+            return
+
+        old_result = self.scan_results[idx]
+        image_path = str(old_result.image_path or "").strip()
+        if not image_path or not Path(image_path).exists():
+            QMessageBox.warning(self, "Nhận dạng lại", f"Không tìm thấy ảnh để nhận dạng lại:\n{image_path or '-'}")
+            return
+
+        new_result = self.omr_processor.process_image(image_path, self.template)
+        sid = (new_result.student_id or "").strip()
+        profile = self._student_profile_by_id(sid)
+        if profile.get("name"):
+            setattr(new_result, "full_name", profile.get("name"))
+        if profile.get("birth_date"):
+            setattr(new_result, "birth_date", profile.get("birth_date"))
+        if profile.get("class_name"):
+            setattr(new_result, "class_name", profile.get("class_name"))
+        if profile.get("exam_room"):
+            setattr(new_result, "exam_room", profile.get("exam_room"))
+        self._trim_result_answers_to_expected_scope(new_result)
+        blank_map = self._compute_blank_questions(new_result)
+
+        rec_errors = list(getattr(new_result, "recognition_errors", [])) or list(getattr(new_result, "errors", []))
+        message = (
+            f"Ảnh: {Path(image_path).name}\n"
+            f"STUDENT ID mới: {new_result.student_id or '-'}\n"
+            f"Mã đề mới: {new_result.exam_code or '-'}\n"
+            f"Nhận dạng ngắn: {self._compact_value(self._short_recognition_text_for_result(new_result), 180)}\n"
+            f"Số lỗi nhận dạng: {len(rec_errors)}\n\n"
+            "Cập nhật kết quả mới vào lưới hiện tại?"
+        )
+        if QMessageBox.question(self, "Xác nhận nhận dạng lại", message, QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) != QMessageBox.Yes:
+            return
+
+        self.scan_results[idx] = new_result
+        self.scan_blank_questions[idx] = blank_map.get("MCQ", [])
+        self.scan_blank_summary[idx] = blank_map
+        self._update_scan_row_from_result(idx, new_result)
+        self._refresh_all_statuses()
+        self._rebuild_error_list()
+        self._update_scan_preview(idx)
+        self._load_selected_result_for_correction()
+        self.btn_save_batch_subject.setEnabled(True)
+
+        if QMessageBox.question(
+            self,
+            "Lưu thay đổi",
+            "Đã cập nhật lưới với kết quả nhận dạng mới. Bạn có muốn lưu batch theo môn ngay bây giờ không?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        ) == QMessageBox.Yes:
+            self._save_batch_for_selected_subject()
 
     def _render_preview_pixmap(self) -> None:
         if self.preview_source_pixmap.isNull():
