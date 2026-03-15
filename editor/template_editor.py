@@ -48,6 +48,7 @@ class TemplateCanvas(QWidget):
         self.add_anchor_mode = False
         self.current_zone_type = ZoneType.MCQ_BLOCK
         self.selected_zone = -1
+        self.selected_anchor = -1
 
         self._drawing = False
         self._moving = False
@@ -64,6 +65,7 @@ class TemplateCanvas(QWidget):
         self.pixmap = pixmap
         self.zoom = 1.0
         self.selected_zone = -1
+        self.selected_anchor = -1
         self.preview_mode = False
         self.recognition_overlay.clear()
         self.resize(int(pixmap.width() * self.zoom), int(pixmap.height() * self.zoom))
@@ -100,6 +102,15 @@ class TemplateCanvas(QWidget):
         if self.add_anchor_mode:
             self.template.anchors.append(AnchorPoint(p.x() / self.template.width, p.y() / self.template.height, f"A{len(self.template.anchors)+1}"))
             self.zones_changed.emit(); self.update(); return
+
+        a_idx = self._hit_anchor(p)
+        if a_idx >= 0:
+            self.selected_anchor = a_idx
+            self.selected_zone = -1
+            self.selection_changed.emit(-1)
+            self.update()
+            return
+        self.selected_anchor = -1
 
         z_idx, c_idx = self._hit_zone_or_control(p)
         if z_idx >= 0:
@@ -195,16 +206,35 @@ class TemplateCanvas(QWidget):
                 return i, -1
         return -1, -1
 
+    def _hit_anchor(self, p: QPoint) -> int:
+        if not self.template:
+            return -1
+        for i in range(len(self.template.anchors) - 1, -1, -1):
+            a = self.template.anchors[i]
+            ax = a.x * self.template.width
+            ay = a.y * self.template.height
+            if abs(ax - p.x()) <= 10 and abs(ay - p.y()) <= 10:
+                return i
+        return -1
+
 
     def keyPressEvent(self, e: QKeyEvent):
         if not self.template:
             return
-        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and 0 <= self.selected_zone < len(self.template.zones):
-            del self.template.zones[self.selected_zone]
-            self.selected_zone = -1
-            self.selection_changed.emit(-1)
-            self.zones_changed.emit()
-            self.update()
+        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            if 0 <= self.selected_zone < len(self.template.zones):
+                del self.template.zones[self.selected_zone]
+                self.selected_zone = -1
+                self.selection_changed.emit(-1)
+                self.zones_changed.emit()
+                self.update()
+                return
+            if 0 <= self.selected_anchor < len(self.template.anchors):
+                del self.template.anchors[self.selected_anchor]
+                self.selected_anchor = -1
+                self.zones_changed.emit()
+                self.update()
+                return
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -218,7 +248,11 @@ class TemplateCanvas(QWidget):
             return
 
         p.setPen(QPen(Qt.black, 2)); p.setBrush(Qt.black)
-        for a in self.template.anchors:
+        for i, a in enumerate(self.template.anchors):
+            if i == self.selected_anchor:
+                p.setPen(QPen(QColor(255, 180, 0), 2)); p.setBrush(QColor(255, 180, 0))
+            else:
+                p.setPen(QPen(Qt.black, 2)); p.setBrush(Qt.black)
             p.drawRect(QRectF(a.x * self.template.width * self.zoom - 4, a.y * self.template.height * self.zoom - 4, 8, 8))
 
         for i, z in enumerate(self.template.zones):
@@ -330,6 +364,7 @@ class TemplateEditorWindow(QMainWindow):
         self.act_paste = QAction("Paste Block", self); self.act_paste.triggered.connect(self.paste_block)
         self.act_duplicate = QAction("Duplicate Block", self); self.act_duplicate.triggered.connect(self.duplicate_block)
         self.act_delete = QAction("Delete Block", self); self.act_delete.triggered.connect(self.delete_selected_block)
+        self.act_delete_anchor = QAction("Delete Anchor", self); self.act_delete_anchor.triggered.connect(self.delete_selected_anchor)
         self.act_snap_grid = QAction("Snap Grid", self); self.act_snap_grid.triggered.connect(self.snap_grid_to_detected_bubbles)
         self.act_zoom_in = QAction("Zoom +", self); self.act_zoom_in.triggered.connect(lambda: self.canvas.set_zoom(self.canvas.zoom * 1.15))
         self.act_zoom_out = QAction("Zoom -", self); self.act_zoom_out.triggered.connect(lambda: self.canvas.set_zoom(self.canvas.zoom / 1.15))
@@ -355,6 +390,7 @@ class TemplateEditorWindow(QMainWindow):
             self.act_paste,
             self.act_duplicate,
             self.act_delete,
+            self.act_delete_anchor,
             self.act_snap_grid,
         ]:
             toolbar.addAction(act)
@@ -420,6 +456,7 @@ class TemplateEditorWindow(QMainWindow):
         m_edit.addAction(self.act_paste)
         m_edit.addAction(self.act_duplicate)
         m_edit.addAction(self.act_delete)
+        m_edit.addAction(self.act_delete_anchor)
 
         m_recog = menu.addMenu("Recognition")
         m_recog.addAction(self.act_preview)
@@ -717,6 +754,18 @@ class TemplateEditorWindow(QMainWindow):
             self.canvas.selection_changed.emit(-1)
             self.canvas.update()
 
+    def delete_selected_anchor(self):
+        if not self.template:
+            return
+        idx = int(getattr(self.canvas, "selected_anchor", -1))
+        if idx < 0 or idx >= len(self.template.anchors):
+            QMessageBox.information(self, "Delete Anchor", "Chọn anchor cần xoá trước (click vào anchor đen).")
+            return
+        del self.template.anchors[idx]
+        self.canvas.selected_anchor = -1
+        self.canvas.zones_changed.emit()
+        self.canvas.update()
+
     def snap_grid_to_detected_bubbles(self):
         z = self._selected_zone()
         if not self.template or not z or not z.grid:
@@ -850,8 +899,11 @@ class TemplateEditorWindow(QMainWindow):
         anchors = list(self.template.anchors or [])
         if len(anchors) < 4:
             issues.append("Anchor count < 4 (không đủ để homography ổn định).")
-        elif len(anchors) > 20:
-            issues.append("Anchor count quá nhiều (>20), dễ bắt nhầm marker nhiễu.")
+        else:
+            mode = str((self.template.metadata or {}).get("alignment_profile", "auto") or "auto")
+            max_anchor = 120 if mode == "one_side" else 60
+            if len(anchors) > max_anchor:
+                issues.append(f"Anchor count quá nhiều (>{max_anchor}), dễ bắt nhầm marker nhiễu.")
 
         w, h = float(self.template.width), float(self.template.height)
         if anchors:
