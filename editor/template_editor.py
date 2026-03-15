@@ -835,11 +835,22 @@ class TemplateEditorWindow(QMainWindow):
         if src is None:
             QMessageBox.warning(self, "Recognition", "Không thể đọc ảnh scan để test recognition.")
             return
-        prepared = self.omr._preprocess(src)
-        tmp_result = OMRResult(image_path=path)
-        aligned, aligned_binary = self.omr.correct_perspective(src, prepared["binary"], self.template, tmp_result)
+
+        # Run the exact same recognition pipeline steps used by process_image,
+        # but keep the intermediate aligned image for on-canvas preview.
+        rotated = self.omr._correct_rotation(src)
+        prepared = self.omr._preprocess(rotated)
+        res = OMRResult(image_path=path)
+        aligned, aligned_binary = self.omr.correct_perspective(rotated, prepared["binary"], self.template, res)
         if aligned_binary is None:
             aligned_binary = self.omr._preprocess(aligned)["binary"]
+
+        for zone in self.template.zones:
+            if zone.zone_type == ZoneType.ANCHOR:
+                continue
+            self.omr.recognize_block(aligned_binary, zone, self.template, res, None)
+        setattr(res, "answers", res.mcq_answers)
+        res.sync_legacy_aliases()
 
         # Show what engine actually uses for recognition.
         bg = self._cv_to_qpixmap(aligned)
@@ -847,7 +858,6 @@ class TemplateEditorWindow(QMainWindow):
             self.canvas.pixmap = bg
             self.canvas.resize(int(bg.width() * self.canvas.zoom), int(bg.height() * self.canvas.zoom))
 
-        res = self.omr.process_image(path, self.template)
         self.result_box.setPlainText(
             f"Student ID: {res.student_id or '-'}\nExam Code: {res.exam_code or '-'}\n"
             f"MCQ: {', '.join([f'Q{k}:{v}' for k, v in sorted(res.mcq_answers.items())]) or '(none)'}\n"
