@@ -1986,6 +1986,7 @@ class MainWindow(QMainWindow):
         self.batch_recognition_mode_combo.addItem("Tự động (khuyến nghị)", "auto")
         self.batch_recognition_mode_combo.addItem("Mẫu cũ / Anchor chuẩn", "legacy")
         self.batch_recognition_mode_combo.addItem("Mẫu mới / Anchor sát biên", "border")
+        self.batch_recognition_mode_combo.addItem("Anchor 1 phía (ruler theo dòng)", "one_side")
         self.batch_recognition_mode_combo.addItem("Lai (thử nhiều cơ chế)", "hybrid")
         self.batch_template_value = QLineEdit("-"); self.batch_template_value.setReadOnly(True)
         self.batch_answer_codes_value = QLineEdit("-"); self.batch_answer_codes_value.setReadOnly(True)

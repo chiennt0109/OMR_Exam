@@ -373,6 +373,7 @@ class TemplateEditorWindow(QMainWindow):
         self.align_profile_combo.addItem("Auto", "auto")
         self.align_profile_combo.addItem("Legacy", "legacy")
         self.align_profile_combo.addItem("Border", "border")
+        self.align_profile_combo.addItem("One-side ruler", "one_side")
         self.align_profile_combo.addItem("Hybrid", "hybrid")
         self.align_profile_combo.currentIndexChanged.connect(self._on_alignment_profile_changed)
         toolbar.addWidget(self.align_profile_combo)
@@ -861,7 +862,10 @@ class TemplateEditorWindow(QMainWindow):
                 if ax < w * 0.08 or ay < h * 0.08 or ax > w * 0.92 or ay > h * 0.92:
                     near_edge += 1
             if near_edge >= max(2, len(anchors) // 2):
-                tips.append("Anchor nằm sát biên nhiều: nên chọn Alignment=Border hoặc Hybrid.")
+                tips.append("Anchor nằm sát biên nhiều: chọn Alignment=Border.")
+                xs = [float((a.x * w if a.x <= 1.0 else a.x)) for a in anchors]
+                if (max(xs) - min(xs)) <= w * 0.18:
+                    tips.append("Anchor gần như 1 cột dọc: chọn Alignment=One-side ruler để chuẩn hóa theo các dòng mốc.")
             else:
                 tips.append("Anchor phân bố trung tâm/ổn định: nên chọn Alignment=Legacy hoặc Auto.")
 
