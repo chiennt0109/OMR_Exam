@@ -1982,6 +1982,11 @@ class MainWindow(QMainWindow):
         batch_form = QFormLayout(batch_group)
         self.batch_subject_combo = QComboBox()
         self.batch_subject_combo.currentIndexChanged.connect(self._on_batch_subject_changed)
+        self.batch_recognition_mode_combo = QComboBox()
+        self.batch_recognition_mode_combo.addItem("Tự động (khuyến nghị)", "auto")
+        self.batch_recognition_mode_combo.addItem("Mẫu cũ / Anchor chuẩn", "legacy")
+        self.batch_recognition_mode_combo.addItem("Mẫu mới / Anchor sát biên", "border")
+        self.batch_recognition_mode_combo.addItem("Lai (thử nhiều cơ chế)", "hybrid")
         self.batch_template_value = QLineEdit("-"); self.batch_template_value.setReadOnly(True)
         self.batch_answer_codes_value = QLineEdit("-"); self.batch_answer_codes_value.setReadOnly(True)
         self.batch_student_id_value = QLineEdit("-"); self.batch_student_id_value.setReadOnly(True)
@@ -2007,6 +2012,7 @@ class MainWindow(QMainWindow):
         action_row.addStretch()
 
         batch_form.addRow("Môn", self.batch_subject_combo)
+        batch_form.addRow("Cơ chế nhận dạng", self.batch_recognition_mode_combo)
         batch_form.addRow("Mẫu giấy dùng", self.batch_template_value)
         batch_form.addRow("Mã đề", self.batch_answer_codes_value)
         batch_form.addRow("Vùng STUDENT ID", self.batch_student_id_value)
@@ -9049,6 +9055,10 @@ class MainWindow(QMainWindow):
         if self.session and not subject_cfg:
             QMessageBox.warning(self, "Batch Scan", "Không có môn nào để nhận dạng trong kỳ thi hiện tại.")
             return
+
+        if hasattr(self, "batch_recognition_mode_combo"):
+            mode = str(self.batch_recognition_mode_combo.currentData() or "auto")
+            setattr(self.omr_processor, "alignment_profile", mode)
 
         # Resolve template, scan folder and answer keys from selected subject config in session.
         subject_template_path = ""

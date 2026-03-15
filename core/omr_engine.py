@@ -58,6 +58,8 @@ class OMRProcessor:
         self.debug_mode = debug_mode
         self.debug_dir = Path(debug_dir) if debug_dir else None
         self._mask_cache: dict[int, tuple[np.ndarray, float]] = {}
+        # alignment_profile: auto | legacy | border | hybrid
+        self.alignment_profile: str = "auto"
 
     def process_image(self, image_path: str | Path, template: Template) -> OMRResult:
         started = time.perf_counter()
@@ -185,9 +187,10 @@ class OMRProcessor:
             angle += 90
         return float(angle)
 
-    def detect_anchors(self, binary: np.ndarray) -> list[tuple[float, float]]:
+    def detect_anchors(self, binary: np.ndarray, use_border_padding: bool = True, relaxed_polygon: bool = True) -> list[tuple[float, float]]:
         # Pad image before contour extraction so anchors touching page border are not clipped.
-        padded = cv2.copyMakeBorder(binary, 8, 8, 8, 8, cv2.BORDER_CONSTANT, value=0)
+        pad = 8 if use_border_padding else 0
+        padded = cv2.copyMakeBorder(binary, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=0) if pad else binary
         contours, _ = cv2.findContours(padded, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
         h, w = binary.shape[:2]
         min_area = max(50, int((h * w) * 0.00003))
@@ -199,7 +202,10 @@ class OMRProcessor:
                 continue
             peri = cv2.arcLength(cnt, True)
             approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
-            if len(approx) < 4 or len(approx) > 8:
+            if relaxed_polygon:
+                if len(approx) < 4 or len(approx) > 8:
+                    continue
+            elif len(approx) != 4:
                 continue
             x, y, bw, bh = cv2.boundingRect(approx)
             if bh == 0 or bw == 0:
@@ -218,8 +224,8 @@ class OMRProcessor:
             m = cv2.moments(cnt)
             if m["m00"] == 0:
                 continue
-            cx = (m["m10"] / m["m00"]) - 8.0
-            cy = (m["m01"] / m["m00"]) - 8.0
+            cx = (m["m10"] / m["m00"]) - float(pad)
+            cy = (m["m01"] / m["m00"]) - float(pad)
             if cx < 0 or cy < 0 or cx >= w or cy >= h:
                 continue
             score = area * fill_ratio * darkness
@@ -228,14 +234,38 @@ class OMRProcessor:
         anchors.sort(key=lambda p: p[2], reverse=True)
         return [(x, y) for x, y, _ in anchors[:20]]
 
-    def correct_perspective(
-        self,
-        image: np.ndarray,
-        binary: np.ndarray,
-        template: Template,
-        result: OMRResult,
-    ) -> tuple[np.ndarray, np.ndarray | None]:
-        detected = self.detect_anchors(binary)
+    def _template_has_border_anchors(self, template: Template) -> bool:
+        if not template.anchors:
+            return False
+        margin = 0.06
+        px_margin_x = max(20.0, template.width * margin)
+        px_margin_y = max(20.0, template.height * margin)
+        for a in template.anchors:
+            ax = a.x * template.width if a.x <= 1.0 else a.x
+            ay = a.y * template.height if a.y <= 1.0 else a.y
+            if ax <= px_margin_x or ay <= px_margin_y or ax >= (template.width - px_margin_x) or ay >= (template.height - px_margin_y):
+                return True
+        return False
+
+    def _detect_anchors_by_profile(self, binary: np.ndarray, profile: str) -> list[tuple[float, float]]:
+        p = str(profile or "auto").strip().lower()
+        if p == "legacy":
+            return self.detect_anchors(binary, use_border_padding=False, relaxed_polygon=False)
+        if p == "border":
+            return self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True)
+        if p == "hybrid":
+            a = self.detect_anchors(binary, use_border_padding=False, relaxed_polygon=False)
+            b = self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True)
+            merged: list[tuple[float, float]] = []
+            for pt in a + b:
+                if not any((pt[0] - q[0]) ** 2 + (pt[1] - q[1]) ** 2 < 36.0 for q in merged):
+                    merged.append(pt)
+            return merged[:20]
+        # auto fallback defaults to border-safe detector.
+        return self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True)
+
+    def _try_anchor_alignment(self, image: np.ndarray, binary: np.ndarray, template: Template, profile: str) -> tuple[np.ndarray, np.ndarray] | None:
+        detected = self._detect_anchors_by_profile(binary, profile)
         template_pts = np.array(
             [
                 (a.x * template.width, a.y * template.height)
@@ -245,15 +275,44 @@ class OMRProcessor:
             ],
             dtype=np.float32,
         )
+        if len(detected) < 4 or len(template_pts) < 4:
+            return None
+        src_pts, dst_pts = self._match_anchor_sets(np.array(detected, dtype=np.float32), template_pts)
+        if len(src_pts) < 4 or len(dst_pts) < 4:
+            return None
+        h = cv2.getPerspectiveTransform(self._order_points(src_pts[:4]), self._order_points(dst_pts[:4]))
+        aligned = cv2.warpPerspective(image, h, (template.width, template.height))
+        aligned_binary = cv2.warpPerspective(binary, h, (template.width, template.height))
+        return aligned, aligned_binary
 
-        if len(detected) >= 4 and len(template_pts) >= 4:
-            src_pts, dst_pts = self._match_anchor_sets(np.array(detected, dtype=np.float32), template_pts)
-            if len(src_pts) >= 4 and len(dst_pts) >= 4:
-                h = cv2.getPerspectiveTransform(self._order_points(src_pts[:4]), self._order_points(dst_pts[:4]))
-                aligned = cv2.warpPerspective(image, h, (template.width, template.height))
-                aligned_binary = cv2.warpPerspective(binary, h, (template.width, template.height))
-                refined_img, refined_bin = self._refine_alignment_with_template_anchors(aligned, aligned_binary, template)
-                return refined_img, refined_bin
+    def correct_perspective(
+        self,
+        image: np.ndarray,
+        binary: np.ndarray,
+        template: Template,
+        result: OMRResult,
+    ) -> tuple[np.ndarray, np.ndarray | None]:
+        mode = str(getattr(self, "alignment_profile", "auto") or "auto").strip().lower()
+        candidates: list[str] = []
+        if mode == "auto":
+            if self._template_has_border_anchors(template):
+                candidates = ["border", "hybrid", "legacy"]
+            else:
+                candidates = ["legacy", "hybrid", "border"]
+        elif mode in {"legacy", "border", "hybrid"}:
+            candidates = [mode]
+        else:
+            candidates = ["hybrid"]
+
+        for candidate in candidates:
+            attempt = self._try_anchor_alignment(image, binary, template, candidate)
+            if attempt is None:
+                continue
+            aligned, aligned_binary = attempt
+            if candidate == "legacy":
+                return aligned, aligned_binary
+            refined_img, refined_bin = self._refine_alignment_with_template_anchors(aligned, aligned_binary, template)
+            return refined_img, refined_bin
 
         result.issues.append(OMRIssue("MISSING_ANCHORS", "Anchor detection failed; using page contour fallback"))
         fallback_img, fallback_bin = self._fallback_align_page_contour(image, template)
