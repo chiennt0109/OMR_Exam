@@ -151,6 +151,11 @@ class TemplateEngine:
 
     def validate_template(self, template: Template) -> list[str]:
         errors = template.validate()
-        if not (4 <= len(template.anchors) <= 12):
-            errors.append("Template should have 4-12 anchors for robust homography.")
+        profile = str((template.metadata or {}).get("alignment_profile", "auto") or "auto").strip().lower()
+        max_anchors = 60 if profile == "one_side" else 20
+        if not (4 <= len(template.anchors) <= max_anchors):
+            if profile == "one_side":
+                errors.append("Template one-side ruler should have 4-60 anchors (top-down row markers on one edge).")
+            else:
+                errors.append("Template should have 4-20 anchors for robust homography.")
         return errors
