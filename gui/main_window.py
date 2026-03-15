@@ -907,6 +907,7 @@ class MainWindow(QMainWindow):
         self.preview_zoom_factor = 1.0
         self.preview_source_pixmap = QPixmap()
         self.preview_rotation_by_index: dict[int, int] = {}
+        self.scan_forced_status_by_index: dict[int, str] = {}
         self.preview_drag_active = False
         self.preview_last_pos = None
         self.setCentralWidget(self.stack)
@@ -1841,7 +1842,10 @@ class MainWindow(QMainWindow):
         self._start_batch_scan_from_ui()
 
     def action_execute_batch_scan(self) -> None:
-        self._start_batch_scan_from_ui()
+        if self.stack.currentIndex() != 1:
+            self._start_batch_scan_from_ui()
+            return
+        self.run_batch_scan()
 
     def action_edit_selected_scan(self) -> None:
         if self._confirm("Sửa bài thi", "Bạn có chắc muốn sửa bài thi được chọn?"):
@@ -8833,6 +8837,7 @@ class MainWindow(QMainWindow):
         self.scan_manual_adjustments.clear()
         self.scan_edit_history.clear()
         self.scan_last_adjustment.clear()
+        self.scan_forced_status_by_index.clear()
         if hasattr(self, "scan_list"):
             self.scan_list.setRowCount(0)
         if hasattr(self, "scan_result_preview"):
@@ -8991,6 +8996,48 @@ class MainWindow(QMainWindow):
             self.btn_save_batch_subject.setEnabled(True)
         return self.scan_list.rowCount() > 0
 
+    @staticmethod
+    def _result_has_meaningful_recognition(result) -> bool:
+        sid = str(getattr(result, "student_id", "") or "").strip()
+        code = str(getattr(result, "exam_code", "") or "").strip()
+        has_id = bool(sid and "?" not in sid)
+        has_code = bool(code and "?" not in code)
+        has_answers = bool((result.mcq_answers or {}) or (result.true_false_answers or {}) or (result.numeric_answers or {}))
+        return has_answers or has_id or has_code
+
+    @staticmethod
+    def _recognition_quality_score(result) -> int:
+        sid = str(getattr(result, "student_id", "") or "").strip()
+        code = str(getattr(result, "exam_code", "") or "").strip()
+        has_id = 1 if sid and "?" not in sid else 0
+        has_code = 1 if code and "?" not in code else 0
+        answers_count = len(result.mcq_answers or {}) + len(result.true_false_answers or {}) + len(result.numeric_answers or {})
+        penalty = len(getattr(result, "issues", []) or []) + len(getattr(result, "recognition_errors", []) or getattr(result, "errors", []) or [])
+        return has_id * 3 + has_code * 3 + answers_count - penalty
+
+    def _try_reprocess_result_rotated_180(self, result):
+        image_path = str(getattr(result, "image_path", "") or "").strip()
+        if not image_path or not Path(image_path).exists() or not self.template:
+            return result, False
+        pix = QPixmap(image_path)
+        if pix.isNull():
+            return result, False
+        rotated = pix.transformed(QTransform().rotate(180.0), Qt.SmoothTransformation)
+        temp_path = str(Path(image_path).with_name(f".{Path(image_path).stem}_tmp_auto180.png"))
+        if not rotated.save(temp_path):
+            return result, False
+        try:
+            alt = self.omr_processor.process_image(temp_path, self.template)
+        finally:
+            try:
+                Path(temp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+        alt.image_path = image_path
+        if self._recognition_quality_score(alt) > self._recognition_quality_score(result):
+            return alt, True
+        return result, False
+
     def run_batch_scan(self) -> None:
         subject_cfg = self._selected_batch_subject_config() or self._resolve_subject_config_for_batch()
         if subject_cfg:
@@ -9102,6 +9149,7 @@ class MainWindow(QMainWindow):
         self.scan_edit_history.clear()
         self.scan_last_adjustment.clear()
         self.preview_rotation_by_index.clear()
+        self.scan_forced_status_by_index.clear()
 
         def on_progress(current: int, total: int, image_path: str):
             self.progress.setMaximum(total)
@@ -9119,6 +9167,18 @@ class MainWindow(QMainWindow):
                 duplicate_ids[sid] = duplicate_ids.get(sid, 0) + 1
 
         for idx, result in enumerate(self.scan_results):
+            forced_status = ""
+            if not self._result_has_meaningful_recognition(result):
+                retried, improved = self._try_reprocess_result_rotated_180(result)
+                if improved:
+                    result = retried
+                    self.scan_results[idx] = result
+                    forced_status = "Tự nhận dạng"
+                elif not self._result_has_meaningful_recognition(retried):
+                    forced_status = "Lỗi file ảnh"
+            if forced_status:
+                self.scan_forced_status_by_index[idx] = forced_status
+
             rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
             sid = (result.student_id or "").strip()
             profile = self._student_profile_by_id(sid)
@@ -9138,8 +9198,12 @@ class MainWindow(QMainWindow):
             self.scan_blank_questions[idx] = blank_questions
             self.scan_blank_summary[idx] = blank_map
             exam_code_text = (result.exam_code or "").strip()
-            status_parts = self._status_parts_for_row(sid, exam_code_text, duplicate_ids.get(sid, 0))
-            status = ", ".join(status_parts) if status_parts else "OK"
+            forced_status = self.scan_forced_status_by_index.get(idx, "")
+            if forced_status:
+                status = forced_status
+            else:
+                status_parts = self._status_parts_for_row(sid, exam_code_text, duplicate_ids.get(sid, 0))
+                status = ", ".join(status_parts) if status_parts else "OK"
             content_text = self._build_recognition_content_text(result, blank_map)
 
             self.scan_list.insertRow(idx)
@@ -11411,7 +11475,8 @@ class MainWindow(QMainWindow):
     def _refresh_row_status(self, idx: int) -> None:
         if idx < 0 or idx >= self.scan_list.rowCount():
             return
-        status = self._status_text_for_row(idx) if idx < len(self.scan_results) else self._status_text_for_saved_table_row(idx)
+        forced_status = self.scan_forced_status_by_index.get(idx, "")
+        status = forced_status or (self._status_text_for_row(idx) if idx < len(self.scan_results) else self._status_text_for_saved_table_row(idx))
         item = QTableWidgetItem(status)
         if status != "OK":
             item.setForeground(Qt.red)
