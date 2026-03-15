@@ -186,7 +186,9 @@ class OMRProcessor:
         return float(angle)
 
     def detect_anchors(self, binary: np.ndarray) -> list[tuple[float, float]]:
-        contours, _ = cv2.findContours(binary, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        # Pad image before contour extraction so anchors touching page border are not clipped.
+        padded = cv2.copyMakeBorder(binary, 8, 8, 8, 8, cv2.BORDER_CONSTANT, value=0)
+        contours, _ = cv2.findContours(padded, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
         h, w = binary.shape[:2]
         min_area = max(50, int((h * w) * 0.00003))
         anchors: list[tuple[float, float, float]] = []
@@ -197,7 +199,7 @@ class OMRProcessor:
                 continue
             peri = cv2.arcLength(cnt, True)
             approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
-            if len(approx) != 4:
+            if len(approx) < 4 or len(approx) > 8:
                 continue
             x, y, bw, bh = cv2.boundingRect(approx)
             if bh == 0 or bw == 0:
@@ -209,15 +211,17 @@ class OMRProcessor:
             fill_ratio = area / rect_area if rect_area else 0.0
             if fill_ratio < 0.65:
                 continue
-            roi = binary[y : y + bh, x : x + bw]
+            roi = padded[y : y + bh, x : x + bw]
             darkness = float(cv2.countNonZero(roi)) / rect_area
             if darkness < 0.50:
                 continue
             m = cv2.moments(cnt)
             if m["m00"] == 0:
                 continue
-            cx = m["m10"] / m["m00"]
-            cy = m["m01"] / m["m00"]
+            cx = (m["m10"] / m["m00"]) - 8.0
+            cy = (m["m01"] / m["m00"]) - 8.0
+            if cx < 0 or cy < 0 or cx >= w or cy >= h:
+                continue
             score = area * fill_ratio * darkness
             anchors.append((cx, cy, score))
 
@@ -248,10 +252,119 @@ class OMRProcessor:
                 h = cv2.getPerspectiveTransform(self._order_points(src_pts[:4]), self._order_points(dst_pts[:4]))
                 aligned = cv2.warpPerspective(image, h, (template.width, template.height))
                 aligned_binary = cv2.warpPerspective(binary, h, (template.width, template.height))
-                return aligned, aligned_binary
+                refined_img, refined_bin = self._refine_alignment_with_template_anchors(aligned, aligned_binary, template)
+                return refined_img, refined_bin
 
         result.issues.append(OMRIssue("MISSING_ANCHORS", "Anchor detection failed; using page contour fallback"))
-        return self._fallback_align_page_contour(image, template)
+        fallback_img, fallback_bin = self._fallback_align_page_contour(image, template)
+        refined_img, refined_bin = self._refine_alignment_with_template_anchors(fallback_img, fallback_bin, template)
+        return refined_img, refined_bin
+
+    def _refine_alignment_with_template_anchors(
+        self,
+        aligned: np.ndarray,
+        aligned_binary: np.ndarray,
+        template: Template,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if len(template.anchors) < 4:
+            return aligned, aligned_binary
+        detected = self.detect_anchors(aligned_binary)
+        if len(detected) < 4:
+            return aligned, aligned_binary
+
+        template_pts = np.array(
+            [
+                (a.x * template.width, a.y * template.height)
+                if a.x <= 1.0 and a.y <= 1.0
+                else (a.x, a.y)
+                for a in template.anchors
+            ],
+            dtype=np.float32,
+        )
+        detected_arr = np.array(detected, dtype=np.float32)
+        if len(template_pts) < 4:
+            return aligned, aligned_binary
+
+        # Match by nearest position in template coordinate space after coarse alignment.
+        # Keep this gate strict to avoid over-correcting already-good legacy templates.
+        max_dist = max(8.0, 0.02 * float(np.hypot(template.width, template.height)))
+        src_matches: list[np.ndarray] = []
+        dst_matches: list[np.ndarray] = []
+        used: set[int] = set()
+        for t in template_pts:
+            d2 = np.sum((detected_arr - t) ** 2, axis=1)
+            idx = int(np.argmin(d2))
+            if idx in used:
+                continue
+            dist = float(np.sqrt(float(d2[idx])))
+            if dist <= max_dist:
+                used.add(idx)
+                src_matches.append(detected_arr[idx])
+                dst_matches.append(t)
+        if len(src_matches) < 5:
+            return aligned, aligned_binary
+
+        src = np.array(src_matches, dtype=np.float32)
+        dst = np.array(dst_matches, dtype=np.float32)
+        h, mask = cv2.findHomography(src, dst, cv2.RANSAC, ransacReprojThreshold=4.0)
+        if h is None:
+            return aligned, aligned_binary
+        if mask is not None and int(mask.sum()) < 5:
+            return aligned, aligned_binary
+
+        # Guard rails: refinement should be a small correction in template space.
+        h = h.astype(np.float64)
+        if abs(float(h[2, 0])) > 2e-4 or abs(float(h[2, 1])) > 2e-4:
+            return aligned, aligned_binary
+
+        # Reprojection quality check on matched points.
+        proj = cv2.perspectiveTransform(src.reshape(-1, 1, 2), h).reshape(-1, 2)
+        rmse = float(np.sqrt(np.mean(np.sum((proj - dst) ** 2, axis=1))))
+        if not np.isfinite(rmse) or rmse > 3.5:
+            return aligned, aligned_binary
+
+        # Scale/shift sanity to prevent large accidental warps on legacy templates.
+        corners = np.array(
+            [[[0.0, 0.0]], [[template.width - 1.0, 0.0]], [[template.width - 1.0, template.height - 1.0]], [[0.0, template.height - 1.0]]],
+            dtype=np.float32,
+        )
+        warped_corners = cv2.perspectiveTransform(corners, h).reshape(4, 2)
+        orig_area = float(template.width * template.height)
+        warped_area = abs(float(cv2.contourArea(warped_corners.astype(np.float32))))
+        if orig_area <= 0:
+            return aligned, aligned_binary
+        area_ratio = warped_area / orig_area
+        if area_ratio < 0.90 or area_ratio > 1.10:
+            return aligned, aligned_binary
+
+        center = np.array([template.width / 2.0, template.height / 2.0], dtype=np.float32).reshape(1, 1, 2)
+        warped_center = cv2.perspectiveTransform(center, h).reshape(2)
+        if float(np.linalg.norm(warped_center - center.reshape(2))) > 25.0:
+            return aligned, aligned_binary
+
+        refined = cv2.warpPerspective(aligned, h, (template.width, template.height))
+        refined_bin = cv2.warpPerspective(aligned_binary, h, (template.width, template.height))
+
+        # Final acceptance: refined result must not degrade anchor fit.
+        refined_detected = self.detect_anchors(refined_bin)
+        if len(refined_detected) >= 4:
+            ref_arr = np.array(refined_detected, dtype=np.float32)
+            base_arr = detected_arr
+
+            def _nearest_avg(det_arr: np.ndarray, tpl_arr: np.ndarray) -> float:
+                vals: list[float] = []
+                for p in tpl_arr:
+                    d2 = np.sum((det_arr - p) ** 2, axis=1)
+                    vals.append(float(np.sqrt(float(np.min(d2)))))
+                return float(np.mean(vals)) if vals else 1e9
+
+            base_err = _nearest_avg(base_arr, template_pts)
+            refined_err = _nearest_avg(ref_arr, template_pts)
+            # Require meaningful improvement; otherwise keep coarse alignment.
+            if not np.isfinite(refined_err) or refined_err > (base_err - 0.5):
+                return aligned, aligned_binary
+
+        return refined, refined_bin
 
     def _fallback_align_page_contour(self, image: np.ndarray, template: Template) -> tuple[np.ndarray, np.ndarray]:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
