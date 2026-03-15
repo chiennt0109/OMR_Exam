@@ -11051,19 +11051,22 @@ class MainWindow(QMainWindow):
                 return True
         return super().eventFilter(obj, event)
 
-    def _selected_active_scan_index(self) -> int:
+    def _selected_scan_row_index(self) -> int:
         idx = self.scan_list.currentRow()
-        if idx < 0 or idx >= len(self.scan_results):
+        if idx < 0 or idx >= self.scan_list.rowCount():
             return -1
         return idx
 
     def _rotate_selected_scan(self, degrees: int) -> None:
-        idx = self._selected_active_scan_index()
-        if idx < 0:
+        row_idx = self._selected_scan_row_index()
+        if row_idx < 0:
             return
-        current = int(self.preview_rotation_by_index.get(idx, 0) or 0)
-        self.preview_rotation_by_index[idx] = (current + int(degrees)) % 360
-        self._update_scan_preview(idx)
+        current = int(self.preview_rotation_by_index.get(row_idx, 0) or 0)
+        self.preview_rotation_by_index[row_idx] = (current + int(degrees)) % 360
+        if row_idx < len(self.scan_results):
+            self._update_scan_preview(row_idx)
+        else:
+            self._update_scan_preview_from_saved_row(row_idx)
         self.btn_save_batch_subject.setEnabled(True)
 
 
@@ -11095,9 +11098,12 @@ class MainWindow(QMainWindow):
         )
 
     def _rerecognize_selected_scan(self) -> None:
-        idx = self._selected_active_scan_index()
+        idx = self._selected_scan_row_index()
         if idx < 0:
             QMessageBox.warning(self, "Nhận dạng lại", "Chọn một bài thi trong danh sách bên trái trước.")
+            return
+        if idx >= len(self.scan_results):
+            QMessageBox.warning(self, "Nhận dạng lại", "Dòng đang chọn là dữ liệu đã lưu. Hãy chạy nhận dạng batch hoặc chọn dòng đang có dữ liệu nhận dạng hiện hành.")
             return
         if not self.template:
             QMessageBox.warning(self, "Nhận dạng lại", "Chưa có template đang dùng. Vui lòng chạy nhận dạng theo môn trước.")
@@ -11226,6 +11232,9 @@ class MainWindow(QMainWindow):
             self.scan_image_preview.setText("Không có ảnh tương ứng cho dòng đã lưu")
             self.btn_zoom_reset.setText("100%")
         else:
+            rotation = int(self.preview_rotation_by_index.get(row, 0) or 0) % 360
+            if rotation:
+                pix = pix.transformed(QTransform().rotate(float(rotation)), Qt.SmoothTransformation)
             self.preview_source_pixmap = pix
             self._render_preview_pixmap()
             self.btn_zoom_reset.setText(f"{int(self.preview_zoom_factor*100)}%")
@@ -11235,6 +11244,7 @@ class MainWindow(QMainWindow):
             ("Họ tên", full_name),
             ("Ngày sinh", birth),
             ("Mã đề", exam_code or "-"),
+            ("Xoay tạm", f"{int(self.preview_rotation_by_index.get(row, 0) or 0)%360}°"),
             ("Nhận dạng ngắn", self._compact_value(recognized_short or "-", 220)),
             ("Nội dung", self._compact_value(content, 220)),
             ("Status", status),
