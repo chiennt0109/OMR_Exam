@@ -412,6 +412,163 @@ class OMRProcessor:
         )
         return refined, refined_bin
 
+    def _template_has_border_anchors(self, template: Template) -> bool:
+        if not template.anchors:
+            return False
+        margin = 0.06
+        px_margin_x = max(20.0, template.width * margin)
+        px_margin_y = max(20.0, template.height * margin)
+        for a in template.anchors:
+            ax = a.x * template.width if a.x <= 1.0 else a.x
+            ay = a.y * template.height if a.y <= 1.0 else a.y
+            if ax <= px_margin_x or ay <= px_margin_y or ax >= (template.width - px_margin_x) or ay >= (template.height - px_margin_y):
+                return True
+        return False
+
+    def _template_has_one_side_anchor_ruler(self, template: Template) -> bool:
+        anchors = list(template.anchors or [])
+        if len(anchors) < 4:
+            return False
+        pts = np.array(
+            [
+                [a.x * template.width, a.y * template.height] if a.x <= 1.0 and a.y <= 1.0 else [a.x, a.y]
+                for a in anchors
+            ],
+            dtype=np.float32,
+        )
+        x_span = float(np.max(pts[:, 0]) - np.min(pts[:, 0]))
+        y_span = float(np.max(pts[:, 1]) - np.min(pts[:, 1]))
+        if y_span <= 1.0:
+            return False
+        # Vertical ruler: x spread small compared to y spread.
+        if x_span / y_span > 0.20:
+            return False
+        mean_x = float(np.mean(pts[:, 0]))
+        # Prefer truly side anchors.
+        return mean_x <= template.width * 0.18 or mean_x >= template.width * 0.82
+
+    def _detect_anchors_by_profile(self, binary: np.ndarray, profile: str) -> list[tuple[float, float]]:
+        p = str(profile or "auto").strip().lower()
+        if p == "legacy":
+            return self.detect_anchors(binary, use_border_padding=False, relaxed_polygon=False)
+        if p == "border":
+            return self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True)
+        if p == "one_side":
+            return self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True)
+        if p == "hybrid":
+            a = self.detect_anchors(binary, use_border_padding=False, relaxed_polygon=False)
+            b = self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True)
+            merged: list[tuple[float, float]] = []
+            for pt in a + b:
+                if not any((pt[0] - q[0]) ** 2 + (pt[1] - q[1]) ** 2 < 36.0 for q in merged):
+                    merged.append(pt)
+            return merged[:20]
+        # auto fallback defaults to border-safe detector.
+        return self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True)
+
+    def _try_anchor_alignment(self, image: np.ndarray, binary: np.ndarray, template: Template, profile: str) -> tuple[np.ndarray, np.ndarray] | None:
+        detected = self._detect_anchors_by_profile(binary, profile)
+        template_pts = np.array(
+            [
+                (a.x * template.width, a.y * template.height)
+                if a.x <= 1.0 and a.y <= 1.0
+                else (a.x, a.y)
+                for a in template.anchors
+            ],
+            dtype=np.float32,
+        )
+        if len(detected) < 4 or len(template_pts) < 4:
+            return None
+        src_pts, dst_pts = self._match_anchor_sets(np.array(detected, dtype=np.float32), template_pts)
+        if len(src_pts) < 4 or len(dst_pts) < 4:
+            return None
+        h = cv2.getPerspectiveTransform(self._order_points(src_pts[:4]), self._order_points(dst_pts[:4]))
+        aligned = cv2.warpPerspective(image, h, (template.width, template.height))
+        aligned_binary = cv2.warpPerspective(binary, h, (template.width, template.height))
+        return aligned, aligned_binary
+
+    def _refine_alignment_with_one_side_anchors(
+        self,
+        aligned: np.ndarray,
+        aligned_binary: np.ndarray,
+        template: Template,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        anchors = list(template.anchors or [])
+        if len(anchors) < 4:
+            return aligned, aligned_binary
+
+        tpl = np.array(
+            [
+                [a.x * template.width, a.y * template.height] if a.x <= 1.0 and a.y <= 1.0 else [a.x, a.y]
+                for a in anchors
+            ],
+            dtype=np.float32,
+        )
+        mean_x = float(np.mean(tpl[:, 0]))
+        right_side = mean_x >= (template.width * 0.5)
+
+        detected = np.array(self.detect_anchors(aligned_binary, use_border_padding=True, relaxed_polygon=True), dtype=np.float32)
+        if len(detected) < 4:
+            return aligned, aligned_binary
+
+        margin = template.width * 0.22
+        if right_side:
+            det_side = detected[detected[:, 0] >= (template.width - margin)]
+            tpl_side = tpl[tpl[:, 0] >= (template.width - margin)]
+        else:
+            det_side = detected[detected[:, 0] <= margin]
+            tpl_side = tpl[tpl[:, 0] <= margin]
+        if len(det_side) < 4 or len(tpl_side) < 4:
+            return aligned, aligned_binary
+
+        det_side = det_side[np.argsort(det_side[:, 1])]
+        tpl_side = tpl_side[np.argsort(tpl_side[:, 1])]
+        n = min(len(det_side), len(tpl_side))
+        det_side = det_side[:n]
+        tpl_side = tpl_side[:n]
+        if n < 4:
+            return aligned, aligned_binary
+
+        y_det = det_side[:, 1]
+        y_tpl = tpl_side[:, 1]
+        # y_tpl ~= sy * y_det + ty
+        sy, ty = np.polyfit(y_det, y_tpl, 1)
+        sy = float(sy)
+        ty = float(ty)
+        if not np.isfinite(sy) or not np.isfinite(ty):
+            return aligned, aligned_binary
+        if sy < 0.90 or sy > 1.10:
+            return aligned, aligned_binary
+
+        tx = float(np.median(tpl_side[:, 0] - det_side[:, 0]))
+        if abs(tx) > template.width * 0.08:
+            return aligned, aligned_binary
+
+        m = np.array([[1.0, 0.0, tx], [0.0, sy, ty]], dtype=np.float32)
+
+        # Accept only if y-fit improves meaningfully.
+        base_err = float(np.mean(np.abs(y_det - y_tpl)))
+        warped_probe = np.stack([det_side[:, 0] + tx, det_side[:, 1] * sy + ty], axis=1)
+        new_err = float(np.mean(np.abs(warped_probe[:, 1] - y_tpl)))
+        if new_err > base_err - 0.5:
+            return aligned, aligned_binary
+
+        refined = cv2.warpAffine(
+            aligned,
+            m,
+            (template.width, template.height),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REPLICATE,
+        )
+        refined_bin = cv2.warpAffine(
+            aligned_binary,
+            m,
+            (template.width, template.height),
+            flags=cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_REPLICATE,
+        )
+        return refined, refined_bin
+
     def correct_perspective(
         self,
         image: np.ndarray,
