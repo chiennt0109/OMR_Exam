@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.omr_engine import OMRProcessor
+from core.omr_engine import OMRProcessor, OMRResult
 from core.template_engine import TemplateEngine
 from models.template import AnchorPoint, Template, Zone, ZoneType
 
@@ -58,6 +58,7 @@ class TemplateCanvas(QWidget):
         self._move_offset = QPoint()
 
         self.recognition_overlay: dict[str, list[bool]] = {}
+        self.detected_anchor_points: list[tuple[float, float]] = []
         self.setFocusPolicy(Qt.StrongFocus)
 
     def set_template(self, template: Template, pixmap: QPixmap):
@@ -68,6 +69,7 @@ class TemplateCanvas(QWidget):
         self.selected_anchor = -1
         self.preview_mode = False
         self.recognition_overlay.clear()
+        self.detected_anchor_points = []
         self.resize(int(pixmap.width() * self.zoom), int(pixmap.height() * self.zoom))
         self.selection_changed.emit(-1)
         self.update()
@@ -255,6 +257,15 @@ class TemplateCanvas(QWidget):
                 p.setPen(QPen(Qt.black, 2)); p.setBrush(Qt.black)
             p.drawRect(QRectF(a.x * self.template.width * self.zoom - 4, a.y * self.template.height * self.zoom - 4, 8, 8))
 
+        # Detected anchors from test-recognition pass.
+        if self.detected_anchor_points:
+            p.setPen(QPen(QColor(40, 180, 255), 2)); p.setBrush(Qt.NoBrush)
+            for ax, ay in self.detected_anchor_points:
+                x = ax * self.zoom
+                y = ay * self.zoom
+                p.drawLine(QPointF(x - 6, y - 6), QPointF(x + 6, y + 6))
+                p.drawLine(QPointF(x - 6, y + 6), QPointF(x + 6, y - 6))
+
         for i, z in enumerate(self.template.zones):
             zr = self._zone_rect_abs(z)
             p.setPen(QPen(QColor(220, 60, 60), 2)); p.setBrush(Qt.NoBrush)
@@ -323,9 +334,16 @@ class TemplateCanvas(QWidget):
         assert self.template and zone.grid
         states = self.recognition_overlay[zone.id]
         for i, (bx, by) in enumerate(zone.grid.bubble_positions):
-            color = QColor(0, 180, 0) if (i < len(states) and states[i]) else QColor(230, 60, 60)
-            painter.setPen(QPen(color, 1)); painter.setBrush(Qt.NoBrush)
-            painter.drawEllipse(QPointF(bx * self.template.width * self.zoom, by * self.template.height * self.zoom), 4, 4)
+            x = bx * self.template.width * self.zoom
+            y = by * self.template.height * self.zoom
+            seen = i < len(states) and states[i]
+            if seen:
+                painter.setPen(QPen(QColor(0, 200, 0), 2)); painter.setBrush(Qt.NoBrush)
+                painter.drawLine(QPointF(x - 5, y - 5), QPointF(x + 5, y + 5))
+                painter.drawLine(QPointF(x - 5, y + 5), QPointF(x + 5, y - 5))
+            else:
+                painter.setPen(QPen(QColor(230, 60, 60), 1)); painter.setBrush(Qt.NoBrush)
+                painter.drawEllipse(QPointF(x, y), 3.5, 3.5)
 
 
 class TemplateEditorWindow(QMainWindow):
@@ -813,9 +831,19 @@ class TemplateEditorWindow(QMainWindow):
         if not path:
             return
 
-        bg = QPixmap(path)
+        src = cv2.imread(path)
+        if src is None:
+            QMessageBox.warning(self, "Recognition", "Không thể đọc ảnh scan để test recognition.")
+            return
+        prepared = self.omr._preprocess(src)
+        tmp_result = OMRResult(image_path=path)
+        aligned, aligned_binary = self.omr.correct_perspective(src, prepared["binary"], self.template, tmp_result)
+        if aligned_binary is None:
+            aligned_binary = self.omr._preprocess(aligned)["binary"]
+
+        # Show what engine actually uses for recognition.
+        bg = self._cv_to_qpixmap(aligned)
         if not bg.isNull() and self.template:
-            bg = bg.scaled(self.template.width, self.template.height, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
             self.canvas.pixmap = bg
             self.canvas.resize(int(bg.width() * self.canvas.zoom), int(bg.height() * self.canvas.zoom))
 
@@ -827,27 +855,35 @@ class TemplateEditorWindow(QMainWindow):
             f"NUM: {res.numeric_answers or {}}"
         )
 
-        # generate overlay by re-measuring bubble fills
+        # Show detected anchors and recognized options overlay (green X = selected/seen).
         self.canvas.recognition_overlay.clear()
-        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-        if img is not None:
-            blur = cv2.GaussianBlur(img, (5, 5), 0)
-            th = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 15, 6)
-            for z in self.template.zones:
-                if not z.grid:
-                    continue
-                states = []
-                for bx, by in z.grid.bubble_positions:
-                    x, y = int(bx * self.template.width), int(by * self.template.height)
-                    x0, y0 = max(0, x - 6), max(0, y - 6)
-                    x1, y1 = min(th.shape[1], x + 6), min(th.shape[0], y + 6)
-                    roi = th[y0:y1, x0:x1]
-                    states.append(False if roi.size == 0 else (float(np.count_nonzero(roi)) / float(roi.size) >= self.omr.fill_threshold))
-                self.canvas.recognition_overlay[z.id] = states
+        self.canvas.detected_anchor_points = list(self.omr.detect_anchors(aligned_binary, max_points=120))
+        for z in self.template.zones:
+            if not z.grid:
+                continue
+            states = []
+            for bx, by in z.grid.bubble_positions:
+                x, y = int(bx * self.template.width), int(by * self.template.height)
+                x0, y0 = max(0, x - 6), max(0, y - 6)
+                x1, y1 = min(aligned_binary.shape[1], x + 6), min(aligned_binary.shape[0], y + 6)
+                roi = aligned_binary[y0:y1, x0:x1]
+                states.append(False if roi.size == 0 else (float(np.count_nonzero(roi)) / float(roi.size) >= self.omr.fill_threshold))
+            self.canvas.recognition_overlay[z.id] = states
+
+        self.result_box.append(f"\nDetected anchors: {len(self.canvas.detected_anchor_points)}")
 
         self.canvas.preview_mode = True
         self.canvas.update()
         self.test_ok = True
+
+    @staticmethod
+    def _cv_to_qpixmap(image_bgr: np.ndarray) -> QPixmap:
+        if image_bgr is None or image_bgr.size == 0:
+            return QPixmap()
+        rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb.shape
+        qimg = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
+        return QPixmap.fromImage(qimg.copy())
 
     def save_template(self):
         self._save_template(save_as=False)
