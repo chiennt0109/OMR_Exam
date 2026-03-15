@@ -48,6 +48,7 @@ class TemplateCanvas(QWidget):
         self.add_anchor_mode = False
         self.current_zone_type = ZoneType.MCQ_BLOCK
         self.selected_zone = -1
+        self.selected_anchor = -1
 
         self._drawing = False
         self._moving = False
@@ -64,6 +65,7 @@ class TemplateCanvas(QWidget):
         self.pixmap = pixmap
         self.zoom = 1.0
         self.selected_zone = -1
+        self.selected_anchor = -1
         self.preview_mode = False
         self.recognition_overlay.clear()
         self.resize(int(pixmap.width() * self.zoom), int(pixmap.height() * self.zoom))
@@ -100,6 +102,15 @@ class TemplateCanvas(QWidget):
         if self.add_anchor_mode:
             self.template.anchors.append(AnchorPoint(p.x() / self.template.width, p.y() / self.template.height, f"A{len(self.template.anchors)+1}"))
             self.zones_changed.emit(); self.update(); return
+
+        a_idx = self._hit_anchor(p)
+        if a_idx >= 0:
+            self.selected_anchor = a_idx
+            self.selected_zone = -1
+            self.selection_changed.emit(-1)
+            self.update()
+            return
+        self.selected_anchor = -1
 
         z_idx, c_idx = self._hit_zone_or_control(p)
         if z_idx >= 0:
@@ -195,16 +206,35 @@ class TemplateCanvas(QWidget):
                 return i, -1
         return -1, -1
 
+    def _hit_anchor(self, p: QPoint) -> int:
+        if not self.template:
+            return -1
+        for i in range(len(self.template.anchors) - 1, -1, -1):
+            a = self.template.anchors[i]
+            ax = a.x * self.template.width
+            ay = a.y * self.template.height
+            if abs(ax - p.x()) <= 10 and abs(ay - p.y()) <= 10:
+                return i
+        return -1
+
 
     def keyPressEvent(self, e: QKeyEvent):
         if not self.template:
             return
-        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and 0 <= self.selected_zone < len(self.template.zones):
-            del self.template.zones[self.selected_zone]
-            self.selected_zone = -1
-            self.selection_changed.emit(-1)
-            self.zones_changed.emit()
-            self.update()
+        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            if 0 <= self.selected_zone < len(self.template.zones):
+                del self.template.zones[self.selected_zone]
+                self.selected_zone = -1
+                self.selection_changed.emit(-1)
+                self.zones_changed.emit()
+                self.update()
+                return
+            if 0 <= self.selected_anchor < len(self.template.anchors):
+                del self.template.anchors[self.selected_anchor]
+                self.selected_anchor = -1
+                self.zones_changed.emit()
+                self.update()
+                return
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -218,7 +248,11 @@ class TemplateCanvas(QWidget):
             return
 
         p.setPen(QPen(Qt.black, 2)); p.setBrush(Qt.black)
-        for a in self.template.anchors:
+        for i, a in enumerate(self.template.anchors):
+            if i == self.selected_anchor:
+                p.setPen(QPen(QColor(255, 180, 0), 2)); p.setBrush(QColor(255, 180, 0))
+            else:
+                p.setPen(QPen(Qt.black, 2)); p.setBrush(Qt.black)
             p.drawRect(QRectF(a.x * self.template.width * self.zoom - 4, a.y * self.template.height * self.zoom - 4, 8, 8))
 
         for i, z in enumerate(self.template.zones):
@@ -324,11 +358,13 @@ class TemplateEditorWindow(QMainWindow):
 
         self.act_preview = QAction("Preview", self); self.act_preview.triggered.connect(self.preview_template)
         self.act_test_recognition = QAction("Test Recognition", self); self.act_test_recognition.triggered.connect(self.test_recognition)
+        self.act_template_qc = QAction("Template QC", self); self.act_template_qc.triggered.connect(self.run_template_quality_check)
 
         self.act_copy = QAction("Copy Block", self); self.act_copy.triggered.connect(self.copy_block)
         self.act_paste = QAction("Paste Block", self); self.act_paste.triggered.connect(self.paste_block)
         self.act_duplicate = QAction("Duplicate Block", self); self.act_duplicate.triggered.connect(self.duplicate_block)
         self.act_delete = QAction("Delete Block", self); self.act_delete.triggered.connect(self.delete_selected_block)
+        self.act_delete_anchor = QAction("Delete Anchor", self); self.act_delete_anchor.triggered.connect(self.delete_selected_anchor)
         self.act_snap_grid = QAction("Snap Grid", self); self.act_snap_grid.triggered.connect(self.snap_grid_to_detected_bubbles)
         self.act_zoom_in = QAction("Zoom +", self); self.act_zoom_in.triggered.connect(lambda: self.canvas.set_zoom(self.canvas.zoom * 1.15))
         self.act_zoom_out = QAction("Zoom -", self); self.act_zoom_out.triggered.connect(lambda: self.canvas.set_zoom(self.canvas.zoom / 1.15))
@@ -349,10 +385,12 @@ class TemplateEditorWindow(QMainWindow):
             self.act_save_as,
             self.act_preview,
             self.act_test_recognition,
+            self.act_template_qc,
             self.act_copy,
             self.act_paste,
             self.act_duplicate,
             self.act_delete,
+            self.act_delete_anchor,
             self.act_snap_grid,
         ]:
             toolbar.addAction(act)
@@ -365,6 +403,16 @@ class TemplateEditorWindow(QMainWindow):
         self.zone_type = QComboBox(); self.zone_type.addItems([z.value for z in [ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK, ZoneType.MCQ_BLOCK, ZoneType.TRUE_FALSE_BLOCK, ZoneType.NUMERIC_BLOCK]])
         self.zone_type.currentTextChanged.connect(self._on_zone_type_changed)
         toolbar.addWidget(self.zone_type)
+
+        toolbar.addWidget(QLabel(" Alignment: "))
+        self.align_profile_combo = QComboBox()
+        self.align_profile_combo.addItem("Auto", "auto")
+        self.align_profile_combo.addItem("Legacy", "legacy")
+        self.align_profile_combo.addItem("Border", "border")
+        self.align_profile_combo.addItem("One-side ruler", "one_side")
+        self.align_profile_combo.addItem("Hybrid", "hybrid")
+        self.align_profile_combo.currentIndexChanged.connect(self._on_alignment_profile_changed)
+        toolbar.addWidget(self.align_profile_combo)
 
         toolbar.addAction(self.act_zoom_in)
         toolbar.addAction(self.act_zoom_out)
@@ -408,10 +456,12 @@ class TemplateEditorWindow(QMainWindow):
         m_edit.addAction(self.act_paste)
         m_edit.addAction(self.act_duplicate)
         m_edit.addAction(self.act_delete)
+        m_edit.addAction(self.act_delete_anchor)
 
         m_recog = menu.addMenu("Recognition")
         m_recog.addAction(self.act_preview)
         m_recog.addAction(self.act_test_recognition)
+        m_recog.addAction(self.act_template_qc)
         m_recog.addAction(self.act_snap_grid)
 
         m_view = menu.addMenu("View")
@@ -585,6 +635,7 @@ class TemplateEditorWindow(QMainWindow):
             QMessageBox.warning(self, "Invalid", "Unable to load image")
             return
         self.template = Template(Path(path).stem, path, pix.width(), pix.height())
+        self.template.metadata["alignment_profile"] = "auto"
         self.canvas.set_template(self.template, pix)
         self._original_pixmap = pix
         self.template_file_path = None
@@ -625,6 +676,7 @@ class TemplateEditorWindow(QMainWindow):
         tpl.width = pix.width()
         tpl.height = pix.height()
         self.template = tpl
+        self._sync_alignment_profile_from_template()
         self.canvas.set_template(self.template, pix)
         self._original_pixmap = pix
         self.template_file_path = path
@@ -701,6 +753,18 @@ class TemplateEditorWindow(QMainWindow):
             self.canvas.selected_zone = -1
             self.canvas.selection_changed.emit(-1)
             self.canvas.update()
+
+    def delete_selected_anchor(self):
+        if not self.template:
+            return
+        idx = int(getattr(self.canvas, "selected_anchor", -1))
+        if idx < 0 or idx >= len(self.template.anchors):
+            QMessageBox.information(self, "Delete Anchor", "Chọn anchor cần xoá trước (click vào anchor đen).")
+            return
+        del self.template.anchors[idx]
+        self.canvas.selected_anchor = -1
+        self.canvas.zones_changed.emit()
+        self.canvas.update()
 
     def snap_grid_to_detected_bubbles(self):
         z = self._selected_zone()
@@ -807,5 +871,83 @@ class TemplateEditorWindow(QMainWindow):
         if save_as or not path:
             path, _ = QFileDialog.getSaveFileName(self, "Save Template", path or "template.json", "JSON (*.json)")
         if path:
+            if self.template is not None:
+                self.template.metadata["alignment_profile"] = str(self.align_profile_combo.currentData() or "auto")
             self.template.save_json(path)
             self.template_file_path = path
+
+    def _on_alignment_profile_changed(self, _idx: int) -> None:
+        if self.template is None:
+            return
+        self.template.metadata["alignment_profile"] = str(self.align_profile_combo.currentData() or "auto")
+
+    def _sync_alignment_profile_from_template(self) -> None:
+        if self.template is None or not hasattr(self, "align_profile_combo"):
+            return
+        mode = str((self.template.metadata or {}).get("alignment_profile", "auto") or "auto")
+        idx = self.align_profile_combo.findData(mode)
+        if idx < 0:
+            idx = 0
+        self.align_profile_combo.setCurrentIndex(idx)
+
+    def run_template_quality_check(self) -> None:
+        if not self.template:
+            QMessageBox.warning(self, "Template QC", "Load a template/image first.")
+            return
+        issues: list[str] = []
+        tips: list[str] = []
+        anchors = list(self.template.anchors or [])
+        if len(anchors) < 4:
+            issues.append("Anchor count < 4 (không đủ để homography ổn định).")
+        else:
+            mode = str((self.template.metadata or {}).get("alignment_profile", "auto") or "auto")
+            max_anchor = 120 if mode == "one_side" else 60
+            if len(anchors) > max_anchor:
+                issues.append(f"Anchor count quá nhiều (>{max_anchor}), dễ bắt nhầm marker nhiễu.")
+
+        w, h = float(self.template.width), float(self.template.height)
+        if anchors:
+            near_edge = 0
+            for a in anchors:
+                ax = a.x * w if a.x <= 1.0 else a.x
+                ay = a.y * h if a.y <= 1.0 else a.y
+                if ax < w * 0.08 or ay < h * 0.08 or ax > w * 0.92 or ay > h * 0.92:
+                    near_edge += 1
+            if near_edge >= max(2, len(anchors) // 2):
+                tips.append("Anchor nằm sát biên nhiều: chọn Alignment=Border.")
+                xs = [float((a.x * w if a.x <= 1.0 else a.x)) for a in anchors]
+                if (max(xs) - min(xs)) <= w * 0.18:
+                    tips.append("Anchor gần như 1 cột dọc: chọn Alignment=One-side ruler để chuẩn hóa theo các dòng mốc.")
+            else:
+                tips.append("Anchor phân bố trung tâm/ổn định: nên chọn Alignment=Legacy hoặc Auto.")
+
+        block_zones = [z for z in self.template.zones if z.zone_type in BLOCK_TYPES]
+        if not block_zones:
+            issues.append("Chưa có block nhận dạng (MCQ/TF/NUM/ID/EXAM_CODE).")
+        missing_grid = [z.name for z in block_zones if not z.grid]
+        if missing_grid:
+            issues.append(f"Thiếu semantic grid: {', '.join(missing_grid[:6])}{'...' if len(missing_grid) > 6 else ''}")
+
+        overlap_count = 0
+        for i in range(len(block_zones)):
+            a = block_zones[i]
+            ar = (a.x, a.y, a.x + a.width, a.y + a.height)
+            for j in range(i + 1, len(block_zones)):
+                b = block_zones[j]
+                br = (b.x, b.y, b.x + b.width, b.y + b.height)
+                ix = max(0.0, min(ar[2], br[2]) - max(ar[0], br[0]))
+                iy = max(0.0, min(ar[3], br[3]) - max(ar[1], br[1]))
+                if ix * iy > 1e-4:
+                    overlap_count += 1
+        if overlap_count > 0:
+            issues.append(f"Có {overlap_count} vùng block bị overlap.")
+
+        score = 100
+        score -= min(40, len(issues) * 12)
+        score = max(0, score)
+        msg = [f"Template QC score: {score}/100", "", "Issues:"]
+        msg.extend([f"- {x}" for x in issues] if issues else ["- Không phát hiện lỗi nghiêm trọng."])
+        msg.append("")
+        msg.append("Recommendations:")
+        msg.extend([f"- {x}" for x in tips] if tips else ["- Dùng Alignment=Auto."])
+        self.result_box.setPlainText("\n".join(msg))
