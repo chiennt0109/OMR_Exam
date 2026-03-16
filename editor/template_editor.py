@@ -831,7 +831,7 @@ class TemplateEditorWindow(QMainWindow):
         if not path:
             return
 
-        res = self.omr.recognize_sheet(path, self.template)
+        res = self.omr.run_recognition_test(path, self.template)
         aligned = getattr(res, "aligned_image", None)
         aligned_binary = getattr(res, "aligned_binary", None)
         if aligned is None or aligned_binary is None:
@@ -854,17 +854,7 @@ class TemplateEditorWindow(QMainWindow):
         # Show detected anchors and recognized options overlay (green X = selected/seen).
         self.canvas.recognition_overlay.clear()
         self.canvas.detected_anchor_points = list(getattr(res, "detected_anchors", []))
-        for z in self.template.zones:
-            if not z.grid:
-                continue
-            states = []
-            for bx, by in z.grid.bubble_positions:
-                x, y = int(bx * self.template.width), int(by * self.template.height)
-                x0, y0 = max(0, x - 6), max(0, y - 6)
-                x1, y1 = min(aligned_binary.shape[1], x + 6), min(aligned_binary.shape[0], y + 6)
-                roi = aligned_binary[y0:y1, x0:x1]
-                states.append(False if roi.size == 0 else (float(np.count_nonzero(roi)) / float(roi.size) >= self.omr.fill_threshold))
-            self.canvas.recognition_overlay[z.id] = states
+        self.canvas.recognition_overlay.update(getattr(res, "bubble_states_by_zone", {}) or self.omr.extract_bubble_states(aligned_binary, self.template))
 
         self.result_box.append(f"\nDetected anchors: {len(self.canvas.detected_anchor_points)}")
 
