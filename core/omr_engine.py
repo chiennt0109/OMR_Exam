@@ -110,12 +110,38 @@ class OMRProcessor:
             setattr(result, "aligned_binary", aligned_binary)
             setattr(result, "detected_anchors", self.detect_anchors(aligned_binary, max_points=120))
 
+            setattr(result, "bubble_states_by_zone", self.extract_bubble_states(aligned_binary, template))
+
             result.processing_time_sec = time.perf_counter() - started
             setattr(result, "answers", result.mcq_answers)
             result.sync_legacy_aliases()
             return result
         finally:
             self.alignment_profile = prev_profile
+
+    def run_recognition_test(self, image: str | Path | np.ndarray, template: Template) -> OMRResult:
+        """Shared recognition entrypoint for template QC and production scan."""
+        return self.recognize_sheet(image, template)
+
+    def extract_bubble_states(self, binary_image: np.ndarray, template: Template) -> dict[str, list[bool]]:
+        states_by_zone: dict[str, list[bool]] = {}
+        if binary_image is None or template is None:
+            return states_by_zone
+        h, w = binary_image.shape[:2]
+        for z in template.zones:
+            if not z.grid:
+                continue
+            states: list[bool] = []
+            for bx, by in z.grid.bubble_positions:
+                x = int(bx * template.width)
+                y = int(by * template.height)
+                x0, y0 = max(0, x - 6), max(0, y - 6)
+                x1, y1 = min(w, x + 6), min(h, y + 6)
+                roi = binary_image[y0:y1, x0:x1]
+                ratio = 0.0 if roi.size == 0 else float(np.count_nonzero(roi)) / float(roi.size)
+                states.append(ratio >= self.fill_threshold)
+            states_by_zone[z.id] = states
+        return states_by_zone
 
     def process_image(self, image_path: str | Path, template: Template) -> OMRResult:
         return self.recognize_sheet(image_path, template)
@@ -129,7 +155,7 @@ class OMRProcessor:
         total = len(image_paths)
         results: list[OMRResult] = []
         for idx, image_path in enumerate(image_paths, start=1):
-            results.append(self.process_image(image_path, template))
+            results.append(self.run_recognition_test(image_path, template))
             if progress_callback:
                 progress_callback(idx, total, image_path)
         return results
