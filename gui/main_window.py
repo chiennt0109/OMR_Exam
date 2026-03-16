@@ -6,7 +6,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QEvent, QPointF
-from PySide6.QtGui import QKeySequence, QPixmap, QTransform, QPainter, QPen
+from PySide6.QtGui import QColor, QImage, QKeySequence, QPixmap, QTransform, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -56,6 +56,7 @@ class PreviewImageWidget(QLabel):
         self.setAlignment(Qt.AlignCenter)
         self.setMinimumHeight(260)
         self._markers: list[dict[str, float]] = []
+        self._overlay_markers: list[dict[str, float]] = []
         self._drag_index: int = -1
 
     def set_markers(self, markers: list[dict[str, float]]) -> None:
@@ -64,6 +65,11 @@ class PreviewImageWidget(QLabel):
 
     def clear_markers(self) -> None:
         self._markers = []
+        self._overlay_markers = []
+        self.update()
+
+    def set_overlay_markers(self, markers: list[dict[str, float]]) -> None:
+        self._overlay_markers = [dict(m) for m in markers]
         self.update()
 
     def markers(self) -> list[dict[str, float]]:
@@ -74,17 +80,28 @@ class PreviewImageWidget(QLabel):
 
     def paintEvent(self, event):  # type: ignore[override]
         super().paintEvent(event)
-        if not self._markers:
+        if not self._markers and not self._overlay_markers:
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
-        painter.setPen(QPen(Qt.green, 2))
-        for m in self._markers:
-            x = float(m.get("x", 0.0))
-            y = float(m.get("y", 0.0))
-            r = 6
-            painter.drawLine(int(x - r), int(y - r), int(x + r), int(y + r))
-            painter.drawLine(int(x - r), int(y + r), int(x + r), int(y - r))
+
+        if self._overlay_markers:
+            painter.setPen(QPen(QColor(40, 130, 255), 2))
+            for m in self._overlay_markers:
+                x = float(m.get("x", 0.0))
+                y = float(m.get("y", 0.0))
+                r = 5
+                painter.drawLine(int(x - r), int(y - r), int(x + r), int(y + r))
+                painter.drawLine(int(x - r), int(y + r), int(x + r), int(y - r))
+
+        if self._markers:
+            painter.setPen(QPen(Qt.green, 2))
+            for m in self._markers:
+                x = float(m.get("x", 0.0))
+                y = float(m.get("y", 0.0))
+                r = 6
+                painter.drawLine(int(x - r), int(y - r), int(x + r), int(y + r))
+                painter.drawLine(int(x - r), int(y + r), int(x + r), int(y - r))
 
     def _pick_marker_index(self, pos: QPointF) -> int:
         px, py = float(pos.x()), float(pos.y())
@@ -9291,13 +9308,13 @@ class MainWindow(QMainWindow):
         penalty = len(getattr(result, "issues", []) or []) + len(getattr(result, "recognition_errors", []) or getattr(result, "errors", []) or [])
         return has_id * 3 + has_code * 3 + answers_count - penalty
 
-    def _apply_template_recognition_settings(self, template: Template) -> None:
+    def _apply_template_recognition_settings(self, template: Template, *, sync_mode_selector: bool = True) -> None:
         if not template:
             return
         md = template.metadata if isinstance(template.metadata, dict) else {}
 
         mode = str(md.get("alignment_profile", "") or "").strip().lower()
-        if mode in {"auto", "legacy", "border", "hybrid", "one_side"}:
+        if sync_mode_selector and mode in {"auto", "legacy", "border", "hybrid", "one_side"}:
             setattr(self.omr_processor, "alignment_profile", mode)
             if hasattr(self, "batch_recognition_mode_combo"):
                 for i in range(self.batch_recognition_mode_combo.count()):
@@ -9458,7 +9475,7 @@ class MainWindow(QMainWindow):
         self.preview_rotation_by_index.clear()
         self.scan_forced_status_by_index.clear()
 
-        self._apply_template_recognition_settings(self.template)
+        self._apply_template_recognition_settings(self.template, sync_mode_selector=False)
 
         def on_progress(current: int, total: int, image_path: str):
             self.progress.setMaximum(total)
@@ -9484,9 +9501,8 @@ class MainWindow(QMainWindow):
             need_retry_180 = (not original_identity) or (not original_meaningful)
             if need_retry_180:
                 retried, improved = self._try_reprocess_result_rotated_180(result)
-                retried_meaningful = self._result_has_meaningful_recognition(retried)
-                retried_identity = self._has_valid_identity(retried)
-                if retried_identity or retried_meaningful or improved:
+                # Accept 180° retry only when quality is strictly improved, otherwise keep original orientation.
+                if improved:
                     result = retried
                     self.scan_results[idx] = result
                     self.preview_rotation_by_index[idx] = (int(self.preview_rotation_by_index.get(idx, 0) or 0) + 180) % 360
@@ -11525,6 +11541,20 @@ class MainWindow(QMainWindow):
         except Exception:
             return self.template is not None
 
+    @staticmethod
+    def _aligned_image_to_qpixmap(image) -> QPixmap:
+        try:
+            if image is None:
+                return QPixmap()
+            h, w, ch = image.shape
+            if h <= 0 or w <= 0 or ch < 3:
+                return QPixmap()
+            rgb = image[:, :, :3][:, :, ::-1].copy()
+            qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888)
+            return QPixmap.fromImage(qimg.copy())
+        except Exception:
+            return QPixmap()
+
     def _marker_positions_for_result(self, result: OMRResult) -> list[dict[str, float]]:
         if self.template is None or self.preview_source_pixmap.isNull():
             return []
@@ -11574,6 +11604,32 @@ class MainWindow(QMainWindow):
                         if 0 <= idx < len(g.bubble_positions):
                             bx, by = g.bubble_positions[idx]
                             markers.append({"zone_id": z.id, "section": "TF", "qno": float(qno), "stmt": float(sidx), "choice": float(c), "x": float(bx) * sx, "y": float(by) * sy})
+        return markers
+
+    def _recognition_overlay_positions_for_result(self, result: OMRResult) -> list[dict[str, float]]:
+        if self.template is None or self.preview_source_pixmap.isNull():
+            return []
+        states_by_zone = getattr(result, "bubble_states_by_zone", None)
+        if not isinstance(states_by_zone, dict) or not states_by_zone:
+            return []
+        tpl_w = max(1.0, float(self.template.width))
+        tpl_h = max(1.0, float(self.template.height))
+        img_w = max(1.0, float(self.preview_source_pixmap.width()))
+        img_h = max(1.0, float(self.preview_source_pixmap.height()))
+        sx, sy = img_w / tpl_w, img_h / tpl_h
+        markers: list[dict[str, float]] = []
+        for z in self.template.zones:
+            g = z.grid
+            if not g or not g.bubble_positions:
+                continue
+            states = list(states_by_zone.get(z.id, []) or [])
+            if not states:
+                continue
+            for i, pos in enumerate(g.bubble_positions):
+                if i >= len(states) or not bool(states[i]):
+                    continue
+                bx, by = pos
+                markers.append({"zone_id": z.id, "x": float(bx) * sx, "y": float(by) * sy})
         return markers
 
     def _apply_adjusted_markers_to_result(self, idx: int, result: OMRResult) -> bool:
@@ -11843,6 +11899,7 @@ class MainWindow(QMainWindow):
 
         tmp_result = self._build_result_from_saved_table_row(row)
         if tmp_result is not None:
+            self.scan_image_preview.set_overlay_markers(self._recognition_overlay_positions_for_result(tmp_result))
             self.scan_image_preview.set_markers(self._marker_positions_for_result(tmp_result))
         else:
             self.scan_image_preview.clear_markers()
@@ -12050,7 +12107,8 @@ class MainWindow(QMainWindow):
             return
         result = self.scan_results[index]
         img_path = Path(result.image_path)
-        pix = QPixmap(str(img_path))
+        aligned_pix = self._aligned_image_to_qpixmap(getattr(result, "aligned_image", None))
+        pix = aligned_pix if not aligned_pix.isNull() else QPixmap(str(img_path))
         if pix.isNull():
             self.preview_source_pixmap = QPixmap()
             self.scan_image_preview.setText(f"Cannot load image: {img_path.name}")
@@ -12061,7 +12119,8 @@ class MainWindow(QMainWindow):
                 pix = pix.transformed(QTransform().rotate(float(rotation)), Qt.SmoothTransformation)
             self.preview_source_pixmap = pix
             self._render_preview_pixmap()
-        self.scan_image_preview.set_markers(self._marker_positions_for_result(result))
+            self.scan_image_preview.set_overlay_markers(self._recognition_overlay_positions_for_result(result))
+            self.scan_image_preview.set_markers(self._marker_positions_for_result(result))
 
         rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
         blank_map = self.scan_blank_summary.get(index, {"MCQ": [], "TF": [], "NUMERIC": []})
