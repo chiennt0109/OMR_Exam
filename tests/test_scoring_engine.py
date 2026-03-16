@@ -139,6 +139,13 @@ class ScoringEngineTests(unittest.TestCase):
         self.assertIn("Q16:1347|1347", row.numeric_compare)
         self.assertIn("Q17:40|40", row.numeric_compare)
 
+    def test_aligned_marked_answers_skips_non_numeric_keys(self):
+        aligned = self.engine._aligned_marked_answers(
+            key_answers={"section": "", "1": "A", 2: "B"},
+            marked_answers={1: "A", 2: "B"},
+        )
+        self.assertEqual(aligned, {1: "A", 2: "B"})
+
 
 if __name__ == "__main__":
     unittest.main()
