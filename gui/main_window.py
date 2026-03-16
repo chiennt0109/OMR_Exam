@@ -9348,27 +9348,29 @@ class MainWindow(QMainWindow):
 
         for idx, result in enumerate(self.scan_results):
             forced_status = ""
-            retried, improved = self._try_reprocess_result_rotated_180(result)
             original_meaningful = self._result_has_meaningful_recognition(result)
-            retried_meaningful = self._result_has_meaningful_recognition(retried)
             original_identity = self._has_valid_identity(result)
-            retried_identity = self._has_valid_identity(retried)
 
-            # Auto-rotate should actively rescue upside-down scans:
-            # - always accept when rotated result gains valid identity from an invalid original,
-            # - or when original is not meaningful and rotated is better/meaningful.
-            if retried_identity and not original_identity:
-                result = retried
-                self.scan_results[idx] = result
-                self.preview_rotation_by_index[idx] = (int(self.preview_rotation_by_index.get(idx, 0) or 0) + 180) % 360
-                forced_status = "Auto fix"
-            elif (not original_meaningful) and (retried_meaningful or improved):
-                result = retried
-                self.scan_results[idx] = result
-                self.preview_rotation_by_index[idx] = (int(self.preview_rotation_by_index.get(idx, 0) or 0) + 180) % 360
-                forced_status = "Auto fix"
-            elif not original_meaningful:
-                forced_status = "Lỗi nhận dạng"
+            # Avoid expensive 180° re-run on already-good scans.
+            # Retry only when identity is missing or overall recognition is not meaningful.
+            need_retry_180 = (not original_identity) or (not original_meaningful)
+            if need_retry_180:
+                retried, improved = self._try_reprocess_result_rotated_180(result)
+                retried_meaningful = self._result_has_meaningful_recognition(retried)
+                retried_identity = self._has_valid_identity(retried)
+
+                if retried_identity and not original_identity:
+                    result = retried
+                    self.scan_results[idx] = result
+                    self.preview_rotation_by_index[idx] = (int(self.preview_rotation_by_index.get(idx, 0) or 0) + 180) % 360
+                    forced_status = "Auto fix"
+                elif (not original_meaningful) and (retried_meaningful or improved):
+                    result = retried
+                    self.scan_results[idx] = result
+                    self.preview_rotation_by_index[idx] = (int(self.preview_rotation_by_index.get(idx, 0) or 0) + 180) % 360
+                    forced_status = "Auto fix"
+                elif not original_meaningful:
+                    forced_status = "Lỗi nhận dạng"
 
             if forced_status:
                 self.scan_forced_status_by_index[idx] = forced_status
@@ -9417,6 +9419,10 @@ class MainWindow(QMainWindow):
                 self.error_list.addItem(f"{Path(result.image_path).name}: {issue.code} - {issue.message}")
             for err in rec_errors:
                 self.error_list.addItem(f"{Path(result.image_path).name}: RECOGNITION - {err}")
+
+            # Keep UI responsive while filling table after recognition reaches 100%.
+            if idx % 10 == 0:
+                QApplication.processEvents()
 
         self.btn_save_batch_subject.setEnabled(True)
         self._apply_scan_filter()
