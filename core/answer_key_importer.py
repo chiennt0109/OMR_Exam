@@ -74,6 +74,14 @@ def _parse_tf_token(df_row_idx: int, exam_code: str, token: str) -> dict[str, bo
     return payload
 
 
+def _is_tf_token(value: str) -> bool:
+    raw = str(value or "").strip().upper().replace(" ", "")
+    if len(raw) != 4:
+        return False
+    allowed = TF_TRUE_VALUES | TF_FALSE_VALUES
+    return all(ch in allowed for ch in raw)
+
+
 
 
 def _is_numeric_token(value: str) -> bool:
@@ -185,19 +193,22 @@ def _parse_exam_matrix(df: pd.DataFrame) -> ImportedAnswerKeyPackage:
                     package.exam_keys[exam_code].mcq_answers[q] = v.upper()
             continue
 
-        if all(len(v.replace(" ", "")) == 4 for v in non_empty):
-            for exam_code, v in values.items():
-                if v:
-                    package.exam_keys[exam_code].true_false_answers[q] = _parse_tf_token(row_idx, exam_code, v)
-            continue
-
+        # Important: evaluate numeric before TF.
+        # Values such as "4,44" (or 22.0 from spreadsheet conversion) can have length 4
+        # and would otherwise be misclassified as TF.
         if all(_is_numeric_token(v) for v in non_empty):
             for exam_code, v in values.items():
                 if v:
                     package.exam_keys[exam_code].numeric_answers[q] = v
             continue
 
-        first_invalid = next((v for v in non_empty if not (v.upper() in MCQ_CHOICES or len(v.replace(" ", "")) == 4 or _is_numeric_token(v))), non_empty[0])
+        if all(_is_tf_token(v) for v in non_empty):
+            for exam_code, v in values.items():
+                if v:
+                    package.exam_keys[exam_code].true_false_answers[q] = _parse_tf_token(row_idx, exam_code, v)
+            continue
+
+        first_invalid = next((v for v in non_empty if not (v.upper() in MCQ_CHOICES or _is_tf_token(v) or _is_numeric_token(v))), non_empty[0])
         raise ImportError(
             f"Row {row_idx + 2}: invalid value '{first_invalid}'. Expected MCQ(A-E), TF(4 chars T/F or Đ/S), or numeric."
         )
