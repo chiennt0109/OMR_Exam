@@ -840,6 +840,9 @@ class OMRProcessor:
             else:
                 value = value.rstrip("?")
             if sign_mark is not None:
+                # If sign is marked, drop uncertain placeholder(s) immediately after sign.
+                # Keep internal placeholders for later digits to preserve uncertainty signal.
+                value = value.lstrip("?")
                 value = sign_symbol + value
             result.numeric_answers[grid.question_start + q] = value
 

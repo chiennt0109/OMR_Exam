@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 from datetime import date, datetime
 from pathlib import Path
@@ -2273,6 +2274,41 @@ class MainWindow(QMainWindow):
         result.sync_legacy_aliases()
         return result
 
+    def _collect_current_subject_results_for_save(self, subject_key: str) -> list[OMRResult]:
+        key = str(subject_key or "").strip()
+        base_results = list(self.scan_results_by_subject.get(key) or self.scan_results or [])
+        row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
+        if row_count <= 0:
+            return base_results
+
+        by_image: dict[str, OMRResult] = {}
+        for res in base_results:
+            img = str(getattr(res, "image_path", "") or "").strip()
+            if img and img not in by_image:
+                by_image[img] = res
+
+        out: list[OMRResult] = []
+        for r in range(row_count):
+            sid_item = self.scan_list.item(r, 0)
+            image_path = str(sid_item.data(Qt.UserRole) if sid_item else "")
+            exam_code = str(sid_item.data(Qt.UserRole + 1) if sid_item else "")
+            sid_text = str(sid_item.text() if sid_item else "-")
+            base = by_image.get(image_path) if image_path else None
+            if base is not None:
+                res = copy.deepcopy(base)
+            else:
+                res = OMRResult(image_path=image_path)
+            res.student_id = "" if sid_text == "-" else sid_text
+            res.exam_code = exam_code
+            if hasattr(self, "scan_list"):
+                res.full_name = str(self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "")
+                res.birth_date = str(self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "")
+            res.sync_legacy_aliases()
+            out.append(res)
+
+        return out
+
+
     def _is_subject_marked_batched(self, cfg: dict) -> bool:
         key = self._subject_key_from_cfg(cfg)
         if self.scan_results_by_subject.get(key):
@@ -2458,13 +2494,14 @@ class MainWindow(QMainWindow):
         try:
             self._refresh_all_statuses()
             ses = ExamSession.load_json(session_path)
-            cfg = ses.config or {}
+            disk_cfg = ses.config or {}
+            mem_cfg = self.session.config if self.session else {}
+            cfg = {**disk_cfg, **(mem_cfg or {})}
             subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
             subject_key = self._subject_key_from_cfg(subject_cfg)
-            saved_results = [
-                self._serialize_omr_result(x)
-                for x in (self.scan_results_by_subject.get(subject_key) or self.scan_results or [])
-            ]
+            current_results = self._collect_current_subject_results_for_save(subject_key)
+            self.scan_results_by_subject[subject_key] = list(current_results)
+            saved_results = [self._serialize_omr_result(x) for x in current_results]
             timestamp = datetime.now().isoformat(timespec="seconds")
             updated = False
             for item in subject_cfgs:
@@ -2486,6 +2523,8 @@ class MainWindow(QMainWindow):
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
+                            "preview_rotation": int(self.preview_rotation_by_index.get(r, 0) or 0),
+                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
                         }
                         for r in range(self.scan_list.rowCount())
                     ]
@@ -2528,6 +2567,8 @@ class MainWindow(QMainWindow):
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
+                            "preview_rotation": int(self.preview_rotation_by_index.get(r, 0) or 0),
+                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
                         }
                         for r in range(self.scan_list.rowCount())
                     ],
@@ -2545,7 +2586,12 @@ class MainWindow(QMainWindow):
                 pass
 
             if self.session:
-                self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
+                merged_session_cfg = {**(self.session.config or {}), "subject_configs": subject_cfgs}
+                if self.scoring_phases:
+                    merged_session_cfg["scoring_phases"] = list(self.scoring_phases)
+                if self.scoring_results_by_subject:
+                    merged_session_cfg["scoring_results"] = dict(self.scoring_results_by_subject)
+                self.session.config = merged_session_cfg
             self.scan_results_by_subject[subject_key] = list(self.scan_results_by_subject.get(subject_key) or self.scan_results or [])
             if isinstance(self.batch_editor_return_payload, dict):
                 self.batch_editor_return_payload["subject_configs"] = subject_cfgs
