@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.omr_engine import OMRProcessor
+from core.omr_engine import OMRProcessor, OMRResult
 from core.template_engine import TemplateEngine
 from models.template import AnchorPoint, Template, Zone, ZoneType
 
