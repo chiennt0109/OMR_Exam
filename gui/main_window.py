@@ -12278,6 +12278,7 @@ class MainWindow(QMainWindow):
         prev_subject_scores = self.scoring_results_by_subject.get(subject, {})
         rows = []
         missing = 0
+        failed_scans: list[dict[str, str]] = []
         for scan in subject_scans:
             sid = (scan.student_id or "").strip()
             profile = self._student_profile_by_id(sid)
@@ -12290,15 +12291,25 @@ class MainWindow(QMainWindow):
             key = self.answer_keys.get(subject, scan.exam_code)
             if not key:
                 missing += 1
+                failed_scans.append({
+                    "file": str(getattr(scan, "image_path", "") or "-"),
+                    "reason": f"Thiếu đáp án cho mã đề '{str(getattr(scan, 'exam_code', '') or '').strip() or '-'}'",
+                })
                 continue
-            rows.append(
-                self.scoring_engine.score(
-                    scan,
-                    key,
-                    student_name=str(getattr(scan, "full_name", "") or ""),
-                    subject_config=subject_cfg,
+            try:
+                rows.append(
+                    self.scoring_engine.score(
+                        scan,
+                        key,
+                        student_name=str(getattr(scan, "full_name", "") or ""),
+                        subject_config=subject_cfg,
+                    )
                 )
-            )
+            except Exception as exc:
+                failed_scans.append({
+                    "file": str(getattr(scan, "image_path", "") or "-"),
+                    "reason": f"Lỗi chấm điểm: {exc}",
+                })
 
         self.score_rows = rows
         self.score_preview_table.setRowCount(0)
@@ -12324,6 +12335,9 @@ class MainWindow(QMainWindow):
             "mode": mode_text,
             "count": len(rows),
             "missing": missing,
+            "failed_count": len(failed_scans),
+            "success_count": len(rows),
+            "failed_scans": list(failed_scans),
             "note": note,
         }
         phase_marker = f"{phase['timestamp']}::{subject}::{mode_text}"
@@ -12372,13 +12386,70 @@ class MainWindow(QMainWindow):
             first_key = self.answer_keys.get(subject, first_scan.exam_code) if first_scan and self.answer_keys else None
             if first_key:
                 formula_text = self.scoring_engine.describe_formula(first_key, subject_cfg)
-        base_msg = f"Calculated {len(rows)} result(s)."
-        if missing:
-            base_msg = f"Calculated {len(rows)} result(s). Missing key for {missing} scan(s)."
+        total_scans = len(subject_scans)
+        fail_count = len(failed_scans)
+        success_count = len(rows)
+        base_msg = (
+            f"Đã chấm xong môn '{subject}'.\n"
+            f"Tổng file: {total_scans} | Thành công: {success_count} | Thất bại: {fail_count}."
+        )
         if formula_text:
             base_msg = f"{base_msg}\n\n{formula_text}"
+        if failed_scans:
+            details = []
+            for item in failed_scans[:30]:
+                details.append(f"- {Path(str(item.get('file', '-') or '-')).name}: {str(item.get('reason', '') or '-')}")
+            if len(failed_scans) > 30:
+                details.append(f"... và {len(failed_scans)-30} file khác")
+            base_msg = f"{base_msg}\n\nFile thất bại:\n" + "\n".join(details)
         QMessageBox.information(self, "Scoring preview", base_msg)
         return rows
+
+    def _export_student_subject_matrix_excel(self, output_path: Path) -> None:
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "scores_by_student"
+
+        subjects = sorted(set(str(k or "").strip() for k in (self.scoring_results_by_subject or {}).keys() if str(k or "").strip()))
+        header = ["Student ID", "Name"] + subjects
+        ws.append(header)
+
+        base_students: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        if self.session:
+            for st in (self.session.students or []):
+                sid = str(getattr(st, "student_id", "") or "").strip()
+                name = str(getattr(st, "name", "") or "").strip()
+                if not sid or sid in seen:
+                    continue
+                seen.add(sid)
+                base_students.append((sid, name))
+
+        for subject in subjects:
+            for sid, row in (self.scoring_results_by_subject.get(subject, {}) or {}).items():
+                sid_text = str(sid or "").strip()
+                if not sid_text or sid_text in seen:
+                    continue
+                seen.add(sid_text)
+                base_students.append((sid_text, str((row or {}).get("name", "") or "")))
+
+        for sid, name in base_students:
+            vals = [sid, name]
+            for subject in subjects:
+                row = (self.scoring_results_by_subject.get(subject, {}) or {}).get(sid, {}) or {}
+                vals.append(row.get("score", ""))
+            ws.append(vals)
+
+        for col in ws.columns:
+            max_len = 0
+            col_letter = col[0].column_letter
+            for cell in col:
+                max_len = max(max_len, len(str(cell.value or "")))
+            ws.column_dimensions[col_letter].width = min(40, max(12, max_len + 2))
+
+        wb.save(output_path)
 
     def export_results(self) -> None:
         rows = self.score_rows or self.calculate_scores()
@@ -12392,7 +12463,11 @@ class MainWindow(QMainWindow):
         self.scoring_engine.export_json(rows, Path(output_dir) / "results.json")
         self.scoring_engine.export_xml(rows, Path(output_dir) / "results.xml")
         self.scoring_engine.export_excel(rows, Path(output_dir) / "results.xlsx")
-        QMessageBox.information(self, "Export", "Exported CSV, JSON, XML, XLSX.")
+        try:
+            self._export_student_subject_matrix_excel(Path(output_dir) / "scores_by_student.xlsx")
+            QMessageBox.information(self, "Export", "Exported CSV, JSON, XML, XLSX, scores_by_student.xlsx.")
+        except Exception as exc:
+            QMessageBox.warning(self, "Export", f"Đã export CSV/JSON/XML/XLSX nhưng không tạo được scores_by_student.xlsx:\n{exc}")
 
     def _refresh_session_info(self) -> None:
         if not self.session:
