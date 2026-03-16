@@ -831,26 +831,12 @@ class TemplateEditorWindow(QMainWindow):
         if not path:
             return
 
-        src = cv2.imread(path)
-        if src is None:
-            QMessageBox.warning(self, "Recognition", "Không thể đọc ảnh scan để test recognition.")
+        res = self.omr.recognize_sheet(path, self.template)
+        aligned = getattr(res, "aligned_image", None)
+        aligned_binary = getattr(res, "aligned_binary", None)
+        if aligned is None or aligned_binary is None:
+            QMessageBox.warning(self, "Recognition", "Không thể căn chỉnh ảnh theo template để test recognition.")
             return
-
-        # Run the exact same recognition pipeline steps used by process_image,
-        # but keep the intermediate aligned image for on-canvas preview.
-        rotated = self.omr._correct_rotation(src)
-        prepared = self.omr._preprocess(rotated)
-        res = OMRResult(image_path=path)
-        aligned, aligned_binary = self.omr.correct_perspective(rotated, prepared["binary"], self.template, res)
-        if aligned_binary is None:
-            aligned_binary = self.omr._preprocess(aligned)["binary"]
-
-        for zone in self.template.zones:
-            if zone.zone_type == ZoneType.ANCHOR:
-                continue
-            self.omr.recognize_block(aligned_binary, zone, self.template, res, None)
-        setattr(res, "answers", res.mcq_answers)
-        res.sync_legacy_aliases()
 
         # Show what engine actually uses for recognition.
         bg = self._cv_to_qpixmap(aligned)
@@ -867,7 +853,7 @@ class TemplateEditorWindow(QMainWindow):
 
         # Show detected anchors and recognized options overlay (green X = selected/seen).
         self.canvas.recognition_overlay.clear()
-        self.canvas.detected_anchor_points = list(self.omr.detect_anchors(aligned_binary, max_points=120))
+        self.canvas.detected_anchor_points = list(getattr(res, "detected_anchors", []))
         for z in self.template.zones:
             if not z.grid:
                 continue

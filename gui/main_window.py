@@ -9405,12 +9405,22 @@ class MainWindow(QMainWindow):
 
         self._apply_template_recognition_settings(self.template)
 
+        # Force debug overlay output in batch mode for troubleshooting consistency with editor.
+        prev_debug_mode = bool(getattr(self.omr_processor, "debug_mode", False))
+        prev_debug_dir = getattr(self.omr_processor, "debug_dir", None)
+        self.omr_processor.debug_mode = True
+        self.omr_processor.debug_dir = scan_dir / ".omr_debug"
+
         def on_progress(current: int, total: int, image_path: str):
             self.progress.setMaximum(total)
             self.progress.setValue(current)
             QApplication.processEvents()
 
-        self.scan_results = self.omr_processor.process_batch(file_paths, self.template, on_progress)
+        try:
+            self.scan_results = self.omr_processor.process_batch(file_paths, self.template, on_progress)
+        finally:
+            self.omr_processor.debug_mode = prev_debug_mode
+            self.omr_processor.debug_dir = prev_debug_dir
         subject_key_for_results = self._subject_key_from_cfg(subject_cfg) if subject_cfg else self._resolve_preferred_scoring_subject()
         self.scan_results_by_subject[subject_key_for_results] = list(self.scan_results)
         self.scan_list.setRowCount(0)

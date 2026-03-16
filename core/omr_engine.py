@@ -61,51 +61,64 @@ class OMRProcessor:
         # alignment_profile: auto | legacy | border | hybrid | one_side
         self.alignment_profile: str = "auto"
 
-    def process_image(self, image_path: str | Path, template: Template) -> OMRResult:
+    def recognize_sheet(self, image: str | Path | np.ndarray, template: Template) -> OMRResult:
         started = time.perf_counter()
-        result = OMRResult(image_path=str(image_path))
+        image_path = str(image) if isinstance(image, (str, Path)) else "<in-memory>"
+        result = OMRResult(image_path=image_path)
         template_profile = str((template.metadata or {}).get("alignment_profile", "") or "").strip().lower()
         prev_profile = self.alignment_profile
         if template_profile in {"auto", "legacy", "border", "hybrid", "one_side"}:
             self.alignment_profile = template_profile
-        norm_path, dpi_msg = self._normalize_to_200_dpi(str(image_path))
-        if dpi_msg:
-            result.issues.append(OMRIssue("DPI", dpi_msg))
 
-        src = cv2.imread(norm_path)
-        if src is None:
-            result.issues.append(OMRIssue("FILE", "Unable to load image"))
-            self.alignment_profile = prev_profile
+        try:
+            if isinstance(image, np.ndarray):
+                src = image.copy()
+            else:
+                norm_path, dpi_msg = self._normalize_to_200_dpi(str(image))
+                if dpi_msg:
+                    result.issues.append(OMRIssue("DPI", dpi_msg))
+                src = cv2.imread(norm_path)
+                if src is None:
+                    result.issues.append(OMRIssue("FILE", "Unable to load image"))
+                    result.sync_legacy_aliases()
+                    return result
+
+            rotated = self._correct_rotation(src)
+            prepared = self._preprocess(rotated)
+
+            aligned, aligned_binary = self.correct_perspective(rotated, prepared["binary"], template, result)
+            aligned_pre = self._preprocess(aligned)
+            if aligned_binary is None:
+                aligned_binary = aligned_pre["binary"]
+
+            debug_overlay = aligned.copy() if self.debug_mode else None
+
+            for zone in template.zones:
+                if zone.zone_type == ZoneType.ANCHOR:
+                    continue
+                self.recognize_block(aligned_binary, zone, template, result, debug_overlay)
+
+            if debug_overlay is not None:
+                out_dir = self.debug_dir or Path(result.image_path).parent
+                out_dir.mkdir(parents=True, exist_ok=True)
+                out_path = out_dir / f"{Path(result.image_path).stem}_debug.png"
+                cv2.imwrite(str(out_path), debug_overlay)
+                result.debug_image_path = str(out_path)
+
+            # Attach aligned artifacts for editor preview/debug without re-running recognition.
+            setattr(result, "aligned_image", aligned)
+            setattr(result, "aligned_binary", aligned_binary)
+            setattr(result, "detected_anchors", self.detect_anchors(aligned_binary, max_points=120))
+
+            result.processing_time_sec = time.perf_counter() - started
+            setattr(result, "answers", result.mcq_answers)
             result.sync_legacy_aliases()
             return result
+        finally:
+            self.alignment_profile = prev_profile
 
-        rotated = self._correct_rotation(src)
-        prepared = self._preprocess(rotated)
-
-        aligned, aligned_binary = self.correct_perspective(rotated, prepared["binary"], template, result)
-        self.alignment_profile = prev_profile
-        aligned_pre = self._preprocess(aligned)
-        if aligned_binary is None:
-            aligned_binary = aligned_pre["binary"]
-
-        debug_overlay = aligned.copy() if self.debug_mode else None
-
-        for zone in template.zones:
-            if zone.zone_type == ZoneType.ANCHOR:
-                continue
-            self.recognize_block(aligned_binary, zone, template, result, debug_overlay)
-
-        if debug_overlay is not None:
-            out_dir = self.debug_dir or Path(result.image_path).parent
-            out_dir.mkdir(parents=True, exist_ok=True)
-            out_path = out_dir / f"{Path(result.image_path).stem}_debug.png"
-            cv2.imwrite(str(out_path), debug_overlay)
-            result.debug_image_path = str(out_path)
-
-        result.processing_time_sec = time.perf_counter() - started
-        setattr(result, "answers", result.mcq_answers)
-        result.sync_legacy_aliases()
-        return result
+    def process_image(self, image_path: str | Path, template: Template) -> OMRResult:
+        return self.recognize_sheet(image_path, template)
 
     def process_batch(
         self,

@@ -72,7 +72,10 @@ class Template:
         for zone in payload["zones"]:
             zt = zone.get("zone_type")
             zone["zone_type"] = zt.value if hasattr(zt, "value") else str(zt)
-        payload.setdefault("metadata", {})["coordinate_mode"] = "relative"
+        md = payload.setdefault("metadata", {})
+        md["coordinate_mode"] = "relative"
+        md["template_width"] = int(self.width)
+        md["template_height"] = int(self.height)
         return payload
 
     @classmethod
@@ -84,9 +87,11 @@ class Template:
             "EXAM_CODE": "EXAM_CODE_BLOCK",
             "ID_BLOCK": "STUDENT_ID_BLOCK",
         }
-        width = int(data.get("width", 1) or 1)
-        height = int(data.get("height", 1) or 1)
         metadata = data.get("metadata", {}) or {}
+        width = int(data.get("width", metadata.get("template_width", 1)) or 1)
+        height = int(data.get("height", metadata.get("template_height", 1)) or 1)
+        metadata.setdefault("template_width", int(width))
+        metadata.setdefault("template_height", int(height))
         coordinate_mode = str(metadata.get("coordinate_mode", "")).lower()
 
         def _is_relative(v: float) -> bool:
