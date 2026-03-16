@@ -2234,16 +2234,18 @@ class MainWindow(QMainWindow):
         # on some PySide6 builds (preventing "Internal C++ object ... already deleted").
         self.scoring_panel = QWidget(w)
 
-        self.score_preview_table = QTableWidget(0, 13, self.scoring_panel)
+        self.score_preview_table = QTableWidget(0, 14, self.scoring_panel)
         self.score_preview_table.setHorizontalHeaderLabels([
-            "Student ID", "Name", "Subject", "Exam Code", "MCQ đúng", "TF đúng", "NUM đúng", "Correct", "Wrong", "Blank", "Score", "TF đáp án|bài làm", "NUM đáp án|bài làm"
+            "Student ID", "Name", "Subject", "Exam Code", "MCQ đúng", "TF đúng", "NUM đúng", "Correct", "Wrong", "Blank", "Score", "MCQ đáp án|bài làm", "TF đáp án|bài làm", "NUM đáp án|bài làm"
         ])
         self.score_preview_table.verticalHeader().setVisible(False)
         self.score_preview_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.score_preview_table.horizontalHeader().setSectionResizeMode(11, QHeaderView.Stretch)
         self.score_preview_table.horizontalHeader().setSectionResizeMode(12, QHeaderView.Stretch)
+        self.score_preview_table.horizontalHeader().setSectionResizeMode(13, QHeaderView.Stretch)
         self.score_preview_table.setColumnWidth(11, 280)
-        self.score_preview_table.setColumnWidth(12, 320)
+        self.score_preview_table.setColumnWidth(12, 280)
+        self.score_preview_table.setColumnWidth(13, 320)
 
         self.scoring_subject_combo = QComboBox()
         self.scoring_mode_combo = QComboBox()
@@ -9155,6 +9157,19 @@ class MainWindow(QMainWindow):
         if tpl_for_view:
             self._apply_template_recognition_settings(tpl_for_view)
 
+        saved_results_payload = cfg.get("batch_saved_results", []) if isinstance(cfg.get("batch_saved_results", []), list) else []
+        self.scan_results = []
+        for payload in saved_results_payload:
+            if not isinstance(payload, dict):
+                continue
+            try:
+                self.scan_results.append(self._deserialize_omr_result(payload))
+            except Exception:
+                continue
+        subject_key = self._subject_key_from_cfg(cfg)
+        if self.scan_results:
+            self.scan_results_by_subject[subject_key] = list(self.scan_results)
+
         saved_rows = cfg.get("batch_saved_rows", []) if isinstance(cfg.get("batch_saved_rows", []), list) else []
         for row in saved_rows:
             if not isinstance(row, dict):
@@ -9282,6 +9297,13 @@ class MainWindow(QMainWindow):
         has_identity = MainWindow._has_valid_identity(result)
         has_answers = bool((result.mcq_answers or {}) or (result.true_false_answers or {}) or (result.numeric_answers or {}))
         return has_answers or has_identity
+
+    @staticmethod
+    def _should_force_image_error_status(result) -> bool:
+        issues = list(getattr(result, "issues", []) or [])
+        if any(str(getattr(issue, "code", "") or "").upper() == "FILE" for issue in issues):
+            return True
+        return not MainWindow._result_has_meaningful_recognition(result)
 
     @staticmethod
     def _recognition_quality_score(result) -> int:
@@ -9491,10 +9513,9 @@ class MainWindow(QMainWindow):
                     self.scan_results[idx] = result
                     self.preview_rotation_by_index[idx] = (int(self.preview_rotation_by_index.get(idx, 0) or 0) + 180) % 360
 
-            final_score = self._recognition_quality_score(result)
-            if final_score <= 0 or not self._result_has_meaningful_recognition(result):
+            if self._should_force_image_error_status(result):
                 # Keep raw recognition data for consistency with single-image re-recognition,
-                # but mark row as low quality so users can review/override.
+                # but only mark image-file error when recognition is truly unusable/file-loading failed.
                 forced_status = "Lỗi file ảnh"
 
             if forced_status:
@@ -12456,7 +12477,7 @@ class MainWindow(QMainWindow):
                 setattr(scan, "birth_date", profile.get("birth_date"))
             if mode_text == "Chỉ tính bài chưa có điểm" and sid and sid in prev_subject_scores:
                 continue
-            key = self.answer_keys.get(subject, scan.exam_code)
+            key = self.answer_keys.get_flexible(subject, scan.exam_code)
             if not key:
                 missing += 1
                 failed_scans.append({
@@ -12494,8 +12515,9 @@ class MainWindow(QMainWindow):
             self.score_preview_table.setItem(i, 8, QTableWidgetItem(str(r.wrong)))
             self.score_preview_table.setItem(i, 9, QTableWidgetItem(str(r.blank)))
             self.score_preview_table.setItem(i, 10, QTableWidgetItem(str(r.score)))
-            self.score_preview_table.setItem(i, 11, QTableWidgetItem(str(getattr(r, "tf_compare", ""))))
-            self.score_preview_table.setItem(i, 12, QTableWidgetItem(str(getattr(r, "numeric_compare", ""))))
+            self.score_preview_table.setItem(i, 11, QTableWidgetItem(str(getattr(r, "mcq_compare", ""))))
+            self.score_preview_table.setItem(i, 12, QTableWidgetItem(str(getattr(r, "tf_compare", ""))))
+            self.score_preview_table.setItem(i, 13, QTableWidgetItem(str(getattr(r, "numeric_compare", ""))))
 
         phase = {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -12551,7 +12573,7 @@ class MainWindow(QMainWindow):
         formula_text = ""
         if rows:
             first_scan = subject_scans[0] if subject_scans else None
-            first_key = self.answer_keys.get(subject, first_scan.exam_code) if first_scan and self.answer_keys else None
+            first_key = self.answer_keys.get_flexible(subject, first_scan.exam_code) if first_scan and self.answer_keys else None
             if first_key:
                 formula_text = self.scoring_engine.describe_formula(first_key, subject_cfg)
         total_scans = len(subject_scans)
