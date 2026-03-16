@@ -5,8 +5,8 @@ import json
 from datetime import date, datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QEvent
-from PySide6.QtGui import QKeySequence, QPixmap, QTransform
+from PySide6.QtCore import Qt, QEvent, QPointF
+from PySide6.QtGui import QKeySequence, QPixmap, QTransform, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -47,6 +47,77 @@ from gui.import_answer_key_dialog import ImportAnswerKeyDialog
 from models.answer_key import AnswerKeyRepository, SubjectKey
 from models.exam_session import ExamSession, Student
 from models.template import Template
+
+
+class PreviewImageWidget(QLabel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAlignment(Qt.AlignCenter)
+        self.setMinimumHeight(260)
+        self._markers: list[dict[str, float]] = []
+        self._drag_index: int = -1
+
+    def set_markers(self, markers: list[dict[str, float]]) -> None:
+        self._markers = [dict(m) for m in markers]
+        self.update()
+
+    def clear_markers(self) -> None:
+        self._markers = []
+        self.update()
+
+    def markers(self) -> list[dict[str, float]]:
+        return [dict(m) for m in self._markers]
+
+    def has_markers(self) -> bool:
+        return bool(self._markers)
+
+    def paintEvent(self, event):  # type: ignore[override]
+        super().paintEvent(event)
+        if not self._markers:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(QPen(Qt.green, 2))
+        for m in self._markers:
+            x = float(m.get("x", 0.0))
+            y = float(m.get("y", 0.0))
+            r = 6
+            painter.drawLine(int(x - r), int(y - r), int(x + r), int(y + r))
+            painter.drawLine(int(x - r), int(y + r), int(x + r), int(y - r))
+
+    def _pick_marker_index(self, pos: QPointF) -> int:
+        px, py = float(pos.x()), float(pos.y())
+        best = -1
+        best_d2 = 1e9
+        for i, m in enumerate(self._markers):
+            dx = px - float(m.get("x", 0.0))
+            dy = py - float(m.get("y", 0.0))
+            d2 = dx * dx + dy * dy
+            if d2 < best_d2 and d2 <= 14.0 * 14.0:
+                best_d2 = d2
+                best = i
+        return best
+
+    def mousePressEvent(self, event):  # type: ignore[override]
+        if event.button() == Qt.LeftButton and self._markers:
+            self._drag_index = self._pick_marker_index(event.position())
+            if self._drag_index >= 0:
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):  # type: ignore[override]
+        if self._drag_index >= 0 and self._drag_index < len(self._markers):
+            self._markers[self._drag_index]["x"] = max(0.0, min(float(self.width() - 1), float(event.position().x())))
+            self._markers[self._drag_index]["y"] = max(0.0, min(float(self.height() - 1), float(event.position().y())))
+            self.update()
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):  # type: ignore[override]
+        self._drag_index = -1
+        super().mouseReleaseEvent(event)
 
 
 class SubjectConfigDialog(QDialog):
@@ -908,6 +979,7 @@ class MainWindow(QMainWindow):
         self.preview_zoom_factor = 1.0
         self.preview_source_pixmap = QPixmap()
         self.preview_rotation_by_index: dict[int, int] = {}
+        self.preview_markers_by_index: dict[int, list[dict[str, float]]] = {}
         self.scan_forced_status_by_index: dict[int, str] = {}
         self.preview_drag_active = False
         self.preview_last_pos = None
@@ -2046,9 +2118,7 @@ class MainWindow(QMainWindow):
         self.scan_list.cellClicked.connect(self._on_scan_cell_clicked)
         self.progress = QProgressBar()
 
-        self.scan_image_preview = QLabel("Chọn bài thi ở danh sách bên trái")
-        self.scan_image_preview.setAlignment(Qt.AlignCenter)
-        self.scan_image_preview.setMinimumHeight(260)
+        self.scan_image_preview = PreviewImageWidget(); self.scan_image_preview.setText("Chọn bài thi ở danh sách bên trái")
         self.scan_image_scroll = QScrollArea()
         self.scan_image_scroll.setWidgetResizable(True)
         self.scan_image_scroll.setAlignment(Qt.AlignCenter)
@@ -11233,6 +11303,159 @@ class MainWindow(QMainWindow):
         result.sync_legacy_aliases()
         return result
 
+    def _ensure_template_for_selected_subject(self) -> bool:
+        cfg = self._selected_batch_subject_config() or self._resolve_subject_config_for_batch()
+        template_path = ""
+        if cfg:
+            template_path = self._normalize_template_path(str(cfg.get("template_path", "") or ""))
+        if not template_path and self.session:
+            template_path = self._normalize_template_path(str(self.session.template_path or ""))
+        if not template_path:
+            return self.template is not None
+        pth = Path(template_path)
+        if not pth.exists():
+            return self.template is not None
+        try:
+            self.template = Template.load_json(pth)
+            return True
+        except Exception:
+            return self.template is not None
+
+    def _marker_positions_for_result(self, result: OMRResult) -> list[dict[str, float]]:
+        if self.template is None or self.preview_source_pixmap.isNull():
+            return []
+        tpl_w = max(1.0, float(self.template.width))
+        tpl_h = max(1.0, float(self.template.height))
+        img_w = max(1.0, float(self.preview_source_pixmap.width()))
+        img_h = max(1.0, float(self.preview_source_pixmap.height()))
+        sx, sy = img_w / tpl_w, img_h / tpl_h
+        markers: list[dict[str, float]] = []
+
+        for z in self.template.zones:
+            g = z.grid
+            if not g or not g.bubble_positions:
+                continue
+            if z.zone_type.value == "MCQ_BLOCK":
+                options = list(g.options or ["A", "B", "C", "D"])
+                cols = max(1, int(g.cols or len(options) or 1))
+                qcount = int(g.question_count or g.rows or 0)
+                for i in range(qcount):
+                    qno = int(g.question_start) + i
+                    ans = str((result.mcq_answers or {}).get(qno, "") or "").strip().upper()
+                    if not ans:
+                        continue
+                    for ch in ans:
+                        if ch not in options:
+                            continue
+                        c = options.index(ch)
+                        idx = i * cols + c
+                        if 0 <= idx < len(g.bubble_positions):
+                            bx, by = g.bubble_positions[idx]
+                            markers.append({"zone_id": z.id, "section": "MCQ", "qno": float(qno), "choice": float(c), "x": float(bx) * sx, "y": float(by) * sy})
+            elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                qpb = int(z.metadata.get("questions_per_block", 2))
+                spq = int(z.metadata.get("statements_per_question", 4))
+                cps = int(z.metadata.get("choices_per_statement", 2))
+                cols = max(1, int(g.cols or cps))
+                labels = [chr(ord("a") + i) for i in range(spq)]
+                for q in range(qpb):
+                    qno = int(g.question_start) + q
+                    flags = (result.true_false_answers or {}).get(qno, {}) or {}
+                    for sidx, label in enumerate(labels):
+                        if label not in flags:
+                            continue
+                        c = 0 if bool(flags.get(label)) else 1
+                        row = q * spq + sidx
+                        idx = row * cols + c
+                        if 0 <= idx < len(g.bubble_positions):
+                            bx, by = g.bubble_positions[idx]
+                            markers.append({"zone_id": z.id, "section": "TF", "qno": float(qno), "stmt": float(sidx), "choice": float(c), "x": float(bx) * sx, "y": float(by) * sy})
+        return markers
+
+    def _apply_adjusted_markers_to_result(self, idx: int, result: OMRResult) -> bool:
+        if self.template is None:
+            return False
+        markers = self.scan_image_preview.markers() if hasattr(self, "scan_image_preview") else []
+        if not markers or self.preview_source_pixmap.isNull():
+            return False
+        tpl_w = max(1.0, float(self.template.width))
+        tpl_h = max(1.0, float(self.template.height))
+        img_w = max(1.0, float(self.preview_source_pixmap.width()))
+        img_h = max(1.0, float(self.preview_source_pixmap.height()))
+        sx, sy = tpl_w / img_w, tpl_h / img_h
+
+        by_zone: dict[str, list[dict[str, float]]] = {}
+        for m in markers:
+            zid = str(m.get("zone_id", ""))
+            if zid:
+                by_zone.setdefault(zid, []).append(m)
+
+        updated = False
+        mcq_new = dict(result.mcq_answers or {})
+        tf_new = dict(result.true_false_answers or {})
+        for z in self.template.zones:
+            g = z.grid
+            if not g or not g.bubble_positions:
+                continue
+            zmarks = by_zone.get(z.id, [])
+            if not zmarks:
+                continue
+            pts = [(float(x), float(y)) for x, y in g.bubble_positions]
+            if z.zone_type.value == "MCQ_BLOCK":
+                options = list(g.options or ["A", "B", "C", "D"])
+                cols = max(1, int(g.cols or len(options) or 1))
+                qcount = int(g.question_count or g.rows or 0)
+                for qidx in range(qcount):
+                    qno = int(g.question_start) + qidx
+                    picks = [m for m in zmarks if int(round(float(m.get("qno", -1)))) == qno]
+                    if not picks:
+                        continue
+                    letters: list[str] = []
+                    for m in picks:
+                        tx, ty = float(m.get("x", 0.0)) * sx, float(m.get("y", 0.0)) * sy
+                        best = min(range(len(pts)), key=lambda k: (pts[k][0]-tx)**2 + (pts[k][1]-ty)**2)
+                        row = best // cols
+                        col = best % cols
+                        if row != qidx:
+                            continue
+                        if 0 <= col < len(options):
+                            letters.append(options[col])
+                    if letters:
+                        mcq_new[qno] = "".join(sorted(set(letters), key=letters.index))
+                        updated = True
+            elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                qpb = int(z.metadata.get("questions_per_block", 2))
+                spq = int(z.metadata.get("statements_per_question", 4))
+                cps = int(z.metadata.get("choices_per_statement", 2))
+                cols = max(1, int(g.cols or cps))
+                labels = [chr(ord("a") + i) for i in range(spq)]
+                for q in range(qpb):
+                    qno = int(g.question_start) + q
+                    flags = dict(tf_new.get(qno, {}) or {})
+                    for sidx, label in enumerate(labels):
+                        picks = [m for m in zmarks if int(round(float(m.get("qno", -1)))) == qno and int(round(float(m.get("stmt", -1)))) == sidx]
+                        if not picks:
+                            continue
+                        m = picks[-1]
+                        tx, ty = float(m.get("x", 0.0)) * sx, float(m.get("y", 0.0)) * sy
+                        best = min(range(len(pts)), key=lambda k: (pts[k][0]-tx)**2 + (pts[k][1]-ty)**2)
+                        row = best // cols
+                        col = best % cols
+                        expected_row = q * spq + sidx
+                        if row != expected_row:
+                            continue
+                        flags[label] = (col == 0)
+                        updated = True
+                    if flags:
+                        tf_new[qno] = flags
+
+        if not updated:
+            return False
+        result.mcq_answers = {int(k): str(v) for k, v in mcq_new.items()}
+        result.true_false_answers = {int(k): dict(v) for k, v in tf_new.items()}
+        self.scan_blank_summary[idx] = self._compute_blank_questions(result)
+        return True
+
     def _set_scan_result_at_row(self, idx: int, result: OMRResult) -> None:
         if idx < 0:
             return
@@ -11248,8 +11471,8 @@ class MainWindow(QMainWindow):
         if idx < 0:
             QMessageBox.warning(self, "Nhận dạng lại", "Chọn một bài thi trong danh sách bên trái trước.")
             return
-        if not self.template:
-            QMessageBox.warning(self, "Nhận dạng lại", "Chưa có template đang dùng. Vui lòng chạy nhận dạng theo môn trước.")
+        if not self._ensure_template_for_selected_subject() or not self.template:
+            QMessageBox.warning(self, "Nhận dạng lại", "Chưa có template khả dụng (theo môn hoặc theo kỳ thi).")
             return
 
         old_result = self.scan_results[idx] if idx < len(self.scan_results) else self._build_result_from_saved_table_row(idx)
@@ -11260,6 +11483,30 @@ class MainWindow(QMainWindow):
         if not image_path or not Path(image_path).exists():
             QMessageBox.warning(self, "Nhận dạng lại", f"Không tìm thấy ảnh để nhận dạng lại:\n{image_path or '-'}")
             return
+
+        if self.scan_image_preview.has_markers():
+            choose = QMessageBox.question(
+                self,
+                "Nhận dạng lại",
+                "Bạn muốn áp dụng vị trí dấu X đã chỉnh để cập nhật kết quả (không thay đổi template)?\nChọn No để chạy nhận dạng ảnh lại như bình thường.",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                QMessageBox.Yes,
+            )
+            if choose == QMessageBox.Cancel:
+                return
+            if choose == QMessageBox.Yes:
+                manual_result = copy.deepcopy(old_result)
+                if self._apply_adjusted_markers_to_result(idx, manual_result):
+                    self._set_scan_result_at_row(idx, manual_result)
+                    self._trim_result_answers_to_expected_scope(manual_result)
+                    self.scan_blank_questions[idx] = self._compute_blank_questions(manual_result).get("MCQ", [])
+                    self.scan_blank_summary[idx] = self._compute_blank_questions(manual_result)
+                    self._update_scan_row_from_result(idx, manual_result)
+                    self._refresh_all_statuses()
+                    self._update_scan_preview(idx)
+                    self.btn_save_batch_subject.setEnabled(True)
+                    return
+                QMessageBox.information(self, "Nhận dạng lại", "Không áp dụng được dấu X đã chỉnh. Hệ thống sẽ chạy nhận dạng ảnh lại.")
 
         process_path = image_path
         rotation = int(self.preview_rotation_by_index.get(idx, 0) or 0) % 360
@@ -11376,6 +11623,7 @@ class MainWindow(QMainWindow):
             self.preview_source_pixmap = QPixmap()
             self.scan_image_preview.setPixmap(QPixmap())
             self.scan_image_preview.setText("Không có ảnh tương ứng cho dòng đã lưu")
+            self.scan_image_preview.clear_markers()
             self.btn_zoom_reset.setText("100%")
         else:
             rotation = int(self.preview_rotation_by_index.get(row, 0) or 0) % 360
@@ -11384,6 +11632,12 @@ class MainWindow(QMainWindow):
             self.preview_source_pixmap = pix
             self._render_preview_pixmap()
             self.btn_zoom_reset.setText(f"{int(self.preview_zoom_factor*100)}%")
+
+        tmp_result = self._build_result_from_saved_table_row(row)
+        if tmp_result is not None:
+            self.scan_image_preview.set_markers(self._marker_positions_for_result(tmp_result))
+        else:
+            self.scan_image_preview.clear_markers()
 
         rows = [
             ("STUDENT ID", sid),
@@ -11573,12 +11827,14 @@ class MainWindow(QMainWindow):
         if pix.isNull():
             self.preview_source_pixmap = QPixmap()
             self.scan_image_preview.setText(f"Cannot load image: {img_path.name}")
+            self.scan_image_preview.clear_markers()
         else:
             rotation = int(self.preview_rotation_by_index.get(index, 0) or 0) % 360
             if rotation:
                 pix = pix.transformed(QTransform().rotate(float(rotation)), Qt.SmoothTransformation)
             self.preview_source_pixmap = pix
             self._render_preview_pixmap()
+        self.scan_image_preview.set_markers(self._marker_positions_for_result(result))
 
         rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
         blank_map = self.scan_blank_summary.get(index, {"MCQ": [], "TF": [], "NUMERIC": []})
