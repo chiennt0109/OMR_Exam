@@ -8904,8 +8904,18 @@ class MainWindow(QMainWindow):
 
     def _effective_subject_configs_for_batch(self) -> list[dict]:
         cfgs = self._subject_configs_in_session()
+        common_template = self._normalize_template_path(str(self.session.template_path if self.session else ""))
         if cfgs:
-            return cfgs
+            # Enforce a single template source for the whole exam when common template is set.
+            out_cfgs: list[dict] = []
+            for cfg in cfgs:
+                if not isinstance(cfg, dict):
+                    continue
+                item = dict(cfg)
+                if common_template:
+                    item["template_path"] = common_template
+                out_cfgs.append(item)
+            return out_cfgs
         # Fallback for older sessions without subject_configs.
         if not self.session:
             return []
@@ -8917,7 +8927,7 @@ class MainWindow(QMainWindow):
             out.append({
                 "name": name,
                 "block": block,
-                "template_path": str(self.session.template_path or ""),
+                "template_path": common_template or str(self.session.template_path or ""),
                 "scan_folder": scan_root,
                 "answer_key_key": subject,
                 "imported_answer_keys": {},
@@ -9085,15 +9095,8 @@ class MainWindow(QMainWindow):
             tpl_for_view = self.template
         has_sid = "Có" if (tpl_for_view and any(z.zone_type.value == "STUDENT_ID_BLOCK" for z in tpl_for_view.zones)) else "Không"
         self.batch_student_id_value.setText(has_sid)
-        if hasattr(self, "batch_recognition_mode_combo") and tpl_for_view:
-            mode = str((tpl_for_view.metadata or {}).get("alignment_profile", "") or "").strip().lower()
-            if mode in {"auto", "legacy", "border", "hybrid", "one_side"}:
-                for i in range(self.batch_recognition_mode_combo.count()):
-                    if str(self.batch_recognition_mode_combo.itemData(i) or "") == mode:
-                        self.batch_recognition_mode_combo.blockSignals(True)
-                        self.batch_recognition_mode_combo.setCurrentIndex(i)
-                        self.batch_recognition_mode_combo.blockSignals(False)
-                        break
+        if tpl_for_view:
+            self._apply_template_recognition_settings(tpl_for_view)
 
         saved_rows = cfg.get("batch_saved_rows", []) if isinstance(cfg.get("batch_saved_rows", []), list) else []
         for row in saved_rows:
@@ -9232,6 +9235,33 @@ class MainWindow(QMainWindow):
         answers_count = len(result.mcq_answers or {}) + len(result.true_false_answers or {}) + len(result.numeric_answers or {})
         penalty = len(getattr(result, "issues", []) or []) + len(getattr(result, "recognition_errors", []) or getattr(result, "errors", []) or [])
         return has_id * 3 + has_code * 3 + answers_count - penalty
+
+    def _apply_template_recognition_settings(self, template: Template) -> None:
+        if not template:
+            return
+        md = template.metadata if isinstance(template.metadata, dict) else {}
+
+        mode = str(md.get("alignment_profile", "") or "").strip().lower()
+        if mode in {"auto", "legacy", "border", "hybrid", "one_side"}:
+            setattr(self.omr_processor, "alignment_profile", mode)
+            if hasattr(self, "batch_recognition_mode_combo"):
+                for i in range(self.batch_recognition_mode_combo.count()):
+                    if str(self.batch_recognition_mode_combo.itemData(i) or "") == mode:
+                        self.batch_recognition_mode_combo.blockSignals(True)
+                        self.batch_recognition_mode_combo.setCurrentIndex(i)
+                        self.batch_recognition_mode_combo.blockSignals(False)
+                        break
+
+        # Optional recognition thresholds can be embedded in template metadata.
+        for field, default in (("fill_threshold", 0.45), ("empty_threshold", 0.20), ("certainty_margin", 0.08)):
+            raw = md.get(field, None)
+            if raw is None:
+                continue
+            try:
+                value = float(raw)
+            except Exception:
+                continue
+            setattr(self.omr_processor, field, value if value >= 0 else default)
 
     def _try_reprocess_result_rotated_180(self, result):
         image_path = str(getattr(result, "image_path", "") or "").strip()
@@ -9373,10 +9403,7 @@ class MainWindow(QMainWindow):
         self.preview_rotation_by_index.clear()
         self.scan_forced_status_by_index.clear()
 
-        template_mode = str((self.template.metadata or {}).get("alignment_profile", "") or "").strip().lower()
-        selected_mode = str(self.batch_recognition_mode_combo.currentData() or "auto") if hasattr(self, "batch_recognition_mode_combo") else "auto"
-        effective_mode = template_mode if template_mode in {"auto", "legacy", "border", "hybrid", "one_side"} else selected_mode
-        setattr(self.omr_processor, "alignment_profile", effective_mode)
+        self._apply_template_recognition_settings(self.template)
 
         def on_progress(current: int, total: int, image_path: str):
             self.progress.setMaximum(total)
