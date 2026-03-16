@@ -9146,13 +9146,18 @@ class MainWindow(QMainWindow):
         return self.scan_list.rowCount() > 0
 
     @staticmethod
-    def _result_has_meaningful_recognition(result) -> bool:
+    def _has_valid_identity(result) -> bool:
         sid = str(getattr(result, "student_id", "") or "").strip()
         code = str(getattr(result, "exam_code", "") or "").strip()
         has_id = bool(sid and "?" not in sid)
         has_code = bool(code and "?" not in code)
+        return has_id or has_code
+
+    @staticmethod
+    def _result_has_meaningful_recognition(result) -> bool:
+        has_identity = MainWindow._has_valid_identity(result)
         has_answers = bool((result.mcq_answers or {}) or (result.true_false_answers or {}) or (result.numeric_answers or {}))
-        return has_answers or has_id or has_code
+        return has_answers or has_identity
 
     @staticmethod
     def _recognition_quality_score(result) -> int:
@@ -9321,14 +9326,26 @@ class MainWindow(QMainWindow):
 
         for idx, result in enumerate(self.scan_results):
             forced_status = ""
-            if not self._result_has_meaningful_recognition(result):
-                retried, _improved = self._try_reprocess_result_rotated_180(result)
-                if self._result_has_meaningful_recognition(retried):
-                    result = retried
-                    self.scan_results[idx] = result
-                    forced_status = "Auto fix"
-                else:
-                    forced_status = "Lỗi nhận dạng"
+            retried, improved = self._try_reprocess_result_rotated_180(result)
+            original_meaningful = self._result_has_meaningful_recognition(result)
+            retried_meaningful = self._result_has_meaningful_recognition(retried)
+            original_identity = self._has_valid_identity(result)
+            retried_identity = self._has_valid_identity(retried)
+
+            # Auto-rotate should actively rescue upside-down scans:
+            # - always accept when rotated result gains valid identity from an invalid original,
+            # - or when original is not meaningful and rotated is better/meaningful.
+            if retried_identity and not original_identity:
+                result = retried
+                self.scan_results[idx] = result
+                forced_status = "Auto fix"
+            elif (not original_meaningful) and (retried_meaningful or improved):
+                result = retried
+                self.scan_results[idx] = result
+                forced_status = "Auto fix"
+            elif not original_meaningful:
+                forced_status = "Lỗi nhận dạng"
+
             if forced_status:
                 self.scan_forced_status_by_index[idx] = forced_status
 
@@ -11579,9 +11596,19 @@ class MainWindow(QMainWindow):
             f"Mã đề mới: {new_result.exam_code or '-'}\n"
             f"Nhận dạng ngắn: {self._compact_value(self._short_recognition_text_for_result(new_result), 180)}\n"
             f"Số lỗi nhận dạng: {len(rec_errors)}\n\n"
-            "Cập nhật kết quả mới vào lưới hiện tại?"
+            "Lưu nhận dạng hay không?\n"
+            "Yes: Cập nhật lưới và lưu batch ngay.\n"
+            "No: Chỉ cập nhật lưới (chưa lưu batch).\n"
+            "Cancel: Không cập nhật."
         )
-        if QMessageBox.question(self, "Xác nhận nhận dạng lại", message, QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) != QMessageBox.Yes:
+        decision = QMessageBox.question(
+            self,
+            "Xác nhận nhận dạng lại",
+            message,
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+            QMessageBox.Yes,
+        )
+        if decision == QMessageBox.Cancel:
             return
 
         self._set_scan_result_at_row(idx, new_result)
@@ -11594,13 +11621,7 @@ class MainWindow(QMainWindow):
         self._load_selected_result_for_correction()
         self.btn_save_batch_subject.setEnabled(True)
 
-        if QMessageBox.question(
-            self,
-            "Lưu thay đổi",
-            "Đã cập nhật lưới với kết quả nhận dạng mới. Bạn có muốn lưu batch theo môn ngay bây giờ không?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes,
-        ) == QMessageBox.Yes:
+        if decision == QMessageBox.Yes:
             self._save_batch_for_selected_subject()
 
     def _render_preview_pixmap(self) -> None:
