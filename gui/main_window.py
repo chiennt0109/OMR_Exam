@@ -9405,22 +9405,12 @@ class MainWindow(QMainWindow):
 
         self._apply_template_recognition_settings(self.template)
 
-        # Force debug overlay output in batch mode for troubleshooting consistency with editor.
-        prev_debug_mode = bool(getattr(self.omr_processor, "debug_mode", False))
-        prev_debug_dir = getattr(self.omr_processor, "debug_dir", None)
-        self.omr_processor.debug_mode = True
-        self.omr_processor.debug_dir = scan_dir / ".omr_debug"
-
         def on_progress(current: int, total: int, image_path: str):
             self.progress.setMaximum(total)
             self.progress.setValue(current)
             QApplication.processEvents()
 
-        try:
-            self.scan_results = self.omr_processor.process_batch(file_paths, self.template, on_progress)
-        finally:
-            self.omr_processor.debug_mode = prev_debug_mode
-            self.omr_processor.debug_dir = prev_debug_dir
+        self.scan_results = self.omr_processor.process_batch(file_paths, self.template, on_progress)
         subject_key_for_results = self._subject_key_from_cfg(subject_cfg) if subject_cfg else self._resolve_preferred_scoring_subject()
         self.scan_results_by_subject[subject_key_for_results] = list(self.scan_results)
         self.scan_list.setRowCount(0)
@@ -9435,26 +9425,26 @@ class MainWindow(QMainWindow):
             original_meaningful = self._result_has_meaningful_recognition(result)
             original_identity = self._has_valid_identity(result)
 
-            # Avoid expensive 180° re-run on already-good scans.
-            # Retry only when identity is missing or overall recognition is not meaningful.
+            # Only allow one 180° retry for low-quality recognitions.
             need_retry_180 = (not original_identity) or (not original_meaningful)
             if need_retry_180:
                 retried, improved = self._try_reprocess_result_rotated_180(result)
                 retried_meaningful = self._result_has_meaningful_recognition(retried)
                 retried_identity = self._has_valid_identity(retried)
+                if retried_identity or retried_meaningful or improved:
+                    result = retried
+                    self.scan_results[idx] = result
+                    self.preview_rotation_by_index[idx] = (int(self.preview_rotation_by_index.get(idx, 0) or 0) + 180) % 360
 
-                if retried_identity and not original_identity:
-                    result = retried
-                    self.scan_results[idx] = result
-                    self.preview_rotation_by_index[idx] = (int(self.preview_rotation_by_index.get(idx, 0) or 0) + 180) % 360
-                    forced_status = "Auto fix"
-                elif (not original_meaningful) and (retried_meaningful or improved):
-                    result = retried
-                    self.scan_results[idx] = result
-                    self.preview_rotation_by_index[idx] = (int(self.preview_rotation_by_index.get(idx, 0) or 0) + 180) % 360
-                    forced_status = "Auto fix"
-                elif not original_meaningful:
-                    forced_status = "Lỗi nhận dạng"
+            final_score = self._recognition_quality_score(result)
+            if final_score <= 0 or not self._result_has_meaningful_recognition(result):
+                # Skip low-quality result and mark as bad image file.
+                result.student_id = ""
+                result.exam_code = ""
+                result.mcq_answers = {}
+                result.true_false_answers = {}
+                result.numeric_answers = {}
+                forced_status = "Lỗi file ảnh"
 
             if forced_status:
                 self.scan_forced_status_by_index[idx] = forced_status
