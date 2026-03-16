@@ -139,6 +139,26 @@ class ScoringEngineTests(unittest.TestCase):
         self.assertIn("Q16:1347|1347", row.numeric_compare)
         self.assertIn("Q17:40|40", row.numeric_compare)
 
+
+    def test_mcq_shifted_question_numbers_are_aligned_by_position(self):
+        key = SubjectKey(
+            subject="Hoa_hoc_11",
+            exam_code="0114",
+            answers={13: "A", 14: "B", 15: "C"},
+            true_false_answers={},
+            numeric_answers={},
+        )
+        omr = OMRResult(
+            image_path="x.png",
+            mcq_answers={1: "A", 2: "B", 3: "C"},
+        )
+
+        row = self.engine.score(omr, key)
+        self.assertEqual(row.correct, 3)
+        self.assertEqual(row.wrong, 0)
+        self.assertEqual(row.blank, 0)
+        self.assertAlmostEqual(row.score, 3.0, places=4)
+
     def test_aligned_marked_answers_skips_non_numeric_keys(self):
         aligned = self.engine._aligned_marked_answers(
             key_answers={"section": "", "1": "A", 2: "B"},

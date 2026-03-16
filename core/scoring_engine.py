@@ -209,13 +209,14 @@ class ScoringEngine:
         tf_compare_items: list[str] = []
         numeric_compare_items: list[str] = []
         profile = self._score_profile(subject_key, subject_config)
+        aligned_mcq_marked = self._aligned_marked_answers(subject_key.answers or {}, omr.mcq_answers or {})
         aligned_tf_marked = self._aligned_marked_answers(subject_key.true_false_answers or {}, omr.true_false_answers or {})
         aligned_numeric_marked = self._aligned_marked_answers(subject_key.numeric_answers or {}, omr.numeric_answers or {})
 
         for q_no, key_answer in subject_key.answers.items():
             if not self._is_countable_mcq_key(key_answer):
                 continue
-            marked = (omr.mcq_answers or {}).get(q_no)
+            marked = aligned_mcq_marked.get(q_no)
             if not marked:
                 blank += 1
                 continue

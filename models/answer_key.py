@@ -44,8 +44,34 @@ class AnswerKeyRepository:
     def upsert(self, key: SubjectKey) -> None:
         self.keys[self._key(key.subject, key.exam_code)] = key
 
+    @staticmethod
+    def _normalize_exam_code(exam_code: str) -> str:
+        text = str(exam_code or "").strip()
+        if not text:
+            return ""
+        if text.isdigit():
+            stripped = text.lstrip("0")
+            return stripped if stripped else "0"
+        return text
+
     def get(self, subject: str, exam_code: str) -> SubjectKey | None:
         return self.keys.get(self._key(subject, exam_code))
+
+    def get_flexible(self, subject: str, exam_code: str) -> SubjectKey | None:
+        key = self.get(subject, exam_code)
+        if key is not None:
+            return key
+
+        norm_target = self._normalize_exam_code(exam_code)
+        if not norm_target:
+            return None
+
+        for item in self.keys.values():
+            if item.subject != subject:
+                continue
+            if self._normalize_exam_code(item.exam_code) == norm_target:
+                return item
+        return None
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"keys": {}}
