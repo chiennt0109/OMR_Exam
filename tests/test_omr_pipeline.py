@@ -1,4 +1,7 @@
 import unittest
+from unittest.mock import patch
+import tempfile
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -34,6 +37,31 @@ class OMRPipelineTests(unittest.TestCase):
         ratios = self.processor.detect_bubbles(binary, centers, 10)
         self.assertGreater(ratios[0], 0.75)
         self.assertLess(ratios[1], 0.35)
+
+    def test_template_dict_persists_template_coordinate_space(self):
+        tpl = Template(name="t", image_path="x.png", width=1234, height=1754)
+        payload = tpl.to_dict()
+        self.assertEqual(payload["metadata"]["coordinate_mode"], "relative")
+        self.assertEqual(payload["metadata"]["template_width"], 1234)
+        self.assertEqual(payload["metadata"]["template_height"], 1754)
+
+    def test_editor_and_batch_pipeline_share_same_recognition_entrypoint(self):
+        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[])
+        with tempfile.TemporaryDirectory() as td:
+            img_path = Path(td) / "sheet.png"
+            cv2.imwrite(str(img_path), np.zeros((100, 200, 3), dtype=np.uint8))
+
+            with patch.object(self.processor, "_normalize_to_200_dpi", return_value=(str(img_path), "")), \
+                patch.object(self.processor, "_correct_rotation", side_effect=lambda x: x), \
+                patch.object(self.processor, "_preprocess", return_value={"binary": np.zeros((100, 200), dtype=np.uint8)}), \
+                patch.object(self.processor, "correct_perspective", return_value=(np.zeros((100, 200, 3), dtype=np.uint8), np.zeros((100, 200), dtype=np.uint8))), \
+                patch.object(self.processor, "detect_anchors", return_value=[]):
+                editor_res = self.processor.recognize_sheet(str(img_path), template)
+                batch_res = self.processor.process_batch([str(img_path)], template)[0]
+
+        self.assertEqual(editor_res.mcq_answers, batch_res.mcq_answers)
+        self.assertEqual(editor_res.true_false_answers, batch_res.true_false_answers)
+        self.assertEqual(editor_res.numeric_answers, batch_res.numeric_answers)
 
     def test_mcq_recognition(self):
         template = Template(
@@ -230,6 +258,61 @@ class OMRPipelineTests(unittest.TestCase):
         result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
         self.processor.recognize_block(binary, template.zones[0], template, result_stub)
         self.assertEqual(result_stub.numeric_answers.get(1), "-9,3")
+
+    def test_numeric_block_drops_leading_placeholder_after_sign(self):
+        rows, cols = 12, 3
+        bubbles = []
+        for r in range(rows):
+            for c in range(cols):
+                bubbles.append((30 + c * 40, 20 + r * 16))
+
+        template = Template(
+            name="num_sign_leading_blank",
+            image_path="",
+            width=200,
+            height=240,
+            anchors=[AnchorPoint(0.05, 0.05), AnchorPoint(0.95, 0.05), AnchorPoint(0.95, 0.95), AnchorPoint(0.05, 0.95)],
+            zones=[
+                Zone(
+                    id="num_sign_leading_blank",
+                    name="num",
+                    zone_type=ZoneType.NUMERIC_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=rows, cols=cols, question_start=1, question_count=1, options=[], bubble_positions=bubbles),
+                    metadata={
+                        "bubble_radius": 5,
+                        "questions_per_block": 1,
+                        "digits_per_answer": 3,
+                        "sign_row": 1,
+                        "decimal_row": 2,
+                        "digit_start_row": 3,
+                        "sign_columns": [1],
+                        "decimal_columns": [2, 3],
+                        "digit_map": list(range(10)),
+                        "sign_symbol": "-",
+                        "decimal_symbol": ",",
+                    },
+                )
+            ],
+        )
+        binary = np.zeros((240, 200), dtype=np.uint8)
+
+        def fill(row: int, col: int) -> None:
+            idx = row * cols + col
+            x, y = bubbles[idx]
+            cv2.circle(binary, (int(x), int(y)), 5, 255, -1)
+
+        fill(0, 0)   # sign
+        # first digit intentionally blank => '?'
+        fill(11, 1)  # second digit = 9
+        fill(5, 2)   # third digit = 3
+
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
+        self.processor.recognize_block(binary, template.zones[0], template, result_stub)
+        self.assertEqual(result_stub.numeric_answers.get(1), "-93")
 
     def test_numeric_block_keeps_placeholder_when_no_decimal_mark(self):
         rows, cols = 12, 3
