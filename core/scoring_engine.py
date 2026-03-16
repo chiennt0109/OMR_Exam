@@ -93,7 +93,16 @@ class ScoringEngine:
         if not isinstance(marked_answers, dict) or not marked_answers:
             return {}
 
-        key_qs = sorted(int(k) for k in key_answers.keys())
+        key_qs: list[int] = []
+        for k in key_answers.keys():
+            try:
+                key_qs.append(int(k))
+            except Exception:
+                continue
+        key_qs.sort()
+        if not key_qs:
+            return {}
+
         raw_marked: dict[int, object] = {}
         for mk, mv in marked_answers.items():
             try:
