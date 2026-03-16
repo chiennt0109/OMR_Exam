@@ -9085,6 +9085,15 @@ class MainWindow(QMainWindow):
             tpl_for_view = self.template
         has_sid = "Có" if (tpl_for_view and any(z.zone_type.value == "STUDENT_ID_BLOCK" for z in tpl_for_view.zones)) else "Không"
         self.batch_student_id_value.setText(has_sid)
+        if hasattr(self, "batch_recognition_mode_combo") and tpl_for_view:
+            mode = str((tpl_for_view.metadata or {}).get("alignment_profile", "") or "").strip().lower()
+            if mode in {"auto", "legacy", "border", "hybrid", "one_side"}:
+                for i in range(self.batch_recognition_mode_combo.count()):
+                    if str(self.batch_recognition_mode_combo.itemData(i) or "") == mode:
+                        self.batch_recognition_mode_combo.blockSignals(True)
+                        self.batch_recognition_mode_combo.setCurrentIndex(i)
+                        self.batch_recognition_mode_combo.blockSignals(False)
+                        break
 
         saved_rows = cfg.get("batch_saved_rows", []) if isinstance(cfg.get("batch_saved_rows", []), list) else []
         for row in saved_rows:
@@ -9223,67 +9232,6 @@ class MainWindow(QMainWindow):
         answers_count = len(result.mcq_answers or {}) + len(result.true_false_answers or {}) + len(result.numeric_answers or {})
         penalty = len(getattr(result, "issues", []) or []) + len(getattr(result, "recognition_errors", []) or getattr(result, "errors", []) or [])
         return has_id * 3 + has_code * 3 + answers_count - penalty
-
-    def _is_exam_code_acceptable(self, code_text: str) -> bool:
-        code = str(code_text or "").strip()
-        if not code or "?" in code:
-            return False
-        avail = self._available_exam_codes()
-        if not avail:
-            return True
-        norm = self._normalize_exam_code_text(code)
-        return code in avail or norm in avail
-
-    def _batch_result_set_quality(self, results: list) -> int:
-        if not results:
-            return -10**9
-        total = 0
-        valid_identity = 0
-        valid_exam_code = 0
-        for res in results:
-            total += self._recognition_quality_score(res)
-            if self._has_valid_identity(res):
-                valid_identity += 1
-            if self._is_exam_code_acceptable(str(getattr(res, "exam_code", "") or "")):
-                valid_exam_code += 1
-        # Strongly prefer runs that recover identity/exam code in batch mode.
-        return total + valid_identity * 8 + valid_exam_code * 6
-
-    def _try_batch_with_profiles(self, file_paths: list[str], template: Template, preferred_mode: str) -> list:
-        mode = str(preferred_mode or "auto").strip().lower() or "auto"
-        candidates = [mode]
-        if mode == "auto":
-            candidates.extend(["border", "hybrid", "legacy", "one_side"])
-        seen: set[str] = set()
-        ordered = [m for m in candidates if not (m in seen or seen.add(m))]
-
-        best_results: list = []
-        best_score: int | None = None
-        prev_mode = str(getattr(self.omr_processor, "alignment_profile", "auto") or "auto")
-        try:
-            for i, profile in enumerate(ordered):
-                setattr(self.omr_processor, "alignment_profile", profile)
-
-                def on_progress(current: int, total: int, image_path: str):
-                    self.progress.setMaximum(total)
-                    self.progress.setValue(current)
-                    QApplication.processEvents()
-
-                results = self.omr_processor.process_batch(file_paths, template, on_progress)
-                score = self._batch_result_set_quality(results)
-                if best_score is None or score > best_score:
-                    best_score = score
-                    best_results = results
-
-                # Early stop when already strong enough to avoid unnecessary retries.
-                if i == 0 and results:
-                    good = sum(1 for r in results if self._has_valid_identity(r) and self._is_exam_code_acceptable(str(getattr(r, "exam_code", "") or "")))
-                    if good >= max(1, int(len(results) * 0.7)):
-                        break
-        finally:
-            setattr(self.omr_processor, "alignment_profile", prev_mode)
-
-        return best_results
 
     def _try_reprocess_result_rotated_180(self, result):
         image_path = str(getattr(result, "image_path", "") or "").strip()
@@ -9425,8 +9373,17 @@ class MainWindow(QMainWindow):
         self.preview_rotation_by_index.clear()
         self.scan_forced_status_by_index.clear()
 
-        preferred_mode = str(self.batch_recognition_mode_combo.currentData() or "auto") if hasattr(self, "batch_recognition_mode_combo") else "auto"
-        self.scan_results = self._try_batch_with_profiles(file_paths, self.template, preferred_mode)
+        template_mode = str((self.template.metadata or {}).get("alignment_profile", "") or "").strip().lower()
+        selected_mode = str(self.batch_recognition_mode_combo.currentData() or "auto") if hasattr(self, "batch_recognition_mode_combo") else "auto"
+        effective_mode = template_mode if template_mode in {"auto", "legacy", "border", "hybrid", "one_side"} else selected_mode
+        setattr(self.omr_processor, "alignment_profile", effective_mode)
+
+        def on_progress(current: int, total: int, image_path: str):
+            self.progress.setMaximum(total)
+            self.progress.setValue(current)
+            QApplication.processEvents()
+
+        self.scan_results = self.omr_processor.process_batch(file_paths, self.template, on_progress)
         subject_key_for_results = self._subject_key_from_cfg(subject_cfg) if subject_cfg else self._resolve_preferred_scoring_subject()
         self.scan_results_by_subject[subject_key_for_results] = list(self.scan_results)
         self.scan_list.setRowCount(0)
