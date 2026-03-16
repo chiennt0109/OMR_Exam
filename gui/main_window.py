@@ -9268,6 +9268,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Batch Scan", "Không có môn nào để nhận dạng trong kỳ thi hiện tại.")
             return
 
+        if hasattr(self, "batch_recognition_mode_combo"):
+            mode = str(self.batch_recognition_mode_combo.currentData() or "auto")
+            setattr(self.omr_processor, "alignment_profile", mode)
+
         # Resolve template, scan folder and answer keys from selected subject config in session.
         subject_template_path = ""
         exam_template_path = self._normalize_template_path(str(self.session.template_path if self.session else ""))
