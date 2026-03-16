@@ -47,6 +47,7 @@ from gui.import_answer_key_dialog import ImportAnswerKeyDialog
 from models.answer_key import AnswerKeyRepository, SubjectKey
 from models.exam_session import ExamSession, Student
 from models.template import Template
+from models.template_repository import TemplateRepository
 
 
 class PreviewImageWidget(QLabel):
@@ -212,6 +213,7 @@ class SubjectConfigDialog(QDialog):
         block_options: list[str] | None = None,
         paper_part_count: int = 3,
         common_template_path: str = "",
+        template_repo: TemplateRepository | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -221,6 +223,7 @@ class SubjectConfigDialog(QDialog):
         block_options = block_options or ["10", "11", "12"]
 
         self.common_template_path = common_template_path
+        self.template_repo = template_repo or TemplateRepository()
         self.paper_part_count_default = paper_part_count
         self.answer_key_data: dict = dict(data.get("imported_answer_keys", {}))
 
@@ -264,8 +267,9 @@ class SubjectConfigDialog(QDialog):
 
         self.total_score = QLineEdit(); self.total_score.setReadOnly(True)
 
-        row_tpl = QHBoxLayout(); row_tpl.addWidget(self.template_path); b_tpl = QPushButton("..."); row_tpl.addWidget(b_tpl)
+        row_tpl = QHBoxLayout(); row_tpl.addWidget(self.template_path); b_tpl = QPushButton("..."); row_tpl.addWidget(b_tpl); b_tpl_repo = QPushButton("Kho mẫu..."); row_tpl.addWidget(b_tpl_repo)
         b_tpl.clicked.connect(self._browse_template)
+        b_tpl_repo.clicked.connect(self._pick_template_from_repo)
         row_scan = QHBoxLayout(); row_scan.addWidget(self.scan_folder); b_scan = QPushButton("..."); row_scan.addWidget(b_scan)
         b_scan.clicked.connect(self._browse_scan_folder)
         row_key = QHBoxLayout(); row_key.addWidget(self.answer_key); b_key = QPushButton("..."); row_key.addWidget(b_key)
@@ -380,7 +384,18 @@ class SubjectConfigDialog(QDialog):
     def _browse_template(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Chọn giấy thi", "", "JSON (*.json)")
         if path:
+            self.template_repo.register(path)
             self.template_path.setText(path)
+
+
+    def _pick_template_from_repo(self) -> None:
+        items = [f"{name} | {path}" for name, path in self.template_repo.list_templates()]
+        if not items:
+            QMessageBox.information(self, "Kho mẫu giấy thi", "Kho mẫu đang trống. Hãy thêm mẫu bằng nút ...")
+            return
+        chosen, ok = QInputDialog.getItem(self, "Kho mẫu giấy thi", "Chọn mẫu:", items, 0, False)
+        if ok and chosen:
+            self.template_path.setText(chosen.split(" | ", 1)[1])
 
     def _browse_scan_folder(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Chọn thư mục bài thi môn")
@@ -475,6 +490,7 @@ class NewExamDialog(QDialog):
         on_batch_scan_subject=None,
         on_save_exam=None,
         stay_open_on_save: bool = False,
+        template_repo: TemplateRepository | None = None,
     ):
         super().__init__(parent)
         data = data or {}
@@ -488,6 +504,7 @@ class NewExamDialog(QDialog):
         self.stay_open_on_save = bool(stay_open_on_save)
         self.subject_options = subject_options
         self.block_options = block_options
+        self.template_repo = template_repo or TemplateRepository()
 
         lay = QVBoxLayout(self)
         form = QFormLayout()
@@ -502,8 +519,9 @@ class NewExamDialog(QDialog):
         self.scan_mode.setCurrentText(str(data.get("scan_mode", "Ảnh trong thư mục gốc")))
         self.paper_part_count = QComboBox(); self.paper_part_count.addItems(["1", "2", "3", "4", "5"]); self.paper_part_count.setCurrentText(str(data.get("paper_part_count", "3")))
 
-        row_tpl = QHBoxLayout(); row_tpl.addWidget(self.common_template); btn_tpl = QPushButton("..."); row_tpl.addWidget(btn_tpl)
+        row_tpl = QHBoxLayout(); row_tpl.addWidget(self.common_template); btn_tpl = QPushButton("..."); row_tpl.addWidget(btn_tpl); btn_tpl_repo = QPushButton("Kho mẫu..."); row_tpl.addWidget(btn_tpl_repo)
         btn_tpl.clicked.connect(self._browse_common_template)
+        btn_tpl_repo.clicked.connect(self._pick_common_template_from_repo)
         row_scan = QHBoxLayout(); row_scan.addWidget(self.scan_root); btn_scan = QPushButton("..."); row_scan.addWidget(btn_scan)
         btn_scan.clicked.connect(self._browse_scan_root)
         row_students = QHBoxLayout(); row_students.addWidget(self.student_list_path)
@@ -575,7 +593,18 @@ class NewExamDialog(QDialog):
     def _browse_common_template(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Chọn giấy thi dùng chung", "", "JSON (*.json)")
         if path:
+            self.template_repo.register(path)
             self.common_template.setText(path)
+
+
+    def _pick_common_template_from_repo(self) -> None:
+        items = [f"{name} | {path}" for name, path in self.template_repo.list_templates()]
+        if not items:
+            QMessageBox.information(self, "Kho mẫu giấy thi", "Kho mẫu đang trống. Hãy thêm mẫu bằng nút ...")
+            return
+        chosen, ok = QInputDialog.getItem(self, "Kho mẫu giấy thi", "Chọn mẫu dùng chung:", items, 0, False)
+        if ok and chosen:
+            self.common_template.setText(chosen.split(" | ", 1)[1])
 
     def _browse_scan_root(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Chọn thư mục gốc bài thi")
@@ -841,6 +870,7 @@ class NewExamDialog(QDialog):
             block_options=self.block_options,
             paper_part_count=int(self.paper_part_count.currentText()),
             common_template_path=self.common_template.text().strip(),
+            template_repo=self.template_repo,
             parent=self,
         )
         if dlg.exec() != QDialog.Accepted:
@@ -858,6 +888,7 @@ class NewExamDialog(QDialog):
             block_options=self.block_options,
             paper_part_count=int(self.paper_part_count.currentText()),
             common_template_path=self.common_template.text().strip(),
+            template_repo=self.template_repo,
             parent=self,
         )
         if dlg.exec() != QDialog.Accepted:
@@ -964,6 +995,8 @@ class MainWindow(QMainWindow):
 
         self.session_registry_path = Path.home() / ".omr_exam_sessions.json"
         self.session_registry: list[dict[str, str | bool]] = self._load_session_registry()
+        self.template_repo_path = Path.home() / ".omr_template_repository.json"
+        self.template_repo = TemplateRepository.load_json(self.template_repo_path)
 
         self.stack = QStackedWidget()
         self.stack.addWidget(self._build_exam_list_page())
@@ -1343,6 +1376,7 @@ class MainWindow(QMainWindow):
             on_batch_scan_subject=lambda x: self._handle_batch_request_from_editor(x),
             on_save_exam=self._save_embedded_exam_editor,
             stay_open_on_save=True,
+            template_repo=self.template_repo,
         )
         dlg.setWindowFlags(Qt.Widget)
         dlg.rejected.connect(self._close_embedded_exam_editor)
@@ -1354,6 +1388,7 @@ class MainWindow(QMainWindow):
         if not self.embedded_exam_dialog or not self.embedded_exam_session_id:
             return False
         edited = self.embedded_exam_dialog.payload()
+        self._register_templates_from_payload(edited)
         session_id = self.embedded_exam_session_id
         path = self._session_path_from_id(session_id)
         if not path.exists():
@@ -1831,7 +1866,7 @@ class MainWindow(QMainWindow):
             return
         if not self._confirm("Tạo kỳ thi mới", "Bạn có chắc muốn tạo kỳ thi mới?"):
             return
-        dlg = NewExamDialog(self.subject_catalog, self.block_catalog, parent=self)
+        dlg = NewExamDialog(self.subject_catalog, self.block_catalog, parent=self, template_repo=self.template_repo)
         if dlg.exec() != QDialog.Accepted:
             return
         self.create_session(dlg.payload())
@@ -8758,8 +8793,26 @@ class MainWindow(QMainWindow):
         layout.addWidget(splitter)
         return w
 
+
+    def _save_template_repository(self) -> None:
+        try:
+            self.template_repo.save_json(self.template_repo_path)
+        except Exception:
+            pass
+
+    def _register_templates_from_payload(self, payload: dict) -> None:
+        common_template = str(payload.get("common_template", "") or "").strip()
+        if common_template:
+            self.template_repo.register(common_template)
+        for cfg in payload.get("subject_configs", []) if isinstance(payload.get("subject_configs", []), list) else []:
+            tp = str((cfg or {}).get("template_path", "") or "").strip()
+            if tp:
+                self.template_repo.register(tp)
+        self._save_template_repository()
+
     def create_session(self, payload: dict | None = None) -> None:
         payload = payload or {}
+        self._register_templates_from_payload(payload)
         exam_name = str(payload.get("exam_name", "Untitled Exam"))
         common_template = str(payload.get("common_template", ""))
         subject_cfgs = payload.get("subject_configs", [])
@@ -8821,6 +8874,8 @@ class MainWindow(QMainWindow):
         if not file_path:
             return
         self.template = Template.load_json(file_path)
+        self.template_repo.register(file_path)
+        self._save_template_repository()
         if self.session:
             self.session.template_path = file_path
         self.session_dirty = True
@@ -9236,13 +9291,13 @@ class MainWindow(QMainWindow):
         penalty = len(getattr(result, "issues", []) or []) + len(getattr(result, "recognition_errors", []) or getattr(result, "errors", []) or [])
         return has_id * 3 + has_code * 3 + answers_count - penalty
 
-    def _apply_template_recognition_settings(self, template: Template) -> None:
+    def _apply_template_recognition_settings(self, template: Template, *, sync_mode_selector: bool = True) -> None:
         if not template:
             return
         md = template.metadata if isinstance(template.metadata, dict) else {}
 
         mode = str(md.get("alignment_profile", "") or "").strip().lower()
-        if mode in {"auto", "legacy", "border", "hybrid", "one_side"}:
+        if sync_mode_selector and mode in {"auto", "legacy", "border", "hybrid", "one_side"}:
             setattr(self.omr_processor, "alignment_profile", mode)
             if hasattr(self, "batch_recognition_mode_combo"):
                 for i in range(self.batch_recognition_mode_combo.count()):
@@ -9275,7 +9330,7 @@ class MainWindow(QMainWindow):
         if not rotated.save(temp_path):
             return result, False
         try:
-            alt = self.omr_processor.process_image(temp_path, self.template)
+            alt = self.omr_processor.run_recognition_test(temp_path, self.template)
         finally:
             try:
                 Path(temp_path).unlink(missing_ok=True)
@@ -9403,7 +9458,7 @@ class MainWindow(QMainWindow):
         self.preview_rotation_by_index.clear()
         self.scan_forced_status_by_index.clear()
 
-        self._apply_template_recognition_settings(self.template)
+        self._apply_template_recognition_settings(self.template, sync_mode_selector=False)
 
         def on_progress(current: int, total: int, image_path: str):
             self.progress.setMaximum(total)
@@ -9429,9 +9484,8 @@ class MainWindow(QMainWindow):
             need_retry_180 = (not original_identity) or (not original_meaningful)
             if need_retry_180:
                 retried, improved = self._try_reprocess_result_rotated_180(result)
-                retried_meaningful = self._result_has_meaningful_recognition(retried)
-                retried_identity = self._has_valid_identity(retried)
-                if retried_identity or retried_meaningful or improved:
+                # Accept 180° retry only when quality is strictly improved, otherwise keep original orientation.
+                if improved:
                     result = retried
                     self.scan_results[idx] = result
                     self.preview_rotation_by_index[idx] = (int(self.preview_rotation_by_index.get(idx, 0) or 0) + 180) % 360
