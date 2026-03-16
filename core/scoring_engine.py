@@ -24,6 +24,7 @@ class ScoreResult:
     mcq_correct: int = 0
     tf_correct: int = 0
     numeric_correct: int = 0
+    mcq_compare: str = ""
     tf_compare: str = ""
     numeric_compare: str = ""
 
@@ -80,6 +81,11 @@ class ScoringEngine:
         if not key_tf and not marked_tf:
             return ""
         return f"Q{q_no}:{key_tf or '-'}|{marked_tf or '-'}"
+
+    def _build_mcq_compare_text(self, key_mcq: str, marked_mcq: str, q_no: int) -> str:
+        if not key_mcq and not marked_mcq:
+            return ""
+        return f"Q{q_no}:{key_mcq or '-'}|{marked_mcq or '-'}"
 
     def _build_numeric_compare_text(self, key_num: str, marked_num: str, q_no: int) -> str:
         if not key_num and not marked_num:
@@ -206,6 +212,7 @@ class ScoringEngine:
         correct = wrong = blank = 0
         score = 0.0
         mcq_correct = tf_correct = numeric_correct = 0
+        mcq_compare_items: list[str] = []
         tf_compare_items: list[str] = []
         numeric_compare_items: list[str] = []
         profile = self._score_profile(subject_key, subject_config)
@@ -217,10 +224,13 @@ class ScoringEngine:
             if not self._is_countable_mcq_key(key_answer):
                 continue
             marked = aligned_mcq_marked.get(q_no)
-            if not marked:
+            key_mcq = str(key_answer or "").strip().upper()
+            marked_mcq = str(marked or "").strip().upper()
+            mcq_compare_items.append(self._build_mcq_compare_text(key_mcq, marked_mcq, q_no))
+            if not marked_mcq:
                 blank += 1
                 continue
-            if marked == key_answer:
+            if marked_mcq == key_mcq:
                 correct += 1
                 mcq_correct += 1
                 score += profile["mcq_per"]
@@ -278,6 +288,7 @@ class ScoringEngine:
             mcq_correct=mcq_correct,
             tf_correct=tf_correct,
             numeric_correct=numeric_correct,
+            mcq_compare="; ".join(x for x in mcq_compare_items if x) or "[Không có MCQ trong đáp án hoặc dữ liệu nhận dạng]",
             tf_compare="; ".join(x for x in tf_compare_items if x) or "[Không có TF trong đáp án hoặc dữ liệu nhận dạng]",
             numeric_compare="; ".join(x for x in numeric_compare_items if x) or "[Không có NUMERIC trong đáp án hoặc dữ liệu nhận dạng]",
         )

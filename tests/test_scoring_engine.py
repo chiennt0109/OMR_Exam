@@ -158,6 +158,9 @@ class ScoringEngineTests(unittest.TestCase):
         self.assertEqual(row.wrong, 0)
         self.assertEqual(row.blank, 0)
         self.assertAlmostEqual(row.score, 3.0, places=4)
+        self.assertIn("Q13:A|A", row.mcq_compare)
+        self.assertIn("Q14:B|B", row.mcq_compare)
+        self.assertIn("Q15:C|C", row.mcq_compare)
 
     def test_aligned_marked_answers_skips_non_numeric_keys(self):
         aligned = self.engine._aligned_marked_answers(
