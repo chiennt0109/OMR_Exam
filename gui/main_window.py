@@ -8906,14 +8906,14 @@ class MainWindow(QMainWindow):
         cfgs = self._subject_configs_in_session()
         common_template = self._normalize_template_path(str(self.session.template_path if self.session else ""))
         if cfgs:
-            # Enforce a single template source for the whole exam when common template is set.
+            # Default to exam common template, but keep subject-specific template if explicitly configured.
             out_cfgs: list[dict] = []
             for cfg in cfgs:
                 if not isinstance(cfg, dict):
                     continue
                 item = dict(cfg)
-                if common_template:
-                    item["template_path"] = common_template
+                subject_template = self._normalize_template_path(str(item.get("template_path", "") or ""))
+                item["template_path"] = subject_template or common_template
                 out_cfgs.append(item)
             return out_cfgs
         # Fallback for older sessions without subject_configs.
