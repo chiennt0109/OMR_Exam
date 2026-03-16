@@ -9291,13 +9291,13 @@ class MainWindow(QMainWindow):
         penalty = len(getattr(result, "issues", []) or []) + len(getattr(result, "recognition_errors", []) or getattr(result, "errors", []) or [])
         return has_id * 3 + has_code * 3 + answers_count - penalty
 
-    def _apply_template_recognition_settings(self, template: Template) -> None:
+    def _apply_template_recognition_settings(self, template: Template, *, sync_mode_selector: bool = True) -> None:
         if not template:
             return
         md = template.metadata if isinstance(template.metadata, dict) else {}
 
         mode = str(md.get("alignment_profile", "") or "").strip().lower()
-        if mode in {"auto", "legacy", "border", "hybrid", "one_side"}:
+        if sync_mode_selector and mode in {"auto", "legacy", "border", "hybrid", "one_side"}:
             setattr(self.omr_processor, "alignment_profile", mode)
             if hasattr(self, "batch_recognition_mode_combo"):
                 for i in range(self.batch_recognition_mode_combo.count()):
@@ -9458,7 +9458,7 @@ class MainWindow(QMainWindow):
         self.preview_rotation_by_index.clear()
         self.scan_forced_status_by_index.clear()
 
-        self._apply_template_recognition_settings(self.template)
+        self._apply_template_recognition_settings(self.template, sync_mode_selector=False)
 
         def on_progress(current: int, total: int, image_path: str):
             self.progress.setMaximum(total)
@@ -9484,9 +9484,8 @@ class MainWindow(QMainWindow):
             need_retry_180 = (not original_identity) or (not original_meaningful)
             if need_retry_180:
                 retried, improved = self._try_reprocess_result_rotated_180(result)
-                retried_meaningful = self._result_has_meaningful_recognition(retried)
-                retried_identity = self._has_valid_identity(retried)
-                if retried_identity or retried_meaningful or improved:
+                # Accept 180° retry only when quality is strictly improved, otherwise keep original orientation.
+                if improved:
                     result = retried
                     self.scan_results[idx] = result
                     self.preview_rotation_by_index[idx] = (int(self.preview_rotation_by_index.get(idx, 0) or 0) + 180) % 360
