@@ -1836,8 +1836,6 @@ class MainWindow(QMainWindow):
         self._show_batch_scan_panel()
         if hasattr(self, "batch_subject_combo") and self.batch_subject_combo.currentIndex() <= 0 and self.batch_subject_combo.count() > 1:
             self.batch_subject_combo.setCurrentIndex(1)
-        # Keep behavior consistent for all recognition triggers.
-        self.run_batch_scan()
 
     def action_run_batch_scan(self) -> None:
         self._start_batch_scan_from_ui()
@@ -11218,19 +11216,46 @@ class MainWindow(QMainWindow):
             QTableWidgetItem(self._build_recognition_content_text(result, self.scan_blank_summary.get(idx, {"MCQ": [], "TF": [], "NUMERIC": []}))),
         )
 
+    def _build_result_from_saved_table_row(self, idx: int) -> OMRResult | None:
+        if idx < 0 or idx >= self.scan_list.rowCount():
+            return None
+        sid_item = self.scan_list.item(idx, 0)
+        image_path = str(sid_item.data(Qt.UserRole) if sid_item else "")
+        if not image_path:
+            return None
+        student_id = str(sid_item.text() if sid_item else "").strip()
+        if student_id == "-":
+            student_id = ""
+        exam_code = str(sid_item.data(Qt.UserRole + 1) if sid_item else "").strip()
+        result = OMRResult(image_path=image_path, student_id=student_id, exam_code=exam_code)
+        result.full_name = str(self.scan_list.item(idx, 1).text() if self.scan_list.item(idx, 1) else "")
+        result.birth_date = str(self.scan_list.item(idx, 2).text() if self.scan_list.item(idx, 2) else "")
+        result.sync_legacy_aliases()
+        return result
+
+    def _set_scan_result_at_row(self, idx: int, result: OMRResult) -> None:
+        if idx < 0:
+            return
+        while len(self.scan_results) <= idx:
+            placeholder = self._build_result_from_saved_table_row(len(self.scan_results))
+            if placeholder is None:
+                placeholder = OMRResult(image_path="")
+            self.scan_results.append(placeholder)
+        self.scan_results[idx] = result
+
     def _rerecognize_selected_scan(self) -> None:
         idx = self._selected_scan_row_index()
         if idx < 0:
             QMessageBox.warning(self, "Nhận dạng lại", "Chọn một bài thi trong danh sách bên trái trước.")
             return
-        if idx >= len(self.scan_results):
-            QMessageBox.warning(self, "Nhận dạng lại", "Dòng đang chọn là dữ liệu đã lưu. Hãy chạy nhận dạng batch hoặc chọn dòng đang có dữ liệu nhận dạng hiện hành.")
-            return
         if not self.template:
             QMessageBox.warning(self, "Nhận dạng lại", "Chưa có template đang dùng. Vui lòng chạy nhận dạng theo môn trước.")
             return
 
-        old_result = self.scan_results[idx]
+        old_result = self.scan_results[idx] if idx < len(self.scan_results) else self._build_result_from_saved_table_row(idx)
+        if old_result is None:
+            QMessageBox.warning(self, "Nhận dạng lại", "Không tìm thấy dữ liệu dòng đang chọn để nhận dạng lại.")
+            return
         image_path = str(old_result.image_path or "").strip()
         if not image_path or not Path(image_path).exists():
             QMessageBox.warning(self, "Nhận dạng lại", f"Không tìm thấy ảnh để nhận dạng lại:\n{image_path or '-'}")
@@ -11284,7 +11309,7 @@ class MainWindow(QMainWindow):
         if QMessageBox.question(self, "Xác nhận nhận dạng lại", message, QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) != QMessageBox.Yes:
             return
 
-        self.scan_results[idx] = new_result
+        self._set_scan_result_at_row(idx, new_result)
         self.scan_blank_questions[idx] = blank_map.get("MCQ", [])
         self.scan_blank_summary[idx] = blank_map
         self._update_scan_row_from_result(idx, new_result)
