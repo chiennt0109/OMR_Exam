@@ -8654,6 +8654,12 @@ class MainWindow(QMainWindow):
             if isinstance(self.batch_editor_return_payload, dict):
                 self.batch_editor_return_payload["subject_configs"] = subject_cfgs
             # Keep selected subject in combo and refresh the grid with that subject's saved rows.
+            current_row = self.scan_list.currentRow() if hasattr(self, "scan_list") else -1
+            current_image = ""
+            if hasattr(self, "scan_list") and 0 <= current_row < self.scan_list.rowCount():
+                it = self.scan_list.item(current_row, 0)
+                current_image = str(it.data(Qt.UserRole) if it else "")
+
             self._refresh_batch_subject_controls()
             if hasattr(self, "batch_subject_combo"):
                 for i in range(1, self.batch_subject_combo.count()):
@@ -8662,6 +8668,22 @@ class MainWindow(QMainWindow):
                         self.batch_subject_combo.setCurrentIndex(i)
                         self._on_batch_subject_changed(i)
                         break
+
+            # Try to keep the edited record position/selection after save.
+            if hasattr(self, "scan_list") and self.scan_list.rowCount() > 0:
+                target_row = -1
+                if current_image:
+                    for r in range(self.scan_list.rowCount()):
+                        it = self.scan_list.item(r, 0)
+                        if str(it.data(Qt.UserRole) if it else "") == current_image:
+                            target_row = r
+                            break
+                if target_row < 0 and current_row >= 0:
+                    target_row = min(current_row, self.scan_list.rowCount() - 1)
+                if target_row >= 0:
+                    self.scan_list.selectRow(target_row)
+                    self._on_scan_selected()
+
             self.btn_save_batch_subject.setEnabled(False)
             QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
         except Exception as exc:
@@ -9338,10 +9360,12 @@ class MainWindow(QMainWindow):
             if retried_identity and not original_identity:
                 result = retried
                 self.scan_results[idx] = result
+                self.preview_rotation_by_index[idx] = (int(self.preview_rotation_by_index.get(idx, 0) or 0) + 180) % 360
                 forced_status = "Auto fix"
             elif (not original_meaningful) and (retried_meaningful or improved):
                 result = retried
                 self.scan_results[idx] = result
+                self.preview_rotation_by_index[idx] = (int(self.preview_rotation_by_index.get(idx, 0) or 0) + 180) % 360
                 forced_status = "Auto fix"
             elif not original_meaningful:
                 forced_status = "Lỗi nhận dạng"
