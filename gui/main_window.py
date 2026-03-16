@@ -3060,7 +3060,17 @@ class MainWindow(QMainWindow):
             self.scan_results_by_subject[subject_key] = list(self.scan_results_by_subject.get(subject_key) or self.scan_results or [])
             if isinstance(self.batch_editor_return_payload, dict):
                 self.batch_editor_return_payload["subject_configs"] = subject_cfgs
+
+            # Keep selected subject and show its just-saved content right away.
             self._refresh_batch_subject_controls()
+            if hasattr(self, "batch_subject_combo"):
+                for i in range(1, self.batch_subject_combo.count()):
+                    cfg_i = self.batch_subject_combo.itemData(i)
+                    if isinstance(cfg_i, dict) and self._subject_key_from_cfg(cfg_i) == subject_key:
+                        self.batch_subject_combo.setCurrentIndex(i)
+                        self._on_batch_subject_changed(i)
+                        break
+
             self.btn_save_batch_subject.setEnabled(False)
             QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
         except Exception as exc:
@@ -3457,7 +3467,17 @@ class MainWindow(QMainWindow):
             self.scan_results_by_subject[subject_key] = list(self.scan_results_by_subject.get(subject_key) or self.scan_results or [])
             if isinstance(self.batch_editor_return_payload, dict):
                 self.batch_editor_return_payload["subject_configs"] = subject_cfgs
+
+            # Keep selected subject in combo and refresh the grid with that subject's saved rows.
             self._refresh_batch_subject_controls()
+            if hasattr(self, "batch_subject_combo"):
+                for i in range(1, self.batch_subject_combo.count()):
+                    cfg_i = self.batch_subject_combo.itemData(i)
+                    if isinstance(cfg_i, dict) and self._subject_key_from_cfg(cfg_i) == subject_key:
+                        self.batch_subject_combo.setCurrentIndex(i)
+                        self._on_batch_subject_changed(i)
+                        break
+
             self.btn_save_batch_subject.setEnabled(False)
             QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
         except Exception as exc:
@@ -8633,7 +8653,15 @@ class MainWindow(QMainWindow):
             self.scan_results_by_subject[subject_key] = list(self.scan_results_by_subject.get(subject_key) or self.scan_results or [])
             if isinstance(self.batch_editor_return_payload, dict):
                 self.batch_editor_return_payload["subject_configs"] = subject_cfgs
+            # Keep selected subject in combo and refresh the grid with that subject's saved rows.
             self._refresh_batch_subject_controls()
+            if hasattr(self, "batch_subject_combo"):
+                for i in range(1, self.batch_subject_combo.count()):
+                    cfg_i = self.batch_subject_combo.itemData(i)
+                    if isinstance(cfg_i, dict) and self._subject_key_from_cfg(cfg_i) == subject_key:
+                        self.batch_subject_combo.setCurrentIndex(i)
+                        self._on_batch_subject_changed(i)
+                        break
             self.btn_save_batch_subject.setEnabled(False)
             QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
         except Exception as exc:
@@ -9294,13 +9322,13 @@ class MainWindow(QMainWindow):
         for idx, result in enumerate(self.scan_results):
             forced_status = ""
             if not self._result_has_meaningful_recognition(result):
-                retried, improved = self._try_reprocess_result_rotated_180(result)
-                if improved:
+                retried, _improved = self._try_reprocess_result_rotated_180(result)
+                if self._result_has_meaningful_recognition(retried):
                     result = retried
                     self.scan_results[idx] = result
-                    forced_status = "Tự nhận dạng"
-                elif not self._result_has_meaningful_recognition(retried):
-                    forced_status = "Lỗi file ảnh"
+                    forced_status = "Auto fix"
+                else:
+                    forced_status = "Lỗi nhận dạng"
             if forced_status:
                 self.scan_forced_status_by_index[idx] = forced_status
 
