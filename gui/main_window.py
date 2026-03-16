@@ -9284,6 +9284,13 @@ class MainWindow(QMainWindow):
         return has_answers or has_identity
 
     @staticmethod
+    def _should_force_image_error_status(result) -> bool:
+        issues = list(getattr(result, "issues", []) or [])
+        if any(str(getattr(issue, "code", "") or "").upper() == "FILE" for issue in issues):
+            return True
+        return not MainWindow._result_has_meaningful_recognition(result)
+
+    @staticmethod
     def _recognition_quality_score(result) -> int:
         sid = str(getattr(result, "student_id", "") or "").strip()
         code = str(getattr(result, "exam_code", "") or "").strip()
@@ -9491,10 +9498,9 @@ class MainWindow(QMainWindow):
                     self.scan_results[idx] = result
                     self.preview_rotation_by_index[idx] = (int(self.preview_rotation_by_index.get(idx, 0) or 0) + 180) % 360
 
-            final_score = self._recognition_quality_score(result)
-            if final_score <= 0 or not self._result_has_meaningful_recognition(result):
+            if self._should_force_image_error_status(result):
                 # Keep raw recognition data for consistency with single-image re-recognition,
-                # but mark row as low quality so users can review/override.
+                # but only mark image-file error when recognition is truly unusable/file-loading failed.
                 forced_status = "Lỗi file ảnh"
 
             if forced_status:
@@ -12456,7 +12462,7 @@ class MainWindow(QMainWindow):
                 setattr(scan, "birth_date", profile.get("birth_date"))
             if mode_text == "Chỉ tính bài chưa có điểm" and sid and sid in prev_subject_scores:
                 continue
-            key = self.answer_keys.get(subject, scan.exam_code)
+            key = self.answer_keys.get_flexible(subject, scan.exam_code)
             if not key:
                 missing += 1
                 failed_scans.append({
@@ -12551,7 +12557,7 @@ class MainWindow(QMainWindow):
         formula_text = ""
         if rows:
             first_scan = subject_scans[0] if subject_scans else None
-            first_key = self.answer_keys.get(subject, first_scan.exam_code) if first_scan and self.answer_keys else None
+            first_key = self.answer_keys.get_flexible(subject, first_scan.exam_code) if first_scan and self.answer_keys else None
             if first_key:
                 formula_text = self.scoring_engine.describe_formula(first_key, subject_cfg)
         total_scans = len(subject_scans)
