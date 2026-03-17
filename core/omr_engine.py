@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
-import math
 from pathlib import Path
 import time
 from typing import Callable
@@ -723,8 +722,9 @@ class OMRProcessor:
         return np.array(picks, dtype=np.float32)
 
     def detect_bubbles(self, binary: np.ndarray, centers: np.ndarray, radius: int) -> np.ndarray:
-        mask, mask_area = self._get_circular_mask(radius)
-        r = radius
+        # X-stroke mask is more robust than circular-area ratio for irregular/partially filled marks.
+        mask = self._get_x_mask(radius)
+        r = max(3, int(radius))
         h, w = binary.shape[:2]
         ratios = np.zeros((len(centers),), dtype=np.float32)
         centers_int = centers.astype(np.int32)
@@ -973,15 +973,19 @@ class OMRProcessor:
             return None
         return best_col
 
-    def _get_circular_mask(self, radius: int) -> tuple[np.ndarray, float]:
+    def _get_x_mask(self, radius: int) -> np.ndarray:
         r = max(3, int(radius))
-        if r in self._mask_cache:
-            return self._mask_cache[r]
-        y, x = np.ogrid[-r : r + 1, -r : r + 1]
-        mask = (x * x + y * y) <= (r * r)
-        area = float(math.pi * r * r)
-        self._mask_cache[r] = (mask, area)
-        return mask, area
+        cached = self._mask_cache.get(r)
+        if cached is not None:
+            return cached[0]
+        size = (2 * r) + 1
+        y, x = np.indices((size, size))
+        d1 = np.abs(y - x)
+        d2 = np.abs(y - (size - 1 - x))
+        thickness = max(1, int(round(r * 0.20)))
+        mask = (d1 <= thickness) | (d2 <= thickness)
+        self._mask_cache[r] = (mask, float(np.count_nonzero(mask)))
+        return mask
 
     def _draw_debug_overlay(self, image: np.ndarray, centers: np.ndarray, ratios: np.ndarray, radius: int) -> None:
         for (x, y), ratio in zip(centers.astype(np.int32), ratios):

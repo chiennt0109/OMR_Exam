@@ -2179,13 +2179,6 @@ class MainWindow(QMainWindow):
         self.batch_answer_codes_value = QLineEdit("-"); self.batch_answer_codes_value.setReadOnly(True)
         self.batch_student_id_value = QLineEdit("-"); self.batch_student_id_value.setReadOnly(True)
         self.batch_scan_folder_value = QLineEdit("-"); self.batch_scan_folder_value.setReadOnly(True)
-        self.batch_fill_threshold_spin = QDoubleSpinBox()
-        self.batch_fill_threshold_spin.setDecimals(2)
-        self.batch_fill_threshold_spin.setRange(0.05, 0.95)
-        self.batch_fill_threshold_spin.setSingleStep(0.01)
-        self.batch_fill_threshold_spin.setValue(float(getattr(self.omr_processor, "fill_threshold", 0.45) or 0.45))
-        self.batch_fill_threshold_spin.setToolTip("Tăng ngưỡng để giảm nhận nhầm các vết tô mờ/đã tẩy; giảm ngưỡng nếu bỏ sót nét tô nhẹ.")
-        self.batch_fill_threshold_spin.valueChanged.connect(self._on_batch_fill_threshold_changed)
         style = self.style()
         self.btn_batch_recognize = QPushButton("Nhận dạng")
         self.btn_batch_recognize.setIcon(style.standardIcon(QStyle.SP_MediaPlay))
@@ -2212,7 +2205,6 @@ class MainWindow(QMainWindow):
         batch_form.addRow("Mã đề", self.batch_answer_codes_value)
         batch_form.addRow("Vùng STUDENT ID", self.batch_student_id_value)
         batch_form.addRow("Thư mục quét", self.batch_scan_folder_value)
-        batch_form.addRow("Ngưỡng nhận tô", self.batch_fill_threshold_spin)
         batch_form.addRow("", action_row)
 
         self.filter_column = QComboBox()
@@ -9426,24 +9418,6 @@ class MainWindow(QMainWindow):
                 continue
             setattr(self.omr_processor, field, value if value >= 0 else default)
 
-        if hasattr(self, "batch_fill_threshold_spin"):
-            spin = self.batch_fill_threshold_spin
-            spin.blockSignals(True)
-            spin.setValue(float(getattr(self.omr_processor, "fill_threshold", 0.45) or 0.45))
-            spin.blockSignals(False)
-
-    def _on_batch_fill_threshold_changed(self, value: float) -> None:
-        self._apply_batch_fill_threshold(value)
-
-    def _apply_batch_fill_threshold(self, value: float | None = None) -> None:
-        raw_value = self.batch_fill_threshold_spin.value() if value is None and hasattr(self, "batch_fill_threshold_spin") else value
-        try:
-            threshold = float(raw_value)
-        except Exception:
-            return
-        threshold = max(0.05, min(0.95, threshold))
-        setattr(self.omr_processor, "fill_threshold", threshold)
-
     def _try_reprocess_result_rotated_180(self, result):
         image_path = str(getattr(result, "image_path", "") or "").strip()
         if not image_path or not Path(image_path).exists() or not self.template:
@@ -9590,7 +9564,6 @@ class MainWindow(QMainWindow):
         self.scan_forced_status_by_index.clear()
 
         self._apply_template_recognition_settings(self.template, sync_mode_selector=False)
-        self._apply_batch_fill_threshold()
 
         def on_progress(current: int, total: int, image_path: str):
             self.progress.setMaximum(total)
@@ -11924,7 +11897,6 @@ class MainWindow(QMainWindow):
         if not self._ensure_template_for_selected_subject() or not self.template:
             QMessageBox.warning(self, "Nhận dạng lại", "Chưa có template khả dụng (theo môn hoặc theo kỳ thi).")
             return
-        self._apply_batch_fill_threshold()
 
         old_result = self.scan_results[idx] if idx < len(self.scan_results) else self._build_result_from_saved_table_row(idx)
         if old_result is None:
