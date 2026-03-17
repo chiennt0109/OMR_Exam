@@ -2100,10 +2100,12 @@ class MainWindow(QMainWindow):
 
         if self.session:
             self.session.answer_key_path = file_path
+        self.active_batch_subject_key = subject
         self.session_dirty = True
         self._refresh_session_info()
         self._refresh_batch_subject_controls()
         self._refresh_batch_subject_controls()
+        self._retrim_batch_results_to_answer_key_scope()
         QMessageBox.information(self, "Import successful", f"Imported {imported_count} exam code(s) into current session.")
 
     def export_answer_key_sample(self) -> None:
@@ -9765,10 +9767,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -9952,10 +9957,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -10058,10 +10066,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -10164,10 +10175,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -10270,10 +10284,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -10376,10 +10393,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -10482,10 +10502,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -10588,10 +10611,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -10694,10 +10720,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -10800,10 +10829,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -10906,10 +10938,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -11012,10 +11047,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -11118,10 +11156,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -11224,10 +11265,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -11330,10 +11374,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -11436,10 +11483,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -11505,6 +11555,25 @@ class MainWindow(QMainWindow):
                     f"thiếu {sec} ({len(expected_set)-len(missing)}/{len(expected_set)}): {','.join(str(v) for v in missing)}"
                 )
         return messages
+
+    def _retrim_batch_results_to_answer_key_scope(self) -> None:
+        if not self.scan_results:
+            return
+        for idx, res in enumerate(self.scan_results):
+            self._trim_result_answers_to_expected_scope(res)
+            blank_map = self._compute_blank_questions(res)
+            self.scan_blank_summary[idx] = blank_map
+            self.scan_blank_questions[idx] = blank_map.get("MCQ", [])
+            if idx < self.scan_list.rowCount():
+                self.scan_list.setItem(idx, 3, QTableWidgetItem(self._build_recognition_content_text(res, blank_map)))
+                sid_item = self.scan_list.item(idx, 0)
+                if sid_item:
+                    sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(res))
+        self._refresh_all_statuses()
+        current = self.scan_list.currentRow() if hasattr(self, "scan_list") else -1
+        if 0 <= current < len(self.scan_results):
+            self._update_scan_preview(current)
+            self._load_selected_result_for_correction()
 
     def _apply_scan_filter(self) -> None:
         value = self.search_value.text().strip().lower()
