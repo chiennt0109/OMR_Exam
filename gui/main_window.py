@@ -9001,6 +9001,17 @@ class MainWindow(QMainWindow):
                 }
         return {}
 
+    def _refresh_student_profile_for_result(self, result, row_idx: int | None = None) -> None:
+        sid = str(getattr(result, "student_id", "") or "").strip()
+        profile = self._student_profile_by_id(sid)
+        setattr(result, "full_name", str(profile.get("name", "") or ""))
+        setattr(result, "birth_date", str(profile.get("birth_date", "") or ""))
+        setattr(result, "class_name", str(profile.get("class_name", "") or ""))
+        setattr(result, "exam_room", str(profile.get("exam_room", "") or ""))
+        if row_idx is not None and 0 <= row_idx < self.scan_list.rowCount():
+            self.scan_list.setItem(row_idx, 1, QTableWidgetItem(str(getattr(result, "full_name", "") or "-")))
+            self.scan_list.setItem(row_idx, 2, QTableWidgetItem(str(getattr(result, "birth_date", "") or "-")))
+
     @staticmethod
     def _normalized_student_id_for_match(student_id: str) -> str:
         sid = str(student_id or "").strip()
@@ -9194,6 +9205,7 @@ class MainWindow(QMainWindow):
             self.preview_source_pixmap = QPixmap()
             self.scan_image_preview.setPixmap(QPixmap())
             self.scan_image_preview.setText("Chọn bài thi ở danh sách bên trái")
+            self.scan_image_preview.clear_markers()
             if hasattr(self, "btn_zoom_reset"):
                 self.preview_zoom_factor = 1.0
                 self.btn_zoom_reset.setText("100%")
@@ -9564,6 +9576,7 @@ class MainWindow(QMainWindow):
         self.scan_result_preview.setRowCount(0)
         self.manual_edit.clear()
         self.scan_image_preview.setText("Chọn bài thi ở danh sách bên trái")
+        self.scan_image_preview.clear_markers()
         self.btn_save_batch_subject.setEnabled(False)
         self.scan_files = [Path(p) for p in file_paths]
         self.scan_blank_questions.clear()
@@ -9616,15 +9629,7 @@ class MainWindow(QMainWindow):
 
             rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
             sid = (result.student_id or "").strip()
-            profile = self._student_profile_by_id(sid)
-            if profile.get("name"):
-                setattr(result, "full_name", profile.get("name"))
-            if profile.get("birth_date"):
-                setattr(result, "birth_date", profile.get("birth_date"))
-            if profile.get("class_name"):
-                setattr(result, "class_name", profile.get("class_name"))
-            if profile.get("exam_room"):
-                setattr(result, "exam_room", profile.get("exam_room"))
+            self._refresh_student_profile_for_result(result)
             full_name = str(getattr(result, "full_name", "") or "-")
             birth_date = str(getattr(result, "birth_date", "") or "-")
             self._trim_result_answers_to_expected_scope(result)
@@ -9829,6 +9834,7 @@ class MainWindow(QMainWindow):
         self.scan_result_preview.setRowCount(0)
         self.manual_edit.clear()
         self.scan_image_preview.setText("Chọn bài thi ở danh sách bên trái")
+        self.scan_image_preview.clear_markers()
         self.btn_save_batch_subject.setEnabled(False)
         self.scan_files = [Path(p) for p in file_paths]
         self.scan_blank_questions.clear()
@@ -9856,15 +9862,7 @@ class MainWindow(QMainWindow):
             rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
             total_errors = len(rec_errors) + len(result.issues)
             sid = (result.student_id or "").strip()
-            profile = self._student_profile_by_id(sid)
-            if profile.get("name"):
-                setattr(result, "full_name", profile.get("name"))
-            if profile.get("birth_date"):
-                setattr(result, "birth_date", profile.get("birth_date"))
-            if profile.get("class_name"):
-                setattr(result, "class_name", profile.get("class_name"))
-            if profile.get("exam_room"):
-                setattr(result, "exam_room", profile.get("exam_room"))
+            self._refresh_student_profile_for_result(result)
             full_name = str(getattr(result, "full_name", "") or "-")
             birth_date = str(getattr(result, "birth_date", "") or "-")
             self._trim_result_answers_to_expected_scope(result)
@@ -12568,6 +12566,7 @@ class MainWindow(QMainWindow):
             return
 
         if changes:
+            self._refresh_student_profile_for_result(res, idx)
             self._trim_result_answers_to_expected_scope(res)
             self.scan_blank_summary[idx] = self._compute_blank_questions(res)
             self.scan_list.setItem(idx, 3, QTableWidgetItem(self._build_recognition_content_text(res, self.scan_blank_summary[idx])))
@@ -12641,6 +12640,7 @@ class MainWindow(QMainWindow):
         sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(res))
         self.scan_list.setItem(idx, 0, sid_item)
         if changes:
+            self._refresh_student_profile_for_result(res, idx)
             self._trim_result_answers_to_expected_scope(res)
             self.scan_blank_summary[idx] = self._compute_blank_questions(res)
             self.scan_list.setItem(idx, 3, QTableWidgetItem(self._build_recognition_content_text(res, self.scan_blank_summary[idx])))
