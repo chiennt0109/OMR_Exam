@@ -427,8 +427,39 @@ class SubjectConfigDialog(QDialog):
         try:
             imported_package = import_answer_key(path)
         except Exception as exc:
-            QMessageBox.warning(self, "Import đáp án", f"Không thể import đáp án:\n{exc}")
-            return
+            message = (
+                f"Không thể import đáp án:\n{exc}\n\n"
+                "Bạn có muốn tiếp tục import các câu hợp lệ không?\n"
+                "- Yes: Vẫn import và CHO ĐIỂM TỐI ĐA cho câu đáp án không đúng chuẩn.\n"
+                "- No: Vẫn import nhưng BỎ QUA câu đáp án không đúng chuẩn (không chấm câu đó).\n"
+                "- Cancel: Hủy import."
+            )
+            choose = QMessageBox.question(
+                self,
+                "Import đáp án",
+                message,
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                QMessageBox.Yes,
+            )
+            if choose == QMessageBox.Cancel:
+                return
+            try:
+                imported_package = import_answer_key(
+                    path,
+                    strict=False,
+                    award_full_credit_for_invalid=(choose == QMessageBox.Yes),
+                )
+            except Exception as inner_exc:
+                QMessageBox.warning(self, "Import đáp án", f"Không thể import đáp án:\n{inner_exc}")
+                return
+
+        if imported_package.warnings:
+            QMessageBox.information(
+                self,
+                "Import đáp án",
+                "Import hoàn tất với cảnh báo:\n- " + "\n- ".join(imported_package.warnings[:20])
+                + ("\n..." if len(imported_package.warnings) > 20 else ""),
+            )
 
         dlg = ImportAnswerKeyDialog(imported_package, self)
         if dlg.exec() != QDialog.Accepted:
@@ -445,6 +476,7 @@ class SubjectConfigDialog(QDialog):
                 "mcq_answers": key.mcq_answers,
                 "true_false_answers": key.true_false_answers,
                 "numeric_answers": key.numeric_answers,
+                "full_credit_questions": key.full_credit_questions,
             }
         self.answer_codes.setText(", ".join(sorted(self.answer_key_data.keys())))
         self.answer_key.setText(path)
@@ -2003,12 +2035,40 @@ class MainWindow(QMainWindow):
             return
         try:
             imported_package = import_answer_key(file_path)
-        except ImportError as exc:
-            QMessageBox.warning(self, "Import failed", str(exc))
-            return
         except Exception as exc:
-            QMessageBox.warning(self, "Import failed", f"Cannot import answer key:\n{exc}")
-            return
+            message = (
+                f"Cannot import answer key:\n{exc}\n\n"
+                "Continue importing only valid rows?\n"
+                "- Yes: Continue and AWARD FULL SCORE for invalid-answer questions.\n"
+                "- No: Continue but SKIP invalid-answer questions.\n"
+                "- Cancel: Stop import."
+            )
+            choose = QMessageBox.question(
+                self,
+                "Import failed",
+                message,
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                QMessageBox.Yes,
+            )
+            if choose == QMessageBox.Cancel:
+                return
+            try:
+                imported_package = import_answer_key(
+                    file_path,
+                    strict=False,
+                    award_full_credit_for_invalid=(choose == QMessageBox.Yes),
+                )
+            except Exception as inner_exc:
+                QMessageBox.warning(self, "Import failed", f"Cannot import answer key:\n{inner_exc}")
+                return
+
+        if imported_package.warnings:
+            QMessageBox.information(
+                self,
+                "Import warnings",
+                "Imported with warnings:\n- " + "\n- ".join(imported_package.warnings[:20])
+                + ("\n..." if len(imported_package.warnings) > 20 else ""),
+            )
 
         dlg = ImportAnswerKeyDialog(imported_package, self)
         if dlg.exec() != QDialog.Accepted:
@@ -2033,6 +2093,7 @@ class MainWindow(QMainWindow):
                     answers=edited.mcq_answers,
                     true_false_answers=edited.true_false_answers,
                     numeric_answers=edited.numeric_answers,
+                    full_credit_questions=edited.full_credit_questions,
                 )
             )
             imported_count += 1
@@ -9430,6 +9491,10 @@ class MainWindow(QMainWindow):
                         answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
                         true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
                         numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
+                        full_credit_questions={
+                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
+                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
+                        },
                     ))
                 self.answer_keys = repo
                 self.imported_exam_codes = sorted(str(k) for k in imported_answer_keys_map.keys())

@@ -18,11 +18,13 @@ class ImportedAnswerKey:
     mcq_answers: dict[int, str] = field(default_factory=dict)
     true_false_answers: dict[int, dict[str, bool]] = field(default_factory=dict)
     numeric_answers: dict[int, str] = field(default_factory=dict)
+    full_credit_questions: dict[str, list[int]] = field(default_factory=dict)
 
 
 @dataclass
 class ImportedAnswerKeyPackage:
     exam_keys: dict[str, ImportedAnswerKey] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
 
 
 def _read_file(file_path: str | Path) -> pd.DataFrame:
@@ -109,7 +111,12 @@ def _ensure_question(df_row_idx: int, value: Any) -> int:
         ) from exc
 
 
-def _parse_single_exam_table(df: pd.DataFrame) -> ImportedAnswerKeyPackage:
+def _parse_single_exam_table(
+    df: pd.DataFrame,
+    *,
+    strict: bool = True,
+    award_full_credit_for_invalid: bool = False,
+) -> ImportedAnswerKeyPackage:
     normalized = [str(c).strip().lower() for c in df.columns]
     if "question" not in normalized:
         raise ImportError("Missing 'Question' column.")
@@ -118,6 +125,7 @@ def _parse_single_exam_table(df: pd.DataFrame) -> ImportedAnswerKeyPackage:
     option_map = {c.upper(): i for i, c in enumerate(normalized) if c in {"a", "b", "c", "d", "e"}}
 
     result = ImportedAnswerKey()
+    warnings: list[str] = []
     for row_idx, row in df.iterrows():
         q_val = row.iloc[q_idx]
         if pd.isna(q_val) or str(q_val).strip() == "":
@@ -132,9 +140,14 @@ def _parse_single_exam_table(df: pd.DataFrame) -> ImportedAnswerKeyPackage:
             elif _is_numeric_token(raw):
                 result.numeric_answers[q] = raw
             else:
-                raise ImportError(
-                    f"Row {row_idx + 2}: invalid value '{raw}'. Expected A/B/C/D/E, T/F(4 chars), or numeric."
-                )
+                message = f"Row {row_idx + 2}: invalid value '{raw}'. Expected A/B/C/D/E, T/F(4 chars), or numeric."
+                if strict:
+                    raise ImportError(message)
+                warnings.append(message)
+                if award_full_credit_for_invalid:
+                    bucket = result.full_credit_questions.setdefault("MCQ", [])
+                    if q not in bucket:
+                        bucket.append(q)
             continue
 
         if not option_map:
@@ -154,15 +167,27 @@ def _parse_single_exam_table(df: pd.DataFrame) -> ImportedAnswerKeyPackage:
             elif token in TF_FALSE_VALUES:
                 tf_payload[choice.lower()] = False
             else:
-                raise ImportError(
-                    f"Row {row_idx + 2}, column '{choice}': invalid value '{vals[choice]}'. Expected T/F or Đ/S."
-                )
+                message = f"Row {row_idx + 2}, column '{choice}': invalid value '{vals[choice]}'. Expected T/F or Đ/S."
+                if strict:
+                    raise ImportError(message)
+                warnings.append(message)
+                tf_payload = {}
+                if award_full_credit_for_invalid:
+                    bucket = result.full_credit_questions.setdefault("TF", [])
+                    if q not in bucket:
+                        bucket.append(q)
+                break
         result.true_false_answers[q] = tf_payload
 
-    return ImportedAnswerKeyPackage(exam_keys={"DEFAULT": result})
+    return ImportedAnswerKeyPackage(exam_keys={"DEFAULT": result}, warnings=warnings)
 
 
-def _parse_exam_matrix(df: pd.DataFrame) -> ImportedAnswerKeyPackage:
+def _parse_exam_matrix(
+    df: pd.DataFrame,
+    *,
+    strict: bool = True,
+    award_full_credit_for_invalid: bool = False,
+) -> ImportedAnswerKeyPackage:
     cols = list(df.columns)
     if len(cols) < 2:
         raise ImportError("Answer key matrix must include question column and exam code columns.")
@@ -187,36 +212,51 @@ def _parse_exam_matrix(df: pd.DataFrame) -> ImportedAnswerKeyPackage:
         if not non_empty:
             continue
 
-        if all(v.upper() in MCQ_CHOICES for v in non_empty):
-            for exam_code, v in values.items():
-                if v:
-                    package.exam_keys[exam_code].mcq_answers[q] = v.upper()
-            continue
+        row_types: list[str] = []
+        for v in non_empty:
+            up = v.upper()
+            if up in MCQ_CHOICES:
+                row_types.append("MCQ")
+            elif _is_numeric_token(v):
+                row_types.append("NUMERIC")
+            elif _is_tf_token(v):
+                row_types.append("TF")
+        inferred_type = row_types[0] if row_types else "MCQ"
 
-        # Important: evaluate numeric before TF.
-        # Values such as "4,44" (or 22.0 from spreadsheet conversion) can have length 4
-        # and would otherwise be misclassified as TF.
-        if all(_is_numeric_token(v) for v in non_empty):
-            for exam_code, v in values.items():
-                if v:
-                    package.exam_keys[exam_code].numeric_answers[q] = v
-            continue
+        for exam_code, v in values.items():
+            if not v:
+                continue
+            up = v.upper()
+            target = package.exam_keys[exam_code]
+            if up in MCQ_CHOICES:
+                target.mcq_answers[q] = up
+                continue
+            if _is_numeric_token(v):
+                target.numeric_answers[q] = v
+                continue
+            if _is_tf_token(v):
+                target.true_false_answers[q] = _parse_tf_token(row_idx, exam_code, v)
+                continue
 
-        if all(_is_tf_token(v) for v in non_empty):
-            for exam_code, v in values.items():
-                if v:
-                    package.exam_keys[exam_code].true_false_answers[q] = _parse_tf_token(row_idx, exam_code, v)
-            continue
-
-        first_invalid = next((v for v in non_empty if not (v.upper() in MCQ_CHOICES or _is_tf_token(v) or _is_numeric_token(v))), non_empty[0])
-        raise ImportError(
-            f"Row {row_idx + 2}: invalid value '{first_invalid}'. Expected MCQ(A-E), TF(4 chars T/F or Đ/S), or numeric."
-        )
+            message = f"Row {row_idx + 2}, exam '{exam_code}': invalid value '{v}'. Expected MCQ(A-E), TF(4 chars T/F or Đ/S), or numeric."
+            if strict:
+                raise ImportError(message)
+            package.warnings.append(message)
+            if award_full_credit_for_invalid:
+                bucket = target.full_credit_questions.setdefault(inferred_type, [])
+                if q not in bucket:
+                    bucket.append(q)
 
     return package
 
 
-def import_answer_key(file_path: str | Path, exam_id: int = 1) -> ImportedAnswerKeyPackage:
+def import_answer_key(
+    file_path: str | Path,
+    exam_id: int = 1,
+    *,
+    strict: bool = True,
+    award_full_credit_for_invalid: bool = False,
+) -> ImportedAnswerKeyPackage:
     multi = _read_excel_multilevel(file_path)
     if multi is not None:
         first_col = multi.columns[0]
@@ -226,16 +266,16 @@ def import_answer_key(file_path: str | Path, exam_id: int = 1) -> ImportedAnswer
             if not exam_code or exam_code.lower().startswith("unnamed"):
                 continue
             data[exam_code] = multi[col]
-        package = _parse_exam_matrix(data)
+        package = _parse_exam_matrix(data, strict=strict, award_full_credit_for_invalid=award_full_credit_for_invalid)
     else:
         df = _read_file(file_path)
         if df.empty:
             raise ImportError("Input file is empty.")
         normalized = [str(c).strip().lower() for c in df.columns]
         if len(df.columns) >= 3 and "question" in normalized and "answer" not in normalized:
-            package = _parse_exam_matrix(df)
+            package = _parse_exam_matrix(df, strict=strict, award_full_credit_for_invalid=award_full_credit_for_invalid)
         else:
-            package = _parse_single_exam_table(df)
+            package = _parse_single_exam_table(df, strict=strict, award_full_credit_for_invalid=award_full_credit_for_invalid)
 
     for key in package.exam_keys.values():
         key.exam_id = exam_id
