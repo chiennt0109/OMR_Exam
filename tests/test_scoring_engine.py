@@ -169,6 +169,35 @@ class ScoringEngineTests(unittest.TestCase):
         )
         self.assertEqual(aligned, {1: "A", 2: "B"})
 
+    def test_full_credit_questions_award_points_even_with_wrong_or_blank_answers(self):
+        key = SubjectKey(
+            subject="Hoa_hoc_11",
+            exam_code="0999",
+            answers={1: "A"},
+            true_false_answers={2: "ĐĐĐS"},
+            numeric_answers={3: "12,5"},
+            full_credit_questions={"MCQ": [1], "TF": [2], "NUMERIC": [3]},
+        )
+        omr = OMRResult(
+            image_path="x.png",
+            mcq_answers={1: "D"},
+            true_false_answers={2: "SSSS"},
+            numeric_answers={},
+        )
+        cfg = {
+            "score_mode": "Điểm theo câu",
+            "question_scores": {
+                "MCQ": {"per_question": 1.0},
+                "NUMERIC": {"per_question": 1.0},
+                "TF": {"1": 0.1, "2": 0.25, "3": 0.5, "4": 1.0},
+            },
+        }
+        row = self.engine.score(omr, key, subject_config=cfg)
+        self.assertEqual(row.correct, 3)
+        self.assertEqual(row.wrong, 0)
+        self.assertEqual(row.blank, 0)
+        self.assertAlmostEqual(row.score, 3.0, places=4)
+
 
 if __name__ == "__main__":
     unittest.main()

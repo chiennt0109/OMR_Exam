@@ -192,6 +192,12 @@ class ImportAnswerKeyDialog(QDialog):
         try:
             for exam_code, table in self.exam_tables.items():
                 key = package.exam_keys.setdefault(exam_code, ImportedAnswerKey(exam_id=exam_id))
+                src = self.imported.exam_keys.get(exam_code)
+                if src is not None:
+                    key.full_credit_questions = {
+                        str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
+                        for sec, vals in (src.full_credit_questions or {}).items()
+                    }
                 for row_idx in range(table.rowCount()):
                     q_item = table.item(row_idx, 0)
                     a_item = table.item(row_idx, 2)

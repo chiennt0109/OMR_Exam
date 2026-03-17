@@ -426,8 +426,39 @@ class SubjectConfigDialog(QDialog):
         try:
             imported_package = import_answer_key(path)
         except Exception as exc:
-            QMessageBox.warning(self, "Import đáp án", f"Không thể import đáp án:\n{exc}")
-            return
+            message = (
+                f"Không thể import đáp án:\n{exc}\n\n"
+                "Bạn có muốn tiếp tục import các câu hợp lệ không?\n"
+                "- Yes: Vẫn import và CHO ĐIỂM TỐI ĐA cho câu đáp án không đúng chuẩn.\n"
+                "- No: Vẫn import nhưng BỎ QUA câu đáp án không đúng chuẩn (không chấm câu đó).\n"
+                "- Cancel: Hủy import."
+            )
+            choose = QMessageBox.question(
+                self,
+                "Import đáp án",
+                message,
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                QMessageBox.Yes,
+            )
+            if choose == QMessageBox.Cancel:
+                return
+            try:
+                imported_package = import_answer_key(
+                    path,
+                    strict=False,
+                    award_full_credit_for_invalid=(choose == QMessageBox.Yes),
+                )
+            except Exception as inner_exc:
+                QMessageBox.warning(self, "Import đáp án", f"Không thể import đáp án:\n{inner_exc}")
+                return
+
+        if imported_package.warnings:
+            QMessageBox.information(
+                self,
+                "Import đáp án",
+                "Import hoàn tất với cảnh báo:\n- " + "\n- ".join(imported_package.warnings[:20])
+                + ("\n..." if len(imported_package.warnings) > 20 else ""),
+            )
 
         dlg = ImportAnswerKeyDialog(imported_package, self)
         if dlg.exec() != QDialog.Accepted:
@@ -444,6 +475,7 @@ class SubjectConfigDialog(QDialog):
                 "mcq_answers": key.mcq_answers,
                 "true_false_answers": key.true_false_answers,
                 "numeric_answers": key.numeric_answers,
+                "full_credit_questions": key.full_credit_questions,
             }
         self.answer_codes.setText(", ".join(sorted(self.answer_key_data.keys())))
         self.answer_key.setText(path)
@@ -2002,12 +2034,40 @@ class MainWindow(QMainWindow):
             return
         try:
             imported_package = import_answer_key(file_path)
-        except ImportError as exc:
-            QMessageBox.warning(self, "Import failed", str(exc))
-            return
         except Exception as exc:
-            QMessageBox.warning(self, "Import failed", f"Cannot import answer key:\n{exc}")
-            return
+            message = (
+                f"Cannot import answer key:\n{exc}\n\n"
+                "Continue importing only valid rows?\n"
+                "- Yes: Continue and AWARD FULL SCORE for invalid-answer questions.\n"
+                "- No: Continue but SKIP invalid-answer questions.\n"
+                "- Cancel: Stop import."
+            )
+            choose = QMessageBox.question(
+                self,
+                "Import failed",
+                message,
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                QMessageBox.Yes,
+            )
+            if choose == QMessageBox.Cancel:
+                return
+            try:
+                imported_package = import_answer_key(
+                    file_path,
+                    strict=False,
+                    award_full_credit_for_invalid=(choose == QMessageBox.Yes),
+                )
+            except Exception as inner_exc:
+                QMessageBox.warning(self, "Import failed", f"Cannot import answer key:\n{inner_exc}")
+                return
+
+        if imported_package.warnings:
+            QMessageBox.information(
+                self,
+                "Import warnings",
+                "Imported with warnings:\n- " + "\n- ".join(imported_package.warnings[:20])
+                + ("\n..." if len(imported_package.warnings) > 20 else ""),
+            )
 
         dlg = ImportAnswerKeyDialog(imported_package, self)
         if dlg.exec() != QDialog.Accepted:
@@ -2032,6 +2092,7 @@ class MainWindow(QMainWindow):
                     answers=edited.mcq_answers,
                     true_false_answers=edited.true_false_answers,
                     numeric_answers=edited.numeric_answers,
+                    full_credit_questions=edited.full_credit_questions,
                 )
             )
             imported_count += 1
@@ -9403,6 +9464,10 @@ class MainWindow(QMainWindow):
                         answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
                         true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
                         numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
+                        full_credit_questions={
+                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
+                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
+                        },
                     ))
                 self.answer_keys = repo
                 self.imported_exam_codes = sorted(str(k) for k in imported_answer_keys_map.keys())
@@ -12279,24 +12344,112 @@ class MainWindow(QMainWindow):
 
         inp_sid = QLineEdit(res.student_id)
         inp_code = QLineEdit(res.exam_code)
-        txt = QTextEdit()
-        txt.setPlainText(
-            json.dumps(
-                {
-                    "mcq_answers": res.mcq_answers,
-                    "true_false_answers": res.true_false_answers,
-                    "numeric_answers": res.numeric_answers,
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
+        def _build_pair_table(data: dict[int, str], value_placeholder: str = "") -> QTableWidget:
+            table = QTableWidget(0, 2)
+            table.setHorizontalHeaderLabels(["Câu", "Giá trị"])
+            table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+            table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+            for q, v in sorted((data or {}).items(), key=lambda x: int(x[0])):
+                r = table.rowCount()
+                table.insertRow(r)
+                table.setItem(r, 0, QTableWidgetItem(str(int(q))))
+                item_v = QTableWidgetItem(str(v))
+                if value_placeholder:
+                    item_v.setToolTip(value_placeholder)
+                table.setItem(r, 1, item_v)
+            return table
+
+        def _build_tf_table(data: dict[int, dict[str, bool]]) -> QTableWidget:
+            table = QTableWidget(0, 5)
+            labels = ["a", "b", "c", "d"]
+            table.setHorizontalHeaderLabels(["Câu", *[s.upper() for s in labels]])
+            table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+            for c in range(1, 5):
+                table.horizontalHeader().setSectionResizeMode(c, QHeaderView.ResizeToContents)
+            for q, flags in sorted((data or {}).items(), key=lambda x: int(x[0])):
+                r = table.rowCount()
+                table.insertRow(r)
+                table.setItem(r, 0, QTableWidgetItem(str(int(q))))
+                flags = dict(flags or {})
+                for i, key in enumerate(labels, start=1):
+                    cb = QComboBox()
+                    cb.addItem("-", None)
+                    cb.addItem("Đúng", True)
+                    cb.addItem("Sai", False)
+                    val = flags.get(key, None)
+                    idx_found = 0
+                    for k in range(cb.count()):
+                        if cb.itemData(k) is val:
+                            idx_found = k
+                            break
+                    cb.setCurrentIndex(idx_found)
+                    table.setCellWidget(r, i, cb)
+            return table
+
+        table_mcq = _build_pair_table(res.mcq_answers, "Ví dụ: A/B/C/D")
+        table_num = _build_pair_table(res.numeric_answers, "Ví dụ: -12.5")
+        table_tf = _build_tf_table(res.true_false_answers)
+
+        def _add_pair_row(table: QTableWidget) -> None:
+            r = table.rowCount()
+            table.insertRow(r)
+            table.setItem(r, 0, QTableWidgetItem(""))
+            table.setItem(r, 1, QTableWidgetItem(""))
+
+        def _add_tf_row() -> None:
+            r = table_tf.rowCount()
+            table_tf.insertRow(r)
+            table_tf.setItem(r, 0, QTableWidgetItem(""))
+            for i in range(1, 5):
+                cb = QComboBox()
+                cb.addItem("-", None)
+                cb.addItem("Đúng", True)
+                cb.addItem("Sai", False)
+                table_tf.setCellWidget(r, i, cb)
+
+        def _remove_selected_row(table: QTableWidget) -> None:
+            row = table.currentRow()
+            if row >= 0:
+                table.removeRow(row)
 
         form.addRow("Student ID", inp_sid)
         form.addRow("Exam Code", inp_code)
         lay.addLayout(form)
-        lay.addWidget(QLabel("Sửa nhận dạng (JSON)"))
-        lay.addWidget(txt)
+        lay.addWidget(QLabel("MCQ"))
+        lay.addWidget(table_mcq)
+        row_mcq = QHBoxLayout()
+        btn_add_mcq = QPushButton("Thêm dòng MCQ")
+        btn_del_mcq = QPushButton("Xoá dòng chọn")
+        btn_add_mcq.clicked.connect(lambda: _add_pair_row(table_mcq))
+        btn_del_mcq.clicked.connect(lambda: _remove_selected_row(table_mcq))
+        row_mcq.addWidget(btn_add_mcq)
+        row_mcq.addWidget(btn_del_mcq)
+        row_mcq.addStretch()
+        lay.addLayout(row_mcq)
+
+        lay.addWidget(QLabel("True / False"))
+        lay.addWidget(table_tf)
+        row_tf = QHBoxLayout()
+        btn_add_tf = QPushButton("Thêm dòng TF")
+        btn_del_tf = QPushButton("Xoá dòng chọn")
+        btn_add_tf.clicked.connect(_add_tf_row)
+        btn_del_tf.clicked.connect(lambda: _remove_selected_row(table_tf))
+        row_tf.addWidget(btn_add_tf)
+        row_tf.addWidget(btn_del_tf)
+        row_tf.addStretch()
+        lay.addLayout(row_tf)
+
+        lay.addWidget(QLabel("Numeric"))
+        lay.addWidget(table_num)
+        row_num = QHBoxLayout()
+        btn_add_num = QPushButton("Thêm dòng Numeric")
+        btn_del_num = QPushButton("Xoá dòng chọn")
+        btn_add_num.clicked.connect(lambda: _add_pair_row(table_num))
+        btn_del_num.clicked.connect(lambda: _remove_selected_row(table_num))
+        row_num.addWidget(btn_add_num)
+        row_num.addWidget(btn_del_num)
+        row_num.addStretch()
+        lay.addLayout(row_num)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
@@ -12323,24 +12476,66 @@ class MainWindow(QMainWindow):
             changes.append(f"exam_code: '{old_code}' -> '{new_code}'")
 
         try:
-            payload = json.loads(txt.toPlainText().strip() or "{}")
-            if isinstance(payload.get("mcq_answers"), dict):
-                new_mcq_answers = {int(k): str(v) for k, v in payload["mcq_answers"].items()}
-                if new_mcq_answers != (res.mcq_answers or {}):
-                    res.mcq_answers = new_mcq_answers
-                    changes.append("mcq_answers updated")
-            if isinstance(payload.get("true_false_answers"), dict):
-                new_tf_answers = payload["true_false_answers"]
-                if new_tf_answers != (res.true_false_answers or {}):
-                    res.true_false_answers = new_tf_answers
-                    changes.append("true_false_answers updated")
-            if isinstance(payload.get("numeric_answers"), dict):
-                new_numeric_answers = {int(k): str(v) for k, v in payload["numeric_answers"].items()}
-                if new_numeric_answers != (res.numeric_answers or {}):
-                    res.numeric_answers = new_numeric_answers
-                    changes.append("numeric_answers updated")
+            new_mcq_answers: dict[int, str] = {}
+            for r in range(table_mcq.rowCount()):
+                q_item = table_mcq.item(r, 0)
+                v_item = table_mcq.item(r, 1)
+                q_text = str(q_item.text() if q_item else "").strip()
+                v_text = str(v_item.text() if v_item else "").strip()
+                if not q_text and not v_text:
+                    continue
+                if not q_text.lstrip("-").isdigit():
+                    raise ValueError(f"MCQ dòng {r+1}: Câu phải là số nguyên.")
+                if not v_text:
+                    continue
+                new_mcq_answers[int(q_text)] = v_text.upper()
+
+            new_numeric_answers: dict[int, str] = {}
+            for r in range(table_num.rowCount()):
+                q_item = table_num.item(r, 0)
+                v_item = table_num.item(r, 1)
+                q_text = str(q_item.text() if q_item else "").strip()
+                v_text = str(v_item.text() if v_item else "").strip()
+                if not q_text and not v_text:
+                    continue
+                if not q_text.lstrip("-").isdigit():
+                    raise ValueError(f"Numeric dòng {r+1}: Câu phải là số nguyên.")
+                if not v_text:
+                    continue
+                new_numeric_answers[int(q_text)] = v_text
+
+            new_tf_answers: dict[int, dict[str, bool]] = {}
+            labels = ["a", "b", "c", "d"]
+            for r in range(table_tf.rowCount()):
+                q_item = table_tf.item(r, 0)
+                q_text = str(q_item.text() if q_item else "").strip()
+                if not q_text:
+                    continue
+                if not q_text.lstrip("-").isdigit():
+                    raise ValueError(f"TF dòng {r+1}: Câu phải là số nguyên.")
+                q = int(q_text)
+                flags: dict[str, bool] = {}
+                for i, key in enumerate(labels, start=1):
+                    cb = table_tf.cellWidget(r, i)
+                    if not isinstance(cb, QComboBox):
+                        continue
+                    val = cb.currentData()
+                    if isinstance(val, bool):
+                        flags[key] = val
+                if flags:
+                    new_tf_answers[q] = flags
+
+            if new_mcq_answers != (res.mcq_answers or {}):
+                res.mcq_answers = new_mcq_answers
+                changes.append("mcq_answers updated")
+            if new_tf_answers != (res.true_false_answers or {}):
+                res.true_false_answers = new_tf_answers
+                changes.append("true_false_answers updated")
+            if new_numeric_answers != (res.numeric_answers or {}):
+                res.numeric_answers = new_numeric_answers
+                changes.append("numeric_answers updated")
         except Exception as exc:
-            QMessageBox.warning(self, "Invalid JSON", f"Dữ liệu nhận dạng không hợp lệ:\n{exc}")
+            QMessageBox.warning(self, "Dữ liệu không hợp lệ", str(exc))
             return
 
         if changes:

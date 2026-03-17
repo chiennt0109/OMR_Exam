@@ -79,6 +79,21 @@ class AnswerKeyImporterTests(unittest.TestCase):
                 import_answer_key(path)
             self.assertIn("Row 2", str(cm.exception))
 
+    def test_import_invalid_value_can_continue_and_mark_full_credit(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "bad_continue.csv"
+            pd.DataFrame(
+                {
+                    "Question": [1],
+                    "0101": ["EDEE"],
+                    "0102": ["A"],
+                }
+            ).to_csv(path, index=False)
+            package = import_answer_key(path, strict=False, award_full_credit_for_invalid=True)
+            self.assertTrue(package.warnings)
+            self.assertEqual(package.exam_keys["0102"].mcq_answers, {1: "A"})
+            self.assertEqual(package.exam_keys["0101"].full_credit_questions.get("MCQ"), [1])
+
     def test_import_numeric_values_with_four_characters_not_misread_as_tf(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "numeric_len4.csv"
