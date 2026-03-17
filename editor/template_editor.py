@@ -432,6 +432,16 @@ class TemplateEditorWindow(QMainWindow):
         self.align_profile_combo.currentIndexChanged.connect(self._on_alignment_profile_changed)
         toolbar.addWidget(self.align_profile_combo)
 
+        toolbar.addWidget(QLabel(" Fill threshold: "))
+        self.fill_threshold_spin = QDoubleSpinBox()
+        self.fill_threshold_spin.setDecimals(2)
+        self.fill_threshold_spin.setRange(0.05, 0.95)
+        self.fill_threshold_spin.setSingleStep(0.01)
+        self.fill_threshold_spin.setValue(0.45)
+        self.fill_threshold_spin.setToolTip("Tăng để giảm nhận nhầm vết mờ/vết tẩy; giảm nếu bỏ sót nét tô nhẹ.")
+        self.fill_threshold_spin.valueChanged.connect(self._on_fill_threshold_changed)
+        toolbar.addWidget(self.fill_threshold_spin)
+
         toolbar.addAction(self.act_zoom_in)
         toolbar.addAction(self.act_zoom_out)
 
@@ -654,10 +664,12 @@ class TemplateEditorWindow(QMainWindow):
             return
         self.template = Template(Path(path).stem, path, pix.width(), pix.height())
         self.template.metadata["alignment_profile"] = "auto"
+        self.template.metadata["fill_threshold"] = float(self.fill_threshold_spin.value())
         self.canvas.set_template(self.template, pix)
         self._original_pixmap = pix
         self.template_file_path = None
         self.preview_ok = False; self.test_ok = False
+        self._sync_recognition_settings_from_template()
 
     def open_template(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open Template", "", "JSON (*.json)")
@@ -694,7 +706,7 @@ class TemplateEditorWindow(QMainWindow):
         tpl.width = pix.width()
         tpl.height = pix.height()
         self.template = tpl
-        self._sync_alignment_profile_from_template()
+        self._sync_recognition_settings_from_template()
         self.canvas.set_template(self.template, pix)
         self._original_pixmap = pix
         self.template_file_path = path
@@ -831,6 +843,7 @@ class TemplateEditorWindow(QMainWindow):
         if not path:
             return
 
+        self._apply_recognition_settings_to_engine()
         res = self.omr.run_recognition_test(path, self.template)
         aligned = getattr(res, "aligned_image", None)
         aligned_binary = getattr(res, "aligned_binary", None)
@@ -895,6 +908,7 @@ class TemplateEditorWindow(QMainWindow):
         if path:
             if self.template is not None:
                 self.template.metadata["alignment_profile"] = str(self.align_profile_combo.currentData() or "auto")
+                self.template.metadata["fill_threshold"] = float(self.fill_threshold_spin.value())
             self.template.save_json(path)
             self.template_file_path = path
 
@@ -902,6 +916,32 @@ class TemplateEditorWindow(QMainWindow):
         if self.template is None:
             return
         self.template.metadata["alignment_profile"] = str(self.align_profile_combo.currentData() or "auto")
+
+    def _on_fill_threshold_changed(self, value: float) -> None:
+        if self.template is None:
+            return
+        self.template.metadata["fill_threshold"] = float(max(0.05, min(0.95, float(value))))
+
+    def _apply_recognition_settings_to_engine(self) -> None:
+        self.omr.alignment_profile = str(self.align_profile_combo.currentData() or "auto")
+        self.omr.fill_threshold = float(max(0.05, min(0.95, float(self.fill_threshold_spin.value()))))
+
+    def _sync_recognition_settings_from_template(self) -> None:
+        self._sync_alignment_profile_from_template()
+        if not hasattr(self, "fill_threshold_spin"):
+            return
+        value = 0.45
+        if self.template is not None:
+            try:
+                value = float((self.template.metadata or {}).get("fill_threshold", 0.45) or 0.45)
+            except Exception:
+                value = 0.45
+        value = max(0.05, min(0.95, value))
+        self.fill_threshold_spin.blockSignals(True)
+        self.fill_threshold_spin.setValue(value)
+        self.fill_threshold_spin.blockSignals(False)
+        if self.template is not None:
+            self.template.metadata["fill_threshold"] = value
 
     def _sync_alignment_profile_from_template(self) -> None:
         if self.template is None or not hasattr(self, "align_profile_combo"):
