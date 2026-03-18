@@ -91,7 +91,7 @@ class ScoringEngine:
         text = str(value or "").strip()
         if not text:
             return ""
-        text = text.replace(" ", "").replace(",", ".")
+        text = text.replace(" ", "")
         if text.startswith("+"):
             text = text[1:]
         return text
@@ -183,6 +183,9 @@ class ScoringEngine:
             return ""
         chars: list[str] = []
         for ch in raw:
+            if ch == "E":
+                chars.append("E")
+                continue
             parsed = self._to_bool_mark(ch)
             if parsed is None:
                 continue
@@ -320,11 +323,19 @@ class ScoringEngine:
                 continue
             tf_compare_items.append(self._build_tf_compare_text(key_tf, marked_tf, q_no))
             if not marked_tf:
-                blank += 1
-            elif key_tf == marked_tf and len(key_tf) == len(marked_tf):
-                correct += 1
-                tf_correct += 1
-                score += float(profile["tf_points"].get(len(key_tf), 1.0))
+                wrong += 1
+                continue
+            matched = 0
+            for key_ch, marked_ch in zip(key_tf, marked_tf):
+                if key_ch == marked_ch or (key_ch == "E" and marked_ch in {"Đ", "S"}):
+                    matched += 1
+            if matched > 0:
+                tf_correct += matched
+                score += float(profile["tf_points"].get(matched, 0.0))
+                if matched == len(key_tf) and len(marked_tf) == len(key_tf):
+                    correct += 1
+                else:
+                    wrong += 1
             else:
                 wrong += 1
 
