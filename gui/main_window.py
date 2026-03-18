@@ -477,6 +477,7 @@ class SubjectConfigDialog(QDialog):
                 "true_false_answers": key.true_false_answers,
                 "numeric_answers": key.numeric_answers,
                 "full_credit_questions": key.full_credit_questions,
+                "invalid_answer_rows": key.invalid_answer_rows,
             }
         self.answer_codes.setText(", ".join(sorted(self.answer_key_data.keys())))
         self.answer_key.setText(path)
@@ -2141,6 +2142,7 @@ class MainWindow(QMainWindow):
                     true_false_answers=edited.true_false_answers,
                     numeric_answers=edited.numeric_answers,
                     full_credit_questions=edited.full_credit_questions,
+                    invalid_answer_rows=edited.invalid_answer_rows,
                 )
             )
             imported_count += 1
@@ -9537,6 +9539,10 @@ class MainWindow(QMainWindow):
                         full_credit_questions={
                             str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
                             for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
+                        },
+                        invalid_answer_rows={
+                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
                         },
                     ))
                 self.answer_keys = repo

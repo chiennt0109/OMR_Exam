@@ -19,6 +19,7 @@ class ImportedAnswerKey:
     true_false_answers: dict[int, dict[str, bool]] = field(default_factory=dict)
     numeric_answers: dict[int, str] = field(default_factory=dict)
     full_credit_questions: dict[str, list[int]] = field(default_factory=dict)
+    invalid_answer_rows: dict[str, dict[int, str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -148,6 +149,7 @@ def _parse_single_exam_table(
                     bucket = result.full_credit_questions.setdefault("MCQ", [])
                     if q not in bucket:
                         bucket.append(q)
+                    result.invalid_answer_rows.setdefault("MCQ", {})[q] = raw
             continue
 
         if not option_map:
@@ -176,6 +178,7 @@ def _parse_single_exam_table(
                     bucket = result.full_credit_questions.setdefault("TF", [])
                     if q not in bucket:
                         bucket.append(q)
+                    result.invalid_answer_rows.setdefault("TF", {})[q] = vals[choice]
                 break
         result.true_false_answers[q] = tf_payload
 
@@ -246,6 +249,7 @@ def _parse_exam_matrix(
                 bucket = target.full_credit_questions.setdefault(inferred_type, [])
                 if q not in bucket:
                     bucket.append(q)
+                target.invalid_answer_rows.setdefault(inferred_type, {})[q] = v
 
     return package
 
