@@ -2358,18 +2358,18 @@ class MainWindow(QMainWindow):
         # on some PySide6 builds (preventing "Internal C++ object ... already deleted").
         self.scoring_panel = QWidget(w)
 
-        self.score_preview_table = QTableWidget(0, 14, self.scoring_panel)
+        self.score_preview_table = QTableWidget(0, 16, self.scoring_panel)
         self.score_preview_table.setHorizontalHeaderLabels([
-            "Student ID", "Name", "Subject", "Exam Code", "MCQ đúng", "TF đúng", "NUM đúng", "Correct", "Wrong", "Blank", "Score", "MCQ đáp án|bài làm", "TF đáp án|bài làm", "NUM đáp án|bài làm"
+            "Student ID", "Name", "Subject", "Exam Code", "MCQ đúng", "TF đúng", "NUM đúng", "Correct", "Wrong", "Blank", "Số câu FULL", "Điểm FULL", "Score", "MCQ đáp án|bài làm", "TF đáp án|bài làm", "NUM đáp án|bài làm"
         ])
         self.score_preview_table.verticalHeader().setVisible(False)
         self.score_preview_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.score_preview_table.horizontalHeader().setSectionResizeMode(11, QHeaderView.Stretch)
-        self.score_preview_table.horizontalHeader().setSectionResizeMode(12, QHeaderView.Stretch)
         self.score_preview_table.horizontalHeader().setSectionResizeMode(13, QHeaderView.Stretch)
-        self.score_preview_table.setColumnWidth(11, 280)
-        self.score_preview_table.setColumnWidth(12, 280)
-        self.score_preview_table.setColumnWidth(13, 320)
+        self.score_preview_table.horizontalHeader().setSectionResizeMode(14, QHeaderView.Stretch)
+        self.score_preview_table.horizontalHeader().setSectionResizeMode(15, QHeaderView.Stretch)
+        self.score_preview_table.setColumnWidth(13, 280)
+        self.score_preview_table.setColumnWidth(14, 280)
+        self.score_preview_table.setColumnWidth(15, 320)
 
         self.scoring_subject_combo = QComboBox()
         self.scoring_mode_combo = QComboBox()
@@ -12856,10 +12856,12 @@ class MainWindow(QMainWindow):
             self.score_preview_table.setItem(i, 7, QTableWidgetItem(str(r.correct)))
             self.score_preview_table.setItem(i, 8, QTableWidgetItem(str(r.wrong)))
             self.score_preview_table.setItem(i, 9, QTableWidgetItem(str(r.blank)))
-            self.score_preview_table.setItem(i, 10, QTableWidgetItem(str(r.score)))
-            self.score_preview_table.setItem(i, 11, QTableWidgetItem(str(getattr(r, "mcq_compare", ""))))
-            self.score_preview_table.setItem(i, 12, QTableWidgetItem(str(getattr(r, "tf_compare", ""))))
-            self.score_preview_table.setItem(i, 13, QTableWidgetItem(str(getattr(r, "numeric_compare", ""))))
+            self.score_preview_table.setItem(i, 10, QTableWidgetItem(str(getattr(r, "bonus_full_credit_count", 0))))
+            self.score_preview_table.setItem(i, 11, QTableWidgetItem(str(getattr(r, "bonus_full_credit_points", 0.0))))
+            self.score_preview_table.setItem(i, 12, QTableWidgetItem(str(r.score)))
+            self.score_preview_table.setItem(i, 13, QTableWidgetItem(str(getattr(r, "mcq_compare", ""))))
+            self.score_preview_table.setItem(i, 14, QTableWidgetItem(str(getattr(r, "tf_compare", ""))))
+            self.score_preview_table.setItem(i, 15, QTableWidgetItem(str(getattr(r, "numeric_compare", ""))))
 
         phase = {
             "timestamp": datetime.now().isoformat(timespec="seconds"),

@@ -24,6 +24,8 @@ class ScoreResult:
     mcq_correct: int = 0
     tf_correct: int = 0
     numeric_correct: int = 0
+    bonus_full_credit_count: int = 0
+    bonus_full_credit_points: float = 0.0
     mcq_compare: str = ""
     tf_compare: str = ""
     numeric_compare: str = ""
@@ -102,6 +104,11 @@ class ScoringEngine:
         if not key_num and not marked_num:
             return ""
         return f"Q{q_no}:{key_num or '-'}|{marked_num or '-'}"
+
+    @staticmethod
+    def _full_credit_compare_label(raw_text: str, points: float) -> str:
+        base = str(raw_text or "").strip() or "[FULL]"
+        return f"{base}[FULL+{points:g}]"
 
     @staticmethod
     def _invalid_key_text(subject_key: SubjectKey, section: str, q_no: int) -> str:
@@ -240,6 +247,8 @@ class ScoringEngine:
         correct = wrong = blank = 0
         score = 0.0
         mcq_correct = tf_correct = numeric_correct = 0
+        bonus_full_credit_count = 0
+        bonus_full_credit_points = 0.0
         mcq_compare_items: list[str] = []
         tf_compare_items: list[str] = []
         numeric_compare_items: list[str] = []
@@ -257,10 +266,13 @@ class ScoringEngine:
             if q_no in mcq_full_credit:
                 marked = aligned_mcq_marked.get(q_no)
                 marked_mcq = str(marked or "").strip().upper()
-                mcq_compare_items.append(self._build_mcq_compare_text(self._invalid_key_text(subject_key, "MCQ", q_no), marked_mcq, q_no))
+                awarded = float(profile["mcq_per"])
+                mcq_compare_items.append(self._build_mcq_compare_text(self._full_credit_compare_label(self._invalid_key_text(subject_key, "MCQ", q_no), awarded), marked_mcq, q_no))
                 correct += 1
                 mcq_correct += 1
-                score += profile["mcq_per"]
+                bonus_full_credit_count += 1
+                bonus_full_credit_points += awarded
+                score += awarded
                 continue
             if not self._is_countable_mcq_key(key_answer):
                 continue
@@ -284,10 +296,13 @@ class ScoringEngine:
             if q_no in tf_full_credit:
                 marked = aligned_tf_marked.get(q_no)
                 marked_tf = self._tf_to_canonical_string(marked)
-                tf_compare_items.append(self._build_tf_compare_text(self._invalid_key_text(subject_key, "TF", q_no), marked_tf, q_no))
+                awarded = float(profile["tf_points"].get(4, max(profile["tf_points"].values() or [0.0])))
+                tf_compare_items.append(self._build_tf_compare_text(self._full_credit_compare_label(self._invalid_key_text(subject_key, "TF", q_no), awarded), marked_tf, q_no))
                 correct += 1
                 tf_correct += 1
-                score += profile["tf_points"].get(4, max(profile["tf_points"].values() or [0.0]))
+                bonus_full_credit_count += 1
+                bonus_full_credit_points += awarded
+                score += awarded
                 continue
             if not self._is_countable_tf_key(key_answer):
                 continue
@@ -316,10 +331,13 @@ class ScoringEngine:
             if q_no in numeric_full_credit:
                 marked = aligned_numeric_marked.get(q_no)
                 norm_marked = self._normalize_numeric_text(marked)
-                numeric_compare_items.append(self._build_numeric_compare_text(self._invalid_key_text(subject_key, "NUMERIC", q_no), norm_marked, q_no))
+                awarded = float(profile["num_per"])
+                numeric_compare_items.append(self._build_numeric_compare_text(self._full_credit_compare_label(self._invalid_key_text(subject_key, "NUMERIC", q_no), awarded), norm_marked, q_no))
                 correct += 1
                 numeric_correct += 1
-                score += profile["num_per"]
+                bonus_full_credit_count += 1
+                bonus_full_credit_points += awarded
+                score += awarded
                 continue
             if not self._is_countable_numeric_key(key_answer):
                 continue
@@ -349,6 +367,8 @@ class ScoringEngine:
             mcq_correct=mcq_correct,
             tf_correct=tf_correct,
             numeric_correct=numeric_correct,
+            bonus_full_credit_count=bonus_full_credit_count,
+            bonus_full_credit_points=round(bonus_full_credit_points, 4),
             mcq_compare="; ".join(x for x in mcq_compare_items if x) or "[Không có MCQ trong đáp án hoặc dữ liệu nhận dạng]",
             tf_compare="; ".join(x for x in tf_compare_items if x) or "[Không có TF trong đáp án hoặc dữ liệu nhận dạng]",
             numeric_compare="; ".join(x for x in numeric_compare_items if x) or "[Không có NUMERIC trong đáp án hoặc dữ liệu nhận dạng]",
