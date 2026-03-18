@@ -1063,6 +1063,7 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.addWidget(self._build_exam_list_page())
         self.stack.addWidget(self._build_workspace_page())
+        self.stack.addWidget(self._build_subject_management_page())
         self.exam_editor_page = QWidget()
         self.exam_editor_layout = QVBoxLayout(self.exam_editor_page)
         self.exam_editor_layout.setContentsMargins(0, 0, 0, 0)
@@ -1113,7 +1114,7 @@ class MainWindow(QMainWindow):
             return True
         if hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled():
             return True
-        if self.stack.currentIndex() == 2 and self.embedded_exam_dialog:
+        if self.stack.currentIndex() == 3 and self.embedded_exam_dialog:
             return True
         return False
 
@@ -1163,7 +1164,7 @@ class MainWindow(QMainWindow):
         return "cancel"
 
     def _save_current_work(self) -> bool:
-        if self.stack.currentIndex() == 2 and self.embedded_exam_dialog:
+        if self.stack.currentIndex() == 3 and self.embedded_exam_dialog:
             return bool(self._save_embedded_exam_editor())
 
         if hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled():
@@ -1283,6 +1284,83 @@ class MainWindow(QMainWindow):
         hdr.setSectionResizeMode(8, QHeaderView.ResizeToContents)
         layout.addWidget(self.exam_list_table)
         return w
+
+    def _build_subject_management_page(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.addWidget(QLabel("Quản lý môn học và khối"))
+
+        form = QFormLayout()
+        self.subject_catalog_editor = QLineEdit(", ".join(self.subject_catalog))
+        self.block_catalog_editor = QLineEdit(", ".join(self.block_catalog))
+        form.addRow("Danh sách môn (phân tách dấu phẩy)", self.subject_catalog_editor)
+        form.addRow("Danh sách khối (phân tách dấu phẩy)", self.block_catalog_editor)
+        layout.addLayout(form)
+
+        btn_row = QHBoxLayout()
+        btn_save = QPushButton("Lưu")
+        btn_save.clicked.connect(self._save_subject_management)
+        btn_back = QPushButton("Đóng")
+        btn_back.clicked.connect(lambda: self.stack.setCurrentIndex(0))
+        btn_row.addWidget(btn_save)
+        btn_row.addWidget(btn_back)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+        layout.addStretch()
+        return w
+
+    @staticmethod
+    def _parse_catalog_items(raw_text: str) -> list[str]:
+        return [x.strip() for x in str(raw_text or "").split(",") if x.strip()]
+
+    def _sync_subject_configs_with_catalog(self) -> bool:
+        if not self.session:
+            return False
+        cfg = dict(self.session.config or {})
+        subject_configs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
+        allowed = {x.casefold() for x in self.subject_catalog}
+        filtered = [x for x in subject_configs if str(x.get("name", "")).strip().casefold() in allowed]
+        changed = len(filtered) != len(subject_configs)
+        if changed:
+            cfg["subject_configs"] = filtered
+            self.session.config = cfg
+            self.session.subjects = [
+                f"{str(x.get('name', '')).strip()}_{str(x.get('block', '')).strip()}"
+                for x in filtered
+                if str(x.get("name", "")).strip()
+            ]
+            self.session_dirty = True
+            self._refresh_batch_subject_controls()
+            self._refresh_session_info()
+        return changed
+
+    def _save_subject_management(self) -> None:
+        subjects = self._parse_catalog_items(self.subject_catalog_editor.text())
+        blocks = self._parse_catalog_items(self.block_catalog_editor.text())
+        if not subjects:
+            QMessageBox.warning(self, "Quản lý môn học", "Danh sách môn học không được để trống.")
+            return
+        if not blocks:
+            QMessageBox.warning(self, "Quản lý khối", "Danh sách khối không được để trống.")
+            return
+
+        self.subject_catalog = subjects
+        self.block_catalog = blocks
+        self.session_dirty = True
+
+        if self.session:
+            cfg = dict(self.session.config or {})
+            cfg["subject_catalog"] = list(self.subject_catalog)
+            cfg["block_catalog"] = list(self.block_catalog)
+            self.session.config = cfg
+            removed = self._sync_subject_configs_with_catalog()
+            if removed:
+                QMessageBox.information(self, "Quản lý môn học", "Đã cập nhật danh sách môn/khối và đồng bộ các môn trong kỳ thi hiện tại.")
+            else:
+                QMessageBox.information(self, "Quản lý môn học", "Đã cập nhật danh sách môn và khối.")
+        else:
+            QMessageBox.information(self, "Quản lý môn học", "Đã cập nhật danh sách môn và khối.")
+        self.stack.setCurrentIndex(0)
 
     def _build_workspace_page(self) -> QWidget:
         central = QWidget()
@@ -1444,7 +1522,7 @@ class MainWindow(QMainWindow):
         dlg.rejected.connect(self._close_embedded_exam_editor)
         self.embedded_exam_dialog = dlg
         self.exam_editor_layout.addWidget(dlg)
-        self.stack.setCurrentIndex(2)
+        self.stack.setCurrentIndex(3)
 
     def _save_embedded_exam_editor(self) -> bool:
         if not self.embedded_exam_dialog or not self.embedded_exam_session_id:
@@ -1889,39 +1967,9 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(0)
 
     def manage_subjects(self) -> None:
-        subjects_text = ", ".join(self.subject_catalog)
-        blocks_text = ", ".join(self.block_catalog)
-        text, ok = QInputDialog.getText(
-            self,
-            "Quản lý môn học",
-            "Nhập danh sách môn (phân tách bằng dấu phẩy):",
-            text=subjects_text,
-        )
-        if not ok:
-            return
-        block_input, ok2 = QInputDialog.getText(
-            self,
-            "Quản lý khối",
-            "Nhập danh sách khối (phân tách bằng dấu phẩy):",
-            text=blocks_text,
-        )
-        if not ok2:
-            return
-
-        subjects = [x.strip() for x in text.split(",") if x.strip()]
-        blocks = [x.strip() for x in block_input.split(",") if x.strip()]
-        if not subjects:
-            QMessageBox.warning(self, "Quản lý môn học", "Danh sách môn học không được để trống.")
-            return
-        if not blocks:
-            QMessageBox.warning(self, "Quản lý khối", "Danh sách khối không được để trống.")
-            return
-
-        self.subject_catalog = subjects
-        self.block_catalog = blocks
-        self.session_dirty = True
-        QMessageBox.information(self, "Quản lý môn/khối", "Đã cập nhật danh sách môn và khối.")
-        self._refresh_session_info()
+        self.subject_catalog_editor.setText(", ".join(self.subject_catalog))
+        self.block_catalog_editor.setText(", ".join(self.block_catalog))
+        self.stack.setCurrentIndex(2)
 
     def action_create_session(self) -> None:
         if not self._confirm_before_switching_work("kỳ thi mới"):
@@ -1946,7 +1994,7 @@ class MainWindow(QMainWindow):
 
     def action_save_session(self) -> None:
         if self._confirm("Lưu kỳ thi", "Bạn có chắc muốn lưu kỳ thi?"):
-            if self.stack.currentIndex() == 2 and self.embedded_exam_dialog:
+            if self.stack.currentIndex() == 3 and self.embedded_exam_dialog:
                 self._save_embedded_exam_editor()
                 return
             self.save_session()
@@ -1966,8 +2014,7 @@ class MainWindow(QMainWindow):
             self.open_template_editor()
 
     def action_manage_subjects(self) -> None:
-        if self._confirm("Quản lý môn học", "Mở quản lý môn học?"):
-            self.manage_subjects()
+        self.manage_subjects()
 
     def action_exit(self) -> None:
         if not self._confirm_before_switching_work("thoát ứng dụng"):
