@@ -24,6 +24,8 @@ class ScoreResult:
     mcq_correct: int = 0
     tf_correct: int = 0
     numeric_correct: int = 0
+    bonus_full_credit_count: int = 0
+    bonus_full_credit_points: float = 0.0
     mcq_compare: str = ""
     tf_compare: str = ""
     numeric_compare: str = ""
@@ -33,8 +35,14 @@ class ScoringEngine:
     @staticmethod
     def _full_credit_qset(subject_key: SubjectKey, section: str) -> set[int]:
         data = (subject_key.full_credit_questions or {}).get(section, []) if isinstance(subject_key.full_credit_questions, dict) else []
+        invalid_map = (subject_key.invalid_answer_rows or {}).get(section, {}) if isinstance(subject_key.invalid_answer_rows, dict) else {}
         out: set[int] = set()
         for q in data or []:
+            try:
+                out.add(int(q))
+            except Exception:
+                continue
+        for q in (invalid_map or {}).keys():
             try:
                 out.add(int(q))
             except Exception:
@@ -102,6 +110,17 @@ class ScoringEngine:
         if not key_num and not marked_num:
             return ""
         return f"Q{q_no}:{key_num or '-'}|{marked_num or '-'}"
+
+    @staticmethod
+    def _full_credit_compare_label(raw_text: str, points: float) -> str:
+        base = str(raw_text or "").strip() or "[FULL]"
+        return f"{base}[FULL+{points:g}]"
+
+    @staticmethod
+    def _invalid_key_text(subject_key: SubjectKey, section: str, q_no: int) -> str:
+        raw = ((subject_key.invalid_answer_rows or {}).get(section, {}) or {}).get(q_no, "")
+        text = str(raw or "").strip()
+        return text or "[FULL]"
 
     @staticmethod
     def _aligned_marked_answers(key_answers: dict, marked_answers: object) -> dict[int, object]:
@@ -176,8 +195,19 @@ class ScoringEngine:
         section_scores = cfg.get("section_scores", {}) if isinstance(cfg.get("section_scores", {}), dict) else {}
         question_scores = cfg.get("question_scores", {}) if isinstance(cfg.get("question_scores", {}), dict) else {}
 
-        mcq_count = sum(1 for _, ans in (subject_key.answers or {}).items() if self._is_countable_mcq_key(ans))
-        num_count = sum(1 for _, ans in (subject_key.numeric_answers or {}).items() if self._is_countable_numeric_key(ans))
+        mcq_qs = {
+            int(q)
+            for q, ans in (subject_key.answers or {}).items()
+            if str(q).strip().lstrip("-").isdigit() and self._is_countable_mcq_key(ans)
+        } | self._full_credit_qset(subject_key, "MCQ")
+        num_qs = {
+            int(q)
+            for q, ans in (subject_key.numeric_answers or {}).items()
+            if str(q).strip().lstrip("-").isdigit() and self._is_countable_numeric_key(ans)
+        } | self._full_credit_qset(subject_key, "NUMERIC")
+
+        mcq_count = len(mcq_qs)
+        num_count = len(num_qs)
 
         mcq_default = subject_key.points_for_question(1)
         num_default = subject_key.points_for_question(1)
@@ -223,6 +253,8 @@ class ScoringEngine:
         correct = wrong = blank = 0
         score = 0.0
         mcq_correct = tf_correct = numeric_correct = 0
+        bonus_full_credit_count = 0
+        bonus_full_credit_points = 0.0
         mcq_compare_items: list[str] = []
         tf_compare_items: list[str] = []
         numeric_compare_items: list[str] = []
@@ -237,13 +269,17 @@ class ScoringEngine:
         mcq_qs = sorted({int(q) for q in (subject_key.answers or {}).keys() if str(q).strip().lstrip("-").isdigit()} | mcq_full_credit)
         for q_no in mcq_qs:
             key_answer = (subject_key.answers or {}).get(q_no, "")
+            print(f"[SCORING] Q{q_no} type=MCQ full={q_no in mcq_full_credit}")
             if q_no in mcq_full_credit:
                 marked = aligned_mcq_marked.get(q_no)
                 marked_mcq = str(marked or "").strip().upper()
-                mcq_compare_items.append(self._build_mcq_compare_text("[FULL]", marked_mcq, q_no))
+                awarded = float(profile["mcq_per"])
+                mcq_compare_items.append(self._build_mcq_compare_text(self._full_credit_compare_label(self._invalid_key_text(subject_key, "MCQ", q_no), awarded), marked_mcq, q_no))
                 correct += 1
                 mcq_correct += 1
-                score += profile["mcq_per"]
+                bonus_full_credit_count += 1
+                bonus_full_credit_points += awarded
+                score += awarded
                 continue
             if not self._is_countable_mcq_key(key_answer):
                 continue
@@ -253,24 +289,27 @@ class ScoringEngine:
             mcq_compare_items.append(self._build_mcq_compare_text(key_mcq, marked_mcq, q_no))
             if not marked_mcq:
                 blank += 1
-                continue
-            if marked_mcq == key_mcq:
+            elif marked_mcq == key_mcq:
                 correct += 1
                 mcq_correct += 1
-                score += profile["mcq_per"]
+                score += float(profile["mcq_per"])
             else:
                 wrong += 1
 
         tf_qs = sorted({int(q) for q in (subject_key.true_false_answers or {}).keys() if str(q).strip().lstrip("-").isdigit()} | tf_full_credit)
         for q_no in tf_qs:
             key_answer = (subject_key.true_false_answers or {}).get(q_no, {})
+            print(f"[SCORING] Q{q_no} type=TF full={q_no in tf_full_credit}")
             if q_no in tf_full_credit:
                 marked = aligned_tf_marked.get(q_no)
                 marked_tf = self._tf_to_canonical_string(marked)
-                tf_compare_items.append(self._build_tf_compare_text("[FULL]", marked_tf, q_no))
+                awarded = float(profile["tf_points"].get(4, max(profile["tf_points"].values() or [0.0])))
+                tf_compare_items.append(self._build_tf_compare_text(self._full_credit_compare_label(self._invalid_key_text(subject_key, "TF", q_no), awarded), marked_tf, q_no))
                 correct += 1
                 tf_correct += 1
-                score += profile["tf_points"].get(4, max(profile["tf_points"].values() or [0.0]))
+                bonus_full_credit_count += 1
+                bonus_full_credit_points += awarded
+                score += awarded
                 continue
             if not self._is_countable_tf_key(key_answer):
                 continue
@@ -282,27 +321,27 @@ class ScoringEngine:
             tf_compare_items.append(self._build_tf_compare_text(key_tf, marked_tf, q_no))
             if not marked_tf:
                 blank += 1
-                continue
-
-            compare_len = min(len(key_tf), len(marked_tf))
-            matched = sum(1 for i in range(compare_len) if key_tf[i] == marked_tf[i])
-            score += profile["tf_points"].get(matched, 0.0)
-            if len(key_tf) == len(marked_tf) and matched == len(key_tf):
+            elif key_tf == marked_tf and len(key_tf) == len(marked_tf):
                 correct += 1
                 tf_correct += 1
+                score += float(profile["tf_points"].get(len(key_tf), 1.0))
             else:
                 wrong += 1
 
         numeric_qs = sorted({int(q) for q in (subject_key.numeric_answers or {}).keys() if str(q).strip().lstrip("-").isdigit()} | numeric_full_credit)
         for q_no in numeric_qs:
             key_answer = (subject_key.numeric_answers or {}).get(q_no, "")
+            print(f"[SCORING] Q{q_no} type=NUMERIC full={q_no in numeric_full_credit}")
             if q_no in numeric_full_credit:
                 marked = aligned_numeric_marked.get(q_no)
                 norm_marked = self._normalize_numeric_text(marked)
-                numeric_compare_items.append(self._build_numeric_compare_text("[FULL]", norm_marked, q_no))
+                awarded = float(profile["num_per"])
+                numeric_compare_items.append(self._build_numeric_compare_text(self._full_credit_compare_label(self._invalid_key_text(subject_key, "NUMERIC", q_no), awarded), norm_marked, q_no))
                 correct += 1
                 numeric_correct += 1
-                score += profile["num_per"]
+                bonus_full_credit_count += 1
+                bonus_full_credit_points += awarded
+                score += awarded
                 continue
             if not self._is_countable_numeric_key(key_answer):
                 continue
@@ -312,11 +351,10 @@ class ScoringEngine:
             numeric_compare_items.append(self._build_numeric_compare_text(norm_key, norm_marked, q_no))
             if marked is None or str(marked).strip() == "":
                 blank += 1
-                continue
-            if norm_marked and norm_key and norm_marked == norm_key:
+            elif norm_marked == norm_key:
                 correct += 1
                 numeric_correct += 1
-                score += profile["num_per"]
+                score += float(profile["num_per"])
             else:
                 wrong += 1
 
@@ -332,6 +370,8 @@ class ScoringEngine:
             mcq_correct=mcq_correct,
             tf_correct=tf_correct,
             numeric_correct=numeric_correct,
+            bonus_full_credit_count=bonus_full_credit_count,
+            bonus_full_credit_points=round(bonus_full_credit_points, 4),
             mcq_compare="; ".join(x for x in mcq_compare_items if x) or "[Không có MCQ trong đáp án hoặc dữ liệu nhận dạng]",
             tf_compare="; ".join(x for x in tf_compare_items if x) or "[Không có TF trong đáp án hoặc dữ liệu nhận dạng]",
             numeric_compare="; ".join(x for x in numeric_compare_items if x) or "[Không có NUMERIC trong đáp án hoặc dữ liệu nhận dạng]",
