@@ -30,6 +30,7 @@ class BubbleGrid:
     question_start: int
     question_count: int = 0
     options: list[str] = field(default_factory=list)
+    semantic_layout: str = ""
     bubble_positions: list[tuple[float, float]] = field(default_factory=list)
 
 

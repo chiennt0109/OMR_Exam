@@ -26,6 +26,7 @@ class SubjectKey:
     true_false_answers: dict[int, dict[str, bool]] = field(default_factory=dict)
     numeric_answers: dict[int, str] = field(default_factory=dict)
     full_credit_questions: dict[str, list[int]] = field(default_factory=dict)
+    invalid_answer_rows: dict[str, dict[int, str]] = field(default_factory=dict)
 
     def points_for_question(self, question_no: int) -> float:
         for rule in self.section_rules:
@@ -90,6 +91,10 @@ class AnswerKeyRepository:
                     str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
                     for sec, vals in (v.full_credit_questions or {}).items()
                 },
+                "invalid_answer_rows": {
+                    str(sec): {str(idx): str(val) for idx, val in (vals or {}).items()}
+                    for sec, vals in (v.invalid_answer_rows or {}).items()
+                },
                 "section_rules": [
                     {
                         "name": rule.name,
@@ -120,6 +125,10 @@ class AnswerKeyRepository:
                     full_credit_questions={
                         str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
                         for sec, vals in (raw.get("full_credit_questions", {}) or {}).items()
+                    },
+                    invalid_answer_rows={
+                        str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                        for sec, vals in (raw.get("invalid_answer_rows", {}) or {}).items()
                     },
                     section_rules=section_rules,
                 )
