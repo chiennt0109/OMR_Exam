@@ -50,7 +50,6 @@ class TemplateEngine:
             [zone.x, zone.y + zone.height],
             [zone.x + zone.width, zone.y + zone.height],
         ]
-        zone.metadata["control_points"] = corners
         return corners
 
     def bilinear_point(self, control_points: list[list[float]], u: float, v: float) -> tuple[float, float]:
@@ -138,14 +137,13 @@ class TemplateEngine:
                 v = min(0.999, max(0.001, (v - 0.5) * scale + 0.5 + off_y))
                 bubbles.append(self.bilinear_point(control_points, u, v))
 
-        zone.metadata["semantic_layout"] = semantic
-
         return BubbleGrid(
             rows=rows,
             cols=cols,
             question_start=question_start,
             question_count=logical_questions,
             options=options,
+            semantic_layout=semantic,
             bubble_positions=bubbles,
         )
 
