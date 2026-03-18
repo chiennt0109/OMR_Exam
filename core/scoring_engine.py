@@ -104,6 +104,12 @@ class ScoringEngine:
         return f"Q{q_no}:{key_num or '-'}|{marked_num or '-'}"
 
     @staticmethod
+    def _invalid_key_text(subject_key: SubjectKey, section: str, q_no: int) -> str:
+        raw = ((subject_key.invalid_answer_rows or {}).get(section, {}) or {}).get(q_no, "")
+        text = str(raw or "").strip()
+        return text or "[FULL]"
+
+    @staticmethod
     def _aligned_marked_answers(key_answers: dict, marked_answers: object) -> dict[int, object]:
         if not isinstance(key_answers, dict) or not key_answers:
             return {}
@@ -251,7 +257,7 @@ class ScoringEngine:
             if q_no in mcq_full_credit:
                 marked = aligned_mcq_marked.get(q_no)
                 marked_mcq = str(marked or "").strip().upper()
-                mcq_compare_items.append(self._build_mcq_compare_text("[FULL]", marked_mcq, q_no))
+                mcq_compare_items.append(self._build_mcq_compare_text(self._invalid_key_text(subject_key, "MCQ", q_no), marked_mcq, q_no))
                 correct += 1
                 mcq_correct += 1
                 score += profile["mcq_per"]
@@ -278,7 +284,7 @@ class ScoringEngine:
             if q_no in tf_full_credit:
                 marked = aligned_tf_marked.get(q_no)
                 marked_tf = self._tf_to_canonical_string(marked)
-                tf_compare_items.append(self._build_tf_compare_text("[FULL]", marked_tf, q_no))
+                tf_compare_items.append(self._build_tf_compare_text(self._invalid_key_text(subject_key, "TF", q_no), marked_tf, q_no))
                 correct += 1
                 tf_correct += 1
                 score += profile["tf_points"].get(4, max(profile["tf_points"].values() or [0.0]))
@@ -310,7 +316,7 @@ class ScoringEngine:
             if q_no in numeric_full_credit:
                 marked = aligned_numeric_marked.get(q_no)
                 norm_marked = self._normalize_numeric_text(marked)
-                numeric_compare_items.append(self._build_numeric_compare_text("[FULL]", norm_marked, q_no))
+                numeric_compare_items.append(self._build_numeric_compare_text(self._invalid_key_text(subject_key, "NUMERIC", q_no), norm_marked, q_no))
                 correct += 1
                 numeric_correct += 1
                 score += profile["num_per"]

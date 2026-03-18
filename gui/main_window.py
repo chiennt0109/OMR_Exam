@@ -213,9 +213,20 @@ class SubjectConfigDialog(QDialog):
         # Total score is defined per one exam code; use the first code as representative.
         first_code = sorted(answer_key_data.keys())[0]
         key_data = answer_key_data.get(first_code, {}) or {}
-        counts["MCQ"] = len(key_data.get("mcq_answers", {}) or {})
-        counts["TF"] = len(key_data.get("true_false_answers", {}) or {})
-        counts["NUMERIC"] = len(key_data.get("numeric_answers", {}) or {})
+        for sec, bucket_name in [("MCQ", "mcq_answers"), ("TF", "true_false_answers"), ("NUMERIC", "numeric_answers")]:
+            valid_qs = {
+                int(q) for q in (key_data.get(bucket_name, {}) or {}).keys()
+                if str(q).strip().lstrip("-").isdigit()
+            }
+            full_qs = {
+                int(q) for q in ((key_data.get("full_credit_questions", {}) or {}).get(sec, []) or [])
+                if str(q).strip().lstrip("-").isdigit()
+            }
+            invalid_qs = {
+                int(q) for q in ((key_data.get("invalid_answer_rows", {}) or {}).get(sec, {}) or {}).keys()
+                if str(q).strip().lstrip("-").isdigit()
+            }
+            counts[sec] = len(valid_qs | full_qs | invalid_qs)
         return counts
 
     @staticmethod
