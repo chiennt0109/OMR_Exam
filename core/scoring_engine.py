@@ -176,8 +176,19 @@ class ScoringEngine:
         section_scores = cfg.get("section_scores", {}) if isinstance(cfg.get("section_scores", {}), dict) else {}
         question_scores = cfg.get("question_scores", {}) if isinstance(cfg.get("question_scores", {}), dict) else {}
 
-        mcq_count = sum(1 for _, ans in (subject_key.answers or {}).items() if self._is_countable_mcq_key(ans))
-        num_count = sum(1 for _, ans in (subject_key.numeric_answers or {}).items() if self._is_countable_numeric_key(ans))
+        mcq_qs = {
+            int(q)
+            for q, ans in (subject_key.answers or {}).items()
+            if str(q).strip().lstrip("-").isdigit() and self._is_countable_mcq_key(ans)
+        } | self._full_credit_qset(subject_key, "MCQ")
+        num_qs = {
+            int(q)
+            for q, ans in (subject_key.numeric_answers or {}).items()
+            if str(q).strip().lstrip("-").isdigit() and self._is_countable_numeric_key(ans)
+        } | self._full_credit_qset(subject_key, "NUMERIC")
+
+        mcq_count = len(mcq_qs)
+        num_count = len(num_qs)
 
         mcq_default = subject_key.points_for_question(1)
         num_default = subject_key.points_for_question(1)
