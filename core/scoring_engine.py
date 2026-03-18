@@ -35,8 +35,14 @@ class ScoringEngine:
     @staticmethod
     def _full_credit_qset(subject_key: SubjectKey, section: str) -> set[int]:
         data = (subject_key.full_credit_questions or {}).get(section, []) if isinstance(subject_key.full_credit_questions, dict) else []
+        invalid_map = (subject_key.invalid_answer_rows or {}).get(section, {}) if isinstance(subject_key.invalid_answer_rows, dict) else {}
         out: set[int] = set()
         for q in data or []:
+            try:
+                out.add(int(q))
+            except Exception:
+                continue
+        for q in (invalid_map or {}).keys():
             try:
                 out.add(int(q))
             except Exception:
