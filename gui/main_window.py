@@ -9465,6 +9465,14 @@ class MainWindow(QMainWindow):
                 continue
             setattr(self.omr_processor, field, value if value >= 0 else default)
 
+    def _allow_batch_auto_rotate_retry(self) -> bool:
+        template_md = (self.template.metadata if self.template and isinstance(self.template.metadata, dict) else {})
+        raw = template_md.get("batch_auto_rotate_retry", False)
+        if isinstance(raw, bool):
+            return raw
+        text = str(raw or "").strip().lower()
+        return text in {"1", "true", "yes", "on"}
+
     def _try_reprocess_result_rotated_180(self, result):
         image_path = str(getattr(result, "image_path", "") or "").strip()
         if not image_path or not Path(image_path).exists() or not self.template:
@@ -9631,8 +9639,8 @@ class MainWindow(QMainWindow):
             original_meaningful = self._result_has_meaningful_recognition(result)
             original_identity = self._has_valid_identity(result)
 
-            # Only allow one 180° retry for low-quality recognitions.
-            need_retry_180 = (not original_identity) or (not original_meaningful)
+            # Keep batch behavior aligned with Template Editor by default (no auto-rotation retry).
+            need_retry_180 = self._allow_batch_auto_rotate_retry() and ((not original_identity) or (not original_meaningful))
             if need_retry_180:
                 retried, improved = self._try_reprocess_result_rotated_180(result)
                 # Accept 180° retry only when quality is strictly improved, otherwise keep original orientation.
