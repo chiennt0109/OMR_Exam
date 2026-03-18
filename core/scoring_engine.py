@@ -94,58 +94,15 @@ class ScoringEngine:
         return f"Q{q_no}:{key_num or '-'}|{marked_num or '-'}"
 
     @staticmethod
-    def _full_credit_compare_label(raw_text: str, points: float) -> str:
-        base = str(raw_text or "").strip() or "[FULL]"
-        return f"{base}[FULL+{points:g}]"
-
-    @staticmethod
-    def _invalid_key_text(subject_key: SubjectKey, section: str, q_no: int) -> str:
-        raw = ((subject_key.invalid_answer_rows or {}).get(section, {}) or {}).get(q_no, "")
-        text = str(raw or "").strip()
-        return text or "[FULL]"
-
-    @staticmethod
-    def _aligned_marked_answers(key_answers: dict, marked_answers: object) -> dict[int, object]:
-        if not isinstance(key_answers, dict) or not key_answers:
-            return {}
-        if not isinstance(marked_answers, dict) or not marked_answers:
-            return {}
-
-        key_qs: list[int] = []
-        for k in key_answers.keys():
-            try:
-                key_qs.append(int(k))
-            except Exception:
-                continue
-        key_qs.sort()
-        if not key_qs:
-            return {}
-
-        raw_marked: dict[int, object] = {}
-        for mk, mv in marked_answers.items():
-            try:
-                raw_marked[int(mk)] = mv
-            except Exception:
-                continue
-        if not raw_marked:
-            return {}
-
-        aligned: dict[int, object] = {}
-        used_marked: set[int] = set()
-
-        # Prefer exact question-number matches first.
-        for q in key_qs:
-            if q in raw_marked:
-                aligned[q] = raw_marked[q]
-                used_marked.add(q)
-
-        # Fallback by positional order for remaining questions (handles shifted numbering like key 13.. vs scan 1..).
-        remaining_marked_qs = [q for q in sorted(raw_marked.keys()) if q not in used_marked]
-        missing_key_qs = [q for q in key_qs if q not in aligned]
-        for kq, mq in zip(missing_key_qs, remaining_marked_qs):
-            aligned[kq] = raw_marked[mq]
-
-        return aligned
+    def _exact_answer_lookup(raw_answers: object, q_no: int) -> object:
+        if not isinstance(raw_answers, dict):
+            return ""
+        if q_no in raw_answers:
+            return raw_answers[q_no]
+        q_text = str(q_no)
+        if q_text in raw_answers:
+            return raw_answers[q_text]
+        return ""
 
     def _tf_to_canonical_string(self, value: object) -> str:
         if isinstance(value, dict):
@@ -174,65 +131,8 @@ class ScoringEngine:
             chars.append("Đ" if parsed else "S")
         return "".join(chars)
 
-    def _score_profile(self, subject_key: SubjectKey, subject_config: dict | None) -> dict:
-        cfg = subject_config if isinstance(subject_config, dict) else {}
-        mode = str(cfg.get("score_mode", "") or "").strip() or "Điểm theo phần"
-        section_scores = cfg.get("section_scores", {}) if isinstance(cfg.get("section_scores", {}), dict) else {}
-        question_scores = cfg.get("question_scores", {}) if isinstance(cfg.get("question_scores", {}), dict) else {}
-
-        mcq_qs = {
-            int(q)
-            for q, ans in (subject_key.answers or {}).items()
-            if str(q).strip().lstrip("-").isdigit() and self._is_countable_mcq_key(ans)
-        }
-        num_qs = {
-            int(q)
-            for q, ans in (subject_key.numeric_answers or {}).items()
-            if str(q).strip().lstrip("-").isdigit() and self._is_countable_numeric_key(ans)
-        }
-
-        mcq_count = len(mcq_qs)
-        num_count = len(num_qs)
-
-        mcq_default = subject_key.points_for_question(1)
-        num_default = subject_key.points_for_question(1)
-
-        if mode == "Điểm theo câu":
-            mcq_per = self._to_float(((question_scores.get("MCQ", {}) or {}).get("per_question", mcq_default)), mcq_default)
-            num_per = self._to_float(((question_scores.get("NUMERIC", {}) or {}).get("per_question", num_default)), num_default)
-            tf_map_raw = (question_scores.get("TF", {}) or {})
-        else:
-            mcq_total = self._to_float(((section_scores.get("MCQ", {}) or {}).get("total_points", 0.0)), 0.0)
-            num_total = self._to_float(((section_scores.get("NUMERIC", {}) or {}).get("total_points", 0.0)), 0.0)
-            mcq_per = (mcq_total / mcq_count) if mcq_count > 0 and mcq_total > 0 else mcq_default
-            num_per = (num_total / num_count) if num_count > 0 and num_total > 0 else num_default
-            tf_map_raw = ((section_scores.get("TF", {}) or {}).get("rule_per_question", {}) or {})
-
-        tf_points_by_correct = {
-            int(k): self._to_float(v, 0.0)
-            for k, v in (tf_map_raw.items() if isinstance(tf_map_raw, dict) else [])
-            if str(k).strip().isdigit()
-        }
-        if not tf_points_by_correct:
-            tf_points_by_correct = {0: 0.0, 1: 0.1, 2: 0.25, 3: 0.5, 4: 1.0}
-
-        return {
-            "mcq_per": mcq_per,
-            "num_per": num_per,
-            "tf_points": tf_points_by_correct,
-            "mode": mode,
-        }
-
     def describe_formula(self, subject_key: SubjectKey, subject_config: dict | None = None) -> str:
-        profile = self._score_profile(subject_key, subject_config)
-        tf_map = profile.get("tf_points", {}) or {}
-        tf_desc = ", ".join([f"{k} ý={v:g}" for k, v in sorted(tf_map.items()) if isinstance(k, int)])
-        return (
-            f"Công thức ({profile.get('mode', 'Điểm theo phần')}): "
-            f"Điểm = (MCQ_đúng × {profile['mcq_per']:g}) + "
-            f"(NUMERIC_đúng × {profile['num_per']:g}) + "
-            f"Σ điểm_TF_theo_số_ý_đúng; TF: [{tf_desc}]"
-        )
+        return "Công thức cố định: MCQ đúng × 0.25 + NUMERIC đúng × 0.25 + TF[0→0, 1→0.1, 2→0.25, 3→0.5, 4→1.0]"
 
     def score(self, omr: OMRResult, subject_key: SubjectKey, student_name: str = "", subject_config: dict | None = None) -> ScoreResult:
         correct = wrong = blank = 0
@@ -243,89 +143,85 @@ class ScoringEngine:
         mcq_compare_items: list[str] = []
         tf_compare_items: list[str] = []
         numeric_compare_items: list[str] = []
-        profile = self._score_profile(subject_key, subject_config)
-        aligned_mcq_marked = self._aligned_marked_answers(subject_key.answers or {}, omr.mcq_answers or {})
-        aligned_tf_marked = self._aligned_marked_answers(subject_key.true_false_answers or {}, omr.true_false_answers or {})
-        aligned_numeric_marked = self._aligned_marked_answers(subject_key.numeric_answers or {}, omr.numeric_answers or {})
+        tf_points = {0: 0.0, 1: 0.1, 2: 0.25, 3: 0.5, 4: 1.0}
 
-        mcq_qs = sorted(int(q) for q in (subject_key.answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
-        for q_no in mcq_qs:
-            key_answer = (subject_key.answers or {}).get(q_no, "")
-            if not self._is_countable_mcq_key(key_answer):
+        print("=== OMR INPUT ===")
+        print(omr.mcq_answers)
+        print(omr.true_false_answers)
+        print(omr.numeric_answers)
+
+        for q_no in sorted(int(q) for q in (subject_key.answers or {}).keys() if str(q).strip().lstrip("-").isdigit()):
+            key = str((subject_key.answers or {}).get(q_no, "") or "").strip().upper()
+            if not self._is_countable_mcq_key(key):
                 continue
-            marked = aligned_mcq_marked.get(q_no)
-            key_mcq = str(key_answer or "").strip().upper()
-            marked_mcq = str(marked or "").strip().upper()
-            mcq_compare_items.append(self._build_mcq_compare_text(key_mcq, marked_mcq, q_no))
-            if key_mcq == "E":
-                if marked_mcq:
+            student = str(self._exact_answer_lookup(omr.mcq_answers, q_no) or "").strip().upper()
+            print(f"[MCQ] Q{q_no}: {key} | {student}")
+            mcq_compare_items.append(self._build_mcq_compare_text(key, student, q_no))
+            if key == "E":
+                if student != "":
                     correct += 1
                     mcq_correct += 1
-                    score += float(profile["mcq_per"])
+                    score += 0.25
                 else:
                     blank += 1
-            elif not marked_mcq:
+            elif student == "":
                 blank += 1
-            elif marked_mcq == key_mcq:
+            elif student == key:
                 correct += 1
                 mcq_correct += 1
-                score += float(profile["mcq_per"])
+                score += 0.25
             else:
                 wrong += 1
 
-        tf_qs = sorted(int(q) for q in (subject_key.true_false_answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
-        for q_no in tf_qs:
-            key_answer = (subject_key.true_false_answers or {}).get(q_no, {})
-            if not self._is_countable_tf_key(key_answer):
+        for q_no in sorted(int(q) for q in (subject_key.true_false_answers or {}).keys() if str(q).strip().lstrip("-").isdigit()):
+            key_value = (subject_key.true_false_answers or {}).get(q_no, {})
+            if not self._is_countable_tf_key(key_value):
                 continue
-            marked = aligned_tf_marked.get(q_no)
-            key_tf = self._tf_to_canonical_string(key_answer)
-            marked_tf = self._tf_to_canonical_string(marked)
+            key_tf = self._tf_to_canonical_string(key_value)
+            student_tf = self._tf_to_canonical_string(self._exact_answer_lookup(omr.true_false_answers, q_no))
             if not key_tf:
                 continue
-            tf_compare_items.append(self._build_tf_compare_text(key_tf, marked_tf, q_no))
-            if not marked_tf:
-                wrong += 1
-                continue
-            matched = 0
-            for key_ch, marked_ch in zip(key_tf, marked_tf):
-                if key_ch == marked_ch or (key_ch == "E" and marked_ch in {"Đ", "S"}):
-                    matched += 1
-            if matched > 0:
-                tf_correct += matched
-                score += float(profile["tf_points"].get(matched, 0.0))
-                if matched == len(key_tf) and len(marked_tf) == len(key_tf):
-                    correct += 1
-                else:
-                    wrong += 1
+            print(f"[TF ] Q{q_no}: {key_tf} | {student_tf}")
+            tf_compare_items.append(self._build_tf_compare_text(key_tf, student_tf, q_no))
+            correct_count = 0
+            for key_ch, student_ch in zip(key_tf, student_tf):
+                if key_ch == student_ch:
+                    correct_count += 1
+                elif key_ch == "E":
+                    correct_count += 1
+            score += tf_points.get(correct_count, 0.0)
+            tf_correct += correct_count
+            if correct_count == len(key_tf) and len(student_tf) == len(key_tf):
+                correct += 1
+            elif student_tf == "":
+                blank += 1
             else:
                 wrong += 1
 
-        numeric_qs = sorted(int(q) for q in (subject_key.numeric_answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
-        for q_no in numeric_qs:
-            key_answer = (subject_key.numeric_answers or {}).get(q_no, "")
-            if not self._is_countable_numeric_key(key_answer):
+        for q_no in sorted(int(q) for q in (subject_key.numeric_answers or {}).keys() if str(q).strip().lstrip("-").isdigit()):
+            key = self._normalize_numeric_text((subject_key.numeric_answers or {}).get(q_no, ""))
+            if not self._is_countable_numeric_key(key):
                 continue
-            marked = aligned_numeric_marked.get(q_no)
-            norm_marked = self._normalize_numeric_text(marked)
-            norm_key = self._normalize_numeric_text(key_answer)
-            numeric_compare_items.append(self._build_numeric_compare_text(norm_key, norm_marked, q_no))
-            if norm_key == "E":
-                if norm_marked:
+            student = self._normalize_numeric_text(self._exact_answer_lookup(omr.numeric_answers, q_no))
+            print(f"[NUM] Q{q_no}: {key} | {student}")
+            numeric_compare_items.append(self._build_numeric_compare_text(key, student, q_no))
+            if key == "E":
+                if student != "":
                     correct += 1
                     numeric_correct += 1
-                    score += float(profile["num_per"])
+                    score += 0.25
                 else:
                     blank += 1
-            elif marked is None or str(marked).strip() == "":
+            elif student == "":
                 blank += 1
-            elif norm_marked == norm_key:
+            elif student == key:
                 correct += 1
                 numeric_correct += 1
-                score += float(profile["num_per"])
+                score += 0.25
             else:
                 wrong += 1
 
+        print(f"[FINAL] correct={correct}, score={score}")
         return ScoreResult(
             student_id=omr.student_id,
             name=student_name,
@@ -334,7 +230,7 @@ class ScoringEngine:
             correct=correct,
             wrong=wrong,
             blank=blank,
-            score=round(score, 4),
+            score=round(score, 2),
             mcq_correct=mcq_correct,
             tf_correct=tf_correct,
             numeric_correct=numeric_correct,
