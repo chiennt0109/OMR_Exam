@@ -113,7 +113,12 @@ class ImportAnswerKeyDialog(QDialog):
                 rows.append(PreviewRow(q, "TF", text))
             for q, ans in sorted(key.numeric_answers.items()):
                 rows.append(PreviewRow(q, "NUMERIC", ans))
+            for sec, answer_type in [("MCQ", "MCQ"), ("TF", "TF"), ("NUMERIC", "NUMERIC")]:
+                invalid_map = (key.invalid_answer_rows or {}).get(sec, {}) if isinstance(getattr(key, "invalid_answer_rows", {}), dict) else {}
+                for q, ans in sorted((invalid_map or {}).items()):
+                    rows.append(PreviewRow(int(q), answer_type, str(ans)))
 
+            rows.sort(key=lambda x: int(x.question))
             for row in rows:
                 self._append_row(table, row)
 
@@ -198,6 +203,10 @@ class ImportAnswerKeyDialog(QDialog):
                         str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
                         for sec, vals in (src.full_credit_questions or {}).items()
                     }
+                    key.invalid_answer_rows = {
+                        str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                        for sec, vals in (src.invalid_answer_rows or {}).items()
+                    }
                 for row_idx in range(table.rowCount()):
                     q_item = table.item(row_idx, 0)
                     a_item = table.item(row_idx, 2)
@@ -210,31 +219,37 @@ class ImportAnswerKeyDialog(QDialog):
                     if answer_type == "MCQ":
                         val = answer_text.upper()
                         if val not in {"A", "B", "C", "D", "E"}:
-                            raise ImportError(
-                                f"Tab '{exam_code}', row {row_idx + 1}: invalid MCQ '{answer_text}'. Expected A/B/C/D/E."
-                            )
-                        key.mcq_answers[q] = val
+                            bucket = key.full_credit_questions.setdefault("MCQ", [])
+                            if q not in bucket:
+                                bucket.append(q)
+                            key.invalid_answer_rows.setdefault("MCQ", {})[q] = answer_text
+                        else:
+                            key.mcq_answers[q] = val
                     elif answer_type == "NUMERIC":
                         token = answer_text.replace(" ", "").replace(",", ".")
                         if token.startswith(("+", "-")):
                             token = token[1:]
                         if not token or token.count(".") > 1 or not token.replace(".", "").isdigit():
-                            raise ImportError(
-                                f"Tab '{exam_code}', row {row_idx + 1}: invalid numeric '{answer_text}'. Expected numeric (e.g. 69, -105, 0,61)."
-                            )
-                        key.numeric_answers[q] = answer_text
+                            bucket = key.full_credit_questions.setdefault("NUMERIC", [])
+                            if q not in bucket:
+                                bucket.append(q)
+                            key.invalid_answer_rows.setdefault("NUMERIC", {})[q] = answer_text
+                        else:
+                            key.numeric_answers[q] = answer_text
                     else:
                         token = answer_text.replace(" ", "").upper()
                         if len(token) != 4 or any(ch not in {"T", "F", "D", "S", "Đ"} for ch in token):
-                            raise ImportError(
-                                f"Tab '{exam_code}', row {row_idx + 1}: invalid TF '{answer_text}'. Expected 4 chars (T/F or Đ/S)."
-                            )
-                        key.true_false_answers[q] = {
-                            "a": token[0] in {"T", "D", "Đ"},
-                            "b": token[1] in {"T", "D", "Đ"},
-                            "c": token[2] in {"T", "D", "Đ"},
-                            "d": token[3] in {"T", "D", "Đ"},
-                        }
+                            bucket = key.full_credit_questions.setdefault("TF", [])
+                            if q not in bucket:
+                                bucket.append(q)
+                            key.invalid_answer_rows.setdefault("TF", {})[q] = answer_text
+                        else:
+                            key.true_false_answers[q] = {
+                                "a": token[0] in {"T", "D", "Đ"},
+                                "b": token[1] in {"T", "D", "Đ"},
+                                "c": token[2] in {"T", "D", "Đ"},
+                                "d": token[3] in {"T", "D", "Đ"},
+                            }
         except ImportError as exc:
             QMessageBox.warning(self, "Validation error", str(exc))
             return
