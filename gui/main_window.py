@@ -213,9 +213,20 @@ class SubjectConfigDialog(QDialog):
         # Total score is defined per one exam code; use the first code as representative.
         first_code = sorted(answer_key_data.keys())[0]
         key_data = answer_key_data.get(first_code, {}) or {}
-        counts["MCQ"] = len(key_data.get("mcq_answers", {}) or {})
-        counts["TF"] = len(key_data.get("true_false_answers", {}) or {})
-        counts["NUMERIC"] = len(key_data.get("numeric_answers", {}) or {})
+        for sec, bucket_name in [("MCQ", "mcq_answers"), ("TF", "true_false_answers"), ("NUMERIC", "numeric_answers")]:
+            valid_qs = {
+                int(q) for q in (key_data.get(bucket_name, {}) or {}).keys()
+                if str(q).strip().lstrip("-").isdigit()
+            }
+            full_qs = {
+                int(q) for q in ((key_data.get("full_credit_questions", {}) or {}).get(sec, []) or [])
+                if str(q).strip().lstrip("-").isdigit()
+            }
+            invalid_qs = {
+                int(q) for q in ((key_data.get("invalid_answer_rows", {}) or {}).get(sec, {}) or {}).keys()
+                if str(q).strip().lstrip("-").isdigit()
+            }
+            counts[sec] = len(valid_qs | full_qs | invalid_qs)
         return counts
 
     @staticmethod
@@ -477,6 +488,7 @@ class SubjectConfigDialog(QDialog):
                 "true_false_answers": key.true_false_answers,
                 "numeric_answers": key.numeric_answers,
                 "full_credit_questions": key.full_credit_questions,
+                "invalid_answer_rows": key.invalid_answer_rows,
             }
         self.answer_codes.setText(", ".join(sorted(self.answer_key_data.keys())))
         self.answer_key.setText(path)
@@ -2094,16 +2106,19 @@ class MainWindow(QMainWindow):
                     true_false_answers=edited.true_false_answers,
                     numeric_answers=edited.numeric_answers,
                     full_credit_questions=edited.full_credit_questions,
+                    invalid_answer_rows=edited.invalid_answer_rows,
                 )
             )
             imported_count += 1
 
         if self.session:
             self.session.answer_key_path = file_path
+        self.active_batch_subject_key = subject
         self.session_dirty = True
         self._refresh_session_info()
         self._refresh_batch_subject_controls()
         self._refresh_batch_subject_controls()
+        self._retrim_batch_results_to_answer_key_scope()
         QMessageBox.information(self, "Import successful", f"Imported {imported_count} exam code(s) into current session.")
 
     def export_answer_key_sample(self) -> None:
@@ -2177,13 +2192,6 @@ class MainWindow(QMainWindow):
         self.batch_answer_codes_value = QLineEdit("-"); self.batch_answer_codes_value.setReadOnly(True)
         self.batch_student_id_value = QLineEdit("-"); self.batch_student_id_value.setReadOnly(True)
         self.batch_scan_folder_value = QLineEdit("-"); self.batch_scan_folder_value.setReadOnly(True)
-        self.batch_fill_threshold_spin = QDoubleSpinBox()
-        self.batch_fill_threshold_spin.setDecimals(2)
-        self.batch_fill_threshold_spin.setRange(0.05, 0.95)
-        self.batch_fill_threshold_spin.setSingleStep(0.01)
-        self.batch_fill_threshold_spin.setValue(float(getattr(self.omr_processor, "fill_threshold", 0.45) or 0.45))
-        self.batch_fill_threshold_spin.setToolTip("Tăng ngưỡng để giảm nhận nhầm các vết tô mờ/đã tẩy; giảm ngưỡng nếu bỏ sót nét tô nhẹ.")
-        self.batch_fill_threshold_spin.valueChanged.connect(self._on_batch_fill_threshold_changed)
         style = self.style()
         self.btn_batch_recognize = QPushButton("Nhận dạng")
         self.btn_batch_recognize.setIcon(style.standardIcon(QStyle.SP_MediaPlay))
@@ -2210,7 +2218,6 @@ class MainWindow(QMainWindow):
         batch_form.addRow("Mã đề", self.batch_answer_codes_value)
         batch_form.addRow("Vùng STUDENT ID", self.batch_student_id_value)
         batch_form.addRow("Thư mục quét", self.batch_scan_folder_value)
-        batch_form.addRow("Ngưỡng nhận tô", self.batch_fill_threshold_spin)
         batch_form.addRow("", action_row)
 
         self.filter_column = QComboBox()
@@ -2304,18 +2311,18 @@ class MainWindow(QMainWindow):
         # on some PySide6 builds (preventing "Internal C++ object ... already deleted").
         self.scoring_panel = QWidget(w)
 
-        self.score_preview_table = QTableWidget(0, 14, self.scoring_panel)
+        self.score_preview_table = QTableWidget(0, 16, self.scoring_panel)
         self.score_preview_table.setHorizontalHeaderLabels([
-            "Student ID", "Name", "Subject", "Exam Code", "MCQ đúng", "TF đúng", "NUM đúng", "Correct", "Wrong", "Blank", "Score", "MCQ đáp án|bài làm", "TF đáp án|bài làm", "NUM đáp án|bài làm"
+            "Student ID", "Name", "Subject", "Exam Code", "MCQ đúng", "TF đúng", "NUM đúng", "Correct", "Wrong", "Blank", "Số câu FULL", "Điểm FULL", "Score", "MCQ đáp án|bài làm", "TF đáp án|bài làm", "NUM đáp án|bài làm"
         ])
         self.score_preview_table.verticalHeader().setVisible(False)
         self.score_preview_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.score_preview_table.horizontalHeader().setSectionResizeMode(11, QHeaderView.Stretch)
-        self.score_preview_table.horizontalHeader().setSectionResizeMode(12, QHeaderView.Stretch)
         self.score_preview_table.horizontalHeader().setSectionResizeMode(13, QHeaderView.Stretch)
-        self.score_preview_table.setColumnWidth(11, 280)
-        self.score_preview_table.setColumnWidth(12, 280)
-        self.score_preview_table.setColumnWidth(13, 320)
+        self.score_preview_table.horizontalHeader().setSectionResizeMode(14, QHeaderView.Stretch)
+        self.score_preview_table.horizontalHeader().setSectionResizeMode(15, QHeaderView.Stretch)
+        self.score_preview_table.setColumnWidth(13, 280)
+        self.score_preview_table.setColumnWidth(14, 280)
+        self.score_preview_table.setColumnWidth(15, 320)
 
         self.scoring_subject_combo = QComboBox()
         self.scoring_mode_combo = QComboBox()
@@ -9001,6 +9008,17 @@ class MainWindow(QMainWindow):
                 }
         return {}
 
+    def _refresh_student_profile_for_result(self, result, row_idx: int | None = None) -> None:
+        sid = str(getattr(result, "student_id", "") or "").strip()
+        profile = self._student_profile_by_id(sid)
+        setattr(result, "full_name", str(profile.get("name", "") or ""))
+        setattr(result, "birth_date", str(profile.get("birth_date", "") or ""))
+        setattr(result, "class_name", str(profile.get("class_name", "") or ""))
+        setattr(result, "exam_room", str(profile.get("exam_room", "") or ""))
+        if row_idx is not None and 0 <= row_idx < self.scan_list.rowCount():
+            self.scan_list.setItem(row_idx, 1, QTableWidgetItem(str(getattr(result, "full_name", "") or "-")))
+            self.scan_list.setItem(row_idx, 2, QTableWidgetItem(str(getattr(result, "birth_date", "") or "-")))
+
     @staticmethod
     def _normalized_student_id_for_match(student_id: str) -> str:
         sid = str(student_id or "").strip()
@@ -9194,6 +9212,7 @@ class MainWindow(QMainWindow):
             self.preview_source_pixmap = QPixmap()
             self.scan_image_preview.setPixmap(QPixmap())
             self.scan_image_preview.setText("Chọn bài thi ở danh sách bên trái")
+            self.scan_image_preview.clear_markers()
             if hasattr(self, "btn_zoom_reset"):
                 self.preview_zoom_factor = 1.0
                 self.btn_zoom_reset.setText("100%")
@@ -9412,23 +9431,13 @@ class MainWindow(QMainWindow):
                 continue
             setattr(self.omr_processor, field, value if value >= 0 else default)
 
-        if hasattr(self, "batch_fill_threshold_spin"):
-            spin = self.batch_fill_threshold_spin
-            spin.blockSignals(True)
-            spin.setValue(float(getattr(self.omr_processor, "fill_threshold", 0.45) or 0.45))
-            spin.blockSignals(False)
-
-    def _on_batch_fill_threshold_changed(self, value: float) -> None:
-        self._apply_batch_fill_threshold(value)
-
-    def _apply_batch_fill_threshold(self, value: float | None = None) -> None:
-        raw_value = self.batch_fill_threshold_spin.value() if value is None and hasattr(self, "batch_fill_threshold_spin") else value
-        try:
-            threshold = float(raw_value)
-        except Exception:
-            return
-        threshold = max(0.05, min(0.95, threshold))
-        setattr(self.omr_processor, "fill_threshold", threshold)
+    def _allow_batch_auto_rotate_retry(self) -> bool:
+        template_md = (self.template.metadata if self.template and isinstance(self.template.metadata, dict) else {})
+        raw = template_md.get("batch_auto_rotate_retry", False)
+        if isinstance(raw, bool):
+            return raw
+        text = str(raw or "").strip().lower()
+        return text in {"1", "true", "yes", "on"}
 
     def _try_reprocess_result_rotated_180(self, result):
         image_path = str(getattr(result, "image_path", "") or "").strip()
@@ -9494,6 +9503,10 @@ class MainWindow(QMainWindow):
                         full_credit_questions={
                             str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
                             for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
+                        },
+                        invalid_answer_rows={
+                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
                         },
                     ))
                 self.answer_keys = repo
@@ -9564,6 +9577,7 @@ class MainWindow(QMainWindow):
         self.scan_result_preview.setRowCount(0)
         self.manual_edit.clear()
         self.scan_image_preview.setText("Chọn bài thi ở danh sách bên trái")
+        self.scan_image_preview.clear_markers()
         self.btn_save_batch_subject.setEnabled(False)
         self.scan_files = [Path(p) for p in file_paths]
         self.scan_blank_questions.clear()
@@ -9575,7 +9589,6 @@ class MainWindow(QMainWindow):
         self.scan_forced_status_by_index.clear()
 
         self._apply_template_recognition_settings(self.template, sync_mode_selector=False)
-        self._apply_batch_fill_threshold()
 
         def on_progress(current: int, total: int, image_path: str):
             self.progress.setMaximum(total)
@@ -9596,8 +9609,8 @@ class MainWindow(QMainWindow):
             original_meaningful = self._result_has_meaningful_recognition(result)
             original_identity = self._has_valid_identity(result)
 
-            # Only allow one 180° retry for low-quality recognitions.
-            need_retry_180 = (not original_identity) or (not original_meaningful)
+            # Keep batch behavior aligned with Template Editor by default (no auto-rotation retry).
+            need_retry_180 = self._allow_batch_auto_rotate_retry() and ((not original_identity) or (not original_meaningful))
             if need_retry_180:
                 retried, improved = self._try_reprocess_result_rotated_180(result)
                 # Accept 180° retry only when quality is strictly improved, otherwise keep original orientation.
@@ -9616,19 +9629,11 @@ class MainWindow(QMainWindow):
 
             rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
             sid = (result.student_id or "").strip()
-            profile = self._student_profile_by_id(sid)
-            if profile.get("name"):
-                setattr(result, "full_name", profile.get("name"))
-            if profile.get("birth_date"):
-                setattr(result, "birth_date", profile.get("birth_date"))
-            if profile.get("class_name"):
-                setattr(result, "class_name", profile.get("class_name"))
-            if profile.get("exam_room"):
-                setattr(result, "exam_room", profile.get("exam_room"))
+            self._refresh_student_profile_for_result(result)
             full_name = str(getattr(result, "full_name", "") or "-")
             birth_date = str(getattr(result, "birth_date", "") or "-")
-            self._trim_result_answers_to_expected_scope(result)
-            blank_map = self._compute_blank_questions(result)
+            scoped = self._scoped_result_copy(result)
+            blank_map = self._compute_blank_questions(scoped)
             blank_questions = blank_map.get("MCQ", [])
             self.scan_blank_questions[idx] = blank_questions
             self.scan_blank_summary[idx] = blank_map
@@ -9704,6 +9709,11 @@ class MainWindow(QMainWindow):
             allow = set(expected["NUMERIC"])
             result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
 
+    def _scoped_result_copy(self, result):
+        scoped = copy.deepcopy(result)
+        self._trim_result_answers_to_expected_scope(scoped)
+        return scoped
+
     def _count_mismatch_status_parts(self, result) -> list[str]:
         expected = self._expected_questions_by_section(result)
         actual_map = {
@@ -9760,10 +9770,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -9829,6 +9842,7 @@ class MainWindow(QMainWindow):
         self.scan_result_preview.setRowCount(0)
         self.manual_edit.clear()
         self.scan_image_preview.setText("Chọn bài thi ở danh sách bên trái")
+        self.scan_image_preview.clear_markers()
         self.btn_save_batch_subject.setEnabled(False)
         self.scan_files = [Path(p) for p in file_paths]
         self.scan_blank_questions.clear()
@@ -9856,15 +9870,7 @@ class MainWindow(QMainWindow):
             rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
             total_errors = len(rec_errors) + len(result.issues)
             sid = (result.student_id or "").strip()
-            profile = self._student_profile_by_id(sid)
-            if profile.get("name"):
-                setattr(result, "full_name", profile.get("name"))
-            if profile.get("birth_date"):
-                setattr(result, "birth_date", profile.get("birth_date"))
-            if profile.get("class_name"):
-                setattr(result, "class_name", profile.get("class_name"))
-            if profile.get("exam_room"):
-                setattr(result, "exam_room", profile.get("exam_room"))
+            self._refresh_student_profile_for_result(result)
             full_name = str(getattr(result, "full_name", "") or "-")
             birth_date = str(getattr(result, "birth_date", "") or "-")
             self._trim_result_answers_to_expected_scope(result)
@@ -9954,10 +9960,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -10060,10 +10069,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -10166,10 +10178,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -10272,10 +10287,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -10378,10 +10396,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -10484,10 +10505,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -10590,10 +10614,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -10696,10 +10723,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -10802,10 +10832,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -10908,10 +10941,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -11014,10 +11050,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -11120,10 +11159,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -11226,10 +11268,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -11332,10 +11377,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -11438,10 +11486,13 @@ class MainWindow(QMainWindow):
                     key_set = set(key_sections[sec])
                     if template_set:
                         overlap = sorted(template_set & key_set)
-                        # If answer key numbering does not align with template numbering, keep template scope.
-                        # This avoids dropping valid TF/NUMERIC recognition when keys use local numbering (1..N).
                         if overlap:
                             expected_by_section[sec] = overlap
+                        else:
+                            # When answer-key numbering does not align with template numbering,
+                            # prioritize answer-key section size and trim by template order.
+                            count = len(key_sections[sec])
+                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -11507,6 +11558,25 @@ class MainWindow(QMainWindow):
                     f"thiếu {sec} ({len(expected_set)-len(missing)}/{len(expected_set)}): {','.join(str(v) for v in missing)}"
                 )
         return messages
+
+    def _retrim_batch_results_to_answer_key_scope(self) -> None:
+        if not self.scan_results:
+            return
+        for idx, res in enumerate(self.scan_results):
+            scoped = self._scoped_result_copy(res)
+            blank_map = self._compute_blank_questions(scoped)
+            self.scan_blank_summary[idx] = blank_map
+            self.scan_blank_questions[idx] = blank_map.get("MCQ", [])
+            if idx < self.scan_list.rowCount():
+                self.scan_list.setItem(idx, 3, QTableWidgetItem(self._build_recognition_content_text(res, blank_map)))
+                sid_item = self.scan_list.item(idx, 0)
+                if sid_item:
+                    sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(res))
+        self._refresh_all_statuses()
+        current = self.scan_list.currentRow() if hasattr(self, "scan_list") else -1
+        if 0 <= current < len(self.scan_results):
+            self._update_scan_preview(current)
+            self._load_selected_result_for_correction()
 
     def _apply_scan_filter(self) -> None:
         value = self.search_value.text().strip().lower()
@@ -11857,7 +11927,6 @@ class MainWindow(QMainWindow):
         if not self._ensure_template_for_selected_subject() or not self.template:
             QMessageBox.warning(self, "Nhận dạng lại", "Chưa có template khả dụng (theo môn hoặc theo kỳ thi).")
             return
-        self._apply_batch_fill_threshold()
 
         old_result = self.scan_results[idx] if idx < len(self.scan_results) else self._build_result_from_saved_table_row(idx)
         if old_result is None:
@@ -11882,9 +11951,9 @@ class MainWindow(QMainWindow):
                 manual_result = copy.deepcopy(old_result)
                 if self._apply_adjusted_markers_to_result(idx, manual_result):
                     self._set_scan_result_at_row(idx, manual_result)
-                    self._trim_result_answers_to_expected_scope(manual_result)
-                    self.scan_blank_questions[idx] = self._compute_blank_questions(manual_result).get("MCQ", [])
-                    self.scan_blank_summary[idx] = self._compute_blank_questions(manual_result)
+                    scoped_manual = self._scoped_result_copy(manual_result)
+                    self.scan_blank_questions[idx] = self._compute_blank_questions(scoped_manual).get("MCQ", [])
+                    self.scan_blank_summary[idx] = self._compute_blank_questions(scoped_manual)
                     self._update_scan_row_from_result(idx, manual_result)
                     self._refresh_all_statuses()
                     self._update_scan_preview(idx)
@@ -11925,8 +11994,8 @@ class MainWindow(QMainWindow):
             setattr(new_result, "class_name", profile.get("class_name"))
         if profile.get("exam_room"):
             setattr(new_result, "exam_room", profile.get("exam_room"))
-        self._trim_result_answers_to_expected_scope(new_result)
-        blank_map = self._compute_blank_questions(new_result)
+        scoped_new = self._scoped_result_copy(new_result)
+        blank_map = self._compute_blank_questions(scoped_new)
 
         rec_errors = list(getattr(new_result, "recognition_errors", [])) or list(getattr(new_result, "errors", []))
         message = (
@@ -12568,8 +12637,9 @@ class MainWindow(QMainWindow):
             return
 
         if changes:
-            self._trim_result_answers_to_expected_scope(res)
-            self.scan_blank_summary[idx] = self._compute_blank_questions(res)
+            self._refresh_student_profile_for_result(res, idx)
+            scoped = self._scoped_result_copy(res)
+            self.scan_blank_summary[idx] = self._compute_blank_questions(scoped)
             self.scan_list.setItem(idx, 3, QTableWidgetItem(self._build_recognition_content_text(res, self.scan_blank_summary[idx])))
             sid_item = self.scan_list.item(idx, 0)
             if sid_item:
@@ -12641,8 +12711,9 @@ class MainWindow(QMainWindow):
         sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(res))
         self.scan_list.setItem(idx, 0, sid_item)
         if changes:
-            self._trim_result_answers_to_expected_scope(res)
-            self.scan_blank_summary[idx] = self._compute_blank_questions(res)
+            self._refresh_student_profile_for_result(res, idx)
+            scoped = self._scoped_result_copy(res)
+            self.scan_blank_summary[idx] = self._compute_blank_questions(scoped)
             self.scan_list.setItem(idx, 3, QTableWidgetItem(self._build_recognition_content_text(res, self.scan_blank_summary[idx])))
             self._record_adjustment(idx, changes, "manual_json")
             self.btn_save_batch_subject.setEnabled(True)
@@ -12738,10 +12809,12 @@ class MainWindow(QMainWindow):
             self.score_preview_table.setItem(i, 7, QTableWidgetItem(str(r.correct)))
             self.score_preview_table.setItem(i, 8, QTableWidgetItem(str(r.wrong)))
             self.score_preview_table.setItem(i, 9, QTableWidgetItem(str(r.blank)))
-            self.score_preview_table.setItem(i, 10, QTableWidgetItem(str(r.score)))
-            self.score_preview_table.setItem(i, 11, QTableWidgetItem(str(getattr(r, "mcq_compare", ""))))
-            self.score_preview_table.setItem(i, 12, QTableWidgetItem(str(getattr(r, "tf_compare", ""))))
-            self.score_preview_table.setItem(i, 13, QTableWidgetItem(str(getattr(r, "numeric_compare", ""))))
+            self.score_preview_table.setItem(i, 10, QTableWidgetItem(str(getattr(r, "bonus_full_credit_count", 0))))
+            self.score_preview_table.setItem(i, 11, QTableWidgetItem(str(getattr(r, "bonus_full_credit_points", 0.0))))
+            self.score_preview_table.setItem(i, 12, QTableWidgetItem(str(r.score)))
+            self.score_preview_table.setItem(i, 13, QTableWidgetItem(str(getattr(r, "mcq_compare", ""))))
+            self.score_preview_table.setItem(i, 14, QTableWidgetItem(str(getattr(r, "tf_compare", ""))))
+            self.score_preview_table.setItem(i, 15, QTableWidgetItem(str(getattr(r, "numeric_compare", ""))))
 
         phase = {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
