@@ -23,6 +23,8 @@ class ScoreResult:
     mcq_correct: int = 0
     tf_correct: int = 0
     numeric_correct: int = 0
+    bonus_full_credit_count: int = 0
+    bonus_full_credit_points: float = 0.0
     mcq_compare: str = ""
     tf_compare: str = ""
     numeric_compare: str = ""
@@ -90,6 +92,17 @@ class ScoringEngine:
         if not key_num and not marked_num:
             return ""
         return f"Q{q_no}:{key_num or '-'}|{marked_num or '-'}"
+
+    @staticmethod
+    def _full_credit_compare_label(raw_text: str, points: float) -> str:
+        base = str(raw_text or "").strip() or "[FULL]"
+        return f"{base}[FULL+{points:g}]"
+
+    @staticmethod
+    def _invalid_key_text(subject_key: SubjectKey, section: str, q_no: int) -> str:
+        raw = ((subject_key.invalid_answer_rows or {}).get(section, {}) or {}).get(q_no, "")
+        text = str(raw or "").strip()
+        return text or "[FULL]"
 
     @staticmethod
     def _aligned_marked_answers(key_answers: dict, marked_answers: object) -> dict[int, object]:
@@ -225,6 +238,8 @@ class ScoringEngine:
         correct = wrong = blank = 0
         score = 0.0
         mcq_correct = tf_correct = numeric_correct = 0
+        bonus_full_credit_count = 0
+        bonus_full_credit_points = 0.0
         mcq_compare_items: list[str] = []
         tf_compare_items: list[str] = []
         numeric_compare_items: list[str] = []
@@ -323,6 +338,8 @@ class ScoringEngine:
             mcq_correct=mcq_correct,
             tf_correct=tf_correct,
             numeric_correct=numeric_correct,
+            bonus_full_credit_count=bonus_full_credit_count,
+            bonus_full_credit_points=round(bonus_full_credit_points, 4),
             mcq_compare="; ".join(x for x in mcq_compare_items if x) or "[Không có MCQ trong đáp án hoặc dữ liệu nhận dạng]",
             tf_compare="; ".join(x for x in tf_compare_items if x) or "[Không có TF trong đáp án hoặc dữ liệu nhận dạng]",
             numeric_compare="; ".join(x for x in numeric_compare_items if x) or "[Không có NUMERIC trong đáp án hoặc dữ liệu nhận dạng]",
