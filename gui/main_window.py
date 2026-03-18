@@ -9662,8 +9662,8 @@ class MainWindow(QMainWindow):
             self._refresh_student_profile_for_result(result)
             full_name = str(getattr(result, "full_name", "") or "-")
             birth_date = str(getattr(result, "birth_date", "") or "-")
-            self._trim_result_answers_to_expected_scope(result)
-            blank_map = self._compute_blank_questions(result)
+            scoped = self._scoped_result_copy(result)
+            blank_map = self._compute_blank_questions(scoped)
             blank_questions = blank_map.get("MCQ", [])
             self.scan_blank_questions[idx] = blank_questions
             self.scan_blank_summary[idx] = blank_map
@@ -9738,6 +9738,11 @@ class MainWindow(QMainWindow):
         if expected.get("NUMERIC"):
             allow = set(expected["NUMERIC"])
             result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+
+    def _scoped_result_copy(self, result):
+        scoped = copy.deepcopy(result)
+        self._trim_result_answers_to_expected_scope(scoped)
+        return scoped
 
     def _count_mismatch_status_parts(self, result) -> list[str]:
         expected = self._expected_questions_by_section(result)
@@ -11588,8 +11593,8 @@ class MainWindow(QMainWindow):
         if not self.scan_results:
             return
         for idx, res in enumerate(self.scan_results):
-            self._trim_result_answers_to_expected_scope(res)
-            blank_map = self._compute_blank_questions(res)
+            scoped = self._scoped_result_copy(res)
+            blank_map = self._compute_blank_questions(scoped)
             self.scan_blank_summary[idx] = blank_map
             self.scan_blank_questions[idx] = blank_map.get("MCQ", [])
             if idx < self.scan_list.rowCount():
@@ -11976,9 +11981,9 @@ class MainWindow(QMainWindow):
                 manual_result = copy.deepcopy(old_result)
                 if self._apply_adjusted_markers_to_result(idx, manual_result):
                     self._set_scan_result_at_row(idx, manual_result)
-                    self._trim_result_answers_to_expected_scope(manual_result)
-                    self.scan_blank_questions[idx] = self._compute_blank_questions(manual_result).get("MCQ", [])
-                    self.scan_blank_summary[idx] = self._compute_blank_questions(manual_result)
+                    scoped_manual = self._scoped_result_copy(manual_result)
+                    self.scan_blank_questions[idx] = self._compute_blank_questions(scoped_manual).get("MCQ", [])
+                    self.scan_blank_summary[idx] = self._compute_blank_questions(scoped_manual)
                     self._update_scan_row_from_result(idx, manual_result)
                     self._refresh_all_statuses()
                     self._update_scan_preview(idx)
@@ -12019,8 +12024,8 @@ class MainWindow(QMainWindow):
             setattr(new_result, "class_name", profile.get("class_name"))
         if profile.get("exam_room"):
             setattr(new_result, "exam_room", profile.get("exam_room"))
-        self._trim_result_answers_to_expected_scope(new_result)
-        blank_map = self._compute_blank_questions(new_result)
+        scoped_new = self._scoped_result_copy(new_result)
+        blank_map = self._compute_blank_questions(scoped_new)
 
         rec_errors = list(getattr(new_result, "recognition_errors", [])) or list(getattr(new_result, "errors", []))
         message = (
@@ -12663,8 +12668,8 @@ class MainWindow(QMainWindow):
 
         if changes:
             self._refresh_student_profile_for_result(res, idx)
-            self._trim_result_answers_to_expected_scope(res)
-            self.scan_blank_summary[idx] = self._compute_blank_questions(res)
+            scoped = self._scoped_result_copy(res)
+            self.scan_blank_summary[idx] = self._compute_blank_questions(scoped)
             self.scan_list.setItem(idx, 3, QTableWidgetItem(self._build_recognition_content_text(res, self.scan_blank_summary[idx])))
             sid_item = self.scan_list.item(idx, 0)
             if sid_item:
@@ -12737,8 +12742,8 @@ class MainWindow(QMainWindow):
         self.scan_list.setItem(idx, 0, sid_item)
         if changes:
             self._refresh_student_profile_for_result(res, idx)
-            self._trim_result_answers_to_expected_scope(res)
-            self.scan_blank_summary[idx] = self._compute_blank_questions(res)
+            scoped = self._scoped_result_copy(res)
+            self.scan_blank_summary[idx] = self._compute_blank_questions(scoped)
             self.scan_list.setItem(idx, 3, QTableWidgetItem(self._build_recognition_content_text(res, self.scan_blank_summary[idx])))
             self._record_adjustment(idx, changes, "manual_json")
             self.btn_save_batch_subject.setEnabled(True)
