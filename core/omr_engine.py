@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
-import math
 from pathlib import Path
 import time
 from typing import Callable
@@ -43,6 +43,27 @@ class OMRResult:
         self.errors = self.recognition_errors
 
 
+
+
+@dataclass
+class RecognitionContext:
+    detected_anchors: list[tuple[float, float]] = field(default_factory=list)
+    bubble_states_by_zone: dict[str, list[bool]] = field(default_factory=dict)
+    semantic_grids: dict[str, object] = field(default_factory=dict)
+    recognized_answers: dict[str, dict] = field(default_factory=dict)
+
+    def reset(self) -> None:
+        self.detected_anchors = []
+        self.bubble_states_by_zone = {}
+        self.semantic_grids = {}
+        self.recognized_answers = {
+            "student_id": "",
+            "exam_code": "",
+            "mcq_answers": {},
+            "true_false_answers": {},
+            "numeric_answers": {},
+        }
+
 class OMRProcessor:
     def __init__(
         self,
@@ -61,10 +82,18 @@ class OMRProcessor:
         # alignment_profile: auto | legacy | border | hybrid | one_side
         self.alignment_profile: str = "auto"
 
-    def recognize_sheet(self, image: str | Path | np.ndarray, template: Template) -> OMRResult:
+    def recognize_sheet(self, image: str | Path | np.ndarray, template: Template, context: RecognitionContext | None = None) -> OMRResult:
         started = time.perf_counter()
         image_path = str(image) if isinstance(image, (str, Path)) else "<in-memory>"
         result = OMRResult(image_path=image_path)
+        context = context or RecognitionContext()
+        context.reset()
+
+        # Reset sheet-level recognition state explicitly for every image.
+        result.mcq_answers = {}
+        result.true_false_answers = {}
+        result.numeric_answers = {}
+
         template_profile = str((template.metadata or {}).get("alignment_profile", "") or "").strip().lower()
         prev_profile = self.alignment_profile
         if template_profile in {"auto", "legacy", "border", "hybrid", "one_side"}:
@@ -91,11 +120,18 @@ class OMRProcessor:
             if aligned_binary is None:
                 aligned_binary = aligned_pre["binary"]
 
+            # Keep template geometry in sync with recognition canvas.
+            aligned_h, aligned_w = aligned_binary.shape[:2]
+            template.width = int(aligned_w)
+            template.height = int(aligned_h)
+
             debug_overlay = aligned.copy() if self.debug_mode else None
 
             for zone in template.zones:
                 if zone.zone_type == ZoneType.ANCHOR:
                     continue
+                if zone.grid is not None:
+                    context.semantic_grids[zone.id] = zone.grid
                 self.recognize_block(aligned_binary, zone, template, result, debug_overlay)
 
             if debug_overlay is not None:
@@ -108,9 +144,19 @@ class OMRProcessor:
             # Attach aligned artifacts for editor preview/debug without re-running recognition.
             setattr(result, "aligned_image", aligned)
             setattr(result, "aligned_binary", aligned_binary)
-            setattr(result, "detected_anchors", self.detect_anchors(aligned_binary, max_points=120))
+            context.detected_anchors = self.detect_anchors(aligned_binary, max_points=120)
+            setattr(result, "detected_anchors", context.detected_anchors)
 
-            setattr(result, "bubble_states_by_zone", self.extract_bubble_states(aligned_binary, template))
+            context.bubble_states_by_zone = self.extract_bubble_states(aligned_binary, template)
+            setattr(result, "bubble_states_by_zone", context.bubble_states_by_zone)
+
+            context.recognized_answers = {
+                "student_id": result.student_id,
+                "exam_code": result.exam_code,
+                "mcq_answers": dict(result.mcq_answers or {}),
+                "true_false_answers": dict(result.true_false_answers or {}),
+                "numeric_answers": dict(result.numeric_answers or {}),
+            }
 
             result.processing_time_sec = time.perf_counter() - started
             setattr(result, "answers", result.mcq_answers)
@@ -119,9 +165,9 @@ class OMRProcessor:
         finally:
             self.alignment_profile = prev_profile
 
-    def run_recognition_test(self, image: str | Path | np.ndarray, template: Template) -> OMRResult:
+    def run_recognition_test(self, image: str | Path | np.ndarray, template: Template, context: RecognitionContext | None = None) -> OMRResult:
         """Shared recognition entrypoint for template QC and production scan."""
-        return self.recognize_sheet(image, template)
+        return self.recognize_sheet(image, template, context)
 
     def extract_bubble_states(self, binary_image: np.ndarray, template: Template) -> dict[str, list[bool]]:
         states_by_zone: dict[str, list[bool]] = {}
@@ -133,8 +179,8 @@ class OMRProcessor:
                 continue
             states: list[bool] = []
             for bx, by in z.grid.bubble_positions:
-                x = int(bx * template.width)
-                y = int(by * template.height)
+                x = int(bx * w)
+                y = int(by * h)
                 x0, y0 = max(0, x - 6), max(0, y - 6)
                 x1, y1 = min(w, x + 6), min(h, y + 6)
                 roi = binary_image[y0:y1, x0:x1]
@@ -144,7 +190,7 @@ class OMRProcessor:
         return states_by_zone
 
     def process_image(self, image_path: str | Path, template: Template) -> OMRResult:
-        return self.recognize_sheet(image_path, template)
+        return self.recognize_sheet(image_path, template, RecognitionContext())
 
     def process_batch(
         self,
@@ -155,7 +201,9 @@ class OMRProcessor:
         total = len(image_paths)
         results: list[OMRResult] = []
         for idx, image_path in enumerate(image_paths, start=1):
-            results.append(self.run_recognition_test(image_path, template))
+            template_copy = deepcopy(template)
+            context = RecognitionContext()
+            results.append(self.run_recognition_test(image_path, template_copy, context))
             if progress_callback:
                 progress_callback(idx, total, image_path)
         return results
@@ -674,8 +722,9 @@ class OMRProcessor:
         return np.array(picks, dtype=np.float32)
 
     def detect_bubbles(self, binary: np.ndarray, centers: np.ndarray, radius: int) -> np.ndarray:
-        mask, mask_area = self._get_circular_mask(radius)
-        r = radius
+        # X-stroke mask is more robust than circular-area ratio for irregular/partially filled marks.
+        mask = self._get_x_mask(radius)
+        r = max(3, int(radius))
         h, w = binary.shape[:2]
         ratios = np.zeros((len(centers),), dtype=np.float32)
         centers_int = centers.astype(np.int32)
@@ -715,9 +764,10 @@ class OMRProcessor:
         if not grid or not grid.bubble_positions:
             return
 
+        h, w = binary.shape[:2]
         centers = np.array(
             [
-                (x * template.width, y * template.height) if x <= 1.0 and y <= 1.0 else (x, y)
+                (x * w, y * h) if x <= 1.0 and y <= 1.0 else (x, y)
                 for x, y in grid.bubble_positions
             ],
             dtype=np.float32,
@@ -923,15 +973,19 @@ class OMRProcessor:
             return None
         return best_col
 
-    def _get_circular_mask(self, radius: int) -> tuple[np.ndarray, float]:
+    def _get_x_mask(self, radius: int) -> np.ndarray:
         r = max(3, int(radius))
-        if r in self._mask_cache:
-            return self._mask_cache[r]
-        y, x = np.ogrid[-r : r + 1, -r : r + 1]
-        mask = (x * x + y * y) <= (r * r)
-        area = float(math.pi * r * r)
-        self._mask_cache[r] = (mask, area)
-        return mask, area
+        cached = self._mask_cache.get(r)
+        if cached is not None:
+            return cached[0]
+        size = (2 * r) + 1
+        y, x = np.indices((size, size))
+        d1 = np.abs(y - x)
+        d2 = np.abs(y - (size - 1 - x))
+        thickness = max(1, int(round(r * 0.20)))
+        mask = (d1 <= thickness) | (d2 <= thickness)
+        self._mask_cache[r] = (mask, float(np.count_nonzero(mask)))
+        return mask
 
     def _draw_debug_overlay(self, image: np.ndarray, centers: np.ndarray, ratios: np.ndarray, radius: int) -> None:
         for (x, y), ratio in zip(centers.astype(np.int32), ratios):
