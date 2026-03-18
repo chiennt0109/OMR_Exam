@@ -269,6 +269,7 @@ class ScoringEngine:
         mcq_qs = sorted({int(q) for q in (subject_key.answers or {}).keys() if str(q).strip().lstrip("-").isdigit()} | mcq_full_credit)
         for q_no in mcq_qs:
             key_answer = (subject_key.answers or {}).get(q_no, "")
+            print(f"[SCORING] Q{q_no} type=MCQ full={q_no in mcq_full_credit}")
             if q_no in mcq_full_credit:
                 marked = aligned_mcq_marked.get(q_no)
                 marked_mcq = str(marked or "").strip().upper()
@@ -288,17 +289,17 @@ class ScoringEngine:
             mcq_compare_items.append(self._build_mcq_compare_text(key_mcq, marked_mcq, q_no))
             if not marked_mcq:
                 blank += 1
-                continue
-            if marked_mcq == key_mcq:
+            elif marked_mcq == key_mcq:
                 correct += 1
                 mcq_correct += 1
-                score += profile["mcq_per"]
+                score += float(profile["mcq_per"])
             else:
                 wrong += 1
 
         tf_qs = sorted({int(q) for q in (subject_key.true_false_answers or {}).keys() if str(q).strip().lstrip("-").isdigit()} | tf_full_credit)
         for q_no in tf_qs:
             key_answer = (subject_key.true_false_answers or {}).get(q_no, {})
+            print(f"[SCORING] Q{q_no} type=TF full={q_no in tf_full_credit}")
             if q_no in tf_full_credit:
                 marked = aligned_tf_marked.get(q_no)
                 marked_tf = self._tf_to_canonical_string(marked)
@@ -320,20 +321,17 @@ class ScoringEngine:
             tf_compare_items.append(self._build_tf_compare_text(key_tf, marked_tf, q_no))
             if not marked_tf:
                 blank += 1
-                continue
-
-            compare_len = min(len(key_tf), len(marked_tf))
-            matched = sum(1 for i in range(compare_len) if key_tf[i] == marked_tf[i])
-            score += profile["tf_points"].get(matched, 0.0)
-            if len(key_tf) == len(marked_tf) and matched == len(key_tf):
+            elif key_tf == marked_tf and len(key_tf) == len(marked_tf):
                 correct += 1
                 tf_correct += 1
+                score += float(profile["tf_points"].get(len(key_tf), 1.0))
             else:
                 wrong += 1
 
         numeric_qs = sorted({int(q) for q in (subject_key.numeric_answers or {}).keys() if str(q).strip().lstrip("-").isdigit()} | numeric_full_credit)
         for q_no in numeric_qs:
             key_answer = (subject_key.numeric_answers or {}).get(q_no, "")
+            print(f"[SCORING] Q{q_no} type=NUMERIC full={q_no in numeric_full_credit}")
             if q_no in numeric_full_credit:
                 marked = aligned_numeric_marked.get(q_no)
                 norm_marked = self._normalize_numeric_text(marked)
@@ -353,11 +351,10 @@ class ScoringEngine:
             numeric_compare_items.append(self._build_numeric_compare_text(norm_key, norm_marked, q_no))
             if marked is None or str(marked).strip() == "":
                 blank += 1
-                continue
-            if norm_marked and norm_key and norm_marked == norm_key:
+            elif norm_marked == norm_key:
                 correct += 1
                 numeric_correct += 1
-                score += profile["num_per"]
+                score += float(profile["num_per"])
             else:
                 wrong += 1
 
