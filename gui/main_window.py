@@ -247,6 +247,7 @@ class SubjectConfigDialog(QDialog):
     ):
         super().__init__(parent)
         self.setWindowTitle("Cấu hình môn học")
+        self.setWindowState(self.windowState() | Qt.WindowMaximized)
         data = data or {}
         subject_options = subject_options or []
         block_options = block_options or ["10", "11", "12"]
@@ -558,6 +559,7 @@ class NewExamDialog(QDialog):
         data = data or {}
         self.setWindowTitle("Sửa kỳ thi" if data else "Tạo kỳ thi mới")
         self.resize(860, 640)
+        self.setWindowState(self.windowState() | Qt.WindowMaximized)
         self.subject_configs: list[dict] = list(data.get("subject_configs", []))
         self.student_list_path_value = str(data.get("student_list_path", "") or "")
         self.student_rows: list[dict] = list(data.get("students", [])) if isinstance(data.get("students", []), list) else []
@@ -1026,7 +1028,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("OMR Exam Grading System")
         self.resize(1200, 800)
-        self.setFixedSize(1200, 800)
+        self.setWindowState(self.windowState() | Qt.WindowMaximized)
 
         self.session: ExamSession | None = None
         self.template: Template | None = None
@@ -2055,6 +2057,7 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
         self.addToolBar(toolbar)
+        self.main_ribbon = toolbar
 
         style = self.style()
         # Session actions
@@ -2260,6 +2263,41 @@ class MainWindow(QMainWindow):
     def action_manage_template(self) -> None:
         self.open_template_editor()
 
+    def _rebuild_template_module_menu(self, *, library_mode: bool, editor_mode: bool) -> None:
+        if not hasattr(self, "template_module_menu"):
+            return
+        self.template_module_menu.clear()
+        if editor_mode and self.template_editor_embedded:
+            editor = self.template_editor_embedded
+            self.template_module_menu.addAction(editor.act_load_blank)
+            self.template_module_menu.addAction(editor.act_open_template)
+            self.template_module_menu.addSeparator()
+            self.template_module_menu.addAction(editor.act_save)
+            self.template_module_menu.addAction(editor.act_save_as)
+            self.template_module_menu.addSeparator()
+            self.template_module_menu.addAction(editor.act_preview)
+            self.template_module_menu.addAction(editor.act_test_recognition)
+            self.template_module_menu.addAction(editor.act_template_qc)
+            self.template_module_menu.addAction(editor.act_snap_grid)
+            self.template_module_menu.addSeparator()
+            self.template_module_menu.addAction(editor.act_copy)
+            self.template_module_menu.addAction(editor.act_paste)
+            self.template_module_menu.addAction(editor.act_duplicate)
+            self.template_module_menu.addAction(editor.act_delete)
+            self.template_module_menu.addAction(editor.act_delete_anchor)
+            self.template_module_menu.addSeparator()
+            self.template_module_menu.addAction(editor.act_zoom_in)
+            self.template_module_menu.addAction(editor.act_zoom_out)
+            self.template_module_menu.addSeparator()
+            self.template_module_menu.addAction(self.ribbon_close_template_action)
+            return
+        if library_mode:
+            self.template_module_menu.addAction(self.ribbon_new_template_action)
+            self.template_module_menu.addAction(self.ribbon_edit_template_action)
+            self.template_module_menu.addAction(self.ribbon_delete_template_action)
+            self.template_module_menu.addSeparator()
+            self.template_module_menu.addAction(self.ribbon_close_template_action)
+
     def _handle_stack_changed(self, index: int) -> None:
         subject_management_visible = index == 2
         template_library_visible = index == 3
@@ -2297,12 +2335,15 @@ class MainWindow(QMainWindow):
                 action.setVisible(template_library_visible)
         for action in template_editor_actions:
             if action is not None:
-                action.setVisible(template_editor_visible)
+                action.setVisible(False)
         if getattr(self, "ribbon_close_template_action", None) is not None:
-            self.ribbon_close_template_action.setVisible(template_visible)
+            self.ribbon_close_template_action.setVisible(template_library_visible)
 
+        if hasattr(self, "main_ribbon"):
+            self.main_ribbon.setVisible(index != 4)
         if hasattr(self, "template_module_menu"):
             self.template_module_menu.menuAction().setVisible(template_visible)
+            self._rebuild_template_module_menu(library_mode=template_library_visible, editor_mode=template_editor_visible)
         if hasattr(self, "act_close_template_module"):
             self.act_close_template_module.setVisible(template_visible)
 
@@ -9241,6 +9282,8 @@ class MainWindow(QMainWindow):
                 widget.deleteLater()
         editor = TemplateEditorWindow(self, on_template_saved=lambda path, name: self._handle_template_saved(path, name))
         editor.setWindowFlags(Qt.Widget)
+        close_action = editor.template_toolbar.addAction(self.style().standardIcon(QStyle.SP_DialogCloseButton), "Close", self._close_template_module)
+        close_action.setToolTip("Close")
         self.template_editor_embedded = editor
         self.template_editor_layout.addWidget(editor)
         self.template_editor_mode = "editor"

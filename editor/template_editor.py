@@ -351,6 +351,7 @@ class TemplateEditorWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("Template Editor")
         self.resize(1620, 940)
+        self.setWindowState(self.windowState() | Qt.WindowMaximized)
 
         self.template_engine = TemplateEngine()
         self.omr = OMRProcessor()
@@ -392,12 +393,12 @@ class TemplateEditorWindow(QMainWindow):
         self._build_menus()
         self._assign_action_icons()
 
-        toolbar = QToolBar("Template")
-        toolbar.setMovable(False)
-        toolbar.setFloatable(False)
-        toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly)
-        toolbar.setIconSize(QSize(18, 18))
-        self.addToolBar(toolbar)
+        self.template_toolbar = QToolBar("Template")
+        self.template_toolbar.setMovable(False)
+        self.template_toolbar.setFloatable(False)
+        self.template_toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.template_toolbar.setIconSize(QSize(18, 18))
+        self.addToolBar(self.template_toolbar)
         for act in [
             self.act_load_blank,
             self.act_open_template,
@@ -413,18 +414,18 @@ class TemplateEditorWindow(QMainWindow):
             self.act_delete_anchor,
             self.act_snap_grid,
         ]:
-            toolbar.addAction(act)
+            self.template_toolbar.addAction(act)
 
         self.anchor_btn = QPushButton("Add Anchor"); self.anchor_btn.setCheckable(True)
         self.anchor_btn.toggled.connect(lambda c: setattr(self.canvas, "add_anchor_mode", c))
-        toolbar.addWidget(self.anchor_btn)
+        self.template_toolbar.addWidget(self.anchor_btn)
 
-        toolbar.addWidget(QLabel(" Zone Type: "))
+        self.template_toolbar.addWidget(QLabel(" Zone Type: "))
         self.zone_type = QComboBox(); self.zone_type.addItems([z.value for z in [ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK, ZoneType.MCQ_BLOCK, ZoneType.TRUE_FALSE_BLOCK, ZoneType.NUMERIC_BLOCK]])
         self.zone_type.currentTextChanged.connect(self._on_zone_type_changed)
-        toolbar.addWidget(self.zone_type)
+        self.template_toolbar.addWidget(self.zone_type)
 
-        toolbar.addWidget(QLabel(" Alignment: "))
+        self.template_toolbar.addWidget(QLabel(" Alignment: "))
         self.align_profile_combo = QComboBox()
         self.align_profile_combo.addItem("Auto", "auto")
         self.align_profile_combo.addItem("Legacy", "legacy")
@@ -432,9 +433,9 @@ class TemplateEditorWindow(QMainWindow):
         self.align_profile_combo.addItem("One-side ruler", "one_side")
         self.align_profile_combo.addItem("Hybrid", "hybrid")
         self.align_profile_combo.currentIndexChanged.connect(self._on_alignment_profile_changed)
-        toolbar.addWidget(self.align_profile_combo)
+        self.template_toolbar.addWidget(self.align_profile_combo)
 
-        toolbar.addWidget(QLabel(" Fill threshold: "))
+        self.template_toolbar.addWidget(QLabel(" Fill threshold: "))
         self.fill_threshold_spin = QDoubleSpinBox()
         self.fill_threshold_spin.setDecimals(2)
         self.fill_threshold_spin.setRange(0.05, 0.95)
@@ -442,10 +443,10 @@ class TemplateEditorWindow(QMainWindow):
         self.fill_threshold_spin.setValue(0.45)
         self.fill_threshold_spin.setToolTip("Tăng để giảm nhận nhầm vết mờ/vết tẩy; giảm nếu bỏ sót nét tô nhẹ.")
         self.fill_threshold_spin.valueChanged.connect(self._on_fill_threshold_changed)
-        toolbar.addWidget(self.fill_threshold_spin)
+        self.template_toolbar.addWidget(self.fill_threshold_spin)
 
-        toolbar.addAction(self.act_zoom_in)
-        toolbar.addAction(self.act_zoom_out)
+        self.template_toolbar.addAction(self.act_zoom_in)
+        self.template_toolbar.addAction(self.act_zoom_out)
 
         self.result_box = QTextEdit(); self.result_box.setReadOnly(True); self.result_box.setMaximumHeight(160)
         self.prop_panel = self._build_prop_panel()
