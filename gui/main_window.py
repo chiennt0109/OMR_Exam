@@ -2008,10 +2008,10 @@ class MainWindow(QMainWindow):
         act_close_current.triggered.connect(self.action_close_current_session)
 
         file_menu.addSeparator()
-        act_manage_template = file_menu.addAction("Quản lý mẫu giấy thi")
-        act_manage_template.triggered.connect(self.action_manage_template)
-        act_close_template_module = file_menu.addAction("Đóng quản lý mẫu giấy thi")
-        act_close_template_module.triggered.connect(self._close_template_module)
+        self.act_manage_template = file_menu.addAction("Quản lý mẫu giấy thi")
+        self.act_manage_template.triggered.connect(self.action_manage_template)
+        self.act_close_template_module = file_menu.addAction("Đóng quản lý mẫu giấy thi")
+        self.act_close_template_module.triggered.connect(self._close_template_module)
 
         act_manage_subject = file_menu.addAction("Quản lý môn học")
         act_manage_subject.triggered.connect(self.action_manage_subjects)
@@ -2033,6 +2033,17 @@ class MainWindow(QMainWindow):
         scoring_menu = self.menuBar().addMenu("Scoring")
         scoring_menu.addAction("Calculate & Preview Scores", self.action_calculate_scores)
         scoring_menu.addAction("Export Results", self.action_export_results)
+
+        self.template_module_menu = self.menuBar().addMenu("Template Editor")
+        self.template_module_menu.addAction("Tạo mới", self._create_new_template)
+        self.template_module_menu.addAction("Sửa", self._edit_selected_template)
+        self.template_module_menu.addAction("Xoá", self._delete_selected_template)
+        self.template_module_menu.addSeparator()
+        self.template_module_menu.addAction("Save", self._save_current_template)
+        self.template_module_menu.addAction("Save As", self._save_current_template_as)
+        self.template_module_menu.addSeparator()
+        self.template_module_menu.addAction("Close", self._close_template_module)
+
         toolbar = QToolBar("Ribbon")
         toolbar.setMovable(False)
         toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
@@ -2283,26 +2294,10 @@ class MainWindow(QMainWindow):
         if getattr(self, "ribbon_close_template_action", None) is not None:
             self.ribbon_close_template_action.setVisible(template_visible)
 
-    def _handle_stack_changed(self, index: int) -> None:
-        subject_management_visible = index == 2
-        for action in [
-            getattr(self, "ribbon_new_exam_action", None),
-            getattr(self, "ribbon_view_exam_action", None),
-            getattr(self, "ribbon_delete_exam_action", None),
-            getattr(self, "ribbon_batch_scan_action", None),
-            getattr(self, "ribbon_scoring_action", None),
-            getattr(self, "ribbon_export_action", None),
-        ]:
-            if action is not None:
-                action.setVisible(not subject_management_visible)
-        for action in [
-            getattr(self, "ribbon_add_subject_action", None),
-            getattr(self, "ribbon_edit_subject_action", None),
-            getattr(self, "ribbon_delete_subject_action", None),
-            getattr(self, "ribbon_save_subject_action", None),
-        ]:
-            if action is not None:
-                action.setVisible(subject_management_visible)
+        if hasattr(self, "template_module_menu"):
+            self.template_module_menu.menuAction().setVisible(template_visible)
+        if hasattr(self, "act_close_template_module"):
+            self.act_close_template_module.setVisible(template_visible)
 
     def action_manage_subjects(self) -> None:
         self.manage_subjects()
@@ -9237,6 +9232,7 @@ class MainWindow(QMainWindow):
                 widget.deleteLater()
         editor = TemplateEditorWindow(self, on_template_saved=lambda path, name: self._handle_template_saved(path, name))
         editor.setWindowFlags(Qt.Widget)
+        editor.menuBar().setVisible(False)
         self.template_editor_embedded = editor
         self.template_editor_layout.addWidget(editor)
         self.template_editor_mode = "editor"
