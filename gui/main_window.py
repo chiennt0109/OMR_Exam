@@ -9282,6 +9282,7 @@ class MainWindow(QMainWindow):
                 widget.deleteLater()
         editor = TemplateEditorWindow(self, on_template_saved=lambda path, name: self._handle_template_saved(path, name))
         editor.setWindowFlags(Qt.Widget)
+        editor.menuBar().setVisible(False)
         close_action = editor.template_toolbar.addAction(self.style().standardIcon(QStyle.SP_DialogCloseButton), "Close", self._close_template_module)
         close_action.setToolTip("Close")
         self.template_editor_embedded = editor
