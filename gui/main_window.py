@@ -1026,6 +1026,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("OMR Exam Grading System")
         self.resize(1200, 800)
+        self.setFixedSize(1200, 800)
 
         self.session: ExamSession | None = None
         self.template: Template | None = None
@@ -1102,11 +1103,14 @@ class MainWindow(QMainWindow):
     def _build_template_management_page(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
-        layout.addWidget(QLabel("Kho mẫu giấy thi"))
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
         split = QSplitter()
         left = QWidget()
         left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(0)
         self.template_library_table = QTableWidget(0, 2)
         self.template_library_table.setHorizontalHeaderLabels(["STT", "Tên mẫu"])
         self.template_library_table.verticalHeader().setVisible(False)
@@ -1121,8 +1125,11 @@ class MainWindow(QMainWindow):
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
         self.template_preview_title = QLabel("Chưa chọn mẫu giấy thi")
         self.template_preview_title.setWordWrap(True)
+        self.template_preview_title.setContentsMargins(0, 0, 0, 4)
         self.template_preview_image = QLabel("Chọn mẫu giấy thi ở danh sách bên trái")
         self.template_preview_image.setAlignment(Qt.AlignCenter)
         self.template_preview_image.setMinimumHeight(420)
@@ -1132,7 +1139,7 @@ class MainWindow(QMainWindow):
         split.addWidget(right)
         split.setStretchFactor(0, 1)
         split.setStretchFactor(1, 2)
-        layout.addWidget(split)
+        layout.addWidget(split, 1)
         return w
 
     def _refresh_template_library(self) -> None:
@@ -9195,6 +9202,8 @@ class MainWindow(QMainWindow):
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
         right_layout.addWidget(self.preview_label)
         right_layout.addWidget(self.result_preview)
         right_layout.addWidget(QLabel("Manual Edit"))
@@ -9232,7 +9241,6 @@ class MainWindow(QMainWindow):
                 widget.deleteLater()
         editor = TemplateEditorWindow(self, on_template_saved=lambda path, name: self._handle_template_saved(path, name))
         editor.setWindowFlags(Qt.Widget)
-        editor.menuBar().setVisible(False)
         self.template_editor_embedded = editor
         self.template_editor_layout.addWidget(editor)
         self.template_editor_mode = "editor"
