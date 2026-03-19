@@ -2283,6 +2283,27 @@ class MainWindow(QMainWindow):
         if getattr(self, "ribbon_close_template_action", None) is not None:
             self.ribbon_close_template_action.setVisible(template_visible)
 
+    def _handle_stack_changed(self, index: int) -> None:
+        subject_management_visible = index == 2
+        for action in [
+            getattr(self, "ribbon_new_exam_action", None),
+            getattr(self, "ribbon_view_exam_action", None),
+            getattr(self, "ribbon_delete_exam_action", None),
+            getattr(self, "ribbon_batch_scan_action", None),
+            getattr(self, "ribbon_scoring_action", None),
+            getattr(self, "ribbon_export_action", None),
+        ]:
+            if action is not None:
+                action.setVisible(not subject_management_visible)
+        for action in [
+            getattr(self, "ribbon_add_subject_action", None),
+            getattr(self, "ribbon_edit_subject_action", None),
+            getattr(self, "ribbon_delete_subject_action", None),
+            getattr(self, "ribbon_save_subject_action", None),
+        ]:
+            if action is not None:
+                action.setVisible(subject_management_visible)
+
     def action_manage_subjects(self) -> None:
         self.manage_subjects()
 
