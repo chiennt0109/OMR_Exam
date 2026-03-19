@@ -1046,6 +1046,10 @@ class MainWindow(QMainWindow):
         self.active_batch_subject_key: str | None = None
         self.subject_catalog: list[str] = ["Toán", "Ngữ văn", "Tiếng Anh", "Vật lý", "Hóa học", "Sinh học"]
         self.block_catalog: list[str] = ["10", "11", "12"]
+        self.subjects: list[str] = list(self.subject_catalog)
+        self.grades: list[str] = list(self.block_catalog)
+        self.subject_management_mode = "subjects"
+        self.subject_edit_index: int | None = None
         self.batch_editor_return_payload: dict | None = None
         self.batch_editor_return_session_id: str | None = None
 
@@ -1082,8 +1086,10 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.stack)
 
         self._build_menu()
+        self.stack.currentChanged.connect(self._handle_stack_changed)
         self._refresh_exam_list()
         self._refresh_batch_subject_controls()
+        self._handle_stack_changed(self.stack.currentIndex())
         self.stack.setCurrentIndex(0)
 
     def resizeEvent(self, event) -> None:
@@ -1290,28 +1296,127 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(w)
         layout.addWidget(QLabel("Quản lý môn học và khối"))
 
+        tables_row = QHBoxLayout()
+
+        self.subjects_table = QTableWidget(0, 1)
+        self.subjects_table.setHorizontalHeaderLabels(["Subject Name"])
+        self.subjects_table.verticalHeader().setVisible(False)
+        self.subjects_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.subjects_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.subjects_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.subjects_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.subjects_table.itemSelectionChanged.connect(lambda: self._handle_subject_management_selection("subjects"))
+
+        self.grades_table = QTableWidget(0, 1)
+        self.grades_table.setHorizontalHeaderLabels(["Grade"])
+        self.grades_table.verticalHeader().setVisible(False)
+        self.grades_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.grades_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.grades_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.grades_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.grades_table.itemSelectionChanged.connect(lambda: self._handle_subject_management_selection("grades"))
+
+        tables_row.addWidget(self.subjects_table)
+        tables_row.addWidget(self.grades_table)
+        layout.addLayout(tables_row)
+
         form = QFormLayout()
-        self.subject_catalog_editor = QLineEdit(", ".join(self.subject_catalog))
-        self.block_catalog_editor = QLineEdit(", ".join(self.block_catalog))
-        form.addRow("Danh sách môn (phân tách dấu phẩy)", self.subject_catalog_editor)
-        form.addRow("Danh sách khối (phân tách dấu phẩy)", self.block_catalog_editor)
+        self.subject_management_label = QLabel("Subject Name")
+        self.subject_management_editor = QLineEdit()
+        self.subject_management_editor.setPlaceholderText("Nhập giá trị đang chọn")
+        form.addRow(self.subject_management_label, self.subject_management_editor)
         layout.addLayout(form)
 
         btn_row = QHBoxLayout()
-        btn_save = QPushButton("Lưu")
+        btn_add = QPushButton("Add")
+        btn_add.clicked.connect(self._subject_management_add)
+        btn_edit = QPushButton("Edit")
+        btn_edit.clicked.connect(self._subject_management_edit)
+        btn_delete = QPushButton("Delete")
+        btn_delete.clicked.connect(self._subject_management_delete)
+        btn_save = QPushButton("Save")
         btn_save.clicked.connect(self._save_subject_management)
         btn_back = QPushButton("Đóng")
         btn_back.clicked.connect(lambda: self.stack.setCurrentIndex(0))
-        btn_row.addWidget(btn_save)
-        btn_row.addWidget(btn_back)
+        for btn in [btn_add, btn_edit, btn_delete, btn_save, btn_back]:
+            btn_row.addWidget(btn)
         btn_row.addStretch()
         layout.addLayout(btn_row)
-        layout.addStretch()
+        self._refresh_subject_management_tables()
         return w
 
-    @staticmethod
-    def _parse_catalog_items(raw_text: str) -> list[str]:
-        return [x.strip() for x in str(raw_text or "").split(",") if x.strip()]
+    def _subject_management_values(self, mode: str) -> list[str]:
+        return self.subjects if mode == "subjects" else self.grades
+
+    def _subject_management_table(self, mode: str) -> QTableWidget:
+        return self.subjects_table if mode == "subjects" else self.grades_table
+
+    def _set_subject_management_mode(self, mode: str) -> None:
+        self.subject_management_mode = mode
+        self.subject_management_label.setText("Subject Name" if mode == "subjects" else "Grade")
+
+    def _refresh_subject_management_tables(self) -> None:
+        self.subjects = list(self.subject_catalog)
+        self.grades = list(self.block_catalog)
+        for mode, values in (("subjects", self.subjects), ("grades", self.grades)):
+            table = self._subject_management_table(mode)
+            table.blockSignals(True)
+            table.setRowCount(len(values))
+            for row, value in enumerate(values):
+                table.setItem(row, 0, QTableWidgetItem(value))
+            table.clearSelection()
+            table.blockSignals(False)
+        self._subject_management_add()
+
+    def _handle_subject_management_selection(self, mode: str) -> None:
+        table = self._subject_management_table(mode)
+        row = table.currentRow()
+        if row < 0:
+            return
+        other_mode = "grades" if mode == "subjects" else "subjects"
+        other_table = self._subject_management_table(other_mode)
+        other_table.blockSignals(True)
+        other_table.clearSelection()
+        other_table.blockSignals(False)
+        values = self._subject_management_values(mode)
+        self._set_subject_management_mode(mode)
+        self.subject_edit_index = row
+        self.subject_management_editor.setText(values[row] if row < len(values) else "")
+
+    def _subject_management_add(self) -> None:
+        self.subject_edit_index = None
+        self.subject_management_editor.clear()
+        self._set_subject_management_mode(self.subject_management_mode or "subjects")
+        self.subject_management_editor.setFocus()
+
+    def _subject_management_edit(self) -> None:
+        table = self._subject_management_table(self.subject_management_mode)
+        row = table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Quản lý môn học", "Vui lòng chọn một dòng để chỉnh sửa.")
+            return
+        values = self._subject_management_values(self.subject_management_mode)
+        self.subject_edit_index = row
+        self.subject_management_editor.setText(values[row] if row < len(values) else "")
+        self.subject_management_editor.setFocus()
+
+    def _subject_management_delete(self) -> None:
+        table = self._subject_management_table(self.subject_management_mode)
+        row = table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Quản lý môn học", "Vui lòng chọn một dòng để xoá.")
+            return
+        values = self._subject_management_values(self.subject_management_mode)
+        if row >= len(values):
+            return
+        del values[row]
+        self._apply_subject_management_values()
+        self._refresh_subject_management_tables()
+        self._set_subject_management_mode(self.subject_management_mode)
+
+    def _apply_subject_management_values(self) -> None:
+        self.subject_catalog = list(self.subjects)
+        self.block_catalog = list(self.grades)
 
     def _sync_subject_configs_with_catalog(self) -> bool:
         if not self.session:
@@ -1335,17 +1440,30 @@ class MainWindow(QMainWindow):
         return changed
 
     def _save_subject_management(self) -> None:
-        subjects = self._parse_catalog_items(self.subject_catalog_editor.text())
-        blocks = self._parse_catalog_items(self.block_catalog_editor.text())
-        if not subjects:
+        value = self.subject_management_editor.text().strip()
+        values = self._subject_management_values(self.subject_management_mode)
+        label = "môn học" if self.subject_management_mode == "subjects" else "khối"
+        if value:
+            if self.subject_edit_index is None:
+                values.append(value)
+            else:
+                values[self.subject_edit_index] = value
+        if not self.subjects:
             QMessageBox.warning(self, "Quản lý môn học", "Danh sách môn học không được để trống.")
             return
-        if not blocks:
+        if not self.grades:
             QMessageBox.warning(self, "Quản lý khối", "Danh sách khối không được để trống.")
             return
 
-        self.subject_catalog = subjects
-        self.block_catalog = blocks
+        normalized = [item.strip() for item in values if item.strip()]
+        if len(normalized) != len(set(x.casefold() for x in normalized)):
+            QMessageBox.warning(self, "Quản lý môn học", f"Danh sách {label} không được trùng lặp.")
+            return
+        if self.subject_management_mode == "subjects":
+            self.subjects = normalized
+        else:
+            self.grades = normalized
+        self._apply_subject_management_values()
         self.session_dirty = True
 
         if self.session:
@@ -1360,7 +1478,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Quản lý môn học", "Đã cập nhật danh sách môn và khối.")
         else:
             QMessageBox.information(self, "Quản lý môn học", "Đã cập nhật danh sách môn và khối.")
-        self.stack.setCurrentIndex(0)
+        self._refresh_subject_management_tables()
+        self._set_subject_management_mode(self.subject_management_mode)
 
     def _build_workspace_page(self) -> QWidget:
         central = QWidget()
@@ -1825,14 +1944,19 @@ class MainWindow(QMainWindow):
 
         style = self.style()
         # Session actions
-        toolbar.addAction(style.standardIcon(QStyle.SP_FileIcon), "Tạo mới", self.action_create_session)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Xem", self._edit_selected_registry_session)
-        toolbar.addAction(style.standardIcon(QStyle.SP_TrashIcon), "Xoá", self._delete_selected_registry_session)
+        self.ribbon_new_exam_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileIcon), "Tạo mới", self.action_create_session)
+        self.ribbon_view_exam_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Xem", self._edit_selected_registry_session)
+        self.ribbon_delete_exam_action = toolbar.addAction(style.standardIcon(QStyle.SP_TrashIcon), "Xoá", self._delete_selected_registry_session)
         toolbar.addSeparator()
         # Workflow actions
-        toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Nhận dạng", self.action_run_batch_scan)
-        toolbar.addAction(style.standardIcon(QStyle.SP_CommandLink), "Tính điểm", self.action_calculate_scores)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DriveNetIcon), "Xuất KQ", self.action_export_results)
+        self.ribbon_batch_scan_action = toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Nhận dạng", self.action_run_batch_scan)
+        self.ribbon_scoring_action = toolbar.addAction(style.standardIcon(QStyle.SP_CommandLink), "Tính điểm", self.action_calculate_scores)
+        self.ribbon_export_action = toolbar.addAction(style.standardIcon(QStyle.SP_DriveNetIcon), "Xuất KQ", self.action_export_results)
+        toolbar.addSeparator()
+        self.ribbon_add_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogNewFolder), "Add Subject", self._subject_management_add)
+        self.ribbon_edit_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Edit", self._subject_management_edit)
+        self.ribbon_delete_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_TrashIcon), "Delete Subject", self._subject_management_delete)
+        self.ribbon_save_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Save", self._save_subject_management)
 
     def open_session(self) -> None:
         if self.session and self.session_dirty:
@@ -1967,8 +2091,8 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(0)
 
     def manage_subjects(self) -> None:
-        self.subject_catalog_editor.setText(", ".join(self.subject_catalog))
-        self.block_catalog_editor.setText(", ".join(self.block_catalog))
+        self._refresh_subject_management_tables()
+        self._set_subject_management_mode("subjects")
         self.stack.setCurrentIndex(2)
 
     def action_create_session(self) -> None:
@@ -2012,6 +2136,27 @@ class MainWindow(QMainWindow):
     def action_manage_template(self) -> None:
         if self._confirm("Quản lý mẫu giấy thi", "Mở trình quản lý mẫu giấy thi?"):
             self.open_template_editor()
+
+    def _handle_stack_changed(self, index: int) -> None:
+        subject_management_visible = index == 2
+        for action in [
+            getattr(self, "ribbon_new_exam_action", None),
+            getattr(self, "ribbon_view_exam_action", None),
+            getattr(self, "ribbon_delete_exam_action", None),
+            getattr(self, "ribbon_batch_scan_action", None),
+            getattr(self, "ribbon_scoring_action", None),
+            getattr(self, "ribbon_export_action", None),
+        ]:
+            if action is not None:
+                action.setVisible(not subject_management_visible)
+        for action in [
+            getattr(self, "ribbon_add_subject_action", None),
+            getattr(self, "ribbon_edit_subject_action", None),
+            getattr(self, "ribbon_delete_subject_action", None),
+            getattr(self, "ribbon_save_subject_action", None),
+        ]:
+            if action is not None:
+                action.setVisible(subject_management_visible)
 
     def action_manage_subjects(self) -> None:
         self.manage_subjects()
