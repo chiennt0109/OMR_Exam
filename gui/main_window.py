@@ -1063,11 +1063,18 @@ class MainWindow(QMainWindow):
         self.session_registry: list[dict[str, str | bool]] = self._load_session_registry()
         self.template_repo_path = Path.home() / ".omr_template_repository.json"
         self.template_repo = TemplateRepository.load_json(self.template_repo_path)
+        self.template_editor_embedded: TemplateEditorWindow | None = None
+        self.template_editor_mode = "library"
 
         self.stack = QStackedWidget()
         self.stack.addWidget(self._build_exam_list_page())
         self.stack.addWidget(self._build_workspace_page())
         self.stack.addWidget(self._build_subject_management_page())
+        self.stack.addWidget(self._build_template_management_page())
+        self.template_editor_page = QWidget()
+        self.template_editor_layout = QVBoxLayout(self.template_editor_page)
+        self.template_editor_layout.setContentsMargins(0, 0, 0, 0)
+        self.stack.addWidget(self.template_editor_page)
         self.exam_editor_page = QWidget()
         self.exam_editor_layout = QVBoxLayout(self.exam_editor_page)
         self.exam_editor_layout.setContentsMargins(0, 0, 0, 0)
@@ -1091,6 +1098,93 @@ class MainWindow(QMainWindow):
         self._refresh_batch_subject_controls()
         self._handle_stack_changed(self.stack.currentIndex())
         self.stack.setCurrentIndex(0)
+
+    def _build_template_management_page(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.addWidget(QLabel("Kho mẫu giấy thi"))
+
+        split = QSplitter()
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        self.template_library_table = QTableWidget(0, 2)
+        self.template_library_table.setHorizontalHeaderLabels(["STT", "Tên mẫu"])
+        self.template_library_table.verticalHeader().setVisible(False)
+        self.template_library_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.template_library_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.template_library_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.template_library_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.template_library_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.template_library_table.itemSelectionChanged.connect(self._handle_template_library_selection)
+        left_layout.addWidget(self.template_library_table)
+        split.addWidget(left)
+
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        self.template_preview_title = QLabel("Chưa chọn mẫu giấy thi")
+        self.template_preview_title.setWordWrap(True)
+        self.template_preview_image = QLabel("Chọn mẫu giấy thi ở danh sách bên trái")
+        self.template_preview_image.setAlignment(Qt.AlignCenter)
+        self.template_preview_image.setMinimumHeight(420)
+        self.template_preview_image.setStyleSheet("border: 1px solid #cfcfcf; background: #fafafa;")
+        right_layout.addWidget(self.template_preview_title)
+        right_layout.addWidget(self.template_preview_image, 1)
+        split.addWidget(right)
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 2)
+        layout.addWidget(split)
+        return w
+
+    def _refresh_template_library(self) -> None:
+        rows = self.template_repo.list_templates()
+        self.template_library_table.setRowCount(len(rows))
+        selected_row = 0 if rows else -1
+        for idx, (name, path) in enumerate(rows):
+            num_item = QTableWidgetItem(str(idx + 1))
+            name_item = QTableWidgetItem(name)
+            name_item.setData(Qt.UserRole, path)
+            self.template_library_table.setItem(idx, 0, num_item)
+            self.template_library_table.setItem(idx, 1, name_item)
+        if rows:
+            self.template_library_table.selectRow(selected_row)
+            self._update_template_preview_by_row(selected_row)
+        else:
+            self.template_preview_title.setText("Kho mẫu giấy thi đang trống")
+            self.template_preview_image.setPixmap(QPixmap())
+            self.template_preview_image.setText("Chưa có mẫu giấy thi trong kho")
+
+    def _handle_template_library_selection(self) -> None:
+        row = self.template_library_table.currentRow()
+        self._update_template_preview_by_row(row)
+
+    def _update_template_preview_by_row(self, row: int) -> None:
+        if row < 0:
+            self.template_preview_title.setText("Chưa chọn mẫu giấy thi")
+            self.template_preview_image.setPixmap(QPixmap())
+            self.template_preview_image.setText("Chọn mẫu giấy thi ở danh sách bên trái")
+            return
+        item = self.template_library_table.item(row, 1)
+        template_path = str(item.data(Qt.UserRole) if item else "")
+        if not template_path:
+            return
+        try:
+            tpl = Template.load_json(template_path)
+            img_path = Path(tpl.image_path)
+            if not img_path.is_absolute():
+                img_path = (Path(template_path).parent / img_path).resolve()
+            pix = QPixmap(str(img_path))
+            self.template_preview_title.setText(f"{row + 1}. {tpl.name}")
+            if pix.isNull():
+                self.template_preview_image.setPixmap(QPixmap())
+                self.template_preview_image.setText("Không thể tải ảnh mẫu giấy thi")
+                return
+            scaled = pix.scaled(self.template_preview_image.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.template_preview_image.setPixmap(scaled)
+            self.template_preview_image.setText("")
+        except Exception:
+            self.template_preview_title.setText(f"{row + 1}. Không thể đọc mẫu giấy thi")
+            self.template_preview_image.setPixmap(QPixmap())
+            self.template_preview_image.setText("Không thể đọc dữ liệu mẫu giấy thi")
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -1120,7 +1214,7 @@ class MainWindow(QMainWindow):
             return True
         if hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled():
             return True
-        if self.stack.currentIndex() == 3 and self.embedded_exam_dialog:
+        if self.stack.currentIndex() == 5 and self.embedded_exam_dialog:
             return True
         return False
 
@@ -1170,7 +1264,7 @@ class MainWindow(QMainWindow):
         return "cancel"
 
     def _save_current_work(self) -> bool:
-        if self.stack.currentIndex() == 3 and self.embedded_exam_dialog:
+        if self.stack.currentIndex() == 5 and self.embedded_exam_dialog:
             return bool(self._save_embedded_exam_editor())
 
         if hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled():
@@ -1641,7 +1735,7 @@ class MainWindow(QMainWindow):
         dlg.rejected.connect(self._close_embedded_exam_editor)
         self.embedded_exam_dialog = dlg
         self.exam_editor_layout.addWidget(dlg)
-        self.stack.setCurrentIndex(3)
+        self.stack.setCurrentIndex(5)
 
     def _save_embedded_exam_editor(self) -> bool:
         if not self.embedded_exam_dialog or not self.embedded_exam_session_id:
@@ -1916,6 +2010,8 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         act_manage_template = file_menu.addAction("Quản lý mẫu giấy thi")
         act_manage_template.triggered.connect(self.action_manage_template)
+        act_close_template_module = file_menu.addAction("Đóng quản lý mẫu giấy thi")
+        act_close_template_module.triggered.connect(self._close_template_module)
 
         act_manage_subject = file_menu.addAction("Quản lý môn học")
         act_manage_subject.triggered.connect(self.action_manage_subjects)
@@ -1957,6 +2053,13 @@ class MainWindow(QMainWindow):
         self.ribbon_edit_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Edit", self._subject_management_edit)
         self.ribbon_delete_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_TrashIcon), "Delete Subject", self._subject_management_delete)
         self.ribbon_save_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Save", self._save_subject_management)
+        toolbar.addSeparator()
+        self.ribbon_new_template_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileIcon), "Tạo mới", self._create_new_template)
+        self.ribbon_edit_template_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Sửa", self._edit_selected_template)
+        self.ribbon_delete_template_action = toolbar.addAction(style.standardIcon(QStyle.SP_TrashIcon), "Xoá", self._delete_selected_template)
+        self.ribbon_save_template_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Save", self._save_current_template)
+        self.ribbon_save_template_as_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Save As", self._save_current_template_as)
+        self.ribbon_close_template_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogCloseButton), "Close", self._close_template_module)
 
     def open_session(self) -> None:
         if self.session and self.session_dirty:
@@ -2118,8 +2221,11 @@ class MainWindow(QMainWindow):
 
     def action_save_session(self) -> None:
         if self._confirm("Lưu kỳ thi", "Bạn có chắc muốn lưu kỳ thi?"):
-            if self.stack.currentIndex() == 3 and self.embedded_exam_dialog:
+            if self.stack.currentIndex() == 5 and self.embedded_exam_dialog:
                 self._save_embedded_exam_editor()
+                return
+            if self.stack.currentIndex() == 4 and self.template_editor_embedded:
+                self._save_current_template()
                 return
             self.save_session()
 
@@ -2134,8 +2240,48 @@ class MainWindow(QMainWindow):
             self.close_current_session()
 
     def action_manage_template(self) -> None:
-        if self._confirm("Quản lý mẫu giấy thi", "Mở trình quản lý mẫu giấy thi?"):
-            self.open_template_editor()
+        self.open_template_editor()
+
+    def _handle_stack_changed(self, index: int) -> None:
+        subject_management_visible = index == 2
+        template_library_visible = index == 3
+        template_editor_visible = index == 4
+        template_visible = template_library_visible or template_editor_visible
+        for action in [
+            getattr(self, "ribbon_new_exam_action", None),
+            getattr(self, "ribbon_view_exam_action", None),
+            getattr(self, "ribbon_delete_exam_action", None),
+            getattr(self, "ribbon_batch_scan_action", None),
+            getattr(self, "ribbon_scoring_action", None),
+            getattr(self, "ribbon_export_action", None),
+        ]:
+            if action is not None:
+                action.setVisible(not subject_management_visible and not template_visible)
+        for action in [
+            getattr(self, "ribbon_add_subject_action", None),
+            getattr(self, "ribbon_edit_subject_action", None),
+            getattr(self, "ribbon_delete_subject_action", None),
+            getattr(self, "ribbon_save_subject_action", None),
+        ]:
+            if action is not None:
+                action.setVisible(subject_management_visible)
+        template_library_actions = [
+            getattr(self, "ribbon_new_template_action", None),
+            getattr(self, "ribbon_edit_template_action", None),
+            getattr(self, "ribbon_delete_template_action", None),
+        ]
+        template_editor_actions = [
+            getattr(self, "ribbon_save_template_action", None),
+            getattr(self, "ribbon_save_template_as_action", None),
+        ]
+        for action in template_library_actions:
+            if action is not None:
+                action.setVisible(template_library_visible)
+        for action in template_editor_actions:
+            if action is not None:
+                action.setVisible(template_editor_visible)
+        if getattr(self, "ribbon_close_template_action", None) is not None:
+            self.ribbon_close_template_action.setVisible(template_visible)
 
     def _handle_stack_changed(self, index: int) -> None:
         subject_management_visible = index == 2
@@ -9067,6 +9213,108 @@ class MainWindow(QMainWindow):
         return w
 
 
+    def _selected_template_repository_entry(self) -> tuple[str, str] | None:
+        row = self.template_library_table.currentRow() if hasattr(self, "template_library_table") else -1
+        if row < 0:
+            return None
+        item = self.template_library_table.item(row, 1)
+        if not item:
+            return None
+        return item.text(), str(item.data(Qt.UserRole) or "")
+
+    def _register_single_template(self, template_path: str, display_name: str | None = None) -> None:
+        self.template_repo.register(template_path, display_name=display_name)
+        self._save_template_repository()
+        self._refresh_template_library()
+
+    def _open_embedded_template_editor(self, template_path: str = "") -> bool:
+        if self.template_editor_embedded and not self._close_embedded_template_editor():
+            return False
+        while self.template_editor_layout.count():
+            item = self.template_editor_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        editor = TemplateEditorWindow(self, on_template_saved=lambda path, name: self._handle_template_saved(path, name))
+        editor.setWindowFlags(Qt.Widget)
+        self.template_editor_embedded = editor
+        self.template_editor_layout.addWidget(editor)
+        self.template_editor_mode = "editor"
+        self.stack.setCurrentIndex(4)
+        if template_path:
+            return bool(editor.load_template_from_path(template_path))
+        return True
+
+    def _handle_template_saved(self, template_path: str, display_name: str) -> None:
+        self._register_single_template(template_path, display_name=display_name)
+
+    def _create_new_template(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Chọn ảnh mẫu giấy thi", "", "Images (*.png *.jpg *.jpeg *.tif *.tiff)")
+        if not path:
+            return
+        if not self._open_embedded_template_editor():
+            return
+        if not self.template_editor_embedded or not self.template_editor_embedded.load_image_from_path(path):
+            return
+        self.stack.setCurrentIndex(4)
+
+    def _edit_selected_template(self) -> None:
+        selected = self._selected_template_repository_entry()
+        if not selected:
+            return
+        _, template_path = selected
+        if not template_path:
+            return
+        if not self._open_embedded_template_editor(template_path):
+            return
+        self.stack.setCurrentIndex(4)
+
+    def _delete_selected_template(self) -> None:
+        selected = self._selected_template_repository_entry()
+        if not selected:
+            return
+        name, template_path = selected
+        if not self._confirm("Xoá mẫu giấy thi", f"Bạn có chắc muốn xoá mẫu giấy thi '{name}' khỏi kho?"):
+            return
+        self.template_repo.templates.pop(name, None)
+        self._save_template_repository()
+        if template_path and Path(template_path).exists():
+            try:
+                Path(template_path).unlink()
+            except Exception:
+                pass
+        self._refresh_template_library()
+
+    def _save_current_template(self) -> bool:
+        if not self.template_editor_embedded:
+            return False
+        return bool(self.template_editor_embedded.save_template())
+
+    def _save_current_template_as(self) -> bool:
+        if not self.template_editor_embedded:
+            return False
+        return bool(self.template_editor_embedded.save_template_as())
+
+    def _close_embedded_template_editor(self) -> bool:
+        if self.template_editor_embedded and not self.template_editor_embedded._confirm_close():
+            return False
+        while self.template_editor_layout.count():
+            item = self.template_editor_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        self.template_editor_embedded = None
+        self.template_editor_mode = "library"
+        self._refresh_template_library()
+        self.stack.setCurrentIndex(3)
+        return True
+
+    def _close_template_module(self) -> bool:
+        if self.template_editor_embedded:
+            return self._close_embedded_template_editor()
+        self.stack.setCurrentIndex(0)
+        return True
+
     def _save_template_repository(self) -> None:
         try:
             self.template_repo.save_json(self.template_repo_path)
@@ -9167,8 +9415,9 @@ class MainWindow(QMainWindow):
         self._refresh_session_info()
 
     def open_template_editor(self) -> None:
-        self.editor = TemplateEditorWindow()
-        self.editor.show()
+        self._refresh_template_library()
+        self.template_editor_mode = "library"
+        self.stack.setCurrentIndex(3)
 
     def _subject_configs_in_session(self) -> list[dict]:
         if not self.session:
