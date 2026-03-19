@@ -78,6 +78,27 @@ class ScoringEngine:
             text = text[1:]
         return text
 
+    @staticmethod
+    def _strict_mcq_match(key: str, student: str) -> bool:
+        key_text = str(key or "")
+        student_text = str(student or "")[:len(key_text)]
+        return len(student_text) == len(key_text) and all(a == b for a, b in zip(key_text, student_text))
+
+    @staticmethod
+    def _strict_tf_match(key: str, student: str) -> tuple[int, bool]:
+        key_text = str(key or "")
+        student_text = str(student or "")[:len(key_text)]
+        correct = sum(1 for a, b in zip(key_text, student_text) if a == b or a == "E")
+        return correct, len(student_text) == len(key_text) and correct == len(key_text)
+
+    @staticmethod
+    def _strict_numeric_match(key: str, student: str, delimiter: str = "|") -> bool:
+        key_parts = [x for x in str(key or "").split(delimiter)]
+        student_parts = [x for x in str(student or "").split(delimiter)][:len(key_parts)]
+        if len(student_parts) != len(key_parts):
+            return False
+        return all(a == b for a, b in zip(key_parts, student_parts))
+
     def _build_tf_compare_text(self, key_tf: str, marked_tf: str, q_no: int) -> str:
         if not key_tf and not marked_tf:
             return ""
@@ -166,7 +187,7 @@ class ScoringEngine:
                     blank += 1
             elif student == "":
                 blank += 1
-            elif student == key:
+            elif self._strict_mcq_match(key, student):
                 correct += 1
                 mcq_correct += 1
                 score += 0.25
@@ -183,15 +204,10 @@ class ScoringEngine:
                 continue
             print(f"[TF ] Q{q_no}: {key_tf} | {student_tf}")
             tf_compare_items.append(self._build_tf_compare_text(key_tf, student_tf, q_no))
-            correct_count = 0
-            for key_ch, student_ch in zip(key_tf, student_tf):
-                if key_ch == student_ch:
-                    correct_count += 1
-                elif key_ch == "E":
-                    correct_count += 1
+            correct_count, tf_full_match = self._strict_tf_match(key_tf, student_tf)
             score += tf_points.get(correct_count, 0.0)
             tf_correct += correct_count
-            if correct_count == len(key_tf) and len(student_tf) == len(key_tf):
+            if tf_full_match:
                 correct += 1
             elif student_tf == "":
                 blank += 1
@@ -214,7 +230,7 @@ class ScoringEngine:
                     blank += 1
             elif student == "":
                 blank += 1
-            elif student == key:
+            elif self._strict_mcq_match(key, student):
                 correct += 1
                 numeric_correct += 1
                 score += 0.25
