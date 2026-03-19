@@ -33,6 +33,7 @@ class ImportAnswerKeyDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Preview Imported Answer Keys")
         self.resize(980, 620)
+        self.setWindowState(self.windowState() | Qt.WindowMaximized)
         self.imported = imported
         self.exam_tables: dict[str, QTableWidget] = {}
 
