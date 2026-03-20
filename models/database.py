@@ -205,6 +205,58 @@ class OMRDatabase:
         if blocks:
             self.replace_catalog("blocks", sorted(blocks, key=str.casefold))
 
+    def replace_answer_keys_for_subject(self, subject_key: str, answer_keys: dict[str, dict[str, Any]]) -> None:
+        subject = str(subject_key or "").strip()
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM answer_keys WHERE subject_key = ?", (subject,))
+        rows = []
+        for exam_code, payload in (answer_keys or {}).items():
+            if not isinstance(payload, dict):
+                continue
+            rows.append(
+                (
+                    subject,
+                    str(exam_code or "").strip(),
+                    json.dumps(payload.get("mcq_answers", {}) or {}, ensure_ascii=False),
+                    json.dumps(payload.get("true_false_answers", {}) or {}, ensure_ascii=False),
+                    json.dumps(
+                        {
+                            "numeric_answers": payload.get("numeric_answers", {}) or {},
+                            "full_credit_questions": payload.get("full_credit_questions", {}) or {},
+                            "invalid_answer_rows": payload.get("invalid_answer_rows", {}) or {},
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+        if rows:
+            cur.executemany(
+                """
+                INSERT INTO answer_keys(subject_key, exam_code, answers_json, true_false_json, numeric_json)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+        self.conn.commit()
+
+    def fetch_answer_keys_for_subject(self, subject_key: str) -> dict[str, dict[str, Any]]:
+        subject = str(subject_key or "").strip()
+        rows = self.conn.execute(
+            "SELECT exam_code, answers_json, true_false_json, numeric_json FROM answer_keys WHERE subject_key = ? ORDER BY exam_code COLLATE NOCASE",
+            (subject,),
+        ).fetchall()
+        payload: dict[str, dict[str, Any]] = {}
+        for exam_code, answers_json, true_false_json, numeric_json in rows:
+            numeric_payload = json.loads(numeric_json or "{}") if numeric_json else {}
+            payload[str(exam_code)] = {
+                "mcq_answers": json.loads(answers_json or "{}") if answers_json else {},
+                "true_false_answers": json.loads(true_false_json or "{}") if true_false_json else {},
+                "numeric_answers": (numeric_payload or {}).get("numeric_answers", {}),
+                "full_credit_questions": (numeric_payload or {}).get("full_credit_questions", {}),
+                "invalid_answer_rows": (numeric_payload or {}).get("invalid_answer_rows", {}),
+            }
+        return payload
+
     def upsert_scan_result(self, subject_key: str, result_payload: dict[str, Any]) -> None:
         self.conn.execute(
             """
