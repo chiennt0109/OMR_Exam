@@ -364,7 +364,7 @@ class SubjectConfigDialog(QDialog):
 
         form.addRow("Tổng điểm bài thi", self.total_score)
 
-        lay.addLayout(form)
+        left_lay.addLayout(form)
         lay.addWidget(self.section_group)
         lay.addWidget(self.question_group)
 
@@ -1791,7 +1791,7 @@ class MainWindow(QMainWindow):
         btn_save = self._make_row_icon_button(style.standardIcon(QStyle.SP_DialogSaveButton), "Lưu bài thi", lambda _=False, r=row: self._save_scan_row_by_index(r))
         lay.addWidget(btn_edit)
         lay.addWidget(btn_save)
-        self.scan_list.setCellWidget(row, 5, holder)
+        self.scan_list.setCellWidget(row, 6, holder)
 
     def _edit_scan_row_by_index(self, row: int) -> None:
         if row < 0 or row >= self.scan_list.rowCount():
@@ -2824,17 +2824,18 @@ class MainWindow(QMainWindow):
         search_row.addWidget(self.filter_column)
         search_row.addWidget(self.search_value)
 
-        self.scan_list = QTableWidget(0, 6)
-        self.scan_list.setHorizontalHeaderLabels(["STUDENT ID", "Họ tên", "Ngày sinh", "Nội dung", "Status", "Chức năng"])
+        self.scan_list = QTableWidget(0, 7)
+        self.scan_list.setHorizontalHeaderLabels(["STUDENT ID", "Mã đề", "Họ tên", "Ngày sinh", "Nội dung", "Status", "Chức năng"])
         self.scan_list.verticalHeader().setVisible(False)
         self.scan_list.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.scan_list.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.scan_list.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.scan_list.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.scan_list.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.scan_list.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
-        self.scan_list.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.scan_list.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.scan_list.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
         self.scan_list.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        self.scan_list.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
         self.scan_list.horizontalHeader().sectionClicked.connect(self._on_scan_header_clicked)
         self.scan_list.itemSelectionChanged.connect(self._on_scan_selected)
         self.scan_list.cellDoubleClicked.connect(self._open_edit_selected_scan)
@@ -3366,10 +3367,10 @@ class MainWindow(QMainWindow):
                     item["batch_saved_rows"] = [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -3410,10 +3411,10 @@ class MainWindow(QMainWindow):
                     "batch_saved_rows": [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -3813,10 +3814,10 @@ class MainWindow(QMainWindow):
                     item["batch_saved_rows"] = [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -3856,10 +3857,10 @@ class MainWindow(QMainWindow):
                     "batch_saved_rows": [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -4242,10 +4243,10 @@ class MainWindow(QMainWindow):
                     item["batch_saved_rows"] = [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -4285,10 +4286,10 @@ class MainWindow(QMainWindow):
                     "batch_saved_rows": [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -4671,10 +4672,10 @@ class MainWindow(QMainWindow):
                     item["batch_saved_rows"] = [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -4714,10 +4715,10 @@ class MainWindow(QMainWindow):
                     "batch_saved_rows": [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -5090,10 +5091,10 @@ class MainWindow(QMainWindow):
                     item["batch_saved_rows"] = [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -5133,10 +5134,10 @@ class MainWindow(QMainWindow):
                     "batch_saved_rows": [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -5509,10 +5510,10 @@ class MainWindow(QMainWindow):
                     item["batch_saved_rows"] = [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -5552,10 +5553,10 @@ class MainWindow(QMainWindow):
                     "batch_saved_rows": [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -5928,10 +5929,10 @@ class MainWindow(QMainWindow):
                     item["batch_saved_rows"] = [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -5971,10 +5972,10 @@ class MainWindow(QMainWindow):
                     "batch_saved_rows": [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -6347,10 +6348,10 @@ class MainWindow(QMainWindow):
                     item["batch_saved_rows"] = [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -6390,10 +6391,10 @@ class MainWindow(QMainWindow):
                     "batch_saved_rows": [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -6766,10 +6767,10 @@ class MainWindow(QMainWindow):
                     item["batch_saved_rows"] = [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -6809,10 +6810,10 @@ class MainWindow(QMainWindow):
                     "batch_saved_rows": [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -7185,10 +7186,10 @@ class MainWindow(QMainWindow):
                     item["batch_saved_rows"] = [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -7228,10 +7229,10 @@ class MainWindow(QMainWindow):
                     "batch_saved_rows": [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -7604,10 +7605,10 @@ class MainWindow(QMainWindow):
                     item["batch_saved_rows"] = [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -7647,10 +7648,10 @@ class MainWindow(QMainWindow):
                     "batch_saved_rows": [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -8023,10 +8024,10 @@ class MainWindow(QMainWindow):
                     item["batch_saved_rows"] = [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -8066,10 +8067,10 @@ class MainWindow(QMainWindow):
                     "batch_saved_rows": [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -8442,10 +8443,10 @@ class MainWindow(QMainWindow):
                     item["batch_saved_rows"] = [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -8485,434 +8486,10 @@ class MainWindow(QMainWindow):
                     "batch_saved_rows": [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ],
-                    "batch_saved_preview": [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ],
-                    "batch_saved_results": saved_results,
-                }
-                cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                pass
-
-            if self.session:
-                self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
-            self.scan_results_by_subject[subject_key] = list(current_results)
-            if isinstance(self.batch_editor_return_payload, dict):
-                self.batch_editor_return_payload["subject_configs"] = subject_cfgs
-            self._refresh_batch_subject_controls()
-            self.btn_save_batch_subject.setEnabled(False)
-            QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
-        except Exception as exc:
-            QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu trạng thái Batch\n{exc}")
-
-
-    def _build_correction_tab(self) -> QWidget:
-        w = QWidget()
-        splitter = QSplitter(Qt.Horizontal)
-        self.exam_code_correction_combo = QComboBox()
-        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
-        self.student_correction_combo = QComboBox()
-        self.student_correction_combo.setEditable(True)
-        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
-        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
-        self.answer_editor_scroll = QScrollArea()
-        self.answer_editor_scroll.setWidgetResizable(True)
-        self.answer_editor_container = QWidget()
-        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
-        self.answer_editor_scroll.setWidget(self.answer_editor_container)
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        self.error_list = QListWidget()
-        self.preview_label = QLabel("Image preview / bubble overlay placeholder")
-        self.preview_label.setAlignment(Qt.AlignCenter)
-        self.manual_edit = QTextEdit()
-        self.manual_edit.setPlaceholderText("Manual corrections JSON (e.g. {'student_id': '1001', 'answers': {'1':'A'}})")
-        self.result_preview = QTextEdit()
-        self.result_preview.setReadOnly(True)
-        self.result_preview.setPlaceholderText("Recognized result for selected scan")
-
-        btn_load_selected = QPushButton("Load Selected Scan Result")
-        btn_load_selected.clicked.connect(self._load_selected_result_for_correction)
-        btn_apply_correction = QPushButton("Apply Manual Correction")
-        btn_apply_correction.clicked.connect(self.apply_manual_correction)
-
-        payload = dict(self.batch_editor_return_payload)
-        session_id = self.batch_editor_return_session_id
-        self.batch_editor_return_payload = None
-        self.batch_editor_return_session_id = None
-
-        if not session_id:
-            self.stack.setCurrentIndex(0)
-            return
-        p = self._session_path_from_id(session_id)
-        if not p.exists():
-            self.stack.setCurrentIndex(0)
-            return
-        try:
-            session = ExamSession.load_json(p)
-        except Exception:
-            self.stack.setCurrentIndex(0)
-            return
-        cfg = session.config or {}
-        payload["subject_configs"] = cfg.get("subject_configs", payload.get("subject_configs", []))
-        payload["scan_root"] = cfg.get("scan_root", payload.get("scan_root", ""))
-        payload["student_list_path"] = cfg.get("student_list_path", payload.get("student_list_path", ""))
-        payload["students"] = [
-            {
-                "student_id": s.student_id,
-                "name": s.name,
-                "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
-                "class_name": str((s.extra or {}).get("class_name", "") or ""),
-                "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
-            }
-            for s in (session.students or [])
-        ]
-        payload["scan_mode"] = cfg.get("scan_mode", payload.get("scan_mode", "Ảnh trong thư mục gốc"))
-        payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
-        self._open_embedded_exam_editor(session_id, session, payload)
-
-    def _show_batch_scan_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(True)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(False)
-
-    def _show_scoring_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(False)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(True)
-
-    def _back_to_batch_scan(self) -> None:
-        if not self._confirm_before_switching_work("Batch Scan"):
-            return
-        self._show_batch_scan_panel()
-
-    def _subject_configs_for_scoring(self) -> list[dict]:
-        return self._effective_subject_configs_for_batch()
-
-    def _subject_config_by_subject_key(self, subject_key: str) -> dict | None:
-        key_norm = str(subject_key or "").strip()
-        if not key_norm:
-            return None
-        for cfg in self._subject_configs_for_scoring():
-            if self._subject_key_from_cfg(cfg) == key_norm:
-                return cfg
-        return None
-
-    @staticmethod
-    def _serialize_omr_result(result: OMRResult) -> dict:
-        return {
-            "image_path": str(getattr(result, "image_path", "") or ""),
-            "student_id": str(getattr(result, "student_id", "") or ""),
-            "exam_code": str(getattr(result, "exam_code", "") or ""),
-            "mcq_answers": {int(k): str(v) for k, v in (getattr(result, "mcq_answers", {}) or {}).items()},
-            "true_false_answers": {int(k): dict(v) for k, v in (getattr(result, "true_false_answers", {}) or {}).items()},
-            "numeric_answers": {int(k): str(v) for k, v in (getattr(result, "numeric_answers", {}) or {}).items()},
-            "confidence_scores": {str(k): float(v) for k, v in (getattr(result, "confidence_scores", {}) or {}).items()},
-            "recognition_errors": [str(x) for x in (getattr(result, "recognition_errors", []) or [])],
-            "processing_time_sec": float(getattr(result, "processing_time_sec", 0.0) or 0.0),
-            "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
-            "full_name": str(getattr(result, "full_name", "") or ""),
-            "birth_date": str(getattr(result, "birth_date", "") or ""),
-        }
-
-    @staticmethod
-    def _deserialize_omr_result(payload: dict) -> OMRResult:
-        result = OMRResult(
-            image_path=str(payload.get("image_path", "") or ""),
-            student_id=str(payload.get("student_id", "") or ""),
-            exam_code=str(payload.get("exam_code", "") or ""),
-            mcq_answers={int(k): str(v) for k, v in (payload.get("mcq_answers", {}) or {}).items()},
-            true_false_answers={int(k): dict(v) for k, v in (payload.get("true_false_answers", {}) or {}).items()},
-            numeric_answers={int(k): str(v) for k, v in (payload.get("numeric_answers", {}) or {}).items()},
-            confidence_scores={str(k): float(v) for k, v in (payload.get("confidence_scores", {}) or {}).items()},
-            recognition_errors=[str(x) for x in (payload.get("recognition_errors", []) or [])],
-            processing_time_sec=float(payload.get("processing_time_sec", 0.0) or 0.0),
-            debug_image_path=str(payload.get("debug_image_path", "") or ""),
-        )
-        setattr(result, "full_name", str(payload.get("full_name", "") or ""))
-        setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
-        result.sync_legacy_aliases()
-        return result
-
-    def _is_subject_marked_batched(self, cfg: dict) -> bool:
-        key = self._subject_key_from_cfg(cfg)
-        if self.scan_results_by_subject.get(key):
-            return True
-        merged = self._merge_saved_batch_snapshot(cfg)
-        if bool(merged.get("batch_saved")):
-            return True
-        if isinstance(merged.get("batch_saved_rows", []), list) and merged.get("batch_saved_rows"):
-            return True
-        if isinstance(merged.get("batch_saved_results", []), list) and merged.get("batch_saved_results"):
-            return True
-        return False
-
-    def _cached_subject_scans_from_config(self, subject_key: str) -> list[OMRResult]:
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return []
-        merged = self._merge_saved_batch_snapshot(cfg)
-        cached = merged.get("batch_saved_results", [])
-        if not isinstance(cached, list) or not cached:
-            return []
-        out: list[OMRResult] = []
-        for item in cached:
-            if not isinstance(item, dict):
-                continue
-            try:
-                out.append(self._deserialize_omr_result(item))
-            except Exception:
-                continue
-        return out
-
-    def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
-        if self.answer_keys and any(str(k).startswith(f"{subject_key}::") for k in self.answer_keys.keys.keys()):
-            return True
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return self.answer_keys is not None
-
-        imported_keys = cfg.get("imported_answer_keys", {}) or {}
-        if isinstance(imported_keys, dict) and imported_keys:
-            repo = self.answer_keys or AnswerKeyRepository()
-            for exam_code, kd in imported_keys.items():
-                repo.upsert(
-                    SubjectKey(
-                        subject=subject_key,
-                        exam_code=str(exam_code),
-                        answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
-                        true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
-                        numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
-                        full_credit_questions={
-                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
-                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
-                        },
-                        invalid_answer_rows={
-                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
-                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
-                        },
-                    )
-                )
-            self.answer_keys = repo
-            self.imported_exam_codes = sorted(str(k) for k in imported_keys.keys())
-            self.active_batch_subject_key = subject_key
-            return True
-
-        answer_key_path = str(cfg.get("answer_key_path", "") or (self.session.answer_key_path if self.session else "") or "")
-        if answer_key_path:
-            pth = Path(answer_key_path)
-            if pth.exists() and pth.suffix.lower() == ".json":
-                try:
-                    loaded = AnswerKeyRepository.load_json(pth)
-                    repo = self.answer_keys or AnswerKeyRepository()
-                    for key_obj in loaded.keys.values():
-                        repo.upsert(key_obj)
-                    self.answer_keys = repo
-                    all_codes: set[str] = set()
-                    for key_name in self.answer_keys.keys.keys():
-                        parts = str(key_name).split("::", 1)
-                        if len(parts) == 2 and parts[0] == subject_key:
-                            all_codes.add(parts[1])
-                    if all_codes:
-                        self.imported_exam_codes = sorted(all_codes)
-                    self.active_batch_subject_key = subject_key
-                    return True
-                except Exception:
-                    pass
-
-        return self.answer_keys is not None
-
-    @staticmethod
-    def _subject_key_from_cfg(cfg: dict) -> str:
-        key = str(cfg.get("answer_key_key", "") or "").strip()
-        if key:
-            return key
-        name = str(cfg.get("name", "") or "").strip()
-        block = str(cfg.get("block", "") or "").strip()
-        return f"{name}_{block}" if name and block else (name or "General")
-
-    def _resolve_preferred_scoring_subject(self) -> str:
-        if self.stack.currentIndex() == 1:
-            cfg = self._selected_batch_subject_config()
-            if cfg:
-                return self._subject_key_from_cfg(cfg)
-        cfgs = self._subject_configs_for_scoring()
-        if cfgs:
-            return self._subject_key_from_cfg(cfgs[0])
-        if self.session and self.session.subjects:
-            return str(self.session.subjects[0])
-        return "General"
-
-    def _eligible_scoring_subject_keys(self) -> list[str]:
-        out: list[str] = []
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if self._is_subject_marked_batched(cfg):
-                out.append(key)
-        return out
-
-    def _populate_scoring_subjects(self, preferred_key: str = "") -> None:
-        if not hasattr(self, "scoring_subject_combo"):
-            return
-        self.scoring_subject_combo.blockSignals(True)
-        self.scoring_subject_combo.clear()
-        eligible = set(self._eligible_scoring_subject_keys())
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if eligible and key not in eligible:
-                continue
-            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
-            self.scoring_subject_combo.addItem(label, key)
-        if self.scoring_subject_combo.count() == 0:
-            fallback = self._resolve_preferred_scoring_subject()
-            self.scoring_subject_combo.addItem(fallback, fallback)
-        pick = preferred_key or self._resolve_preferred_scoring_subject()
-        for i in range(self.scoring_subject_combo.count()):
-            if str(self.scoring_subject_combo.itemData(i)) == pick:
-                self.scoring_subject_combo.setCurrentIndex(i)
-                break
-        self.scoring_subject_combo.blockSignals(False)
-
-    def _open_scoring_view(self) -> None:
-        if not self.session:
-            QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
-            return
-        if not self._eligible_scoring_subject_keys():
-            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
-            return
-        self.stack.setCurrentIndex(1)
-        self._populate_scoring_subjects(self._resolve_preferred_scoring_subject())
-        self._refresh_scoring_phase_table()
-        self._show_scoring_panel()
-
-    def _refresh_scoring_phase_table(self) -> None:
-        if not hasattr(self, "scoring_phase_table"):
-            return
-        self.scoring_phase_table.setRowCount(0)
-        for i, p in enumerate(self.scoring_phases[-100:]):
-            self.scoring_phase_table.insertRow(i)
-            self.scoring_phase_table.setItem(i, 0, QTableWidgetItem(str(p.get("timestamp", "-"))))
-            self.scoring_phase_table.setItem(i, 1, QTableWidgetItem(str(p.get("subject", "-"))))
-            self.scoring_phase_table.setItem(i, 2, QTableWidgetItem(str(p.get("mode", "-"))))
-            self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
-            self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
-
-    def _run_scoring_from_panel(self) -> None:
-        subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
-        mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
-        note = self.scoring_phase_note.text().strip() if hasattr(self, "scoring_phase_note") else ""
-        self.calculate_scores(subject_key=subject_key or self._resolve_preferred_scoring_subject(), mode=mode, note=note)
-
-
-
-    def _save_batch_for_selected_subject(self) -> None:
-        subject_cfg = self._selected_batch_subject_config()
-        if not subject_cfg:
-            QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
-            return
-        row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
-        if row_count <= 0:
-            QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
-            return
-
-        session_path = self.current_session_path
-        if not session_path and self.batch_editor_return_session_id:
-            p = self._session_path_from_id(self.batch_editor_return_session_id)
-            if p.exists():
-                session_path = p
-        if not session_path:
-            QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy kỳ thi để lưu trạng thái Batch theo môn.")
-            return
-
-        try:
-            self._refresh_all_statuses()
-            ses = ExamSession.load_json(session_path)
-            cfg = ses.config or {}
-            subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
-            subject_key = self._subject_key_from_cfg(subject_cfg)
-            current_results = self._current_scan_results_snapshot()
-            self.scan_results = list(current_results)
-            for result in current_results:
-                result.answer_string = self._build_answer_string_for_result(result, subject_key)
-            saved_results = [self._serialize_omr_result(x) for x in current_results]
-            timestamp = datetime.now().isoformat(timespec="seconds")
-            updated = False
-            for item in subject_cfgs:
-                if not isinstance(item, dict):
-                    continue
-                same_name_block = str(item.get("name", "")).strip() == str(subject_cfg.get("name", "")).strip() and str(item.get("block", "")).strip() == str(subject_cfg.get("block", "")).strip()
-                same_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
-                if same_name_block or same_key:
-                    item["batch_saved"] = True
-                    item["batch_saved_at"] = timestamp
-                    item["batch_result_count"] = row_count
-                    item["batch_saved_rows"] = [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ]
-                    item["batch_saved_preview"] = [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ]
-                    item["batch_saved_results"] = saved_results
-                    updated = True
-                    break
-            if not updated:
-                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
-                return
-            ses.config = {**cfg, "subject_configs": subject_cfgs}
-            ses.save_json(session_path)
-
-            # Write sidecar cache to ensure grids can be restored even if subject config is trimmed elsewhere.
-            try:
-                cache_path = session_path.with_suffix(".batch_cache.json")
-                cache_data = {}
-                if cache_path.exists():
-                    raw = json.loads(cache_path.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        cache_data = raw
-                cache_key = f"{str(subject_cfg.get('name','')).strip().lower()}::{str(subject_cfg.get('block','')).strip().lower()}::{str(subject_cfg.get('answer_key_key','')).strip().lower()}"
-                cache_data[cache_key] = {
-                    "batch_saved": True,
-                    "batch_saved_at": timestamp,
-                    "batch_result_count": row_count,
-                    "batch_saved_rows": [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -9290,10 +8867,10 @@ class MainWindow(QMainWindow):
                     item["batch_saved_rows"] = [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -9333,10 +8910,10 @@ class MainWindow(QMainWindow):
                     "batch_saved_rows": [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -9714,10 +9291,10 @@ class MainWindow(QMainWindow):
                     item["batch_saved_rows"] = [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -9757,10 +9334,434 @@ class MainWindow(QMainWindow):
                     "batch_saved_rows": [
                         {
                             "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                            "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
+                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
+                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
+                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
+                        }
+                        for r in range(self.scan_list.rowCount())
+                    ],
+                    "batch_saved_preview": [
+                        {
+                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
+                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
+                        }
+                        for r in range(self.scan_result_preview.rowCount())
+                    ],
+                    "batch_saved_results": saved_results,
+                }
+                cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+
+            if self.session:
+                self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
+            self.scan_results_by_subject[subject_key] = list(current_results)
+            if isinstance(self.batch_editor_return_payload, dict):
+                self.batch_editor_return_payload["subject_configs"] = subject_cfgs
+            self._refresh_batch_subject_controls()
+            self.btn_save_batch_subject.setEnabled(False)
+            QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
+        except Exception as exc:
+            QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu trạng thái Batch\n{exc}")
+
+
+    def _build_correction_tab(self) -> QWidget:
+        w = QWidget()
+        splitter = QSplitter(Qt.Horizontal)
+        self.exam_code_correction_combo = QComboBox()
+        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
+        self.student_correction_combo = QComboBox()
+        self.student_correction_combo.setEditable(True)
+        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
+        self.answer_editor_scroll = QScrollArea()
+        self.answer_editor_scroll.setWidgetResizable(True)
+        self.answer_editor_container = QWidget()
+        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
+        self.answer_editor_scroll.setWidget(self.answer_editor_container)
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        self.error_list = QListWidget()
+        self.preview_label = QLabel("Image preview / bubble overlay placeholder")
+        self.preview_label.setAlignment(Qt.AlignCenter)
+        self.manual_edit = QTextEdit()
+        self.manual_edit.setPlaceholderText("Manual corrections JSON (e.g. {'student_id': '1001', 'answers': {'1':'A'}})")
+        self.result_preview = QTextEdit()
+        self.result_preview.setReadOnly(True)
+        self.result_preview.setPlaceholderText("Recognized result for selected scan")
+
+        btn_load_selected = QPushButton("Load Selected Scan Result")
+        btn_load_selected.clicked.connect(self._load_selected_result_for_correction)
+        btn_apply_correction = QPushButton("Apply Manual Correction")
+        btn_apply_correction.clicked.connect(self.apply_manual_correction)
+
+        payload = dict(self.batch_editor_return_payload)
+        session_id = self.batch_editor_return_session_id
+        self.batch_editor_return_payload = None
+        self.batch_editor_return_session_id = None
+
+        if not session_id:
+            self.stack.setCurrentIndex(0)
+            return
+        p = self._session_path_from_id(session_id)
+        if not p.exists():
+            self.stack.setCurrentIndex(0)
+            return
+        try:
+            session = ExamSession.load_json(p)
+        except Exception:
+            self.stack.setCurrentIndex(0)
+            return
+        cfg = session.config or {}
+        payload["subject_configs"] = cfg.get("subject_configs", payload.get("subject_configs", []))
+        payload["scan_root"] = cfg.get("scan_root", payload.get("scan_root", ""))
+        payload["student_list_path"] = cfg.get("student_list_path", payload.get("student_list_path", ""))
+        payload["students"] = [
+            {
+                "student_id": s.student_id,
+                "name": s.name,
+                "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
+                "class_name": str((s.extra or {}).get("class_name", "") or ""),
+                "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
+            }
+            for s in (session.students or [])
+        ]
+        payload["scan_mode"] = cfg.get("scan_mode", payload.get("scan_mode", "Ảnh trong thư mục gốc"))
+        payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
+        self._open_embedded_exam_editor(session_id, session, payload)
+
+    def _show_batch_scan_panel(self) -> None:
+        if hasattr(self, "scan_lr_split"):
+            self.scan_lr_split.setVisible(True)
+        if hasattr(self, "scoring_panel"):
+            self.scoring_panel.setVisible(False)
+
+    def _show_scoring_panel(self) -> None:
+        if hasattr(self, "scan_lr_split"):
+            self.scan_lr_split.setVisible(False)
+        if hasattr(self, "scoring_panel"):
+            self.scoring_panel.setVisible(True)
+
+    def _back_to_batch_scan(self) -> None:
+        if not self._confirm_before_switching_work("Batch Scan"):
+            return
+        self._show_batch_scan_panel()
+
+    def _subject_configs_for_scoring(self) -> list[dict]:
+        return self._effective_subject_configs_for_batch()
+
+    def _subject_config_by_subject_key(self, subject_key: str) -> dict | None:
+        key_norm = str(subject_key or "").strip()
+        if not key_norm:
+            return None
+        for cfg in self._subject_configs_for_scoring():
+            if self._subject_key_from_cfg(cfg) == key_norm:
+                return cfg
+        return None
+
+    @staticmethod
+    def _serialize_omr_result(result: OMRResult) -> dict:
+        return {
+            "image_path": str(getattr(result, "image_path", "") or ""),
+            "student_id": str(getattr(result, "student_id", "") or ""),
+            "exam_code": str(getattr(result, "exam_code", "") or ""),
+            "mcq_answers": {int(k): str(v) for k, v in (getattr(result, "mcq_answers", {}) or {}).items()},
+            "true_false_answers": {int(k): dict(v) for k, v in (getattr(result, "true_false_answers", {}) or {}).items()},
+            "numeric_answers": {int(k): str(v) for k, v in (getattr(result, "numeric_answers", {}) or {}).items()},
+            "confidence_scores": {str(k): float(v) for k, v in (getattr(result, "confidence_scores", {}) or {}).items()},
+            "recognition_errors": [str(x) for x in (getattr(result, "recognition_errors", []) or [])],
+            "processing_time_sec": float(getattr(result, "processing_time_sec", 0.0) or 0.0),
+            "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
+            "full_name": str(getattr(result, "full_name", "") or ""),
+            "birth_date": str(getattr(result, "birth_date", "") or ""),
+        }
+
+    @staticmethod
+    def _deserialize_omr_result(payload: dict) -> OMRResult:
+        result = OMRResult(
+            image_path=str(payload.get("image_path", "") or ""),
+            student_id=str(payload.get("student_id", "") or ""),
+            exam_code=str(payload.get("exam_code", "") or ""),
+            mcq_answers={int(k): str(v) for k, v in (payload.get("mcq_answers", {}) or {}).items()},
+            true_false_answers={int(k): dict(v) for k, v in (payload.get("true_false_answers", {}) or {}).items()},
+            numeric_answers={int(k): str(v) for k, v in (payload.get("numeric_answers", {}) or {}).items()},
+            confidence_scores={str(k): float(v) for k, v in (payload.get("confidence_scores", {}) or {}).items()},
+            recognition_errors=[str(x) for x in (payload.get("recognition_errors", []) or [])],
+            processing_time_sec=float(payload.get("processing_time_sec", 0.0) or 0.0),
+            debug_image_path=str(payload.get("debug_image_path", "") or ""),
+        )
+        setattr(result, "full_name", str(payload.get("full_name", "") or ""))
+        setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
+        result.sync_legacy_aliases()
+        return result
+
+    def _is_subject_marked_batched(self, cfg: dict) -> bool:
+        key = self._subject_key_from_cfg(cfg)
+        if self.scan_results_by_subject.get(key):
+            return True
+        merged = self._merge_saved_batch_snapshot(cfg)
+        if bool(merged.get("batch_saved")):
+            return True
+        if isinstance(merged.get("batch_saved_rows", []), list) and merged.get("batch_saved_rows"):
+            return True
+        if isinstance(merged.get("batch_saved_results", []), list) and merged.get("batch_saved_results"):
+            return True
+        return False
+
+    def _cached_subject_scans_from_config(self, subject_key: str) -> list[OMRResult]:
+        cfg = self._subject_config_by_subject_key(subject_key)
+        if not cfg:
+            return []
+        merged = self._merge_saved_batch_snapshot(cfg)
+        cached = merged.get("batch_saved_results", [])
+        if not isinstance(cached, list) or not cached:
+            return []
+        out: list[OMRResult] = []
+        for item in cached:
+            if not isinstance(item, dict):
+                continue
+            try:
+                out.append(self._deserialize_omr_result(item))
+            except Exception:
+                continue
+        return out
+
+    def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
+        if self.answer_keys and any(str(k).startswith(f"{subject_key}::") for k in self.answer_keys.keys.keys()):
+            return True
+        cfg = self._subject_config_by_subject_key(subject_key)
+        if not cfg:
+            return self.answer_keys is not None
+
+        imported_keys = cfg.get("imported_answer_keys", {}) or {}
+        if isinstance(imported_keys, dict) and imported_keys:
+            repo = self.answer_keys or AnswerKeyRepository()
+            for exam_code, kd in imported_keys.items():
+                repo.upsert(
+                    SubjectKey(
+                        subject=subject_key,
+                        exam_code=str(exam_code),
+                        answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
+                        true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
+                        numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
+                        full_credit_questions={
+                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
+                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
+                        },
+                        invalid_answer_rows={
+                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
+                        },
+                    )
+                )
+            self.answer_keys = repo
+            self.imported_exam_codes = sorted(str(k) for k in imported_keys.keys())
+            self.active_batch_subject_key = subject_key
+            return True
+
+        answer_key_path = str(cfg.get("answer_key_path", "") or (self.session.answer_key_path if self.session else "") or "")
+        if answer_key_path:
+            pth = Path(answer_key_path)
+            if pth.exists() and pth.suffix.lower() == ".json":
+                try:
+                    loaded = AnswerKeyRepository.load_json(pth)
+                    repo = self.answer_keys or AnswerKeyRepository()
+                    for key_obj in loaded.keys.values():
+                        repo.upsert(key_obj)
+                    self.answer_keys = repo
+                    all_codes: set[str] = set()
+                    for key_name in self.answer_keys.keys.keys():
+                        parts = str(key_name).split("::", 1)
+                        if len(parts) == 2 and parts[0] == subject_key:
+                            all_codes.add(parts[1])
+                    if all_codes:
+                        self.imported_exam_codes = sorted(all_codes)
+                    self.active_batch_subject_key = subject_key
+                    return True
+                except Exception:
+                    pass
+
+        return self.answer_keys is not None
+
+    @staticmethod
+    def _subject_key_from_cfg(cfg: dict) -> str:
+        key = str(cfg.get("answer_key_key", "") or "").strip()
+        if key:
+            return key
+        name = str(cfg.get("name", "") or "").strip()
+        block = str(cfg.get("block", "") or "").strip()
+        return f"{name}_{block}" if name and block else (name or "General")
+
+    def _resolve_preferred_scoring_subject(self) -> str:
+        if self.stack.currentIndex() == 1:
+            cfg = self._selected_batch_subject_config()
+            if cfg:
+                return self._subject_key_from_cfg(cfg)
+        cfgs = self._subject_configs_for_scoring()
+        if cfgs:
+            return self._subject_key_from_cfg(cfgs[0])
+        if self.session and self.session.subjects:
+            return str(self.session.subjects[0])
+        return "General"
+
+    def _eligible_scoring_subject_keys(self) -> list[str]:
+        out: list[str] = []
+        for cfg in self._subject_configs_for_scoring():
+            key = self._subject_key_from_cfg(cfg)
+            if self._is_subject_marked_batched(cfg):
+                out.append(key)
+        return out
+
+    def _populate_scoring_subjects(self, preferred_key: str = "") -> None:
+        if not hasattr(self, "scoring_subject_combo"):
+            return
+        self.scoring_subject_combo.blockSignals(True)
+        self.scoring_subject_combo.clear()
+        eligible = set(self._eligible_scoring_subject_keys())
+        for cfg in self._subject_configs_for_scoring():
+            key = self._subject_key_from_cfg(cfg)
+            if eligible and key not in eligible:
+                continue
+            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
+            self.scoring_subject_combo.addItem(label, key)
+        if self.scoring_subject_combo.count() == 0:
+            fallback = self._resolve_preferred_scoring_subject()
+            self.scoring_subject_combo.addItem(fallback, fallback)
+        pick = preferred_key or self._resolve_preferred_scoring_subject()
+        for i in range(self.scoring_subject_combo.count()):
+            if str(self.scoring_subject_combo.itemData(i)) == pick:
+                self.scoring_subject_combo.setCurrentIndex(i)
+                break
+        self.scoring_subject_combo.blockSignals(False)
+
+    def _open_scoring_view(self) -> None:
+        if not self.session:
+            QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
+            return
+        if not self._eligible_scoring_subject_keys():
+            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
+            return
+        self.stack.setCurrentIndex(1)
+        self._populate_scoring_subjects(self._resolve_preferred_scoring_subject())
+        self._refresh_scoring_phase_table()
+        self._show_scoring_panel()
+
+    def _refresh_scoring_phase_table(self) -> None:
+        if not hasattr(self, "scoring_phase_table"):
+            return
+        self.scoring_phase_table.setRowCount(0)
+        for i, p in enumerate(self.scoring_phases[-100:]):
+            self.scoring_phase_table.insertRow(i)
+            self.scoring_phase_table.setItem(i, 0, QTableWidgetItem(str(p.get("timestamp", "-"))))
+            self.scoring_phase_table.setItem(i, 1, QTableWidgetItem(str(p.get("subject", "-"))))
+            self.scoring_phase_table.setItem(i, 2, QTableWidgetItem(str(p.get("mode", "-"))))
+            self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
+            self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
+
+    def _run_scoring_from_panel(self) -> None:
+        subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
+        mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
+        note = self.scoring_phase_note.text().strip() if hasattr(self, "scoring_phase_note") else ""
+        self.calculate_scores(subject_key=subject_key or self._resolve_preferred_scoring_subject(), mode=mode, note=note)
+
+
+
+    def _save_batch_for_selected_subject(self) -> None:
+        subject_cfg = self._selected_batch_subject_config()
+        if not subject_cfg:
+            QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
+            return
+        row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
+        if row_count <= 0:
+            QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
+            return
+
+        session_path = self.current_session_path
+        if not session_path and self.batch_editor_return_session_id:
+            p = self._session_path_from_id(self.batch_editor_return_session_id)
+            if p.exists():
+                session_path = p
+        if not session_path:
+            QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy kỳ thi để lưu trạng thái Batch theo môn.")
+            return
+
+        try:
+            self._refresh_all_statuses()
+            ses = ExamSession.load_json(session_path)
+            cfg = ses.config or {}
+            subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
+            subject_key = self._subject_key_from_cfg(subject_cfg)
+            current_results = self._current_scan_results_snapshot()
+            self.scan_results = list(current_results)
+            for result in current_results:
+                result.answer_string = self._build_answer_string_for_result(result, subject_key)
+            saved_results = [self._serialize_omr_result(x) for x in current_results]
+            timestamp = datetime.now().isoformat(timespec="seconds")
+            updated = False
+            for item in subject_cfgs:
+                if not isinstance(item, dict):
+                    continue
+                same_name_block = str(item.get("name", "")).strip() == str(subject_cfg.get("name", "")).strip() and str(item.get("block", "")).strip() == str(subject_cfg.get("block", "")).strip()
+                same_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
+                if same_name_block or same_key:
+                    item["batch_saved"] = True
+                    item["batch_saved_at"] = timestamp
+                    item["batch_result_count"] = row_count
+                    item["batch_saved_rows"] = [
+                        {
+                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
+                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
+                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
+                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
+                        }
+                        for r in range(self.scan_list.rowCount())
+                    ]
+                    item["batch_saved_preview"] = [
+                        {
+                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
+                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
+                        }
+                        for r in range(self.scan_result_preview.rowCount())
+                    ]
+                    item["batch_saved_results"] = saved_results
+                    updated = True
+                    break
+            if not updated:
+                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
+                return
+            ses.config = {**cfg, "subject_configs": subject_cfgs}
+            ses.save_json(session_path)
+
+            # Write sidecar cache to ensure grids can be restored even if subject config is trimmed elsewhere.
+            try:
+                cache_path = session_path.with_suffix(".batch_cache.json")
+                cache_data = {}
+                if cache_path.exists():
+                    raw = json.loads(cache_path.read_text(encoding="utf-8"))
+                    if isinstance(raw, dict):
+                        cache_data = raw
+                cache_key = f"{str(subject_cfg.get('name','')).strip().lower()}::{str(subject_cfg.get('block','')).strip().lower()}::{str(subject_cfg.get('answer_key_key','')).strip().lower()}"
+                cache_data[cache_key] = {
+                    "batch_saved": True,
+                    "batch_saved_at": timestamp,
+                    "batch_result_count": row_count,
+                    "batch_saved_rows": [
+                        {
+                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
+                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                             "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                             "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                             "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -10595,16 +10596,17 @@ class MainWindow(QMainWindow):
             sid_item.setData(Qt.UserRole + 1, str(row.get("exam_code", "") or ""))
             sid_item.setData(Qt.UserRole + 2, str(row.get("recognized_short", "") or ""))
             self.scan_list.setItem(r, 0, sid_item)
-            self.scan_list.setItem(r, 1, QTableWidgetItem(str(row.get("full_name", "-"))))
-            self.scan_list.setItem(r, 2, QTableWidgetItem(str(row.get("birth_date", "-"))))
-            self.scan_list.setItem(r, 3, QTableWidgetItem(str(row.get("content", "-"))))
+            self.scan_list.setItem(r, 1, QTableWidgetItem(str(row.get("exam_code", "-") or "-")))
+            self.scan_list.setItem(r, 2, QTableWidgetItem(str(row.get("full_name", "-"))))
+            self.scan_list.setItem(r, 3, QTableWidgetItem(str(row.get("birth_date", "-"))))
+            self.scan_list.setItem(r, 4, QTableWidgetItem(str(row.get("content", "-"))))
             forced_status = str(row.get("forced_status", "") or "")
             if forced_status:
                 self.scan_forced_status_by_index[r] = forced_status
             item_status = QTableWidgetItem(str(row.get("status", "-")))
             if item_status.text() != "OK":
                 item_status.setForeground(Qt.red)
-            self.scan_list.setItem(r, 4, item_status)
+            self.scan_list.setItem(r, 5, item_status)
             self._set_scan_action_widget(r)
 
         saved_preview = cfg.get("batch_saved_preview", []) if isinstance(cfg.get("batch_saved_preview", []), list) else []
@@ -10637,10 +10639,10 @@ class MainWindow(QMainWindow):
                     "image_path": str(sid_item.data(Qt.UserRole) if sid_item else ""),
                     "exam_code": str(sid_item.data(Qt.UserRole + 1) if sid_item else ""),
                     "recognized_short": str(sid_item.data(Qt.UserRole + 2) if sid_item else ""),
-                    "full_name": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                    "birth_date": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                    "content": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                    "status": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                    "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                    "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                    "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                    "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                 }
             )
 
@@ -10679,13 +10681,14 @@ class MainWindow(QMainWindow):
             sid_item.setData(Qt.UserRole + 1, str(row.get("exam_code", "") or ""))
             sid_item.setData(Qt.UserRole + 2, str(row.get("recognized_short", "") or ""))
             self.scan_list.setItem(r, 0, sid_item)
-            self.scan_list.setItem(r, 1, QTableWidgetItem(str(row.get("full_name", "-"))))
-            self.scan_list.setItem(r, 2, QTableWidgetItem(str(row.get("birth_date", "-"))))
-            self.scan_list.setItem(r, 3, QTableWidgetItem(str(row.get("content", "-"))))
+            self.scan_list.setItem(r, 1, QTableWidgetItem(str(row.get("exam_code", "-") or "-")))
+            self.scan_list.setItem(r, 2, QTableWidgetItem(str(row.get("full_name", "-"))))
+            self.scan_list.setItem(r, 3, QTableWidgetItem(str(row.get("birth_date", "-"))))
+            self.scan_list.setItem(r, 4, QTableWidgetItem(str(row.get("content", "-"))))
             st = QTableWidgetItem(str(row.get("status", "-")))
             if st.text() != "OK":
                 st.setForeground(Qt.red)
-            self.scan_list.setItem(r, 4, st)
+            self.scan_list.setItem(r, 5, st)
             self._set_scan_action_widget(r)
 
         for row in (cached.get("preview", []) if isinstance(cached.get("preview", []), list) else []):
@@ -10979,13 +10982,14 @@ class MainWindow(QMainWindow):
             sid_item.setData(Qt.UserRole + 1, exam_code_text)
             sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(result))
             self.scan_list.setItem(idx, 0, sid_item)
-            self.scan_list.setItem(idx, 1, QTableWidgetItem(full_name))
-            self.scan_list.setItem(idx, 2, QTableWidgetItem(birth_date))
-            self.scan_list.setItem(idx, 3, QTableWidgetItem(content_text))
+            self.scan_list.setItem(idx, 1, QTableWidgetItem(exam_code_text or "-"))
+            self.scan_list.setItem(idx, 2, QTableWidgetItem(full_name))
+            self.scan_list.setItem(idx, 3, QTableWidgetItem(birth_date))
+            self.scan_list.setItem(idx, 4, QTableWidgetItem(content_text))
             status_item = QTableWidgetItem(status)
             if status != "OK":
                 status_item.setForeground(Qt.red)
-            self.scan_list.setItem(idx, 4, status_item)
+            self.scan_list.setItem(idx, 5, status_item)
             self._set_scan_action_widget(idx)
             for issue in result.issues:
                 self.error_list.addItem(f"{Path(result.image_path).name}: {issue.code} - {issue.message}")
@@ -11217,13 +11221,14 @@ class MainWindow(QMainWindow):
             sid_item.setData(Qt.UserRole + 1, exam_code_text)
             sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(result))
             self.scan_list.setItem(idx, 0, sid_item)
-            self.scan_list.setItem(idx, 1, QTableWidgetItem(full_name))
-            self.scan_list.setItem(idx, 2, QTableWidgetItem(birth_date))
-            self.scan_list.setItem(idx, 3, QTableWidgetItem(content_text))
+            self.scan_list.setItem(idx, 1, QTableWidgetItem(exam_code_text or "-"))
+            self.scan_list.setItem(idx, 2, QTableWidgetItem(full_name))
+            self.scan_list.setItem(idx, 3, QTableWidgetItem(birth_date))
+            self.scan_list.setItem(idx, 4, QTableWidgetItem(content_text))
             status_item = QTableWidgetItem(status)
             if status != "OK":
                 status_item.setForeground(Qt.red)
-            self.scan_list.setItem(idx, 4, status_item)
+            self.scan_list.setItem(idx, 5, status_item)
             self._set_scan_action_widget(idx)
             for issue in result.issues:
                 self.error_list.addItem(f"{Path(result.image_path).name}: {issue.code} - {issue.message}")
@@ -13023,8 +13028,8 @@ class MainWindow(QMainWindow):
             image_path = str(sid_item.data(Qt.UserRole) if sid_item else "").strip()
             if image_path:
                 result.image_path = image_path
-            setattr(result, "full_name", str(self.scan_list.item(idx, 1).text() if self.scan_list.item(idx, 1) else ""))
-            setattr(result, "birth_date", str(self.scan_list.item(idx, 2).text() if self.scan_list.item(idx, 2) else ""))
+            setattr(result, "full_name", str(self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else ""))
+            setattr(result, "birth_date", str(self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else ""))
             out.append(result)
         return out
 
@@ -13040,8 +13045,8 @@ class MainWindow(QMainWindow):
             student_id = ""
         exam_code = str(sid_item.data(Qt.UserRole + 1) if sid_item else "").strip()
         result = OMRResult(image_path=image_path, student_id=student_id, exam_code=exam_code)
-        result.full_name = str(self.scan_list.item(idx, 1).text() if self.scan_list.item(idx, 1) else "")
-        result.birth_date = str(self.scan_list.item(idx, 2).text() if self.scan_list.item(idx, 2) else "")
+        result.full_name = str(self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else "")
+        result.birth_date = str(self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else "")
         result.sync_legacy_aliases()
         return result
 
@@ -13391,10 +13396,11 @@ class MainWindow(QMainWindow):
 
     def _update_scan_preview_from_saved_row(self, row: int) -> None:
         sid = self.scan_list.item(row, 0).text() if self.scan_list.item(row, 0) else "-"
-        full_name = self.scan_list.item(row, 1).text() if self.scan_list.item(row, 1) else "-"
-        birth = self.scan_list.item(row, 2).text() if self.scan_list.item(row, 2) else "-"
-        content = self.scan_list.item(row, 3).text() if self.scan_list.item(row, 3) else "-"
-        status = self.scan_list.item(row, 4).text() if self.scan_list.item(row, 4) else "-"
+        exam_code_cell = self.scan_list.item(row, 1).text() if self.scan_list.item(row, 1) else "-"
+        full_name = self.scan_list.item(row, 2).text() if self.scan_list.item(row, 2) else "-"
+        birth = self.scan_list.item(row, 3).text() if self.scan_list.item(row, 3) else "-"
+        content = self.scan_list.item(row, 4).text() if self.scan_list.item(row, 4) else "-"
+        status = self.scan_list.item(row, 5).text() if self.scan_list.item(row, 5) else "-"
         img_path = ""
         exam_code = ""
         recognized_short = ""
@@ -13430,7 +13436,7 @@ class MainWindow(QMainWindow):
             ("STUDENT ID", sid),
             ("Họ tên", full_name),
             ("Ngày sinh", birth),
-            ("Mã đề", exam_code or "-"),
+            ("Mã đề", exam_code or exam_code_cell or "-"),
             ("Xoay tạm", f"{int(self.preview_rotation_by_index.get(row, 0) or 0)%360}°"),
             ("Nhận dạng ngắn", self._compact_value(recognized_short or "-", 220)),
             ("Nội dung", self._compact_value(content, 220)),
@@ -13697,7 +13703,7 @@ class MainWindow(QMainWindow):
                 if v and v != "-" and v == sid:
                     dup += 1
         status_parts = self._status_parts_for_row(sid if sid != "-" else "", exam_code_text, dup)
-        name_item = self.scan_list.item(row_idx, 1)
+        name_item = self.scan_list.item(row_idx, 2)
         name_text = name_item.text().strip() if name_item else ""
         if sid and sid != "-" and self._name_missing(name_text):
             status_parts.append("Lỗi SBD")
@@ -13711,7 +13717,7 @@ class MainWindow(QMainWindow):
         item = QTableWidgetItem(status)
         if status != "OK":
             item.setForeground(Qt.red)
-        self.scan_list.setItem(idx, 4, item)
+        self.scan_list.setItem(idx, 5, item)
 
     def _update_scan_preview(self, index: int) -> None:
         if index < 0 or index >= len(self.scan_results):
@@ -13799,6 +13805,15 @@ class MainWindow(QMainWindow):
         self._sync_correction_detail_panel(res, rebuild_editor=True)
         self.correction_ui_loading = False
 
+    def _load_selected_result_for_correction(self) -> None:
+        idx = self.scan_list.currentRow()
+        if idx < 0 or idx >= len(self.scan_results):
+            return
+        res = self.scan_results[idx]
+        self.correction_ui_loading = True
+        self._sync_correction_detail_panel(res, rebuild_editor=True)
+        self.correction_ui_loading = False
+
     def _open_edit_selected_scan(self, *_args) -> None:
         idx = self.scan_list.currentRow()
         if idx < 0:
@@ -13807,7 +13822,7 @@ class MainWindow(QMainWindow):
         if idx >= len(self.scan_results):
             sid_item_existing = self.scan_list.item(idx, 0)
             sid = sid_item_existing.text() if sid_item_existing else "-"
-            content = self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else "-"
+            content = self.scan_list.item(idx, 4).text() if self.scan_list.item(idx, 4) else "-"
             exam_code = str(sid_item_existing.data(Qt.UserRole + 1) if sid_item_existing else "").strip()
             if not exam_code:
                 for r in range(self.scan_result_preview.rowCount()):
@@ -13831,7 +13846,7 @@ class MainWindow(QMainWindow):
             buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
             buttons.accepted.connect(dlg.accept)
             buttons.rejected.connect(dlg.reject)
-            lay.addWidget(buttons)
+            left_lay.addWidget(buttons)
             if dlg.exec() != QDialog.Accepted:
                 return
             old_item = self.scan_list.item(idx, 0)
@@ -13845,7 +13860,7 @@ class MainWindow(QMainWindow):
             sid_item.setData(Qt.UserRole + 1, new_exam_code)
             sid_item.setData(Qt.UserRole + 2, old_recognized_short)
             self.scan_list.setItem(idx, 0, sid_item)
-            self.scan_list.setItem(idx, 3, QTableWidgetItem(txt_content.toPlainText().strip() or "-"))
+            self.scan_list.setItem(idx, 4, QTableWidgetItem(txt_content.toPlainText().strip() or "-"))
             self._refresh_row_status(idx)
             for r in range(self.scan_result_preview.rowCount()):
                 k = self.scan_result_preview.item(r, 0)
@@ -13869,11 +13884,30 @@ class MainWindow(QMainWindow):
 
         dlg = QDialog(self)
         dlg.setWindowTitle(f"Sửa bài thi: {Path(res.image_path).name}")
-        lay = QVBoxLayout(dlg)
+        dlg.setWindowState(Qt.WindowMaximized)
+        lay = QHBoxLayout(dlg)
+        splitter = QSplitter(Qt.Horizontal)
+        left = QWidget()
+        left_lay = QVBoxLayout(left)
         form = QFormLayout()
 
-        inp_sid = QLineEdit(res.student_id)
-        inp_code = QLineEdit(res.exam_code)
+        inp_sid = QComboBox()
+        inp_sid.setEditable(True)
+        inp_sid.setInsertPolicy(QComboBox.NoInsert)
+        self._load_student_correction_options(str(res.student_id or "").strip())
+        for i in range(self.student_correction_combo.count()):
+            inp_sid.addItem(self.student_correction_combo.itemText(i), self.student_correction_combo.itemData(i))
+        idx_sid = inp_sid.findData(str(res.student_id or "").strip())
+        inp_sid.setCurrentIndex(max(0, idx_sid))
+        inp_sid.setCompleter(self.student_correction_combo.completer())
+
+        inp_code = QComboBox()
+        subject_key = self._current_batch_subject_key()
+        self._load_exam_code_correction_options(subject_key, str(res.exam_code or "").strip())
+        for i in range(self.exam_code_correction_combo.count()):
+            inp_code.addItem(self.exam_code_correction_combo.itemText(i), self.exam_code_correction_combo.itemData(i))
+        idx_code = inp_code.findData(str(res.exam_code or "").strip())
+        inp_code.setCurrentIndex(max(0, idx_code))
         def _build_pair_table(data: dict[int, str], value_placeholder: str = "") -> QTableWidget:
             table = QTableWidget(0, 2)
             table.setHorizontalHeaderLabels(["Câu", "Giá trị"])
@@ -13944,9 +13978,23 @@ class MainWindow(QMainWindow):
 
         form.addRow("Student ID", inp_sid)
         form.addRow("Exam Code", inp_code)
+        splitter.addWidget(left)
+        right = QWidget()
+        right_lay = QVBoxLayout(right)
+        right_lay.addWidget(QLabel("Ảnh bài làm"))
+        preview = QLabel()
+        preview.setAlignment(Qt.AlignCenter)
+        preview.setMinimumWidth(420)
+        pix = self.preview_source_pixmap if hasattr(self, "preview_source_pixmap") and not self.preview_source_pixmap.isNull() else QPixmap(str(Path(res.image_path)))
+        preview.setPixmap(pix.scaled(900, 1200, Qt.KeepAspectRatio, Qt.SmoothTransformation) if not pix.isNull() else QPixmap())
+        right_lay.addWidget(preview, 1)
+        splitter.addWidget(right)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 1)
+        lay.addWidget(splitter)
         lay.addLayout(form)
-        lay.addWidget(QLabel("MCQ"))
-        lay.addWidget(table_mcq)
+        left_lay.addWidget(QLabel("MCQ"))
+        left_lay.addWidget(table_mcq)
         row_mcq = QHBoxLayout()
         btn_add_mcq = QPushButton("Thêm dòng MCQ")
         btn_del_mcq = QPushButton("Xoá dòng chọn")
@@ -13955,10 +14003,10 @@ class MainWindow(QMainWindow):
         row_mcq.addWidget(btn_add_mcq)
         row_mcq.addWidget(btn_del_mcq)
         row_mcq.addStretch()
-        lay.addLayout(row_mcq)
+        left_lay.addLayout(row_mcq)
 
-        lay.addWidget(QLabel("True / False"))
-        lay.addWidget(table_tf)
+        left_lay.addWidget(QLabel("True / False"))
+        left_lay.addWidget(table_tf)
         row_tf = QHBoxLayout()
         btn_add_tf = QPushButton("Thêm dòng TF")
         btn_del_tf = QPushButton("Xoá dòng chọn")
@@ -13967,10 +14015,10 @@ class MainWindow(QMainWindow):
         row_tf.addWidget(btn_add_tf)
         row_tf.addWidget(btn_del_tf)
         row_tf.addStretch()
-        lay.addLayout(row_tf)
+        left_lay.addLayout(row_tf)
 
-        lay.addWidget(QLabel("Numeric"))
-        lay.addWidget(table_num)
+        left_lay.addWidget(QLabel("Numeric"))
+        left_lay.addWidget(table_num)
         row_num = QHBoxLayout()
         btn_add_num = QPushButton("Thêm dòng Numeric")
         btn_del_num = QPushButton("Xoá dòng chọn")
@@ -13979,7 +14027,7 @@ class MainWindow(QMainWindow):
         row_num.addWidget(btn_add_num)
         row_num.addWidget(btn_del_num)
         row_num.addStretch()
-        lay.addLayout(row_num)
+        left_lay.addLayout(row_num)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
@@ -13989,8 +14037,8 @@ class MainWindow(QMainWindow):
             return
 
         changes: list[str] = []
-        new_sid = inp_sid.text().strip()
-        new_code = inp_code.text().strip()
+        new_sid = str(inp_sid.currentData() or inp_sid.currentText() or "").strip()
+        new_code = str(inp_code.currentData() or inp_code.currentText() or "").strip()
         if new_sid != (res.student_id or ""):
             old_sid = res.student_id or ""
             res.student_id = new_sid
