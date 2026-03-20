@@ -13623,6 +13623,17 @@ class MainWindow(QMainWindow):
         if changed <= 0:
             return 0
         self.scoring_results_by_subject[subject] = subject_scores
+        for row in rows:
+            self.database.upsert_score_row(subject, row.student_id, row.exam_code, {
+                "student_id": row.student_id,
+                "name": row.name,
+                "subject": row.subject,
+                "exam_code": row.exam_code,
+                "score": row.score,
+                "correct": row.correct,
+                "wrong": row.wrong,
+                "blank": row.blank,
+            })
         phase = {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "subject": subject,
@@ -13797,6 +13808,52 @@ class MainWindow(QMainWindow):
                 indent=2,
             )
         )
+        self.correction_ui_loading = False
+
+    def _load_selected_result_for_correction(self) -> None:
+        idx = self.scan_list.currentRow()
+        if idx < 0 or idx >= len(self.scan_results):
+            return
+        res = self.scan_results[idx]
+        self.correction_ui_loading = True
+        self._sync_correction_detail_panel(res, rebuild_editor=True)
+        self.correction_ui_loading = False
+
+    def _load_selected_result_for_correction(self) -> None:
+        idx = self.scan_list.currentRow()
+        if idx < 0 or idx >= len(self.scan_results):
+            return
+        res = self.scan_results[idx]
+        self.correction_ui_loading = True
+        self._sync_correction_detail_panel(res, rebuild_editor=True)
+        self.correction_ui_loading = False
+
+    def _load_selected_result_for_correction(self) -> None:
+        idx = self.scan_list.currentRow()
+        if idx < 0 or idx >= len(self.scan_results):
+            return
+        res = self.scan_results[idx]
+        self.correction_ui_loading = True
+        self._sync_correction_detail_panel(res, rebuild_editor=True)
+        self.correction_ui_loading = False
+
+    def _load_selected_result_for_correction(self) -> None:
+        idx = self.scan_list.currentRow()
+        if idx < 0 or idx >= len(self.scan_results):
+            return
+        res = self.scan_results[idx]
+        self.correction_ui_loading = True
+        self._sync_correction_detail_panel(res, rebuild_editor=True)
+        self.correction_ui_loading = False
+
+    def _load_selected_result_for_correction(self) -> None:
+        idx = self.scan_list.currentRow()
+        if idx < 0 or idx >= len(self.scan_results):
+            return
+        res = self.scan_results[idx]
+        self.correction_ui_loading = True
+        self._sync_correction_detail_panel(res, rebuild_editor=True)
+        self.correction_ui_loading = False
 
     def _load_selected_result_for_correction(self) -> None:
         idx = self.scan_list.currentRow()
