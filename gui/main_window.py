@@ -12736,6 +12736,17 @@ class MainWindow(QMainWindow):
         if changed <= 0:
             return 0
         self.scoring_results_by_subject[subject] = subject_scores
+        for row in rows:
+            self.database.upsert_score_row(subject, row.student_id, row.exam_code, {
+                "student_id": row.student_id,
+                "name": row.name,
+                "subject": row.subject,
+                "exam_code": row.exam_code,
+                "score": row.score,
+                "correct": row.correct,
+                "wrong": row.wrong,
+                "blank": row.blank,
+            })
         phase = {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "subject": subject,
@@ -12765,6 +12776,16 @@ class MainWindow(QMainWindow):
         self.scan_edit_history.setdefault(idx, []).append(message)
         self.scan_last_adjustment[idx] = message
         self.scan_manual_adjustments[idx] = sorted(set(self.scan_manual_adjustments.get(idx, []) + details))
+        if 0 <= idx < len(self.scan_results):
+            res = self.scan_results[idx]
+            self.database.log_change("scan_results", str(getattr(res, "image_path", "") or idx), source, "", message, source)
+
+    def _persist_scan_results_to_db(self, subject_key: str) -> None:
+        rows = [self._serialize_omr_result(x) for x in (self.scan_results_by_subject.get(subject_key, self.scan_results) or [])]
+        self.database.replace_scan_results_for_subject(subject_key, rows)
+
+    def _persist_single_scan_result_to_db(self, result: OMRResult, note: str = "") -> None:
+        self.database.update_scan_result_payload(str(getattr(result, "image_path", "") or ""), self._serialize_omr_result(result), note=note)
 
     def _refresh_all_statuses(self) -> None:
         for row_idx in range(self.scan_list.rowCount()):
@@ -13169,6 +13190,7 @@ class MainWindow(QMainWindow):
                 sid_item.setData(Qt.UserRole + 1, res.exam_code or "")
                 sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(res))
             self._record_adjustment(idx, changes, "dialog_edit")
+            self._persist_single_scan_result_to_db(res, note="dialog_edit")
             self._refresh_all_statuses()
             self._update_scan_preview(idx)
             self._load_selected_result_for_correction()
@@ -13239,7 +13261,8 @@ class MainWindow(QMainWindow):
             self.scan_blank_summary[idx] = self._compute_blank_questions(scoped)
             self.scan_list.setItem(idx, 3, QTableWidgetItem(self._build_recognition_content_text(res, self.scan_blank_summary[idx])))
             self._record_adjustment(idx, changes, "manual_json")
-            self.btn_save_batch_subject.setEnabled(True)
+            self._persist_single_scan_result_to_db(res, note="manual_json")
+            self.btn_save_batch_subject.setEnabled(False)
             invalidated = self._invalidate_scoring_for_student_ids(
                 [old_sid_for_score, str(res.student_id or "").strip()],
                 reason="manual_json",

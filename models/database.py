@@ -223,3 +223,104 @@ class OMRDatabase:
             ),
         )
         self.conn.commit()
+
+    def replace_scan_results_for_subject(self, subject_key: str, rows: Iterable[dict[str, Any]]) -> None:
+        subject = str(subject_key or "")
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM scan_results WHERE subject_key = ?", (subject,))
+        payload_rows = list(rows)
+        cur.executemany(
+            """
+            INSERT INTO scan_results(subject_key, image_path, exam_code_text, student_code_text, mcq_answer, tf_answer, numeric_answer, payload_json, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            [
+                (
+                    subject,
+                    str(row.get("image_path", "") or ""),
+                    str(row.get("exam_code", "") or ""),
+                    str(row.get("student_id", "") or ""),
+                    json.dumps(row.get("mcq_answers", {}), ensure_ascii=False),
+                    json.dumps(row.get("true_false_answers", {}), ensure_ascii=False),
+                    json.dumps(row.get("numeric_answers", {}), ensure_ascii=False),
+                    json.dumps(row, ensure_ascii=False),
+                )
+                for row in payload_rows
+            ],
+        )
+        self.conn.commit()
+
+    def update_scan_result_payload(self, image_path: str, payload: dict[str, Any], note: str = "") -> None:
+        image_key = str(image_path or "")
+        old_row = self.conn.execute(
+            "SELECT payload_json FROM scan_results WHERE image_path = ? ORDER BY id DESC LIMIT 1",
+            (image_key,),
+        ).fetchone()
+        old_payload = json.loads(old_row[0]) if old_row and old_row[0] else {}
+        self.conn.execute(
+            """
+            UPDATE scan_results
+            SET exam_code_text = ?, student_code_text = ?, mcq_answer = ?, tf_answer = ?, numeric_answer = ?, payload_json = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE image_path = ?
+            """,
+            (
+                str(payload.get("exam_code", "") or ""),
+                str(payload.get("student_id", "") or ""),
+                json.dumps(payload.get("mcq_answers", {}), ensure_ascii=False),
+                json.dumps(payload.get("true_false_answers", {}), ensure_ascii=False),
+                json.dumps(payload.get("numeric_answers", {}), ensure_ascii=False),
+                json.dumps(payload, ensure_ascii=False),
+                image_key,
+            ),
+        )
+        self.conn.commit()
+        if old_payload != payload:
+            self.log_change("scan_results", image_key, "payload_json", old_payload, payload, note or "scan_result_update")
+
+    def upsert_score_row(self, subject_key: str, student_code: str, exam_code: str, payload: dict[str, Any]) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO scores(subject_key, student_code, exam_code, score, correct_count, wrong_count, blank_count, payload_json, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(subject_key, student_code, exam_code) DO UPDATE SET
+                score = excluded.score,
+                correct_count = excluded.correct_count,
+                wrong_count = excluded.wrong_count,
+                blank_count = excluded.blank_count,
+                payload_json = excluded.payload_json,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                str(subject_key or ""),
+                str(student_code or ""),
+                str(exam_code or ""),
+                float(payload.get("score", 0) or 0),
+                int(payload.get("correct", 0) or 0),
+                int(payload.get("wrong", 0) or 0),
+                int(payload.get("blank", 0) or 0),
+                json.dumps(payload, ensure_ascii=False),
+            ),
+        )
+        self.conn.commit()
+
+    def dashboard_summary(self, subject_key: str = "") -> dict[str, Any]:
+        params: tuple[Any, ...] = ()
+        where = ""
+        if str(subject_key or "").strip():
+            where = "WHERE subject_key = ?"
+            params = (str(subject_key).strip(),)
+        cur = self.conn.cursor()
+        avg_score = cur.execute(f"SELECT AVG(score) FROM scores {where}", params).fetchone()[0] or 0
+        top_rows = cur.execute(
+            f"SELECT student_code, score FROM scores {where} ORDER BY score DESC, student_code ASC LIMIT 10",
+            params,
+        ).fetchall()
+        distribution = cur.execute(
+            f"SELECT CAST(score AS INT) AS bucket, COUNT(*) FROM scores {where} GROUP BY bucket ORDER BY bucket",
+            params,
+        ).fetchall()
+        return {
+            "average_score": float(avg_score or 0),
+            "top_students": [{"student_code": str(r[0]), "score": float(r[1] or 0)} for r in top_rows],
+            "distribution": [{"bucket": int(r[0] or 0), "count": int(r[1] or 0)} for r in distribution],
+        }
