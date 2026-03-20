@@ -347,10 +347,11 @@ class TemplateCanvas(QWidget):
 
 
 class TemplateEditorWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None, on_template_saved=None):
+        super().__init__(parent)
         self.setWindowTitle("Template Editor")
         self.resize(1620, 940)
+        self.setWindowState(self.windowState() | Qt.WindowMaximized)
 
         self.template_engine = TemplateEngine()
         self.omr = OMRProcessor()
@@ -361,6 +362,8 @@ class TemplateEditorWindow(QMainWindow):
         self._sync = False
         self.template_file_path: str | None = None
         self._original_pixmap: QPixmap | None = None
+        self.template_dirty = False
+        self.on_template_saved = on_template_saved
 
         self.canvas = TemplateCanvas()
         self.canvas.selection_changed.connect(self._load_props)
@@ -390,12 +393,12 @@ class TemplateEditorWindow(QMainWindow):
         self._build_menus()
         self._assign_action_icons()
 
-        toolbar = QToolBar("Template")
-        toolbar.setMovable(False)
-        toolbar.setFloatable(False)
-        toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly)
-        toolbar.setIconSize(QSize(18, 18))
-        self.addToolBar(toolbar)
+        self.template_toolbar = QToolBar("Template")
+        self.template_toolbar.setMovable(False)
+        self.template_toolbar.setFloatable(False)
+        self.template_toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.template_toolbar.setIconSize(QSize(18, 18))
+        self.addToolBar(self.template_toolbar)
         for act in [
             self.act_load_blank,
             self.act_open_template,
@@ -411,18 +414,18 @@ class TemplateEditorWindow(QMainWindow):
             self.act_delete_anchor,
             self.act_snap_grid,
         ]:
-            toolbar.addAction(act)
+            self.template_toolbar.addAction(act)
 
         self.anchor_btn = QPushButton("Add Anchor"); self.anchor_btn.setCheckable(True)
         self.anchor_btn.toggled.connect(lambda c: setattr(self.canvas, "add_anchor_mode", c))
-        toolbar.addWidget(self.anchor_btn)
+        self.template_toolbar.addWidget(self.anchor_btn)
 
-        toolbar.addWidget(QLabel(" Zone Type: "))
+        self.template_toolbar.addWidget(QLabel(" Zone Type: "))
         self.zone_type = QComboBox(); self.zone_type.addItems([z.value for z in [ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK, ZoneType.MCQ_BLOCK, ZoneType.TRUE_FALSE_BLOCK, ZoneType.NUMERIC_BLOCK]])
         self.zone_type.currentTextChanged.connect(self._on_zone_type_changed)
-        toolbar.addWidget(self.zone_type)
+        self.template_toolbar.addWidget(self.zone_type)
 
-        toolbar.addWidget(QLabel(" Alignment: "))
+        self.template_toolbar.addWidget(QLabel(" Alignment: "))
         self.align_profile_combo = QComboBox()
         self.align_profile_combo.addItem("Auto", "auto")
         self.align_profile_combo.addItem("Legacy", "legacy")
@@ -430,9 +433,9 @@ class TemplateEditorWindow(QMainWindow):
         self.align_profile_combo.addItem("One-side ruler", "one_side")
         self.align_profile_combo.addItem("Hybrid", "hybrid")
         self.align_profile_combo.currentIndexChanged.connect(self._on_alignment_profile_changed)
-        toolbar.addWidget(self.align_profile_combo)
+        self.template_toolbar.addWidget(self.align_profile_combo)
 
-        toolbar.addWidget(QLabel(" Fill threshold: "))
+        self.template_toolbar.addWidget(QLabel(" Fill threshold: "))
         self.fill_threshold_spin = QDoubleSpinBox()
         self.fill_threshold_spin.setDecimals(2)
         self.fill_threshold_spin.setRange(0.05, 0.95)
@@ -440,10 +443,10 @@ class TemplateEditorWindow(QMainWindow):
         self.fill_threshold_spin.setValue(0.45)
         self.fill_threshold_spin.setToolTip("Tăng để giảm nhận nhầm vết mờ/vết tẩy; giảm nếu bỏ sót nét tô nhẹ.")
         self.fill_threshold_spin.valueChanged.connect(self._on_fill_threshold_changed)
-        toolbar.addWidget(self.fill_threshold_spin)
+        self.template_toolbar.addWidget(self.fill_threshold_spin)
 
-        toolbar.addAction(self.act_zoom_in)
-        toolbar.addAction(self.act_zoom_out)
+        self.template_toolbar.addAction(self.act_zoom_in)
+        self.template_toolbar.addAction(self.act_zoom_out)
 
         self.result_box = QTextEdit(); self.result_box.setReadOnly(True); self.result_box.setMaximumHeight(160)
         self.prop_panel = self._build_prop_panel()
@@ -455,16 +458,18 @@ class TemplateEditorWindow(QMainWindow):
 
     def _assign_action_icons(self) -> None:
         s = self.style()
-        self.act_load_blank.setIcon(s.standardIcon(QStyle.SP_DialogOpenButton))
-        self.act_open_template.setIcon(s.standardIcon(QStyle.SP_DialogOpenButton))
+        self.act_load_blank.setIcon(s.standardIcon(QStyle.SP_DirOpenIcon))
+        self.act_open_template.setIcon(s.standardIcon(QStyle.SP_FileIcon))
         self.act_save.setIcon(s.standardIcon(QStyle.SP_DialogSaveButton))
-        self.act_save_as.setIcon(s.standardIcon(QStyle.SP_DialogSaveButton))
+        self.act_save_as.setIcon(s.standardIcon(QStyle.SP_DriveFDIcon))
         self.act_preview.setIcon(s.standardIcon(QStyle.SP_FileDialogContentsView))
         self.act_test_recognition.setIcon(s.standardIcon(QStyle.SP_MediaPlay))
-        self.act_copy.setIcon(s.standardIcon(QStyle.SP_FileIcon))
+        self.act_template_qc.setIcon(s.standardIcon(QStyle.SP_MessageBoxInformation))
+        self.act_copy.setIcon(s.standardIcon(QStyle.SP_FileDialogDetailedView))
         self.act_paste.setIcon(s.standardIcon(QStyle.SP_DialogResetButton))
         self.act_duplicate.setIcon(s.standardIcon(QStyle.SP_FileDialogNewFolder))
         self.act_delete.setIcon(s.standardIcon(QStyle.SP_TrashIcon))
+        self.act_delete_anchor.setIcon(s.standardIcon(QStyle.SP_BrowserStop))
         self.act_snap_grid.setIcon(s.standardIcon(QStyle.SP_BrowserReload))
         self.act_zoom_in.setIcon(s.standardIcon(QStyle.SP_ArrowUp))
         self.act_zoom_out.setIcon(s.standardIcon(QStyle.SP_ArrowDown))
@@ -588,6 +593,7 @@ class TemplateEditorWindow(QMainWindow):
         return self.template.zones[i]
 
     def _on_zone_changed(self):
+        self._mark_dirty()
         if self.canvas.preview_mode:
             self.regenerate_selected_grid(auto=True)
             self.preview_template()
@@ -600,6 +606,7 @@ class TemplateEditorWindow(QMainWindow):
             return
 
         z.zone_type = zt
+        self._mark_dirty()
         if zt == ZoneType.STUDENT_ID_BLOCK:
             z.metadata.setdefault("rows", 10)
             z.metadata.setdefault("columns", 8)
@@ -657,29 +664,39 @@ class TemplateEditorWindow(QMainWindow):
     def load_image(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open Blank Paper", "", "Images (*.png *.jpg *.jpeg *.tif *.tiff)")
         if not path:
-            return
+            return False
+        return self.load_image_from_path(path)
+
+    def load_image_from_path(self, path: str) -> bool:
         pix = QPixmap(path)
         if pix.isNull():
             QMessageBox.warning(self, "Invalid", "Unable to load image")
-            return
+            return False
         self.template = Template(Path(path).stem, path, pix.width(), pix.height())
         self.template.metadata["alignment_profile"] = "auto"
         self.template.metadata["fill_threshold"] = float(self.fill_threshold_spin.value())
         self.canvas.set_template(self.template, pix)
         self._original_pixmap = pix
         self.template_file_path = None
-        self.preview_ok = False; self.test_ok = False
+        self.preview_ok = False
+        self.test_ok = False
+        self.template_dirty = False
         self._sync_recognition_settings_from_template()
+        self.result_box.setPlainText("Đã nạp ảnh mẫu. Hãy tạo vùng nhận dạng, preview, test recognition và lưu.")
+        return True
 
     def open_template(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open Template", "", "JSON (*.json)")
         if not path:
-            return
+            return False
+        return self.load_template_from_path(path)
+
+    def load_template_from_path(self, path: str) -> bool:
         try:
             tpl = Template.load_json(path)
         except Exception as exc:
             QMessageBox.warning(self, "Invalid template", f"Unable to load template:\n{exc}")
-            return
+            return False
 
         img_path = Path(tpl.image_path)
         if not img_path.is_absolute():
@@ -693,15 +710,14 @@ class TemplateEditorWindow(QMainWindow):
                 "Images (*.png *.jpg *.jpeg *.tif *.tiff)",
             )
             if not new_img:
-                return
+                return False
             img_path = Path(new_img)
 
         pix = QPixmap(str(img_path))
         if pix.isNull():
             QMessageBox.warning(self, "Invalid", "Unable to load template image")
-            return
+            return False
 
-        # Keep relative geometry from template, but update canvas dimensions to actual image.
         tpl.image_path = str(img_path)
         tpl.width = pix.width()
         tpl.height = pix.height()
@@ -712,7 +728,9 @@ class TemplateEditorWindow(QMainWindow):
         self.template_file_path = path
         self.preview_ok = False
         self.test_ok = False
+        self.template_dirty = False
         self.result_box.setPlainText("Template loaded. You can preview, adjust and save again.")
+        return True
 
     def regenerate_selected_grid(self, auto: bool = False):
         z = self._selected_zone()
@@ -748,6 +766,7 @@ class TemplateEditorWindow(QMainWindow):
             "decimal_symbol": self.p_decimal_symbol.text() or ".",
         })
         z.grid = self.template_engine.generate_semantic_grid(z)
+        self._mark_dirty()
         self.canvas.update()
 
     def copy_block(self):
@@ -763,6 +782,7 @@ class TemplateEditorWindow(QMainWindow):
         z.name = f"{z.name}_paste"
         z.x = min(0.95, z.x + 0.02); z.y = min(0.95, z.y + 0.02)
         self.template.zones.append(z)
+        self._mark_dirty()
         self.canvas.update()
 
     def duplicate_block(self):
@@ -770,6 +790,7 @@ class TemplateEditorWindow(QMainWindow):
         if not z or not self.template:
             return
         self.template.zones.append(self.template_engine.duplicate_zone(z))
+        self._mark_dirty()
         self.canvas.update()
 
 
@@ -780,6 +801,7 @@ class TemplateEditorWindow(QMainWindow):
         idx = self.canvas.selected_zone
         if 0 <= idx < len(self.template.zones):
             del self.template.zones[idx]
+            self._mark_dirty()
             self.canvas.selected_zone = -1
             self.canvas.selection_changed.emit(-1)
             self.canvas.update()
@@ -792,6 +814,7 @@ class TemplateEditorWindow(QMainWindow):
             QMessageBox.information(self, "Delete Anchor", "Chọn anchor cần xoá trước (click vào anchor đen).")
             return
         del self.template.anchors[idx]
+        self._mark_dirty()
         self.canvas.selected_anchor = -1
         self.canvas.zones_changed.emit()
         self.canvas.update()
@@ -815,6 +838,7 @@ class TemplateEditorWindow(QMainWindow):
             ys, xs = np.where(roi > 0)
             new_pos.append(((x0 + float(xs.mean())) / self.template.width, (y0 + float(ys.mean())) / self.template.height))
         z.grid.bubble_positions = new_pos
+        self._mark_dirty()
         self.canvas.update()
 
     def preview_template(self):
@@ -885,23 +909,24 @@ class TemplateEditorWindow(QMainWindow):
         return QPixmap.fromImage(qimg.copy())
 
     def save_template(self):
-        self._save_template(save_as=False)
+        return self._save_template(save_as=False)
 
     def save_template_as(self):
-        self._save_template(save_as=True)
+        return self._save_template(save_as=True)
 
     def _save_template(self, save_as: bool):
         if not self.template:
-            return
+            return False
         if not self.preview_ok:
             QMessageBox.warning(self, "Preview required", "Run preview first.")
-            return
+            return False
         if not self.test_ok:
             QMessageBox.warning(self, "Test required", "Run test recognition first.")
-            return
+            return False
         errs = self._validate_template()
         if errs:
-            QMessageBox.warning(self, "Validation", "\n".join(errs)); return
+            QMessageBox.warning(self, "Validation", "\n".join(errs))
+            return False
         path = self.template_file_path
         if save_as or not path:
             path, _ = QFileDialog.getSaveFileName(self, "Save Template", path or "template.json", "JSON (*.json)")
@@ -909,18 +934,55 @@ class TemplateEditorWindow(QMainWindow):
             if self.template is not None:
                 self.template.metadata["alignment_profile"] = str(self.align_profile_combo.currentData() or "auto")
                 self.template.metadata["fill_threshold"] = float(self.fill_threshold_spin.value())
+                self.template.name = str(Path(path).stem)
             self.template.save_json(path)
             self.template_file_path = path
+            self.template_dirty = False
+            if callable(self.on_template_saved):
+                self.on_template_saved(path, self.template.name if self.template else Path(path).stem)
+            return True
+        return False
+
+    def _mark_dirty(self) -> None:
+        if self.template is not None:
+            self.template_dirty = True
+
+    def has_unsaved_changes(self) -> bool:
+        return bool(self.template is not None and self.template_dirty)
+
+    def _confirm_close(self) -> bool:
+        if not self.has_unsaved_changes():
+            return True
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Template Editor")
+        msg.setText("Mẫu giấy thi có thay đổi chưa lưu.")
+        msg.setInformativeText("Bạn có muốn lưu trước khi đóng không?")
+        msg.setStandardButtons(QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
+        msg.setDefaultButton(QMessageBox.Save)
+        choice = msg.exec()
+        if choice == QMessageBox.Cancel:
+            return False
+        if choice == QMessageBox.Save:
+            return bool(self.save_template())
+        return True
+
+    def closeEvent(self, event):  # type: ignore[override]
+        if self._confirm_close():
+            event.accept()
+            return
+        event.ignore()
 
     def _on_alignment_profile_changed(self, _idx: int) -> None:
         if self.template is None:
             return
         self.template.metadata["alignment_profile"] = str(self.align_profile_combo.currentData() or "auto")
+        self._mark_dirty()
 
     def _on_fill_threshold_changed(self, value: float) -> None:
         if self.template is None:
             return
         self.template.metadata["fill_threshold"] = float(max(0.05, min(0.95, float(value))))
+        self._mark_dirty()
 
     def _apply_recognition_settings_to_engine(self) -> None:
         self.omr.alignment_profile = str(self.align_profile_combo.currentData() or "auto")
