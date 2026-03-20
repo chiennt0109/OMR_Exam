@@ -850,7 +850,7 @@ class OMRProcessor:
         h, w = binary.shape[:2]
         expected = np.array([(x * w, y * h) if x <= 1.0 and y <= 1.0 else (x, y) for x, y in grid.bubble_positions], dtype=np.float32)
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
-            return expected
+            return self._resolve_column_digit_centers(binary, expected, grid, float(zone.metadata.get("bubble_radius", 9)))
         bubble_radius = float(zone.metadata.get("bubble_radius", 9))
         min_area = max(6.0, 0.25 * np.pi * (bubble_radius ** 2))
         max_area = max(min_area * 3.5, 4.0 * np.pi * (bubble_radius ** 2))
@@ -882,6 +882,62 @@ class OMRProcessor:
                     best_pt = cand
             refined.append(best_pt if best_pt is not None else np.array([exp_x, exp_y], dtype=np.float32))
         return np.array(refined, dtype=np.float32)
+
+    def _resolve_column_digit_centers(
+        self,
+        binary: np.ndarray,
+        expected: np.ndarray,
+        grid,
+        bubble_radius: float,
+    ) -> np.ndarray:
+        rows, cols = max(1, int(grid.rows)), max(1, int(grid.cols))
+        if len(expected) != rows * cols:
+            return expected
+        h, w = binary.shape[:2]
+        min_area = max(6.0, 0.25 * np.pi * (bubble_radius ** 2))
+        max_area = max(min_area * 3.5, 4.0 * np.pi * (bubble_radius ** 2))
+        search_pad = max(10, int(round(bubble_radius * 2.4)))
+        max_dist = max(6.0, bubble_radius * 1.75)
+        refined = expected.copy()
+
+        for c in range(cols):
+            col_pts = expected[c::cols]
+            offsets: list[np.ndarray] = []
+            for exp_x, exp_y in col_pts:
+                x0 = int(max(0, exp_x - search_pad))
+                y0 = int(max(0, exp_y - search_pad))
+                x1 = int(min(w, exp_x + search_pad + 1))
+                y1 = int(min(h, exp_y + search_pad + 1))
+                roi = binary[y0:y1, x0:x1]
+                if roi.size == 0:
+                    continue
+                num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(roi, connectivity=8)
+                best_offset: np.ndarray | None = None
+                best_score = float("inf")
+                for idx in range(1, num_labels):
+                    area = float(stats[idx, cv2.CC_STAT_AREA])
+                    if area < min_area or area > max_area:
+                        continue
+                    cx, cy = centroids[idx]
+                    cand = np.array([cx + x0, cy + y0], dtype=np.float32)
+                    offset = cand - np.array([exp_x, exp_y], dtype=np.float32)
+                    dist = float(np.linalg.norm(offset))
+                    if dist > max_dist:
+                        continue
+                    if dist < best_score:
+                        best_score = dist
+                        best_offset = offset
+                if best_offset is not None:
+                    offsets.append(best_offset)
+
+            if not offsets:
+                continue
+            median_offset = np.median(np.array(offsets, dtype=np.float32), axis=0)
+            for r in range(rows):
+                idx = (r * cols) + c
+                refined[idx] = expected[idx] + median_offset
+
+        return refined.astype(np.float32)
 
     def recognize_block(self, binary: np.ndarray, zone: Zone, template: Template, result: OMRResult, debug_overlay: np.ndarray | None = None) -> None:
         grid = zone.grid
