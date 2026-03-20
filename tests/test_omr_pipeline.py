@@ -541,6 +541,34 @@ class OMRPipelineTests(unittest.TestCase):
         digits, _ = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
         self.assertEqual(digits, "0")
 
+    def test_student_id_recognize_block_weights_center_core_more_than_outline_ratio(self):
+        template = Template(
+            name="sid_weight",
+            image_path="",
+            width=100,
+            height=100,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="sid_weight",
+                    name="sid",
+                    zone_type=ZoneType.STUDENT_ID_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(50, 10 + r * 8) for r in range(10)]),
+                    metadata={"bubble_radius": 5},
+                )
+            ],
+        )
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
+        with patch.object(self.processor, "_resolve_zone_centers", return_value=np.array([[50, 10 + r * 8] for r in range(10)], dtype=np.float32)), \
+            patch.object(self.processor, "detect_bubbles", return_value=np.array([0.42, 0.35, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=np.array([0.86, 0.30, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05], dtype=np.float32)):
+            self.processor.recognize_block(np.zeros((100, 100), dtype=np.uint8), template.zones[0], template, result_stub)
+        self.assertEqual(result_stub.student_id, "0")
+
     def test_numeric_block_removes_only_trailing_placeholders_without_decimal(self):
         rows, cols = 12, 4
         bubbles = []
