@@ -578,6 +578,29 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(centers.shape, (4, 2))
         self.assertLess(float(np.mean(np.linalg.norm(centers - actual.astype(np.float32), axis=1))), 8.0)
 
+    def test_auto_orient_keeps_original_when_90_degree_score_is_ambiguous(self):
+        template = Template(
+            name="sheet",
+            image_path="",
+            width=400,
+            height=600,
+            anchors=[AnchorPoint(0.08, 0.08), AnchorPoint(0.92, 0.08), AnchorPoint(0.92, 0.92), AnchorPoint(0.08, 0.92)],
+            zones=[],
+        )
+        aligned = np.full((600, 400, 3), 255, dtype=np.uint8)
+        aligned_binary = np.zeros((600, 400), dtype=np.uint8)
+        with patch.object(self.processor, "_orientation_score", side_effect=[120.0, 135.0, 118.0, 110.0]):
+            out_img, out_bin = self.processor._auto_orient(aligned, aligned_binary, template)
+
+        self.assertEqual(out_img.shape[:2], (600, 400))
+        self.assertEqual(out_bin.shape[:2], (600, 400))
+        self.assertEqual(self.processor._last_alignment_debug["orientation_rotation"], 0)
+
+    def test_reasonable_page_warp_rejects_small_inner_contours(self):
+        template = Template(name="sheet", image_path="", width=400, height=600, anchors=[], zones=[])
+        inner = np.array([[80, 120], [320, 120], [320, 480], [80, 480]], dtype=np.float32)
+        self.assertFalse(self.processor._is_reasonable_page_warp(inner, (600, 400), template))
+
 
 if __name__ == "__main__":
     unittest.main()

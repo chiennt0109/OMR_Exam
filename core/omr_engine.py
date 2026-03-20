@@ -516,16 +516,6 @@ class OMRProcessor:
 
     def correct_perspective(self, image: np.ndarray, binary: np.ndarray, template: Template, result: OMRResult) -> tuple[np.ndarray, np.ndarray | None]:
         self._last_alignment_debug = {}
-        page_corners = self._detect_page_corners(image)
-        aligned: np.ndarray | None = None
-        aligned_binary: np.ndarray | None = None
-        if page_corners is not None:
-            dst = np.array([[0, 0], [template.width - 1, 0], [template.width - 1, template.height - 1], [0, template.height - 1]], dtype=np.float32)
-            h = cv2.getPerspectiveTransform(page_corners.astype(np.float32), dst)
-            aligned = cv2.warpPerspective(image, h, (template.width, template.height), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-            aligned_binary = cv2.warpPerspective(binary, h, (template.width, template.height), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_REPLICATE)
-            self._last_alignment_debug["page_corners"] = page_corners.tolist()
-
         mode = str(getattr(self, "alignment_profile", "auto") or "auto").strip().lower()
         candidates: list[str] = []
         if mode == "auto":
@@ -545,7 +535,7 @@ class OMRProcessor:
 
         for candidate in candidates:
             if candidate == "one_side":
-                coarse_img, coarse_bin = self._fallback_align_page_contour(base_image, template, conservative=True)
+                coarse_img, coarse_bin = self._fallback_align_page_contour(image, template, conservative=True)
                 refined_img, refined_bin = self._refine_alignment_with_one_side_anchors(coarse_img, coarse_bin, template)
                 oriented_img, oriented_bin = self._auto_orient(refined_img, refined_bin, template)
                 shifted_img, shifted_bin = self._refine_corner_translation(oriented_img, oriented_bin, template)
@@ -562,9 +552,8 @@ class OMRProcessor:
             self._last_alignment_debug["alignment_mode"] = candidate
             return shifted_img, shifted_bin
 
-        if aligned is None or aligned_binary is None:
-            result.issues.append(OMRIssue("MISSING_ANCHORS", "Anchor detection failed; using page contour fallback"))
-            aligned, aligned_binary = self._fallback_align_page_contour(image, template)
+        result.issues.append(OMRIssue("MISSING_ANCHORS", "Anchor detection failed; using page contour fallback"))
+        aligned, aligned_binary = self._fallback_align_page_contour(image, template)
         refined_img, refined_bin = self._refine_alignment_with_template_anchors(aligned, aligned_binary, template)
         oriented_img, oriented_bin = self._auto_orient(refined_img, refined_bin, template)
         shifted_img, shifted_bin = self._refine_corner_translation(oriented_img, oriented_bin, template)
@@ -591,9 +580,27 @@ class OMRProcessor:
                 bin_r = cv2.resize(bin_r, (template.width, template.height), interpolation=cv2.INTER_NEAREST)
             score = self._orientation_score(bin_r, template)
             candidates.append((score, rotation, img_r, bin_r))
-        best = max(candidates, key=lambda item: item[0])
-        self._last_alignment_debug["orientation_rotation"] = int(best[1])
-        return best[2], best[3]
+        by_rotation = {rotation: (score, img_r, bin_r) for score, rotation, img_r, bin_r in candidates}
+        zero_score = by_rotation[0][0]
+        best_score, best_rotation, best_img, best_bin = max(candidates, key=lambda item: item[0])
+        flip_score = by_rotation[180][0]
+
+        chosen_rotation = 0
+        chosen_img = by_rotation[0][1]
+        chosen_bin = by_rotation[0][2]
+
+        if flip_score > zero_score + 12.0:
+            chosen_rotation = 180
+            chosen_img = by_rotation[180][1]
+            chosen_bin = by_rotation[180][2]
+
+        if best_rotation in {90, 270} and best_score > max(zero_score, flip_score) + 40.0:
+            chosen_rotation = int(best_rotation)
+            chosen_img = best_img
+            chosen_bin = best_bin
+
+        self._last_alignment_debug["orientation_rotation"] = int(chosen_rotation)
+        return chosen_img, chosen_bin
 
     def _orientation_score(self, binary: np.ndarray, template: Template) -> float:
         score = 0.0
@@ -606,6 +613,7 @@ class OMRProcessor:
                 d2 = np.sum((anchors - pt) ** 2, axis=1)
                 total += float(np.sqrt(float(np.min(d2))))
             score -= total
+            score += float(min(len(anchors), 12)) * 6.0
         vert = np.sum(binary > 0, axis=0).astype(np.float32)
         horz = np.sum(binary > 0, axis=1).astype(np.float32)
         score += float(np.std(vert) + np.std(horz)) * 0.02
@@ -723,6 +731,10 @@ class OMRProcessor:
         if corners is None:
             resized = cv2.resize(image, (template.width, template.height))
             return resized, self._preprocess(resized)["binary"]
+        if not self._is_reasonable_page_warp(corners, image.shape[:2], template):
+            resized = cv2.resize(image, (template.width, template.height))
+            return resized, self._preprocess(resized)["binary"]
+        self._last_alignment_debug["page_corners"] = corners.tolist()
         dst = np.array([[0, 0], [template.width - 1, 0], [template.width - 1, template.height - 1], [0, template.height - 1]], dtype=np.float32)
         h = cv2.getPerspectiveTransform(corners.astype(np.float32), dst)
         if conservative:
@@ -743,6 +755,25 @@ class OMRProcessor:
         aligned = cv2.warpPerspective(image, h, (template.width, template.height), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
         aligned_binary = cv2.warpPerspective(self._preprocess(image)["binary"], h, (template.width, template.height), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_REPLICATE)
         return aligned, aligned_binary
+
+    def _is_reasonable_page_warp(self, corners: np.ndarray, image_shape: tuple[int, int], template: Template) -> bool:
+        img_h, img_w = image_shape
+        if len(corners) != 4:
+            return False
+        area = abs(float(cv2.contourArea(corners.astype(np.float32))))
+        image_area = float(img_w * img_h)
+        if image_area <= 0 or area < image_area * 0.45:
+            return False
+        width_top = float(np.linalg.norm(corners[1] - corners[0]))
+        width_bottom = float(np.linalg.norm(corners[2] - corners[3]))
+        height_left = float(np.linalg.norm(corners[3] - corners[0]))
+        height_right = float(np.linalg.norm(corners[2] - corners[1]))
+        avg_width = max(1.0, 0.5 * (width_top + width_bottom))
+        avg_height = max(1.0, 0.5 * (height_left + height_right))
+        source_ratio = avg_width / avg_height
+        template_ratio = float(template.width) / max(1.0, float(template.height))
+        ratio_delta = abs(np.log(max(source_ratio, 1e-6) / max(template_ratio, 1e-6)))
+        return ratio_delta <= 0.35
 
     def _match_anchor_sets(self, detected: np.ndarray, template_pts: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         det = self._order_points(self._pick_corner_like_points(detected))
