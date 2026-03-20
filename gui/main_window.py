@@ -13846,6 +13846,15 @@ class MainWindow(QMainWindow):
         self._sync_correction_detail_panel(res, rebuild_editor=True)
         self.correction_ui_loading = False
 
+    def _load_selected_result_for_correction(self) -> None:
+        idx = self.scan_list.currentRow()
+        if idx < 0 or idx >= len(self.scan_results):
+            return
+        res = self.scan_results[idx]
+        self.correction_ui_loading = True
+        self._sync_correction_detail_panel(res, rebuild_editor=True)
+        self.correction_ui_loading = False
+
     def _open_edit_selected_scan(self, *_args) -> None:
         idx = self.scan_list.currentRow()
         if idx < 0:
@@ -14055,15 +14064,28 @@ class MainWindow(QMainWindow):
         right_lay.addLayout(zoom_row)
         preview = QLabel()
         preview.setAlignment(Qt.AlignCenter)
-        pix = self.preview_source_pixmap if hasattr(self, "preview_source_pixmap") and not self.preview_source_pixmap.isNull() else QPixmap(str(Path(res.image_path)))
+        preview.setText("Đang tải ảnh bài làm...")
+
+        image_path = str(getattr(res, "image_path", "") or "").strip()
+        image_name = Path(image_path).name if image_path else "-"
+        aligned_pix = self._aligned_image_to_qpixmap(getattr(res, "aligned_image", None))
+        if not aligned_pix.isNull():
+            pix = aligned_pix
+        elif hasattr(self, "preview_source_pixmap") and not self.preview_source_pixmap.isNull() and self.scan_list.currentRow() == idx:
+            pix = self.preview_source_pixmap
+        else:
+            pix = QPixmap(image_path) if image_path else QPixmap()
         base_pix = pix
+
         preview_scroll = QScrollArea()
         preview_scroll.setWidgetResizable(False)
         preview_scroll.setAlignment(Qt.AlignCenter)
         preview_scroll.setWidget(preview)
         zoom_state = {"factor": 1.0}
+
         def _fit_preview_to_viewport() -> None:
             if base_pix.isNull():
+                preview.resize(preview_scroll.viewport().size())
                 return
             viewport = preview_scroll.viewport().size()
             if viewport.width() <= 0 or viewport.height() <= 0:
@@ -14076,10 +14098,18 @@ class MainWindow(QMainWindow):
         def _apply_preview_zoom() -> None:
             if base_pix.isNull():
                 preview.setPixmap(QPixmap())
+                preview.setText(f"Không thể tải ảnh bài làm tương ứng.\n{image_name}")
+                preview.resize(preview_scroll.viewport().size())
+                btn_zoom_reset_dlg.setText("100%")
                 return
             scaled = base_pix.scaled(base_pix.size() * zoom_state["factor"], Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            preview.setText("")
             preview.setPixmap(scaled)
+            preview.resize(scaled.size())
+            preview.setMinimumSize(scaled.size())
+            preview.adjustSize()
             btn_zoom_reset_dlg.setText(f"{int(zoom_state['factor'] * 100)}%")
+
         btn_zoom_out_dlg.clicked.connect(lambda: (zoom_state.__setitem__("factor", max(0.2, zoom_state["factor"] / 1.2)), _apply_preview_zoom()))
         btn_zoom_in_dlg.clicked.connect(lambda: (zoom_state.__setitem__("factor", min(5.0, zoom_state["factor"] * 1.2)), _apply_preview_zoom()))
         btn_zoom_reset_dlg.clicked.connect(lambda: (zoom_state.__setitem__("factor", 1.0), _apply_preview_zoom()))
