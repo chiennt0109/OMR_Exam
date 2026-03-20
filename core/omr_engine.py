@@ -974,15 +974,20 @@ class OMRProcessor:
 
         for c in range(cols):
             col_pts = expected[c::cols]
+            col_search_pad = search_pad
+            col_max_dist = max_dist
+            if c == 0 or c == (cols - 1):
+                col_search_pad = max(col_search_pad, int(round(search_pad * 1.25)))
+                col_max_dist = max(col_max_dist, bubble_radius * 2.10)
             offsets: list[np.ndarray] = []
             for exp_x, exp_y in col_pts:
                 best_offset = self._find_local_component_offset(
                     binary,
                     np.array([exp_x, exp_y], dtype=np.float32),
-                    search_pad,
+                    col_search_pad,
                     min_area,
                     max_area,
-                    max_dist,
+                    col_max_dist,
                 )
                 if best_offset is not None:
                     offsets.append(best_offset)
@@ -996,10 +1001,10 @@ class OMRProcessor:
                 local_offset = self._find_local_component_offset(
                     binary,
                     shifted.astype(np.float32),
-                    max(8, int(round(search_pad * 0.75))),
+                    max(8, int(round(col_search_pad * 0.75))),
                     min_area,
                     max_area,
-                    max(5.0, bubble_radius * 1.15),
+                    max(5.0, bubble_radius * (1.25 if c == 0 or c == (cols - 1) else 1.15)),
                 )
                 refined[idx] = shifted if local_offset is None else shifted + local_offset
 
