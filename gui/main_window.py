@@ -6,7 +6,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QEvent, QPointF
-from PySide6.QtGui import QColor, QImage, QKeySequence, QPixmap, QTransform, QPainter, QPen
+from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPixmap, QTransform, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -46,6 +46,7 @@ from core.scoring_engine import ScoringEngine
 from editor.template_editor import TemplateEditorWindow
 from gui.import_answer_key_dialog import ImportAnswerKeyDialog
 from models.answer_key import AnswerKeyRepository, SubjectKey
+from models.database import OMRDatabase
 from models.exam_session import ExamSession, Student
 from models.template import Template
 from models.template_repository import TemplateRepository
@@ -1066,6 +1067,7 @@ class MainWindow(QMainWindow):
         self.session_registry: list[dict[str, str | bool]] = self._load_session_registry()
         self.template_repo_path = Path.home() / ".omr_template_repository.json"
         self.template_repo = TemplateRepository.load_json(self.template_repo_path)
+        self.database = OMRDatabase.default()
         self.template_editor_embedded: TemplateEditorWindow | None = None
         self.template_editor_mode = "library"
 
@@ -1097,6 +1099,18 @@ class MainWindow(QMainWindow):
 
         self._build_menu()
         self.stack.currentChanged.connect(self._handle_stack_changed)
+        db_subjects = self.database.fetch_catalog("subjects")
+        db_blocks = self.database.fetch_catalog("blocks")
+        if db_subjects:
+            self.subject_catalog = db_subjects
+            self.subjects = list(db_subjects)
+        else:
+            self.database.replace_catalog("subjects", self.subject_catalog)
+        if db_blocks:
+            self.block_catalog = db_blocks
+            self.grades = list(db_blocks)
+        else:
+            self.database.replace_catalog("blocks", self.block_catalog)
         self._refresh_exam_list()
         self._refresh_batch_subject_controls()
         self._handle_stack_changed(self.stack.currentIndex())
@@ -1518,8 +1532,16 @@ class MainWindow(QMainWindow):
         self._set_subject_management_mode(self.subject_management_mode)
 
     def _apply_subject_management_values(self) -> None:
+        old_subjects = list(self.subject_catalog)
+        old_blocks = list(self.block_catalog)
         self.subject_catalog = list(self.subjects)
         self.block_catalog = list(self.grades)
+        self.database.replace_catalog("subjects", self.subject_catalog)
+        self.database.replace_catalog("blocks", self.block_catalog)
+        if old_subjects != self.subject_catalog:
+            self.database.log_change("catalog", "subjects", "subject_catalog", old_subjects, self.subject_catalog, "subject_management")
+        if old_blocks != self.block_catalog:
+            self.database.log_change("catalog", "blocks", "block_catalog", old_blocks, self.block_catalog, "subject_management")
 
     def _sync_subject_configs_with_catalog(self) -> bool:
         if not self.session:
