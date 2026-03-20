@@ -8,6 +8,7 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertNotIn('left_left_lay.addLayout(form)', source)
         self.assertNotIn('left_left_lay.addWidget(buttons)', source)
         self.assertIn('lay.addLayout(form)', source)
+        self.assertIn('lay.addWidget(buttons)', source)
 
 
 if __name__ == '__main__':

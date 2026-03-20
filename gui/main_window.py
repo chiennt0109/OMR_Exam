@@ -365,7 +365,7 @@ class SubjectConfigDialog(QDialog):
 
         form.addRow("Tổng điểm bài thi", self.total_score)
 
-        left_left_lay.addLayout(form)
+        lay.addLayout(form)
         lay.addWidget(self.section_group)
         lay.addWidget(self.question_group)
 
@@ -13923,7 +13923,7 @@ class MainWindow(QMainWindow):
             buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
             buttons.accepted.connect(dlg.accept)
             buttons.rejected.connect(dlg.reject)
-            left_left_lay.addWidget(buttons)
+            lay.addWidget(buttons)
             if dlg.exec() != QDialog.Accepted:
                 return
             old_item = self.scan_list.item(idx, 0)
