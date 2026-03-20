@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -11,10 +12,12 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QInputDialog,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QTextEdit,
     QVBoxLayout,
 )
 
@@ -33,6 +36,7 @@ class ImportAnswerKeyDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Preview Imported Answer Keys")
         self.resize(980, 620)
+        self.setWindowState(self.windowState() | Qt.WindowMaximized)
         self.imported = imported
         self.exam_tables: dict[str, QTableWidget] = {}
 
@@ -64,9 +68,18 @@ class ImportAnswerKeyDialog(QDialog):
 
         self.tabs = QTabWidget()
         self.tabs.currentChanged.connect(self._on_tab_changed)
+        self.tabs.tabBarDoubleClicked.connect(self._rename_exam_code)
 
         btn_add = QPushButton("Add Row")
         btn_add.clicked.connect(self._add_empty_row)
+        btn_delete = QPushButton("Delete Row")
+        btn_delete.clicked.connect(self._delete_selected_rows)
+        btn_rename = QPushButton("Rename Exam Code")
+        btn_rename.clicked.connect(lambda: self._rename_exam_code(self.tabs.currentIndex()))
+
+        self.summary_text = QTextEdit()
+        self.summary_text.setReadOnly(True)
+        self.summary_text.setPlaceholderText("Tóm tắt đáp án hiện tại sẽ hiển thị ở đây.")
 
         btn_box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         btn_box.accepted.connect(self._on_accept)
@@ -76,7 +89,14 @@ class ImportAnswerKeyDialog(QDialog):
         layout.addLayout(top)
         layout.addLayout(mapping)
         layout.addWidget(self.tabs)
-        layout.addWidget(btn_add)
+        btn_row = QHBoxLayout()
+        btn_row.addWidget(btn_add)
+        btn_row.addWidget(btn_delete)
+        btn_row.addWidget(btn_rename)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+        layout.addWidget(QLabel("Tóm tắt đáp án / mô tả chấm khi nhập sai:"))
+        layout.addWidget(self.summary_text)
         layout.addWidget(btn_box)
 
         self._load_rows()
@@ -94,14 +114,17 @@ class ImportAnswerKeyDialog(QDialog):
         type_combo = QComboBox()
         type_combo.addItems(["MCQ", "TF", "NUMERIC"])
         type_combo.setCurrentText(row.answer_type)
+        type_combo.currentTextChanged.connect(lambda _text: self._handle_table_changed())
         table.setCellWidget(r, 1, type_combo)
-        table.setItem(r, 2, QTableWidgetItem(row.answer_value))
+        answer_item = QTableWidgetItem(row.answer_value)
+        table.setItem(r, 2, answer_item)
 
     def _load_rows(self) -> None:
         self.tabs.clear()
         self.exam_tables.clear()
         for exam_code, key in sorted(self.imported.exam_keys.items()):
             table = self._build_table()
+            table.itemChanged.connect(lambda _item, tbl=table: self._handle_table_changed(tbl))
             self.exam_tables[exam_code] = table
             self.tabs.addTab(table, exam_code)
 
@@ -124,6 +147,7 @@ class ImportAnswerKeyDialog(QDialog):
 
         self._refresh_exam_codes_label()
         self._update_section_counts_from_current_tab()
+        self._refresh_summary()
 
     def _refresh_exam_codes_label(self) -> None:
         codes = sorted(self.exam_tables.keys())
@@ -135,6 +159,7 @@ class ImportAnswerKeyDialog(QDialog):
 
     def _on_tab_changed(self, _idx: int) -> None:
         self._update_section_counts_from_current_tab()
+        self._refresh_summary()
 
     def _update_section_counts_from_current_tab(self) -> None:
         table = self._current_table()
@@ -157,6 +182,20 @@ class ImportAnswerKeyDialog(QDialog):
             PreviewRow(question=table.rowCount() + 1, answer_type="MCQ", answer_value="A"),
         )
         self._update_section_counts_from_current_tab()
+        self._refresh_summary()
+
+    def _delete_selected_rows(self) -> None:
+        table = self._current_table()
+        if not table:
+            return
+        selected_rows = sorted({idx.row() for idx in table.selectedIndexes()}, reverse=True)
+        if not selected_rows:
+            QMessageBox.information(self, "Delete Row", "Chọn ít nhất một dòng để xoá.")
+            return
+        for row_idx in selected_rows:
+            table.removeRow(row_idx)
+        self._update_section_counts_from_current_tab()
+        self._refresh_summary()
 
     def _apply_mapping(self) -> None:
         table = self._current_table()
@@ -185,6 +224,81 @@ class ImportAnswerKeyDialog(QDialog):
                 widget.setCurrentText("TF")
             else:
                 widget.setCurrentText("NUMERIC")
+        self._refresh_summary()
+
+    def _handle_table_changed(self, table: QTableWidget | None = None) -> None:
+        if table is not None and table is not self._current_table():
+            return
+        self._update_section_counts_from_current_tab()
+        self._refresh_summary()
+
+    def _rename_exam_code(self, index: int) -> None:
+        if index < 0 or index >= self.tabs.count():
+            return
+        table = self.tabs.widget(index)
+        if not isinstance(table, QTableWidget):
+            return
+        old_code = self.tabs.tabText(index).strip()
+        new_code, ok = QInputDialog.getText(self, "Đổi mã đề", "Mã đề mới:", text=old_code)
+        if not ok:
+            return
+        new_code = new_code.strip() or old_code
+        if new_code != old_code and new_code in self.exam_tables:
+            QMessageBox.warning(self, "Đổi mã đề", f"Mã đề '{new_code}' đã tồn tại.")
+            return
+        if new_code == old_code:
+            return
+        del self.exam_tables[old_code]
+        self.exam_tables[new_code] = table
+        self.tabs.setTabText(index, new_code)
+        self._refresh_exam_codes_label()
+        self._refresh_summary()
+
+    @staticmethod
+    def _tf_to_text(flags: dict[str, bool]) -> str:
+        return "".join("Đ" if bool((flags or {}).get(ch)) else "S" for ch in ["a", "b", "c", "d"])
+
+    def _rows_from_table(self, table: QTableWidget) -> list[PreviewRow]:
+        rows: list[PreviewRow] = []
+        for row_idx in range(table.rowCount()):
+            q_item = table.item(row_idx, 0)
+            a_item = table.item(row_idx, 2)
+            widget = table.cellWidget(row_idx, 1)
+            if not q_item or not a_item or widget is None:
+                continue
+            q_text = (q_item.text() or "").strip()
+            if not q_text.lstrip("-").isdigit():
+                continue
+            rows.append(
+                PreviewRow(
+                    question=int(q_text),
+                    answer_type=widget.currentText(),
+                    answer_value=(a_item.text() or "").strip(),
+                )
+            )
+        rows.sort(key=lambda row: (row.question, row.answer_type))
+        return rows
+
+    def _refresh_summary(self) -> None:
+        exam_code = self.tabs.tabText(self.tabs.currentIndex()).strip() if self.tabs.count() else ""
+        table = self._current_table()
+        if not table:
+            self.summary_text.clear()
+            return
+        rows = self._rows_from_table(table)
+        if not rows:
+            self.summary_text.setPlainText("Chưa có đáp án cho mã đề hiện tại.")
+            return
+        chunks = [f"Mã đề: {exam_code or '-'}"]
+        for answer_type in ["MCQ", "TF", "NUMERIC"]:
+            same_type = [row for row in rows if row.answer_type == answer_type]
+            if not same_type:
+                chunks.append(f"{answer_type}: -")
+                continue
+            values = ", ".join(f"Câu {row.question}: {row.answer_value}" for row in same_type)
+            chunks.append(f"{answer_type}: {values}")
+        chunks.append("Nếu nhập đáp án sai chuẩn, dòng đó vẫn được giữ lại để chấm theo mô tả full-credit/invalid hiện có.")
+        self.summary_text.setPlainText("\n".join(chunks))
 
     def _on_accept(self) -> None:
         try:
@@ -197,16 +311,11 @@ class ImportAnswerKeyDialog(QDialog):
         try:
             for exam_code, table in self.exam_tables.items():
                 key = package.exam_keys.setdefault(exam_code, ImportedAnswerKey(exam_id=exam_id))
-                src = self.imported.exam_keys.get(exam_code)
-                if src is not None:
-                    key.full_credit_questions = {
-                        str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
-                        for sec, vals in (src.full_credit_questions or {}).items()
-                    }
-                    key.invalid_answer_rows = {
-                        str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
-                        for sec, vals in (src.invalid_answer_rows or {}).items()
-                    }
+                key.mcq_answers = {}
+                key.true_false_answers = {}
+                key.numeric_answers = {}
+                key.full_credit_questions = {}
+                key.invalid_answer_rows = {}
                 for row_idx in range(table.rowCount()):
                     q_item = table.item(row_idx, 0)
                     a_item = table.item(row_idx, 2)
