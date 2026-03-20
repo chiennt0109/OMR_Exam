@@ -994,7 +994,7 @@ class OMRProcessor:
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
             core_ratios = self._detect_center_core_marks(binary, centers, radius)
             if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
-                ratios = np.clip((0.35 * ratios) + (0.65 * core_ratios), 0.0, 1.0)
+                ratios = np.clip((0.20 * ratios) + (0.65 * core_ratios), 0.0, 1.0)
             else:
                 ratios = np.clip((0.55 * ratios) + (0.45 * core_ratios), 0.0, 1.0)
         dynamic_thresholds = np.array([self._estimate_local_fill_threshold(binary, center, radius, self.fill_threshold) for center in centers], dtype=np.float32)
