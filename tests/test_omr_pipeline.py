@@ -161,27 +161,32 @@ class OMRPipelineTests(unittest.TestCase):
 
         self.assertLess(float(np.mean(np.linalg.norm(centers - shifted, axis=1))), 3.0)
 
-    def test_rebuild_digit_zone_anchors_creates_one_right_side_ruler(self):
+    def test_detect_digit_anchor_ruler_prefers_local_rectangles_near_named_points(self):
         template = Template(
             name="digit_template",
             image_path="",
-            width=300,
-            height=200,
-            anchors=[AnchorPoint(0.1, 0.1, "A1")],
-            zones=[
-                Zone(id="sid", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0.55, y=0.20, width=0.16, height=0.55, metadata={"rows": 10}),
-                Zone(id="exam", name="exam", zone_type=ZoneType.EXAM_CODE_BLOCK, x=0.74, y=0.20, width=0.11, height=0.55, metadata={"rows": 10}),
+            width=240,
+            height=140,
+            anchors=[
+                AnchorPoint(0.80, 0.18, "DIGIT_ANCHOR_01"),
+                AnchorPoint(0.80, 0.42, "DIGIT_ANCHOR_02"),
+                AnchorPoint(0.80, 0.66, "DIGIT_ANCHOR_03"),
+                AnchorPoint(0.80, 0.90, "DIGIT_ANCHOR_04"),
             ],
+            zones=[],
         )
+        binary = np.zeros((140, 240), dtype=np.uint8)
+        expected = [(192, 25), (192, 59), (192, 92), (192, 126)]
+        distractors = [(120, 25), (120, 59), (120, 92), (120, 126)]
+        for x, y in expected:
+            cv2.rectangle(binary, (x - 6, y - 4), (x + 6, y + 4), 255, -1)
+        for x, y in distractors:
+            cv2.rectangle(binary, (x - 6, y - 4), (x + 6, y + 4), 255, -1)
 
-        anchors = self.template_engine.rebuild_digit_zone_anchors(template)
-        digit_anchors = [a for a in anchors if a.name.startswith("DIGIT_ANCHOR_")]
+        detected = self.processor._detect_digit_anchor_ruler(binary, template)
 
-        self.assertEqual(len(digit_anchors), 11)
-        self.assertEqual(template.metadata.get("alignment_profile"), "one_side")
-        self.assertTrue(all(a.x > 0.85 for a in digit_anchors))
-        self.assertAlmostEqual(digit_anchors[0].y, 0.20, places=3)
-        self.assertAlmostEqual(digit_anchors[-1].y, 0.75, places=3)
+        self.assertEqual(len(detected), 4)
+        self.assertLess(float(np.mean([abs(x - 192.0) for x, _ in detected])), 3.0)
 
     def test_detect_bubbles_ratio(self):
         binary = np.zeros((120, 120), dtype=np.uint8)

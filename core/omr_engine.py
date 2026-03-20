@@ -47,12 +47,14 @@ class OMRResult:
 @dataclass
 class RecognitionContext:
     detected_anchors: list[tuple[float, float]] = field(default_factory=list)
+    detected_digit_anchors: list[tuple[float, float]] = field(default_factory=list)
     bubble_states_by_zone: dict[str, list[bool]] = field(default_factory=dict)
     semantic_grids: dict[str, object] = field(default_factory=dict)
     recognized_answers: dict[str, dict] = field(default_factory=dict)
 
     def reset(self) -> None:
         self.detected_anchors = []
+        self.detected_digit_anchors = []
         self.bubble_states_by_zone = {}
         self.semantic_grids = {}
         self.recognized_answers = {
@@ -147,6 +149,8 @@ class OMRProcessor:
             setattr(result, "alignment_debug", dict(self._last_alignment_debug))
             context.detected_anchors = self.detect_anchors(aligned_binary, max_points=120)
             setattr(result, "detected_anchors", context.detected_anchors)
+            context.detected_digit_anchors = self._detect_digit_anchor_ruler(aligned_binary, template)
+            setattr(result, "detected_digit_anchors", context.detected_digit_anchors)
 
             context.bubble_states_by_zone = self.extract_bubble_states(aligned_binary, template)
             setattr(result, "bubble_states_by_zone", context.bubble_states_by_zone)
@@ -990,7 +994,10 @@ class OMRProcessor:
             if str(getattr(a, "name", "") or "").startswith("DIGIT_ANCHOR_"):
                 named_digit_anchors.append(pt)
         template_pts = np.array(named_digit_anchors or fallback_anchor_pts, dtype=np.float32)
-        detected_pts = np.array(self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True, max_points=120), dtype=np.float32)
+        if named_digit_anchors:
+            detected_pts = np.array(self._detect_digit_anchor_ruler(binary, template), dtype=np.float32)
+        else:
+            detected_pts = np.array(self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True, max_points=120), dtype=np.float32)
         if len(detected_pts) < 4:
             return np.empty((0, 2), dtype=np.float32), np.empty((0, 2), dtype=np.float32)
 
@@ -1042,6 +1049,62 @@ class OMRProcessor:
             det_idx = np.linspace(0, len(right_det) - 1, count).astype(int)
             right_det = right_det[det_idx]
         return right_tpl.astype(np.float32), right_det.astype(np.float32)
+
+    def _detect_digit_anchor_ruler(self, binary: np.ndarray, template: Template) -> list[tuple[float, float]]:
+        anchors = [a for a in (template.anchors or []) if str(getattr(a, "name", "") or "").startswith("DIGIT_ANCHOR_")]
+        if not anchors:
+            return []
+        detected: list[tuple[float, float]] = []
+        for anchor in anchors:
+            pt = np.array(
+                [
+                    anchor.x * template.width if anchor.x <= 1.0 else anchor.x,
+                    anchor.y * template.height if anchor.y <= 1.0 else anchor.y,
+                ],
+                dtype=np.float32,
+            )
+            matched = self._detect_anchor_near_expected(binary, pt)
+            if matched is not None:
+                detected.append((float(matched[0]), float(matched[1])))
+        return detected
+
+    def _detect_anchor_near_expected(self, binary: np.ndarray, expected_pt: np.ndarray) -> np.ndarray | None:
+        h, w = binary.shape[:2]
+        exp_x, exp_y = float(expected_pt[0]), float(expected_pt[1])
+        search_pad_x = max(14, int(round(w * 0.02)))
+        search_pad_y = max(14, int(round(h * 0.02)))
+        x0 = int(max(0, exp_x - search_pad_x))
+        y0 = int(max(0, exp_y - search_pad_y))
+        x1 = int(min(w, exp_x + search_pad_x + 1))
+        y1 = int(min(h, exp_y + search_pad_y + 1))
+        roi = binary[y0:y1, x0:x1]
+        if roi.size == 0:
+            return None
+        contours, _ = cv2.findContours(roi, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        best_pt: np.ndarray | None = None
+        best_score = float("-inf")
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area < 30:
+                continue
+            x, y, bw, bh = cv2.boundingRect(cnt)
+            if bw <= 0 or bh <= 0:
+                continue
+            ratio = bw / float(bh)
+            if not (0.45 <= ratio <= 2.20):
+                continue
+            rect_area = float(bw * bh)
+            fill_ratio = area / rect_area if rect_area else 0.0
+            if fill_ratio < 0.45:
+                continue
+            cx = x0 + x + (bw * 0.5)
+            cy = y0 + y + (bh * 0.5)
+            dist = float(np.hypot(cx - exp_x, cy - exp_y))
+            score = (fill_ratio * rect_area) - (dist * 3.0)
+            if score > best_score:
+                best_score = score
+                best_pt = np.array([cx, cy], dtype=np.float32)
+        return best_pt
 
     def _resolve_column_digit_centers(
         self,
