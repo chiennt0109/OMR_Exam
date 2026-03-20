@@ -29,6 +29,82 @@ class OMRPipelineTests(unittest.TestCase):
         anchors = self.processor.detect_anchors(img)
         self.assertGreaterEqual(len(anchors), 4)
 
+    def test_detect_anchors_ignores_inner_bubbles_when_border_mode_enabled(self):
+        img = np.zeros((400, 300), dtype=np.uint8)
+        for x, y in [(20, 20), (260, 20), (20, 360), (260, 360)]:
+            cv2.rectangle(img, (x, y), (x + 18, y + 18), 255, -1)
+        for x in range(80, 220, 35):
+            for y in range(80, 320, 45):
+                cv2.circle(img, (x, y), 10, 255, 2)
+
+        anchors = self.processor.detect_anchors(img, use_border_padding=True, relaxed_polygon=True, max_points=40)
+        self.assertLessEqual(len(anchors), 8)
+
+    def test_student_id_zone_keeps_expected_centers(self):
+        template = Template(
+            name="sid",
+            image_path="",
+            width=200,
+            height=200,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="sid",
+                    name="sid",
+                    zone_type=ZoneType.STUDENT_ID_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=10, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(40 + c * 60, 20 + r * 16) for r in range(10) for c in range(2)]),
+                    metadata={"bubble_radius": 5},
+                )
+            ],
+        )
+        binary = np.zeros((200, 200), dtype=np.uint8)
+        centers = self.processor._resolve_zone_centers(binary, template.zones[0], template)
+        expected = np.array(template.zones[0].grid.bubble_positions, dtype=np.float32)
+        self.assertTrue(np.allclose(centers, expected))
+
+    def test_student_id_zone_applies_column_offset_for_tilt(self):
+        grid = BubbleGrid(rows=4, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(40 + c * 40, 20 + r * 20) for r in range(4) for c in range(2)])
+        template = Template(
+            name="sid_tilt",
+            image_path="",
+            width=140,
+            height=120,
+            anchors=[],
+            zones=[Zone(id="sid_tilt", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0, y=0, width=1, height=1, grid=grid, metadata={"bubble_radius": 5})],
+        )
+        binary = np.zeros((120, 140), dtype=np.uint8)
+        expected = np.array(grid.bubble_positions, dtype=np.float32)
+        shifted = expected.copy()
+        shifted[0::2] += np.array([2.0, 1.0], dtype=np.float32)
+        shifted[1::2] += np.array([6.0, 1.0], dtype=np.float32)
+        for x, y in shifted.astype(np.int32):
+            cv2.circle(binary, (int(x), int(y)), 5, 255, 1)
+
+        centers = self.processor._resolve_zone_centers(binary, template.zones[0], template)
+        self.assertLess(float(np.mean(np.linalg.norm(centers - shifted, axis=1))), 3.5)
+
+    def test_student_id_zone_refines_each_row_after_column_shift(self):
+        grid = BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(40, 20 + r * 20) for r in range(4)])
+        template = Template(
+            name="sid_row_refine",
+            image_path="",
+            width=100,
+            height=120,
+            anchors=[],
+            zones=[Zone(id="sid_row_refine", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0, y=0, width=1, height=1, grid=grid, metadata={"bubble_radius": 5})],
+        )
+        binary = np.zeros((120, 100), dtype=np.uint8)
+        shifted = np.array([[42, 20], [43, 41], [42, 60], [44, 81]], dtype=np.int32)
+        for x, y in shifted:
+            cv2.circle(binary, (int(x), int(y)), 5, 255, 1)
+
+        centers = self.processor._resolve_zone_centers(binary, template.zones[0], template)
+        self.assertLess(float(np.mean(np.linalg.norm(centers - shifted.astype(np.float32), axis=1))), 3.0)
+
     def test_detect_bubbles_ratio(self):
         binary = np.zeros((120, 120), dtype=np.uint8)
         cv2.circle(binary, (40, 60), 10, 255, -1)
@@ -37,6 +113,43 @@ class OMRPipelineTests(unittest.TestCase):
         ratios = self.processor.detect_bubbles(binary, centers, 10)
         self.assertGreater(ratios[0], 0.75)
         self.assertLess(ratios[1], 0.35)
+
+    def test_detect_center_core_marks_prefers_filled_center_over_outline(self):
+        binary = np.zeros((120, 120), dtype=np.uint8)
+        cv2.circle(binary, (40, 60), 10, 255, -1)
+        cv2.circle(binary, (80, 60), 10, 255, 1)
+        centers = np.array([[40, 60], [80, 60]], dtype=np.float32)
+        ratios = self.processor._detect_center_core_marks(binary, centers, 10)
+        self.assertGreater(ratios[0], 0.8)
+        self.assertLess(ratios[1], 0.25)
+
+    def test_detect_core_ring_contrast_penalizes_outline_only_bubbles(self):
+        binary = np.zeros((120, 120), dtype=np.uint8)
+        cv2.circle(binary, (40, 60), 10, 255, -1)
+        cv2.circle(binary, (80, 60), 10, 255, 1)
+        centers = np.array([[40, 60], [80, 60]], dtype=np.float32)
+        scores = self.processor._detect_core_ring_contrast(binary, centers, 10)
+        self.assertGreater(scores[0], 0.45)
+        self.assertLess(scores[1], 0.10)
+
+    def test_detect_eroded_mark_density_suppresses_outline_only_bubbles(self):
+        binary = np.zeros((120, 120), dtype=np.uint8)
+        cv2.line(binary, (34, 54), (46, 66), 255, 3)
+        cv2.line(binary, (46, 54), (34, 66), 255, 3)
+        cv2.circle(binary, (80, 60), 10, 255, 1)
+        centers = np.array([[40, 60], [80, 60]], dtype=np.float32)
+        scores = self.processor._detect_eroded_mark_density(binary, centers, 10)
+        self.assertGreater(scores[0], 0.12)
+        self.assertLess(scores[1], 0.05)
+
+    def test_detect_square_mark_density_prefers_marked_center_square(self):
+        binary = np.zeros((120, 120), dtype=np.uint8)
+        cv2.rectangle(binary, (34, 54), (46, 66), 255, -1)
+        cv2.circle(binary, (80, 60), 10, 255, 1)
+        centers = np.array([[40, 60], [80, 60]], dtype=np.float32)
+        scores = self.processor._detect_square_mark_density(binary, centers, 10)
+        self.assertGreater(scores[0], 0.45)
+        self.assertLess(scores[1], 0.20)
 
     def test_template_dict_persists_template_coordinate_space(self):
         tpl = Template(name="t", image_path="x.png", width=1234, height=1754)
@@ -439,6 +552,68 @@ class OMRPipelineTests(unittest.TestCase):
         self.processor.recognize_block(binary, template.zones[0], template, result_stub)
         self.assertEqual(result_stub.student_id, "7")
 
+    def test_student_id_decode_uses_softer_column_margin(self):
+        zone = Zone(
+            id="sid_margin",
+            name="sid",
+            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        mat = np.array([[0.58], [0.18], [0.48], [0.16], [0.15], [0.14], [0.13], [0.12], [0.11], [0.10]], dtype=np.float32)
+        result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
+        digits, _ = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
+        self.assertEqual(digits, "0")
+
+    def test_student_id_decode_accepts_small_but_consistent_lead(self):
+        zone = Zone(
+            id="sid_small_gap",
+            name="sid",
+            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        mat = np.array([[0.57], [0.18], [0.52], [0.17], [0.16], [0.15], [0.14], [0.13], [0.12], [0.11]], dtype=np.float32)
+        result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
+        digits, _ = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
+        self.assertEqual(digits, "0")
+
+    def test_student_id_recognize_block_weights_center_core_more_than_outline_ratio(self):
+        template = Template(
+            name="sid_weight",
+            image_path="",
+            width=100,
+            height=100,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="sid_weight",
+                    name="sid",
+                    zone_type=ZoneType.STUDENT_ID_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(50, 10 + r * 8) for r in range(10)]),
+                    metadata={"bubble_radius": 5},
+                )
+            ],
+        )
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
+        with patch.object(self.processor, "_resolve_zone_centers", return_value=np.array([[50, 10 + r * 8] for r in range(10)], dtype=np.float32)), \
+            patch.object(self.processor, "detect_bubbles", return_value=np.array([0.42, 0.35, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=np.array([0.86, 0.30, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05], dtype=np.float32)):
+            self.processor.recognize_block(np.zeros((100, 100), dtype=np.uint8), template.zones[0], template, result_stub)
+        self.assertEqual(result_stub.student_id, "0")
+
     def test_numeric_block_removes_only_trailing_placeholders_without_decimal(self):
         rows, cols = 12, 4
         bubbles = []
@@ -493,6 +668,131 @@ class OMRPipelineTests(unittest.TestCase):
         result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
         self.processor.recognize_block(binary, template.zones[0], template, result_stub)
         self.assertEqual(result_stub.numeric_answers.get(1), "-9?3")
+    def _build_sheet_with_corner_markers(self, width: int = 600, height: int = 900) -> np.ndarray:
+        img = np.full((height, width, 3), 255, dtype=np.uint8)
+        cv2.rectangle(img, (30, 30), (80, 80), (0, 0, 0), -1)
+        cv2.rectangle(img, (width - 80, 30), (width - 30, 80), (0, 0, 0), -1)
+        cv2.rectangle(img, (width - 80, height - 80), (width - 30, height - 30), (0, 0, 0), -1)
+        cv2.rectangle(img, (30, height - 80), (80, height - 30), (0, 0, 0), -1)
+        cv2.rectangle(img, (10, 10), (width - 10, height - 10), (0, 0, 0), 4)
+        return img
+
+    def test_detect_page_corners_from_sheet_border(self):
+        image = self._build_sheet_with_corner_markers()
+        corners = self.processor._detect_page_corners(image)
+        self.assertIsNotNone(corners)
+        self.assertEqual(corners.shape, (4, 2))
+        self.assertLess(np.linalg.norm(corners[0] - np.array([9.0, 9.0], dtype=np.float32)), 40.0)
+        self.assertLess(np.linalg.norm(corners[2] - np.array([590.0, 890.0], dtype=np.float32)), 40.0)
+
+    def test_correct_perspective_handles_rotation_and_perspective_distortion(self):
+        template = Template(
+            name="sheet",
+            image_path="",
+            width=400,
+            height=600,
+            anchors=[AnchorPoint(0.08, 0.08), AnchorPoint(0.92, 0.08), AnchorPoint(0.92, 0.92), AnchorPoint(0.08, 0.92)],
+            zones=[],
+        )
+        base = np.full((600, 400, 3), 255, dtype=np.uint8)
+        cv2.rectangle(base, (0, 0), (399, 599), (0, 0, 0), 4)
+        for x, y in [(32, 48), (368, 48), (368, 552), (32, 552)]:
+            cv2.rectangle(base, (x - 14, y - 14), (x + 14, y + 14), (0, 0, 0), -1)
+
+        src = np.array([[0, 0], [399, 0], [399, 599], [0, 599]], dtype=np.float32)
+        dst = np.array([[30, 20], [360, 5], [390, 590], [10, 560]], dtype=np.float32)
+        warped = cv2.warpPerspective(base, cv2.getPerspectiveTransform(src, dst), (400, 600), borderValue=(255, 255, 255))
+        rotated = cv2.warpAffine(warped, cv2.getRotationMatrix2D((200, 300), 7.0, 1.0), (400, 600), borderValue=(255, 255, 255))
+        binary = self.processor._preprocess(rotated)["binary"]
+        result_stub = type("R", (), {"issues": []})()
+
+        aligned, aligned_binary = self.processor.correct_perspective(rotated, binary, template, result_stub)
+        anchors = np.array(self.processor.detect_anchors(aligned_binary, max_points=20), dtype=np.float32)
+        expected = np.array([[32, 48], [368, 48], [368, 552], [32, 552]], dtype=np.float32)
+        distances = []
+        for pt in expected:
+            d2 = np.sum((anchors - pt) ** 2, axis=1)
+            distances.append(np.sqrt(np.min(d2)))
+        self.assertLess(float(np.mean(distances)), 20.0)
+        self.assertEqual(aligned.shape[:2], (600, 400))
+
+    def test_resolve_zone_centers_uses_connected_components_grid_relaxation(self):
+        template = Template(
+            name="mcq",
+            image_path="",
+            width=200,
+            height=120,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="mcq1",
+                    name="mcq",
+                    zone_type=ZoneType.MCQ_BLOCK,
+                    x=0.0,
+                    y=0.0,
+                    width=1.0,
+                    height=1.0,
+                    grid=BubbleGrid(
+                        rows=1,
+                        cols=4,
+                        question_start=1,
+                        question_count=1,
+                        options=["A", "B", "C", "D"],
+                        bubble_positions=[(40, 60), (80, 60), (120, 60), (160, 60)],
+                    ),
+                    metadata={"bubble_radius": 10},
+                )
+            ],
+        )
+        binary = np.zeros((120, 200), dtype=np.uint8)
+        actual = np.array([[36, 58], [79, 61], [123, 59], [165, 62]], dtype=np.int32)
+        for x, y in actual:
+            cv2.circle(binary, (int(x), int(y)), 8, 255, -1)
+
+        centers = self.processor._resolve_zone_centers(binary, template.zones[0], template)
+        self.assertEqual(centers.shape, (4, 2))
+        self.assertLess(float(np.mean(np.linalg.norm(centers - actual.astype(np.float32), axis=1))), 8.0)
+
+    def test_auto_orient_keeps_original_when_90_degree_score_is_ambiguous(self):
+        template = Template(
+            name="sheet",
+            image_path="",
+            width=400,
+            height=600,
+            anchors=[AnchorPoint(0.08, 0.08), AnchorPoint(0.92, 0.08), AnchorPoint(0.92, 0.92), AnchorPoint(0.08, 0.92)],
+            zones=[],
+        )
+        aligned = np.full((600, 400, 3), 255, dtype=np.uint8)
+        aligned_binary = np.zeros((600, 400), dtype=np.uint8)
+        with patch.object(self.processor, "_orientation_score", side_effect=[120.0, 135.0, 118.0, 110.0]):
+            out_img, out_bin = self.processor._auto_orient(aligned, aligned_binary, template)
+
+        self.assertEqual(out_img.shape[:2], (600, 400))
+        self.assertEqual(out_bin.shape[:2], (600, 400))
+        self.assertEqual(self.processor._last_alignment_debug["orientation_rotation"], 0)
+
+    def test_reasonable_page_warp_rejects_small_inner_contours(self):
+        template = Template(name="sheet", image_path="", width=400, height=600, anchors=[], zones=[])
+        inner = np.array([[80, 120], [320, 120], [320, 480], [80, 480]], dtype=np.float32)
+        self.assertFalse(self.processor._is_reasonable_page_warp(inner, (600, 400), template))
+
+    def test_correct_perspective_fallback_path_does_not_use_uninitialized_alignment(self):
+        template = Template(name="sheet", image_path="", width=400, height=600, anchors=[], zones=[])
+        image = np.zeros((600, 400, 3), dtype=np.uint8)
+        binary = np.zeros((600, 400), dtype=np.uint8)
+        result_stub = type("R", (), {"issues": []})()
+        fallback_img = np.zeros_like(image)
+        fallback_bin = np.zeros_like(binary)
+
+        with patch.object(self.processor, "_fallback_align_page_contour", return_value=(fallback_img, fallback_bin)), \
+            patch.object(self.processor, "_refine_alignment_with_template_anchors", side_effect=lambda img, bin_img, _tpl: (img, bin_img)), \
+            patch.object(self.processor, "_auto_orient", side_effect=lambda img, bin_img, _tpl: (img, bin_img)), \
+            patch.object(self.processor, "_refine_corner_translation", side_effect=lambda img, bin_img, _tpl: (img, bin_img)):
+            aligned, aligned_binary = self.processor.correct_perspective(image, binary, template, result_stub)
+
+        self.assertEqual(aligned.shape, image.shape)
+        self.assertEqual(aligned_binary.shape, binary.shape)
+        self.assertEqual(result_stub.issues[0].code, "MISSING_ANCHORS")
 
 
 if __name__ == "__main__":
