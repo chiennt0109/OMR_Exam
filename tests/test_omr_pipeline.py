@@ -601,6 +601,24 @@ class OMRPipelineTests(unittest.TestCase):
         inner = np.array([[80, 120], [320, 120], [320, 480], [80, 480]], dtype=np.float32)
         self.assertFalse(self.processor._is_reasonable_page_warp(inner, (600, 400), template))
 
+    def test_correct_perspective_fallback_path_does_not_use_uninitialized_alignment(self):
+        template = Template(name="sheet", image_path="", width=400, height=600, anchors=[], zones=[])
+        image = np.zeros((600, 400, 3), dtype=np.uint8)
+        binary = np.zeros((600, 400), dtype=np.uint8)
+        result_stub = type("R", (), {"issues": []})()
+        fallback_img = np.zeros_like(image)
+        fallback_bin = np.zeros_like(binary)
+
+        with patch.object(self.processor, "_fallback_align_page_contour", return_value=(fallback_img, fallback_bin)), \
+            patch.object(self.processor, "_refine_alignment_with_template_anchors", side_effect=lambda img, bin_img, _tpl: (img, bin_img)), \
+            patch.object(self.processor, "_auto_orient", side_effect=lambda img, bin_img, _tpl: (img, bin_img)), \
+            patch.object(self.processor, "_refine_corner_translation", side_effect=lambda img, bin_img, _tpl: (img, bin_img)):
+            aligned, aligned_binary = self.processor.correct_perspective(image, binary, template, result_stub)
+
+        self.assertEqual(aligned.shape, image.shape)
+        self.assertEqual(aligned_binary.shape, binary.shape)
+        self.assertEqual(result_stub.issues[0].code, "MISSING_ANCHORS")
+
 
 if __name__ == "__main__":
     unittest.main()

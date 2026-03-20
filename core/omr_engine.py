@@ -516,6 +516,8 @@ class OMRProcessor:
 
     def correct_perspective(self, image: np.ndarray, binary: np.ndarray, template: Template, result: OMRResult) -> tuple[np.ndarray, np.ndarray | None]:
         self._last_alignment_debug = {}
+        aligned: np.ndarray | None = None
+        aligned_binary: np.ndarray | None = None
         mode = str(getattr(self, "alignment_profile", "auto") or "auto").strip().lower()
         candidates: list[str] = []
         if mode == "auto":
