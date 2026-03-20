@@ -1,6 +1,6 @@
 # OMR_Exam
 
-Desktop Optical Mark Recognition (OMR) exam grading system built with **Python + PySide6 + OpenCV + JSON**.
+Desktop Optical Mark Recognition (OMR) exam grading system built with **Python + PySide6 + OpenCV + SQLite**.
 
 ## Features
 
@@ -83,6 +83,18 @@ OMR_Exam/
 
 ```bash
 python main.py
+```
+
+On first run, the application automatically bootstraps its SQLite database at:
+
+```text
+~/.omr_exam/omr_exam.db
+```
+
+If you want to initialize the DB during installation/deployment, you can also run:
+
+```bash
+python scripts/init_db.py
 ```
 
 ## Suggested dependencies
