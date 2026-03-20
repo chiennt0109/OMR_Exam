@@ -371,7 +371,14 @@ class ScoringEngine:
                 correct += 1
                 tf_correct += 1
             else:
-                wrong += 1
+                score += tf_points.get(correct_count, 0.0)
+                if tf_full_match:
+                    tf_correct += 1
+                    correct += 1
+                elif raw_student == "_" * len(key_tf):
+                    blank += 1
+                else:
+                    wrong += 1
 
         for item in defs["NUMERIC"]:
             q_no = int(item["q_no"])
