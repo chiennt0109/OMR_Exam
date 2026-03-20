@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-import json
 from pathlib import Path
 from typing import Any
 
 from models.answer_key import AnswerKeyRepository
+from models.database import OMRDatabase
 
 
 @dataclass
@@ -88,8 +88,15 @@ class ExamSession:
         return session
 
     def save_json(self, path: str | Path) -> None:
-        Path(path).write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+        path_obj = Path(path)
+        session_id = path_obj.stem or path_obj.name or self.exam_name
+        OMRDatabase.default().save_exam_session(session_id, self.exam_name, self.to_dict())
 
     @classmethod
     def load_json(cls, path: str | Path) -> "ExamSession":
-        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+        path_obj = Path(path)
+        session_id = path_obj.stem or path_obj.name
+        payload = OMRDatabase.default().fetch_exam_session(session_id)
+        if not payload:
+            raise FileNotFoundError(f"Session '{session_id}' not found in SQLite storage.")
+        return cls.from_dict(payload)
