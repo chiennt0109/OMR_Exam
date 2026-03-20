@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QHeaderView,
     QHBoxLayout,
     QLabel,
@@ -13836,6 +13837,15 @@ class MainWindow(QMainWindow):
         self._sync_correction_detail_panel(res, rebuild_editor=True)
         self.correction_ui_loading = False
 
+    def _load_selected_result_for_correction(self) -> None:
+        idx = self.scan_list.currentRow()
+        if idx < 0 or idx >= len(self.scan_results):
+            return
+        res = self.scan_results[idx]
+        self.correction_ui_loading = True
+        self._sync_correction_detail_panel(res, rebuild_editor=True)
+        self.correction_ui_loading = False
+
     def _open_edit_selected_scan(self, *_args) -> None:
         idx = self.scan_list.currentRow()
         if idx < 0:
@@ -13930,6 +13940,8 @@ class MainWindow(QMainWindow):
             inp_code.addItem(self.exam_code_correction_combo.itemText(i), self.exam_code_correction_combo.itemData(i))
         idx_code = inp_code.findData(str(res.exam_code or "").strip())
         inp_code.setCurrentIndex(max(0, idx_code))
+        expected = self._expected_questions_by_section(res)
+
         def _build_pair_table(data: dict[int, str], value_placeholder: str = "") -> QTableWidget:
             table = QTableWidget(0, 2)
             table.setHorizontalHeaderLabels(["Câu", "Giá trị"])
@@ -13944,6 +13956,32 @@ class MainWindow(QMainWindow):
                     item_v.setToolTip(value_placeholder)
                 table.setItem(r, 1, item_v)
             return table
+
+        def _build_mcq_grid(data: dict[int, str]) -> tuple[QWidget, dict[int, QLineEdit]]:
+            box = QWidget()
+            grid = QGridLayout(box)
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setHorizontalSpacing(8)
+            grid.setVerticalSpacing(6)
+            edits: dict[int, QLineEdit] = {}
+            questions = list(expected.get("MCQ", [])) or sorted(int(q) for q in (data or {}).keys())
+            if not questions:
+                questions = []
+            cols = 8
+            for idx_q, q_no in enumerate(questions):
+                row = (idx_q // cols) * 2
+                col = idx_q % cols
+                lbl = QLabel(str(q_no))
+                lbl.setAlignment(Qt.AlignCenter)
+                edit = QLineEdit(str((data or {}).get(q_no, "") or ""))
+                edit.setMaxLength(1)
+                edit.setMaximumWidth(52)
+                edit.setAlignment(Qt.AlignCenter)
+                edits[int(q_no)] = edit
+                grid.addWidget(lbl, row, col)
+                grid.addWidget(edit, row + 1, col)
+            grid.setColumnStretch(cols, 1)
+            return box, edits
 
         def _build_tf_table(data: dict[int, dict[str, bool]]) -> QTableWidget:
             table = QTableWidget(0, 5)
@@ -13972,7 +14010,7 @@ class MainWindow(QMainWindow):
                     table.setCellWidget(r, i, cb)
             return table
 
-        table_mcq = _build_pair_table(res.mcq_answers, "Ví dụ: A/B/C/D")
+        mcq_widget, mcq_edits = _build_mcq_grid(res.mcq_answers)
         table_num = _build_pair_table(res.numeric_answers, "Ví dụ: -12.5")
         table_tf = _build_tf_table(res.true_false_answers)
 
@@ -14004,28 +14042,60 @@ class MainWindow(QMainWindow):
         right = QWidget()
         right_lay = QVBoxLayout(right)
         right_lay.addWidget(QLabel("Ảnh bài làm"))
+        zoom_row = QHBoxLayout()
+        btn_zoom_out_dlg = QPushButton("-")
+        btn_zoom_reset_dlg = QPushButton("100%")
+        btn_zoom_in_dlg = QPushButton("+")
+        for btn in [btn_zoom_out_dlg, btn_zoom_reset_dlg, btn_zoom_in_dlg]:
+            btn.setMaximumWidth(52)
+        zoom_row.addWidget(btn_zoom_out_dlg)
+        zoom_row.addWidget(btn_zoom_reset_dlg)
+        zoom_row.addWidget(btn_zoom_in_dlg)
+        zoom_row.addStretch()
+        right_lay.addLayout(zoom_row)
         preview = QLabel()
         preview.setAlignment(Qt.AlignCenter)
-        preview.setMinimumWidth(420)
         pix = self.preview_source_pixmap if hasattr(self, "preview_source_pixmap") and not self.preview_source_pixmap.isNull() else QPixmap(str(Path(res.image_path)))
-        preview.setPixmap(pix.scaled(900, 1200, Qt.KeepAspectRatio, Qt.SmoothTransformation) if not pix.isNull() else QPixmap())
-        right_lay.addWidget(preview, 1)
+        base_pix = pix
+        preview_scroll = QScrollArea()
+        preview_scroll.setWidgetResizable(False)
+        preview_scroll.setAlignment(Qt.AlignCenter)
+        preview_scroll.setWidget(preview)
+        zoom_state = {"factor": 1.0}
+        def _fit_preview_to_viewport() -> None:
+            if base_pix.isNull():
+                return
+            viewport = preview_scroll.viewport().size()
+            if viewport.width() <= 0 or viewport.height() <= 0:
+                return
+            scale_w = viewport.width() / max(1, base_pix.width())
+            scale_h = viewport.height() / max(1, base_pix.height())
+            zoom_state["factor"] = max(0.2, min(1.0, min(scale_w, scale_h)))
+            _apply_preview_zoom()
+
+        def _apply_preview_zoom() -> None:
+            if base_pix.isNull():
+                preview.setPixmap(QPixmap())
+                return
+            scaled = base_pix.scaled(base_pix.size() * zoom_state["factor"], Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            preview.setPixmap(scaled)
+            btn_zoom_reset_dlg.setText(f"{int(zoom_state['factor'] * 100)}%")
+        btn_zoom_out_dlg.clicked.connect(lambda: (zoom_state.__setitem__("factor", max(0.2, zoom_state["factor"] / 1.2)), _apply_preview_zoom()))
+        btn_zoom_in_dlg.clicked.connect(lambda: (zoom_state.__setitem__("factor", min(5.0, zoom_state["factor"] * 1.2)), _apply_preview_zoom()))
+        btn_zoom_reset_dlg.clicked.connect(lambda: (zoom_state.__setitem__("factor", 1.0), _apply_preview_zoom()))
+        right_lay.addWidget(preview_scroll, 1)
         splitter.addWidget(right)
         splitter.setChildrenCollapsible(False)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
         lay.addWidget(splitter)
         QTimer.singleShot(0, lambda s=splitter: s.setSizes([max(1, s.width() // 2), max(1, s.width() // 2)]))
+        QTimer.singleShot(0, _fit_preview_to_viewport)
         left_lay.addLayout(form)
         left_lay.addWidget(QLabel("MCQ"))
-        left_lay.addWidget(table_mcq)
+        left_lay.addWidget(mcq_widget)
         row_mcq = QHBoxLayout()
-        btn_add_mcq = QPushButton("Thêm dòng MCQ")
-        btn_del_mcq = QPushButton("Xoá dòng chọn")
-        btn_add_mcq.clicked.connect(lambda: _add_pair_row(table_mcq))
-        btn_del_mcq.clicked.connect(lambda: _remove_selected_row(table_mcq))
-        row_mcq.addWidget(btn_add_mcq)
-        row_mcq.addWidget(btn_del_mcq)
+        row_mcq.addWidget(QLabel("Nhập đáp án trực tiếp vào từng ô MCQ"))
         row_mcq.addStretch()
         left_lay.addLayout(row_mcq)
 
@@ -14079,18 +14149,10 @@ class MainWindow(QMainWindow):
 
         try:
             new_mcq_answers: dict[int, str] = {}
-            for r in range(table_mcq.rowCount()):
-                q_item = table_mcq.item(r, 0)
-                v_item = table_mcq.item(r, 1)
-                q_text = str(q_item.text() if q_item else "").strip()
-                v_text = str(v_item.text() if v_item else "").strip()
-                if not q_text and not v_text:
-                    continue
-                if not q_text.lstrip("-").isdigit():
-                    raise ValueError(f"MCQ dòng {r+1}: Câu phải là số nguyên.")
-                if not v_text:
-                    continue
-                new_mcq_answers[int(q_text)] = v_text.upper()
+            for q_no, edit in mcq_edits.items():
+                v_text = str(edit.text() if edit else "").strip().upper()[:1]
+                if v_text:
+                    new_mcq_answers[int(q_no)] = v_text
 
             new_numeric_answers: dict[int, str] = {}
             for r in range(table_num.rowCount()):
