@@ -364,7 +364,7 @@ class SubjectConfigDialog(QDialog):
 
         form.addRow("Tổng điểm bài thi", self.total_score)
 
-        left_lay.addLayout(form)
+        left_left_lay.addLayout(form)
         lay.addWidget(self.section_group)
         lay.addWidget(self.question_group)
 
@@ -1801,6 +1801,7 @@ class MainWindow(QMainWindow):
         self._open_edit_selected_scan()
 
     def _save_scan_row_by_index(self, row: int) -> None:
+        self._ensure_correction_state()
         if row < 0 or row >= self.scan_list.rowCount():
             return
         self.scan_list.selectRow(row)
@@ -9994,7 +9995,18 @@ class MainWindow(QMainWindow):
         self.answer_editor_layout.addWidget(num_box)
         self.answer_editor_layout.addStretch()
 
+    def _ensure_correction_state(self) -> None:
+        if not hasattr(self, "correction_ui_loading"):
+            self.correction_ui_loading = False
+        if not hasattr(self, "correction_pending_payload") or not isinstance(getattr(self, "correction_pending_payload", None), dict):
+            self.correction_pending_payload = {}
+        if not hasattr(self, "correction_save_timer") or not isinstance(getattr(self, "correction_save_timer", None), QTimer):
+            self.correction_save_timer = QTimer(self)
+            self.correction_save_timer.setSingleShot(True)
+            self.correction_save_timer.timeout.connect(self._flush_pending_correction_updates)
+
     def _schedule_correction_update(self, field_name: str, old_value: object, new_value: object, apply_fn) -> None:
+        self._ensure_correction_state()
         if self.correction_ui_loading or old_value == new_value:
             return
         apply_fn()
@@ -10005,6 +10017,7 @@ class MainWindow(QMainWindow):
         self.correction_save_timer.start(150)
 
     def _flush_pending_correction_updates(self) -> None:
+        self._ensure_correction_state()
         idx, result = self._correction_selected_result()
         if idx is None or result is None or not self.correction_pending_payload:
             return
@@ -13814,6 +13827,15 @@ class MainWindow(QMainWindow):
         self._sync_correction_detail_panel(res, rebuild_editor=True)
         self.correction_ui_loading = False
 
+    def _load_selected_result_for_correction(self) -> None:
+        idx = self.scan_list.currentRow()
+        if idx < 0 or idx >= len(self.scan_results):
+            return
+        res = self.scan_results[idx]
+        self.correction_ui_loading = True
+        self._sync_correction_detail_panel(res, rebuild_editor=True)
+        self.correction_ui_loading = False
+
     def _open_edit_selected_scan(self, *_args) -> None:
         idx = self.scan_list.currentRow()
         if idx < 0:
@@ -13846,7 +13868,7 @@ class MainWindow(QMainWindow):
             buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
             buttons.accepted.connect(dlg.accept)
             buttons.rejected.connect(dlg.reject)
-            left_lay.addWidget(buttons)
+            left_left_lay.addWidget(buttons)
             if dlg.exec() != QDialog.Accepted:
                 return
             old_item = self.scan_list.item(idx, 0)
@@ -13989,10 +14011,12 @@ class MainWindow(QMainWindow):
         preview.setPixmap(pix.scaled(900, 1200, Qt.KeepAspectRatio, Qt.SmoothTransformation) if not pix.isNull() else QPixmap())
         right_lay.addWidget(preview, 1)
         splitter.addWidget(right)
+        splitter.setChildrenCollapsible(False)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
         lay.addWidget(splitter)
-        lay.addLayout(form)
+        QTimer.singleShot(0, lambda s=splitter: s.setSizes([max(1, s.width() // 2), max(1, s.width() // 2)]))
+        left_lay.addLayout(form)
         left_lay.addWidget(QLabel("MCQ"))
         left_lay.addWidget(table_mcq)
         row_mcq = QHBoxLayout()
@@ -14031,7 +14055,7 @@ class MainWindow(QMainWindow):
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
-        lay.addWidget(buttons)
+        left_lay.addWidget(buttons)
 
         if dlg.exec() != QDialog.Accepted:
             return
