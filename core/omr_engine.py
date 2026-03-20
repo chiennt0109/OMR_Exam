@@ -532,6 +532,9 @@ class OMRProcessor:
         else:
             candidates = ["hybrid"]
 
+        base_image = aligned if aligned is not None else image
+        base_binary = aligned_binary if aligned_binary is not None else binary
+
         for candidate in candidates:
             if candidate == "one_side":
                 coarse_img, coarse_bin = self._fallback_align_page_contour(image, template, conservative=True)
@@ -541,7 +544,7 @@ class OMRProcessor:
                 self._last_alignment_debug["alignment_mode"] = "one_side"
                 return shifted_img, shifted_bin
 
-            attempt = self._try_anchor_alignment(image, binary, template, candidate)
+            attempt = self._try_anchor_alignment(base_image, base_binary, template, candidate)
             if attempt is None:
                 continue
             coarse_img, coarse_bin = attempt
