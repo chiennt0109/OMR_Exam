@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QCheckBox,
+    QCompleter,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -1778,6 +1779,42 @@ class MainWindow(QMainWindow):
         btn.clicked.connect(cb)
         return btn
 
+    def _set_scan_action_widget(self, row: int) -> None:
+        if row < 0 or row >= self.scan_list.rowCount():
+            return
+        style = self.style()
+        holder = QWidget()
+        lay = QHBoxLayout(holder)
+        lay.setContentsMargins(2, 0, 2, 0)
+        lay.setSpacing(2)
+        btn_edit = self._make_row_icon_button(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Sửa bài thi", lambda _=False, r=row: self._edit_scan_row_by_index(r))
+        btn_save = self._make_row_icon_button(style.standardIcon(QStyle.SP_DialogSaveButton), "Lưu bài thi", lambda _=False, r=row: self._save_scan_row_by_index(r))
+        lay.addWidget(btn_edit)
+        lay.addWidget(btn_save)
+        self.scan_list.setCellWidget(row, 5, holder)
+
+    def _edit_scan_row_by_index(self, row: int) -> None:
+        if row < 0 or row >= self.scan_list.rowCount():
+            return
+        self.scan_list.selectRow(row)
+        self._on_scan_selected()
+        self._open_edit_selected_scan()
+
+    def _save_scan_row_by_index(self, row: int) -> None:
+        if row < 0 or row >= self.scan_list.rowCount():
+            return
+        self.scan_list.selectRow(row)
+        self._on_scan_selected()
+        if self.correction_save_timer.isActive():
+            self.correction_save_timer.stop()
+            self._flush_pending_correction_updates()
+        idx = self.scan_list.currentRow()
+        if 0 <= idx < len(self.scan_results):
+            res = self.scan_results[idx]
+            self._persist_single_scan_result_to_db(res, note="row_action_save")
+            self._refresh_all_statuses()
+            self._update_scan_preview(idx)
+
     def _refresh_exam_list(self) -> None:
         self.exam_list_table.setRowCount(len(self.session_registry))
         style = self.style()
@@ -2787,8 +2824,8 @@ class MainWindow(QMainWindow):
         search_row.addWidget(self.filter_column)
         search_row.addWidget(self.search_value)
 
-        self.scan_list = QTableWidget(0, 5)
-        self.scan_list.setHorizontalHeaderLabels(["STUDENT ID", "Họ tên", "Ngày sinh", "Nội dung", "Status"])
+        self.scan_list = QTableWidget(0, 6)
+        self.scan_list.setHorizontalHeaderLabels(["STUDENT ID", "Họ tên", "Ngày sinh", "Nội dung", "Status", "Chức năng"])
         self.scan_list.verticalHeader().setVisible(False)
         self.scan_list.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.scan_list.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -2797,6 +2834,7 @@ class MainWindow(QMainWindow):
         self.scan_list.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.scan_list.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.scan_list.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.scan_list.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
         self.scan_list.horizontalHeader().sectionClicked.connect(self._on_scan_header_clicked)
         self.scan_list.itemSelectionChanged.connect(self._on_scan_selected)
         self.scan_list.cellDoubleClicked.connect(self._open_edit_selected_scan)
@@ -9878,17 +9916,25 @@ class MainWindow(QMainWindow):
                 if not sid:
                     continue
                 students.append((sid, str(item.get("name", "") or "").strip(), str(extra.get("class_name", "") or "").strip()))
+        labels: list[str] = []
         seen: set[str] = set()
         for sid, name, class_name in students:
             if sid in seen:
                 continue
             seen.add(sid)
             label = f"[{sid}] - {name or '-'} - {class_name or '-'}"
+            labels.append(label)
             self.student_correction_combo.addItem(label, sid)
         if current_student_id and current_student_id not in seen:
-            self.student_correction_combo.addItem(f"[{current_student_id}] - - -", current_student_id)
+            label = f"[{current_student_id}] - - -"
+            labels.append(label)
+            self.student_correction_combo.addItem(label, current_student_id)
         idx = self.student_correction_combo.findData(current_student_id)
         self.student_correction_combo.setCurrentIndex(max(0, idx))
+        completer = QCompleter(labels, self.student_correction_combo)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchContains)
+        self.student_correction_combo.setCompleter(completer)
         self.student_correction_combo.blockSignals(False)
 
     def _build_visual_answer_editor(self, result: OMRResult) -> None:
@@ -9979,7 +10025,9 @@ class MainWindow(QMainWindow):
         self.correction_pending_payload = {}
         self._refresh_all_statuses()
         self._update_scan_preview(idx)
-        self._load_selected_result_for_correction()
+        self.correction_ui_loading = True
+        self._sync_correction_detail_panel(result, rebuild_editor=False)
+        self.correction_ui_loading = False
 
     def _handle_exam_code_correction_changed(self, _index: int) -> None:
         idx, result = self._correction_selected_result()
@@ -10557,6 +10605,7 @@ class MainWindow(QMainWindow):
             if item_status.text() != "OK":
                 item_status.setForeground(Qt.red)
             self.scan_list.setItem(r, 4, item_status)
+            self._set_scan_action_widget(r)
 
         saved_preview = cfg.get("batch_saved_preview", []) if isinstance(cfg.get("batch_saved_preview", []), list) else []
         for row in saved_preview:
@@ -10637,6 +10686,7 @@ class MainWindow(QMainWindow):
             if st.text() != "OK":
                 st.setForeground(Qt.red)
             self.scan_list.setItem(r, 4, st)
+            self._set_scan_action_widget(r)
 
         for row in (cached.get("preview", []) if isinstance(cached.get("preview", []), list) else []):
             if not isinstance(row, dict):
@@ -10936,6 +10986,7 @@ class MainWindow(QMainWindow):
             if status != "OK":
                 status_item.setForeground(Qt.red)
             self.scan_list.setItem(idx, 4, status_item)
+            self._set_scan_action_widget(idx)
             for issue in result.issues:
                 self.error_list.addItem(f"{Path(result.image_path).name}: {issue.code} - {issue.message}")
             for err in rec_errors:
@@ -11173,6 +11224,7 @@ class MainWindow(QMainWindow):
             if status != "OK":
                 status_item.setForeground(Qt.red)
             self.scan_list.setItem(idx, 4, status_item)
+            self._set_scan_action_widget(idx)
             for issue in result.issues:
                 self.error_list.addItem(f"{Path(result.image_path).name}: {issue.code} - {issue.message}")
             for err in rec_errors:
@@ -13608,8 +13660,6 @@ class MainWindow(QMainWindow):
         subject_key = self._current_batch_subject_key()
         result.answer_string = self._build_answer_string_for_result(result, subject_key)
         self.database.update_scan_result_payload(str(getattr(result, "image_path", "") or ""), self._serialize_omr_result(result), note=note)
-        if subject_key:
-            self._refresh_scan_results_from_db(subject_key)
 
     def _refresh_all_statuses(self) -> None:
         for row_idx in range(self.scan_list.rowCount()):
@@ -13707,19 +13757,16 @@ class MainWindow(QMainWindow):
             self.scan_result_preview.setItem(r, 0, QTableWidgetItem(str(k)))
             self.scan_result_preview.setItem(r, 1, QTableWidgetItem(str(v)))
 
-    def _load_selected_result_for_correction(self) -> None:
-        idx = self.scan_list.currentRow()
-        if idx < 0 or idx >= len(self.scan_results):
-            return
-        res = self.scan_results[idx]
-        self.correction_ui_loading = True
+    def _sync_correction_detail_panel(self, res: OMRResult, rebuild_editor: bool = False) -> None:
         subject_key = self._current_batch_subject_key()
         self._load_exam_code_correction_options(subject_key, str(res.exam_code or "").strip())
         self._load_student_correction_options(str(res.student_id or "").strip())
-        self._build_visual_answer_editor(res)
+        if rebuild_editor:
+            self._build_visual_answer_editor(res)
         payload = {
             "student_id": res.student_id,
             "exam_code": res.exam_code,
+            "answer_string": str(getattr(res, "answer_string", "") or self._build_answer_string_for_result(res, subject_key)),
             "mcq_answers": res.mcq_answers,
             "true_false_answers": res.true_false_answers,
             "numeric_answers": res.numeric_answers,
@@ -13732,13 +13779,24 @@ class MainWindow(QMainWindow):
                 {
                     "student_id": res.student_id,
                     "exam_code": res.exam_code,
+                    "answer_string": payload["answer_string"],
                     "mcq_answers": res.mcq_answers,
+                    "true_false_answers": res.true_false_answers,
                     "numeric_answers": res.numeric_answers,
                 },
                 ensure_ascii=False,
                 indent=2,
             )
         )
+        self.correction_ui_loading = False
+
+    def _load_selected_result_for_correction(self) -> None:
+        idx = self.scan_list.currentRow()
+        if idx < 0 or idx >= len(self.scan_results):
+            return
+        res = self.scan_results[idx]
+        self.correction_ui_loading = True
+        self._sync_correction_detail_panel(res, rebuild_editor=True)
         self.correction_ui_loading = False
 
     def _open_edit_selected_scan(self, *_args) -> None:
