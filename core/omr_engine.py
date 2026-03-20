@@ -850,6 +850,20 @@ class OMRProcessor:
             ratios[i] = float(np.count_nonzero(roi)) / float(roi.size)
         return ratios
 
+    def _detect_square_mark_density(self, binary: np.ndarray, centers: np.ndarray, radius: int) -> np.ndarray:
+        half = max(2, int(round(radius * 0.55)))
+        h, w = binary.shape[:2]
+        ratios = np.zeros((len(centers),), dtype=np.float32)
+        centers_int = centers.astype(np.int32)
+        for i, (x, y) in enumerate(centers_int):
+            x0, y0 = max(0, x - half), max(0, y - half)
+            x1, y1 = min(w, x + half + 1), min(h, y + half + 1)
+            roi = binary[y0:y1, x0:x1]
+            if roi.size == 0:
+                continue
+            ratios[i] = float(np.count_nonzero(roi)) / float(roi.size)
+        return ratios
+
     def _detect_core_ring_contrast(self, binary: np.ndarray, centers: np.ndarray, radius: int) -> np.ndarray:
         core_r = max(2, int(round(radius * 0.35)))
         ring_r = max(core_r + 1, int(round(radius * 0.80)))
@@ -892,20 +906,6 @@ class OMRProcessor:
                 continue
             eroded = cv2.erode(roi, kernel, iterations=1)
             scores[i] = float(np.count_nonzero(eroded)) / float(eroded.size)
-        return scores
-
-    def _detect_square_mark_density(self, binary: np.ndarray, centers: np.ndarray, radius: int) -> np.ndarray:
-        half = max(2, int(round(radius * 0.55)))
-        h, w = binary.shape[:2]
-        scores = np.zeros((len(centers),), dtype=np.float32)
-        centers_int = centers.astype(np.int32)
-        for i, (x, y) in enumerate(centers_int):
-            x0, y0 = max(0, x - half), max(0, y - half)
-            x1, y1 = min(w, x + half + 1), min(h, y + half + 1)
-            roi = binary[y0:y1, x0:x1]
-            if roi.size == 0:
-                continue
-            scores[i] = float(np.count_nonzero(roi)) / float(roi.size)
         return scores
 
     def classify_bubble(self, ratio: float) -> str:
@@ -1052,10 +1052,9 @@ class OMRProcessor:
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
             core_ratios = self._detect_center_core_marks(binary, centers, radius)
             if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
-                contrast_ratios = self._detect_core_ring_contrast(binary, centers, radius)
-                eroded_ratios = self._detect_eroded_mark_density(binary, centers, radius)
                 square_ratios = self._detect_square_mark_density(binary, centers, radius)
-                ratios = np.clip((0.10 * ratios) + (0.15 * core_ratios) + (0.15 * contrast_ratios) + (0.25 * eroded_ratios) + (0.35 * square_ratios), 0.0, 1.0)
+                eroded_ratios = self._detect_eroded_mark_density(binary, centers, radius)
+                ratios = np.clip((0.20 * ratios) + (0.45 * square_ratios) + (0.35 * eroded_ratios), 0.0, 1.0)
             else:
                 ratios = np.clip((0.55 * ratios) + (0.45 * core_ratios), 0.0, 1.0)
         dynamic_thresholds = np.array([self._estimate_local_fill_threshold(binary, center, radius, self.fill_threshold) for center in centers], dtype=np.float32)
