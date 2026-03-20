@@ -1072,6 +1072,14 @@ class NewExamDialog(QDialog):
         self.subject_configs.append(payload)
         try:
             self.database.replace_answer_keys_for_subject(str(payload.get("answer_key_key", "") or ""), payload.get("imported_answer_keys", {}) or {})
+            self.database.log_change(
+                "answer_keys",
+                str(payload.get("answer_key_key", "") or ""),
+                "imported_answer_keys",
+                "",
+                payload.get("imported_answer_keys", {}) or {},
+                "add_subject",
+            )
         except Exception:
             pass
         self._refresh_subject_list()
@@ -1099,6 +1107,15 @@ class NewExamDialog(QDialog):
             if old_subject_key and old_subject_key != new_subject_key:
                 self.database.replace_answer_keys_for_subject(old_subject_key, {})
             self.database.replace_answer_keys_for_subject(new_subject_key, edited.get("imported_answer_keys", {}) or {})
+            if old_cfg.get("imported_answer_keys", {}) != edited.get("imported_answer_keys", {}):
+                self.database.log_change(
+                    "answer_keys",
+                    new_subject_key,
+                    "imported_answer_keys",
+                    old_cfg.get("imported_answer_keys", {}) or {},
+                    edited.get("imported_answer_keys", {}) or {},
+                    "edit_subject",
+                )
         except Exception:
             pass
 
@@ -2861,6 +2878,7 @@ class MainWindow(QMainWindow):
         self.score_preview_table.setColumnWidth(15, 320)
 
         self.scoring_subject_combo = QComboBox()
+        self.scoring_subject_combo.currentIndexChanged.connect(self._handle_scoring_subject_changed)
         self.scoring_mode_combo = QComboBox()
         self.scoring_mode_combo.addItems(["Tính lại toàn bộ", "Chỉ tính bài chưa có điểm"])
         self.scoring_phase_note = QLineEdit()
@@ -2891,9 +2909,13 @@ class MainWindow(QMainWindow):
         self.scoring_phase_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.scoring_phase_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
 
+        self.dashboard_summary_label = QLabel("Dashboard DB: chưa có dữ liệu.")
+        self.dashboard_summary_label.setWordWrap(True)
+
         scoring_panel_layout = QVBoxLayout(self.scoring_panel)
         scoring_panel_layout.setContentsMargins(0, 0, 0, 0)
         scoring_panel_layout.addLayout(scoring_top)
+        scoring_panel_layout.addWidget(self.dashboard_summary_label)
         scoring_panel_layout.addWidget(self.score_preview_table, 7)
         scoring_panel_layout.addWidget(QLabel("Lịch sử pha chấm điểm"))
         scoring_panel_layout.addWidget(self.scoring_phase_table, 3)
@@ -3058,6 +3080,16 @@ class MainWindow(QMainWindow):
         return False
 
     def _cached_subject_scans_from_config(self, subject_key: str) -> list[OMRResult]:
+        db_rows = self.database.fetch_scan_results_for_subject(subject_key)
+        if db_rows:
+            out: list[OMRResult] = []
+            for item in db_rows:
+                try:
+                    out.append(self._deserialize_omr_result(item))
+                except Exception:
+                    continue
+            if out:
+                return out
         cfg = self._subject_config_by_subject_key(subject_key)
         if not cfg:
             return []
@@ -3074,6 +3106,31 @@ class MainWindow(QMainWindow):
             except Exception:
                 continue
         return out
+
+    def _refresh_scan_results_from_db(self, subject_key: str) -> list[OMRResult]:
+        rows = self.database.fetch_scan_results_for_subject(subject_key)
+        refreshed: list[OMRResult] = []
+        for item in rows:
+            try:
+                refreshed.append(self._deserialize_omr_result(item))
+            except Exception:
+                continue
+        if refreshed:
+            self.scan_results_by_subject[subject_key] = list(refreshed)
+        return refreshed
+
+    def _refresh_dashboard_summary_from_db(self, subject_key: str) -> None:
+        if not hasattr(self, "dashboard_summary_label"):
+            return
+        summary = self.database.dashboard_summary(subject_key)
+        avg_score = float(summary.get("average_score", 0.0) or 0.0)
+        distribution = summary.get("distribution", []) if isinstance(summary.get("distribution", []), list) else []
+        top_students = summary.get("top_students", []) if isinstance(summary.get("top_students", []), list) else []
+        dist_text = ", ".join(f"{item.get('bucket', 0)}: {item.get('count', 0)}" for item in distribution[:8]) or "-"
+        top_text = ", ".join(f"{item.get('student_code', '-')}: {item.get('score', 0)}" for item in top_students[:5]) or "-"
+        self.dashboard_summary_label.setText(
+            f"Dashboard DB | Điểm TB: {avg_score:.2f} | Phổ điểm: {dist_text} | Top học sinh: {top_text}"
+        )
 
     def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
         if self.answer_keys and any(str(k).startswith(f"{subject_key}::") for k in self.answer_keys.keys.keys()):
@@ -3191,8 +3248,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
             return
         self.stack.setCurrentIndex(1)
-        self._populate_scoring_subjects(self._resolve_preferred_scoring_subject())
+        selected_subject = self._resolve_preferred_scoring_subject()
+        self._populate_scoring_subjects(selected_subject)
         self._refresh_scoring_phase_table()
+        self._refresh_dashboard_summary_from_db(selected_subject)
         self._show_scoring_panel()
 
     def _refresh_scoring_phase_table(self) -> None:
@@ -3206,6 +3265,11 @@ class MainWindow(QMainWindow):
             self.scoring_phase_table.setItem(i, 2, QTableWidgetItem(str(p.get("mode", "-"))))
             self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
             self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
+
+    def _handle_scoring_subject_changed(self, _index: int) -> None:
+        subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
+        if subject_key:
+            self._refresh_dashboard_summary_from_db(subject_key)
 
     def _run_scoring_from_panel(self) -> None:
         subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
@@ -13032,9 +13096,14 @@ class MainWindow(QMainWindow):
     def _persist_scan_results_to_db(self, subject_key: str) -> None:
         rows = [self._serialize_omr_result(x) for x in (self.scan_results_by_subject.get(subject_key, self.scan_results) or [])]
         self.database.replace_scan_results_for_subject(subject_key, rows)
+        self.database.log_change("scan_results", subject_key, "replace_subject_rows", "", f"{len(rows)} rows", "batch_save")
+        self._refresh_scan_results_from_db(subject_key)
 
     def _persist_single_scan_result_to_db(self, result: OMRResult, note: str = "") -> None:
         self.database.update_scan_result_payload(str(getattr(result, "image_path", "") or ""), self._serialize_omr_result(result), note=note)
+        subject_key = self._current_batch_subject_key()
+        if subject_key:
+            self._refresh_scan_results_from_db(subject_key)
 
     def _refresh_all_statuses(self) -> None:
         for row_idx in range(self.scan_list.rowCount()):
@@ -13529,7 +13598,7 @@ class MainWindow(QMainWindow):
 
     def calculate_scores(self, subject_key: str = "", mode: str = "Tính lại toàn bộ", note: str = "") -> list:
         subject = (subject_key or self._resolve_preferred_scoring_subject() or "General").strip()
-        subject_scans = self.scan_results_by_subject.get(subject, [])
+        subject_scans = self._refresh_scan_results_from_db(subject) or self.scan_results_by_subject.get(subject, [])
         if not subject_scans:
             subject_scans = self._cached_subject_scans_from_config(subject)
             if subject_scans:
@@ -13661,6 +13730,7 @@ class MainWindow(QMainWindow):
             if not self._persist_session_quietly():
                 QMessageBox.warning(self, "Scoring", "Không thể tự động lưu kết quả chấm điểm. Vui lòng dùng nút Lưu kỳ thi.")
         self._refresh_scoring_phase_table()
+        self._refresh_dashboard_summary_from_db(subject)
 
         formula_text = ""
         if rows:

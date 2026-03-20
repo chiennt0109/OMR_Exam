@@ -380,6 +380,21 @@ class OMRDatabase:
         )
         self.conn.commit()
 
+    def fetch_scan_results_for_subject(self, subject_key: str) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT payload_json FROM scan_results WHERE subject_key = ? ORDER BY id ASC",
+            (str(subject_key or ""),),
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for (payload_json,) in rows:
+            try:
+                payload = json.loads(payload_json or "{}") if payload_json else {}
+            except Exception:
+                payload = {}
+            if isinstance(payload, dict):
+                out.append(payload)
+        return out
+
     def update_scan_result_payload(self, image_path: str, payload: dict[str, Any], note: str = "") -> None:
         image_key = str(image_path or "")
         old_row = self.conn.execute(
@@ -432,6 +447,21 @@ class OMRDatabase:
             ),
         )
         self.conn.commit()
+
+    def fetch_scores_for_subject(self, subject_key: str) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT payload_json FROM scores WHERE subject_key = ? ORDER BY score DESC, student_code ASC",
+            (str(subject_key or ""),),
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for (payload_json,) in rows:
+            try:
+                payload = json.loads(payload_json or "{}") if payload_json else {}
+            except Exception:
+                payload = {}
+            if isinstance(payload, dict):
+                out.append(payload)
+        return out
 
     def dashboard_summary(self, subject_key: str = "") -> dict[str, Any]:
         params: tuple[Any, ...] = ()
