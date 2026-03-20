@@ -1131,6 +1131,9 @@ class OMRProcessor:
                 col_threshold = max(self.empty_threshold + 0.10, float((self.fill_threshold * 0.90)))
                 col_threshold = max(col_threshold, float(np.mean(col_scores) + (0.25 * np.std(col_scores))))
                 certainty_margin = self.certainty_margin * 0.40
+                if c == 0 or c == (cols - 1):
+                    col_threshold *= 0.95
+                    certainty_margin *= 0.75
             elif is_exam_code:
                 col_threshold = max(self.empty_threshold + 0.10, float((self.fill_threshold * 0.95)))
                 col_threshold = max(col_threshold, float(np.mean(col_scores) + (0.30 * np.std(col_scores))))
@@ -1143,7 +1146,8 @@ class OMRProcessor:
             top, second = float(col_scores[top_i]), float(col_scores[second_i]) if len(order) > 1 else 0.0
             if len(np.where(col_scores > col_threshold)[0]) > 1:
                 result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: double mark")
-            ratio_gate = second <= 0.0 or top >= (second * (1.08 if is_student_id else 1.10 if is_exam_code else 1.18))
+            student_ratio = 1.05 if is_student_id and (c == 0 or c == (cols - 1)) else 1.08
+            ratio_gate = second <= 0.0 or top >= (second * (student_ratio if is_student_id else 1.10 if is_exam_code else 1.18))
             if top <= col_threshold or ((top - second) <= certainty_margin and not ratio_gate):
                 digits.append("?")
                 result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: uncertain")
