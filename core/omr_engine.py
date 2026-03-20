@@ -878,6 +878,36 @@ class OMRProcessor:
             scores[i] = float(np.clip(core_ratio - (0.45 * ring_ratio), 0.0, 1.0))
         return scores
 
+    def _detect_eroded_mark_density(self, binary: np.ndarray, centers: np.ndarray, radius: int) -> np.ndarray:
+        r = max(3, int(round(radius * 0.85)))
+        kernel = np.ones((3, 3), np.uint8)
+        h, w = binary.shape[:2]
+        scores = np.zeros((len(centers),), dtype=np.float32)
+        centers_int = centers.astype(np.int32)
+        for i, (x, y) in enumerate(centers_int):
+            x0, y0 = max(0, x - r), max(0, y - r)
+            x1, y1 = min(w, x + r + 1), min(h, y + r + 1)
+            roi = binary[y0:y1, x0:x1]
+            if roi.size == 0:
+                continue
+            eroded = cv2.erode(roi, kernel, iterations=1)
+            scores[i] = float(np.count_nonzero(eroded)) / float(eroded.size)
+        return scores
+
+    def _detect_square_mark_density(self, binary: np.ndarray, centers: np.ndarray, radius: int) -> np.ndarray:
+        r = max(2, int(round(radius * 0.70)))
+        h, w = binary.shape[:2]
+        scores = np.zeros((len(centers),), dtype=np.float32)
+        centers_int = centers.astype(np.int32)
+        for i, (x, y) in enumerate(centers_int):
+            x0, y0 = max(0, x - r), max(0, y - r)
+            x1, y1 = min(w, x + r + 1), min(h, y + r + 1)
+            roi = binary[y0:y1, x0:x1]
+            if roi.size == 0:
+                continue
+            scores[i] = float(np.count_nonzero(roi)) / float(roi.size)
+        return scores
+
     def classify_bubble(self, ratio: float) -> str:
         if ratio > self.fill_threshold:
             return "filled"
@@ -1022,8 +1052,9 @@ class OMRProcessor:
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
             core_ratios = self._detect_center_core_marks(binary, centers, radius)
             if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
-                contrast_ratios = self._detect_core_ring_contrast(binary, centers, radius)
-                ratios = np.clip((0.20 * ratios) + (0.45 * core_ratios) + (0.35 * contrast_ratios), 0.0, 1.0)
+                square_ratios = self._detect_square_mark_density(binary, centers, radius)
+                eroded_ratios = self._detect_eroded_mark_density(binary, centers, radius)
+                ratios = np.clip((0.15 * ratios) + (0.30 * core_ratios) + (0.30 * square_ratios) + (0.25 * eroded_ratios), 0.0, 1.0)
             else:
                 ratios = np.clip((0.55 * ratios) + (0.45 * core_ratios), 0.0, 1.0)
         dynamic_thresholds = np.array([self._estimate_local_fill_threshold(binary, center, radius, self.fill_threshold) for center in centers], dtype=np.float32)
@@ -1093,6 +1124,7 @@ class OMRProcessor:
         confs: list[float] = []
         is_student_id = zone.zone_type == ZoneType.STUDENT_ID_BLOCK
         is_exam_code = zone.zone_type == ZoneType.EXAM_CODE_BLOCK
+        fallback_candidates: list[tuple[int, float, int]] = []
         for c in range(cols):
             col_scores = mat[:, c]
             if is_student_id:
@@ -1113,18 +1145,24 @@ class OMRProcessor:
                 result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: double mark")
             ratio_gate = second <= 0.0 or top >= (second * (1.08 if is_student_id else 1.10 if is_exam_code else 1.18))
             if top <= col_threshold or ((top - second) <= certainty_margin and not ratio_gate):
-                if is_student_id and top > (self.empty_threshold + 0.08):
-                    mapped = digit_map[top_i] if top_i < len(digit_map) else top_i
-                    digits.append(str(mapped))
-                    result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: soft-picked")
-                    confs.append(top - second)
-                    continue
                 digits.append("?")
                 result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: uncertain")
+                if is_student_id:
+                    mapped = digit_map[top_i] if top_i < len(digit_map) else top_i
+                    fallback_score = top - max(col_threshold * 0.85, second)
+                    fallback_candidates.append((c, float(fallback_score), int(mapped)))
             else:
                 mapped = digit_map[top_i] if top_i < len(digit_map) else top_i
                 digits.append(str(mapped))
             confs.append(top - second)
+        if is_student_id:
+            uncertain_cols = [idx for idx, value in enumerate(digits) if value == "?"]
+            if uncertain_cols and len(uncertain_cols) <= 2:
+                best_map = {col: (score, mapped) for col, score, mapped in fallback_candidates if score > 0.0}
+                for col in uncertain_cols:
+                    pick = best_map.get(col)
+                    if pick is not None:
+                        digits[col] = str(pick[1])
         return "".join(digits), confs
 
     def _decode_true_false(self, mat: np.ndarray, zone: Zone, grid, result: OMRResult) -> None:

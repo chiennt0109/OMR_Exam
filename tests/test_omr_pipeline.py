@@ -132,6 +132,26 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertGreater(scores[0], 0.45)
         self.assertLess(scores[1], 0.10)
 
+    def test_detect_eroded_mark_density_suppresses_outline_only_bubbles(self):
+        binary = np.zeros((120, 120), dtype=np.uint8)
+        cv2.line(binary, (34, 54), (46, 66), 255, 3)
+        cv2.line(binary, (46, 54), (34, 66), 255, 3)
+        cv2.circle(binary, (80, 60), 10, 255, 1)
+        centers = np.array([[40, 60], [80, 60]], dtype=np.float32)
+        scores = self.processor._detect_eroded_mark_density(binary, centers, 10)
+        self.assertGreater(scores[0], 0.12)
+        self.assertLess(scores[1], 0.05)
+
+    def test_detect_square_mark_density_prefers_cross_mark_for_student_id(self):
+        binary = np.zeros((120, 120), dtype=np.uint8)
+        cv2.line(binary, (32, 52), (48, 68), 255, 3)
+        cv2.line(binary, (48, 52), (32, 68), 255, 3)
+        cv2.circle(binary, (80, 60), 10, 255, 1)
+        centers = np.array([[40, 60], [80, 60]], dtype=np.float32)
+        scores = self.processor._detect_square_mark_density(binary, centers, 10)
+        self.assertGreater(scores[0], 0.15)
+        self.assertLess(scores[1], 0.12)
+
     def test_template_dict_persists_template_coordinate_space(self):
         tpl = Template(name="t", image_path="x.png", width=1234, height=1754)
         payload = tpl.to_dict()
@@ -567,22 +587,36 @@ class OMRPipelineTests(unittest.TestCase):
         digits, _ = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
         self.assertEqual(digits, "0")
 
-    def test_student_id_decode_soft_picks_plausible_top_digit(self):
+    def test_student_id_decode_promotes_near_threshold_single_unknown(self):
         zone = Zone(
-            id="sid_soft_pick",
+            id="sid_promote",
             name="sid",
             zone_type=ZoneType.STUDENT_ID_BLOCK,
             x=0,
             y=0,
             width=1,
             height=1,
-            grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[]),
+            grid=BubbleGrid(rows=10, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[]),
             metadata={},
         )
-        mat = np.array([[0.24], [0.22], [0.31], [0.21], [0.18], [0.17], [0.16], [0.15], [0.14], [0.13]], dtype=np.float32)
+        mat = np.array(
+            [
+                [0.58, 0.18],
+                [0.20, 0.17],
+                [0.52, 0.16],
+                [0.16, 0.15],
+                [0.15, 0.14],
+                [0.14, 0.60],
+                [0.13, 0.18],
+                [0.12, 0.17],
+                [0.11, 0.16],
+                [0.10, 0.15],
+            ],
+            dtype=np.float32,
+        )
         result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
         digits, _ = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
-        self.assertEqual(digits, "2")
+        self.assertEqual(digits, "05")
 
     def test_student_id_recognize_block_weights_center_core_more_than_outline_ratio(self):
         template = Template(
