@@ -7,12 +7,14 @@ import cv2
 import numpy as np
 
 from core.omr_engine import OMRProcessor
+from core.template_engine import TemplateEngine
 from models.template import AnchorPoint, BubbleGrid, Template, Zone, ZoneType
 
 
 class OMRPipelineTests(unittest.TestCase):
     def setUp(self) -> None:
         self.processor = OMRProcessor(debug_mode=False)
+        self.template_engine = TemplateEngine()
 
     def test_classify_bubble_thresholds(self):
         self.assertEqual(self.processor.classify_bubble(0.6), "filled")
@@ -124,6 +126,62 @@ class OMRPipelineTests(unittest.TestCase):
 
         centers = self.processor._resolve_zone_centers(binary, template.zones[0], template)
         self.assertLess(float(np.mean(np.linalg.norm(centers - shifted, axis=1))), 4.0)
+
+    def test_student_id_zone_uses_right_anchor_ruler_before_component_refine(self):
+        grid = BubbleGrid(rows=4, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(130 + c * 24, 30 + r * 20) for r in range(4) for c in range(2)])
+        anchors = [AnchorPoint(176 / 220, y / 140, f"R{i}") for i, y in enumerate((24, 44, 64, 84, 104, 124), start=1)]
+        zone = Zone(id="sid_ruler", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=120 / 220, y=20 / 140, width=48 / 220, height=90 / 140, grid=grid, metadata={"bubble_radius": 5})
+        template = Template(name="sid_ruler", image_path="", width=220, height=140, anchors=anchors, zones=[zone])
+
+        binary = np.zeros((140, 220), dtype=np.uint8)
+        shifted = np.array(grid.bubble_positions, dtype=np.float32) + np.array([10.0, 2.0], dtype=np.float32)
+        for x, y in shifted.astype(np.int32):
+            cv2.circle(binary, (int(x), int(y)), 5, 255, 1)
+
+        detected_ruler = [(186.0, 26.0), (186.0, 46.0), (186.0, 66.0), (186.0, 86.0), (186.0, 106.0), (186.0, 126.0)]
+        with patch.object(self.processor, "detect_anchors", return_value=detected_ruler):
+            centers = self.processor._resolve_zone_centers(binary, zone, template)
+
+        self.assertLess(float(np.mean(np.linalg.norm(centers - shifted, axis=1))), 3.5)
+
+    def test_exam_code_zone_uses_right_anchor_ruler_for_local_shift(self):
+        grid = BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(150, 30 + r * 18) for r in range(4)])
+        anchors = [AnchorPoint(188 / 240, y / 120, f"DIGIT_ANCHOR_{i:02d}") for i, y in enumerate((20, 38, 56, 74, 92, 110), start=1)]
+        zone = Zone(id="exam_ruler", name="exam", zone_type=ZoneType.EXAM_CODE_BLOCK, x=142 / 240, y=18 / 120, width=28 / 240, height=76 / 120, grid=grid, metadata={"bubble_radius": 5})
+        template = Template(name="exam_ruler", image_path="", width=240, height=120, anchors=anchors, zones=[zone])
+
+        binary = np.zeros((120, 240), dtype=np.uint8)
+        shifted = np.array(grid.bubble_positions, dtype=np.float32) + np.array([8.0, 1.5], dtype=np.float32)
+        for x, y in shifted.astype(np.int32):
+            cv2.circle(binary, (int(x), int(y)), 5, 255, 1)
+
+        detected_ruler = [(196.0, 21.5), (196.0, 39.5), (196.0, 57.5), (196.0, 75.5), (196.0, 93.5), (196.0, 111.5)]
+        with patch.object(self.processor, "detect_anchors", return_value=detected_ruler):
+            centers = self.processor._resolve_zone_centers(binary, zone, template)
+
+        self.assertLess(float(np.mean(np.linalg.norm(centers - shifted, axis=1))), 3.0)
+
+    def test_rebuild_digit_zone_anchors_creates_one_right_side_ruler(self):
+        template = Template(
+            name="digit_template",
+            image_path="",
+            width=300,
+            height=200,
+            anchors=[AnchorPoint(0.1, 0.1, "A1")],
+            zones=[
+                Zone(id="sid", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0.55, y=0.20, width=0.16, height=0.55, metadata={"rows": 10}),
+                Zone(id="exam", name="exam", zone_type=ZoneType.EXAM_CODE_BLOCK, x=0.74, y=0.20, width=0.11, height=0.55, metadata={"rows": 10}),
+            ],
+        )
+
+        anchors = self.template_engine.rebuild_digit_zone_anchors(template)
+        digit_anchors = [a for a in anchors if a.name.startswith("DIGIT_ANCHOR_")]
+
+        self.assertEqual(len(digit_anchors), 11)
+        self.assertEqual(template.metadata.get("alignment_profile"), "one_side")
+        self.assertTrue(all(a.x > 0.85 for a in digit_anchors))
+        self.assertAlmostEqual(digit_anchors[0].y, 0.20, places=3)
+        self.assertAlmostEqual(digit_anchors[-1].y, 0.75, places=3)
 
     def test_detect_bubbles_ratio(self):
         binary = np.zeros((120, 120), dtype=np.uint8)

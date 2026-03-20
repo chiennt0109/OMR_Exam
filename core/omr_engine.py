@@ -922,6 +922,7 @@ class OMRProcessor:
         h, w = binary.shape[:2]
         expected = np.array([(x * w, y * h) if x <= 1.0 and y <= 1.0 else (x, y) for x, y in grid.bubble_positions], dtype=np.float32)
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+            expected = self._apply_anchor_ruler_to_digit_zone(binary, expected, zone, template)
             return self._resolve_column_digit_centers(binary, expected, grid, float(zone.metadata.get("bubble_radius", 9)))
         bubble_radius = float(zone.metadata.get("bubble_radius", 9))
         min_area = max(6.0, 0.25 * np.pi * (bubble_radius ** 2))
@@ -954,6 +955,93 @@ class OMRProcessor:
                     best_pt = cand
             refined.append(best_pt if best_pt is not None else np.array([exp_x, exp_y], dtype=np.float32))
         return np.array(refined, dtype=np.float32)
+
+    def _apply_anchor_ruler_to_digit_zone(self, binary: np.ndarray, expected: np.ndarray, zone: Zone, template: Template) -> np.ndarray:
+        if len(expected) == 0:
+            return expected
+        template_pts, detected_pts = self._match_zone_anchor_ruler(binary, zone, template)
+        if len(template_pts) < 3 or len(detected_pts) < 3:
+            return expected
+        matrix, inliers = cv2.estimateAffinePartial2D(template_pts, detected_pts, method=cv2.RANSAC, ransacReprojThreshold=3.0)
+        if matrix is None:
+            return expected
+        if inliers is not None and int(inliers.sum()) < max(3, int(0.6 * len(template_pts))):
+            return expected
+        transformed = cv2.transform(expected.reshape(1, -1, 2), matrix).reshape(-1, 2)
+        if transformed.shape != expected.shape:
+            return expected
+        shift = transformed - expected
+        median_shift = np.median(shift, axis=0)
+        max_shift_x = max(6.0, float(zone.width * template.width) * 0.18)
+        max_shift_y = max(6.0, float(zone.height * template.height) * 0.10)
+        if abs(float(median_shift[0])) > max_shift_x or abs(float(median_shift[1])) > max_shift_y:
+            return expected
+        return transformed.astype(np.float32)
+
+    def _match_zone_anchor_ruler(self, binary: np.ndarray, zone: Zone, template: Template) -> tuple[np.ndarray, np.ndarray]:
+        anchors = list(template.anchors or [])
+        if len(anchors) < 4:
+            return np.empty((0, 2), dtype=np.float32), np.empty((0, 2), dtype=np.float32)
+        named_digit_anchors: list[list[float]] = []
+        fallback_anchor_pts: list[list[float]] = []
+        for a in anchors:
+            pt = [a.x * template.width, a.y * template.height] if a.x <= 1.0 and a.y <= 1.0 else [a.x, a.y]
+            fallback_anchor_pts.append(pt)
+            if str(getattr(a, "name", "") or "").startswith("DIGIT_ANCHOR_"):
+                named_digit_anchors.append(pt)
+        template_pts = np.array(named_digit_anchors or fallback_anchor_pts, dtype=np.float32)
+        detected_pts = np.array(self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True, max_points=120), dtype=np.float32)
+        if len(detected_pts) < 4:
+            return np.empty((0, 2), dtype=np.float32), np.empty((0, 2), dtype=np.float32)
+
+        zone_rect = np.array(
+            [
+                zone.x * template.width,
+                zone.y * template.height,
+                (zone.x + zone.width) * template.width,
+                (zone.y + zone.height) * template.height,
+            ],
+            dtype=np.float32,
+        )
+        zone_h = max(1.0, float(zone_rect[3] - zone_rect[1]))
+        side_margin = max(18.0, float(zone.width * template.width) * 0.45)
+        y_pad = max(12.0, zone_h * 0.08)
+
+        right_tpl = template_pts[
+            (template_pts[:, 0] >= (zone_rect[2] - side_margin))
+            & (template_pts[:, 1] >= (zone_rect[1] - y_pad))
+            & (template_pts[:, 1] <= (zone_rect[3] + y_pad))
+        ]
+        if len(right_tpl) < 3:
+            right_tpl = template_pts[
+                (template_pts[:, 0] >= zone_rect[2])
+                & (template_pts[:, 1] >= (zone_rect[1] - y_pad))
+                & (template_pts[:, 1] <= (zone_rect[3] + y_pad))
+            ]
+        if len(right_tpl) < 3:
+            return np.empty((0, 2), dtype=np.float32), np.empty((0, 2), dtype=np.float32)
+
+        det_margin = max(18.0, binary.shape[1] * 0.12)
+        right_det = detected_pts[
+            (detected_pts[:, 0] >= (zone_rect[2] - det_margin))
+            & (detected_pts[:, 1] >= (zone_rect[1] - (y_pad * 1.5)))
+            & (detected_pts[:, 1] <= (zone_rect[3] + (y_pad * 1.5)))
+        ]
+        if len(right_det) < 3:
+            return np.empty((0, 2), dtype=np.float32), np.empty((0, 2), dtype=np.float32)
+
+        right_tpl = right_tpl[np.argsort(right_tpl[:, 1])]
+        right_det = right_det[np.argsort(right_det[:, 1])]
+        count = min(len(right_tpl), len(right_det))
+        if count < 3:
+            return np.empty((0, 2), dtype=np.float32), np.empty((0, 2), dtype=np.float32)
+        if len(right_tpl) != count:
+            tpl_idx = np.linspace(0, len(right_tpl) - 1, count).astype(int)
+            right_tpl = right_tpl[tpl_idx]
+        if len(right_det) != count:
+            det_idx = np.linspace(0, len(right_det) - 1, count).astype(int)
+            right_det = right_det[det_idx]
+        return right_tpl.astype(np.float32), right_det.astype(np.float32)
 
     def _resolve_column_digit_centers(
         self,

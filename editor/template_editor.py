@@ -386,6 +386,7 @@ class TemplateEditorWindow(QMainWindow):
         self.act_duplicate = QAction("Duplicate Block", self); self.act_duplicate.triggered.connect(self.duplicate_block)
         self.act_delete = QAction("Delete Block", self); self.act_delete.triggered.connect(self.delete_selected_block)
         self.act_delete_anchor = QAction("Delete Anchor", self); self.act_delete_anchor.triggered.connect(self.delete_selected_anchor)
+        self.act_generate_digit_anchors = QAction("Generate Digit Anchors", self); self.act_generate_digit_anchors.triggered.connect(self.generate_digit_zone_anchors)
         self.act_snap_grid = QAction("Snap Grid", self); self.act_snap_grid.triggered.connect(self.snap_grid_to_detected_bubbles)
         self.act_zoom_in = QAction("Zoom +", self); self.act_zoom_in.triggered.connect(lambda: self.canvas.set_zoom(self.canvas.zoom * 1.15))
         self.act_zoom_out = QAction("Zoom -", self); self.act_zoom_out.triggered.connect(lambda: self.canvas.set_zoom(self.canvas.zoom / 1.15))
@@ -412,6 +413,7 @@ class TemplateEditorWindow(QMainWindow):
             self.act_duplicate,
             self.act_delete,
             self.act_delete_anchor,
+            self.act_generate_digit_anchors,
             self.act_snap_grid,
         ]:
             self.template_toolbar.addAction(act)
@@ -470,6 +472,7 @@ class TemplateEditorWindow(QMainWindow):
         self.act_duplicate.setIcon(s.standardIcon(QStyle.SP_FileDialogNewFolder))
         self.act_delete.setIcon(s.standardIcon(QStyle.SP_TrashIcon))
         self.act_delete_anchor.setIcon(s.standardIcon(QStyle.SP_BrowserStop))
+        self.act_generate_digit_anchors.setIcon(s.standardIcon(QStyle.SP_FileDialogListView))
         self.act_snap_grid.setIcon(s.standardIcon(QStyle.SP_BrowserReload))
         self.act_zoom_in.setIcon(s.standardIcon(QStyle.SP_ArrowUp))
         self.act_zoom_out.setIcon(s.standardIcon(QStyle.SP_ArrowDown))
@@ -490,6 +493,7 @@ class TemplateEditorWindow(QMainWindow):
         m_edit.addAction(self.act_duplicate)
         m_edit.addAction(self.act_delete)
         m_edit.addAction(self.act_delete_anchor)
+        m_edit.addAction(self.act_generate_digit_anchors)
 
         m_recog = menu.addMenu("Recognition")
         m_recog.addAction(self.act_preview)
@@ -766,7 +770,28 @@ class TemplateEditorWindow(QMainWindow):
             "decimal_symbol": self.p_decimal_symbol.text() or ".",
         })
         z.grid = self.template_engine.generate_semantic_grid(z)
+        if self.template and z.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+            self.template_engine.rebuild_digit_zone_anchors(self.template)
         self._mark_dirty()
+        self.canvas.update()
+
+    def generate_digit_zone_anchors(self):
+        if not self.template:
+            QMessageBox.information(self, "Digit anchors", "Hãy nạp template trước.")
+            return
+        digit_zones = [z for z in self.template.zones if z.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK)]
+        if not digit_zones:
+            QMessageBox.information(self, "Digit anchors", "Cần có ít nhất một vùng STUDENT_ID_BLOCK hoặc EXAM_CODE_BLOCK.")
+            return
+        anchors = self.template_engine.rebuild_digit_zone_anchors(self.template)
+        self._mark_dirty()
+        self._sync_alignment_profile_from_template()
+        self.result_box.setPlainText(
+            "Đã tạo ruler anchor cho Student ID / Exam Code.\n"
+            f"- Số anchor hình chữ nhật: {len([a for a in anchors if a.name.startswith('DIGIT_ANCHOR_')])}\n"
+            "- Vị trí: một cột dọc nằm bên phải cụm Student ID + Exam Code.\n"
+            "- Recognition sẽ dùng các anchor này để căn hàng bubble của 2 vùng trên."
+        )
         self.canvas.update()
 
     def copy_block(self):
