@@ -188,6 +188,29 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(len(detected), 4)
         self.assertLess(float(np.mean([abs(x - 192.0) for x, _ in detected])), 3.0)
 
+    def test_detect_digit_anchor_ruler_accepts_l_shaped_markers(self):
+        template = Template(
+            name="digit_l_shape",
+            image_path="",
+            width=240,
+            height=160,
+            anchors=[
+                AnchorPoint(0.82, 0.20, "DIGIT_ANCHOR_01"),
+                AnchorPoint(0.82, 0.45, "DIGIT_ANCHOR_02"),
+                AnchorPoint(0.82, 0.70, "DIGIT_ANCHOR_03"),
+            ],
+            zones=[],
+        )
+        binary = np.zeros((160, 240), dtype=np.uint8)
+        for x, y in [(197, 32), (197, 72), (197, 112)]:
+            cv2.rectangle(binary, (x - 5, y - 2), (x + 5, y + 2), 255, -1)
+            cv2.rectangle(binary, (x - 5, y - 8), (x - 1, y + 4), 255, -1)
+
+        detected = self.processor._detect_digit_anchor_ruler(binary, template)
+
+        self.assertEqual(len(detected), 3)
+        self.assertLess(float(np.mean([abs(x - 194.0) for x, _ in detected])), 6.0)
+
     def test_detect_bubbles_ratio(self):
         binary = np.zeros((120, 120), dtype=np.uint8)
         cv2.circle(binary, (40, 60), 10, 255, -1)

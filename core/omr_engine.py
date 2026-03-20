@@ -1071,8 +1071,8 @@ class OMRProcessor:
     def _detect_anchor_near_expected(self, binary: np.ndarray, expected_pt: np.ndarray) -> np.ndarray | None:
         h, w = binary.shape[:2]
         exp_x, exp_y = float(expected_pt[0]), float(expected_pt[1])
-        search_pad_x = max(14, int(round(w * 0.02)))
-        search_pad_y = max(14, int(round(h * 0.02)))
+        search_pad_x = max(18, int(round(w * 0.025)))
+        search_pad_y = max(18, int(round(h * 0.025)))
         x0 = int(max(0, exp_x - search_pad_x))
         y0 = int(max(0, exp_y - search_pad_y))
         x1 = int(min(w, exp_x + search_pad_x + 1))
@@ -1080,27 +1080,33 @@ class OMRProcessor:
         roi = binary[y0:y1, x0:x1]
         if roi.size == 0:
             return None
-        contours, _ = cv2.findContours(roi, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(roi, connectivity=8)
         best_pt: np.ndarray | None = None
         best_score = float("-inf")
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            if area < 30:
+        for idx in range(1, num_labels):
+            area = float(stats[idx, cv2.CC_STAT_AREA])
+            if area < 20:
                 continue
-            x, y, bw, bh = cv2.boundingRect(cnt)
+            x = int(stats[idx, cv2.CC_STAT_LEFT])
+            y = int(stats[idx, cv2.CC_STAT_TOP])
+            bw = int(stats[idx, cv2.CC_STAT_WIDTH])
+            bh = int(stats[idx, cv2.CC_STAT_HEIGHT])
             if bw <= 0 or bh <= 0:
                 continue
             ratio = bw / float(bh)
-            if not (0.45 <= ratio <= 2.20):
+            if not (0.25 <= ratio <= 4.50):
                 continue
             rect_area = float(bw * bh)
-            fill_ratio = area / rect_area if rect_area else 0.0
-            if fill_ratio < 0.45:
+            density = area / rect_area if rect_area else 0.0
+            if density < 0.10:
                 continue
-            cx = x0 + x + (bw * 0.5)
-            cy = y0 + y + (bh * 0.5)
+            cx = x0 + float(centroids[idx][0])
+            cy = y0 + float(centroids[idx][1])
             dist = float(np.hypot(cx - exp_x, cy - exp_y))
-            score = (fill_ratio * rect_area) - (dist * 3.0)
+            if dist > max(search_pad_x, search_pad_y) * 1.10:
+                continue
+            edge_strength = min(bw, bh)
+            score = (area * 1.6) + (edge_strength * 2.0) + (density * 20.0) - (dist * 2.5)
             if score > best_score:
                 best_score = score
                 best_pt = np.array([cx, cy], dtype=np.float32)
