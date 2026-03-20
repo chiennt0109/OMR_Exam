@@ -1,4 +1,12 @@
-from gui.main_window import run
+from models.database import bootstrap_application_db
+
+
+def main() -> None:
+    bootstrap_application_db()
+    from gui.main_window import run
+
+    run()
+
 
 if __name__ == "__main__":
-    run()
+    main()

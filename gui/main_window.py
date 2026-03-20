@@ -5,11 +5,13 @@ import json
 from datetime import date, datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QEvent, QPointF
-from PySide6.QtGui import QColor, QImage, QKeySequence, QPixmap, QTransform, QPainter, QPen
+from PySide6.QtCore import Qt, QEvent, QPointF, QTimer
+from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPixmap, QTransform, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -26,6 +28,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -40,12 +43,13 @@ from PySide6.QtWidgets import (
     QScrollArea,
 )
 
-from core.answer_key_importer import import_answer_key
+from core.answer_key_importer import ImportedAnswerKey, ImportedAnswerKeyPackage, import_answer_key
 from core.omr_engine import OMRProcessor, OMRResult
 from core.scoring_engine import ScoringEngine
 from editor.template_editor import TemplateEditorWindow
 from gui.import_answer_key_dialog import ImportAnswerKeyDialog
 from models.answer_key import AnswerKeyRepository, SubjectKey
+from models.database import OMRDatabase, bootstrap_application_db
 from models.exam_session import ExamSession, Student
 from models.template import Template
 from models.template_repository import TemplateRepository
@@ -247,6 +251,8 @@ class SubjectConfigDialog(QDialog):
     ):
         super().__init__(parent)
         self.setWindowTitle("Cấu hình môn học")
+        self.setWindowState(self.windowState() | Qt.WindowMaximized)
+        self.resize(1180, 820)
         data = data or {}
         subject_options = subject_options or []
         block_options = block_options or ["10", "11", "12"]
@@ -255,6 +261,20 @@ class SubjectConfigDialog(QDialog):
         self.template_repo = template_repo or TemplateRepository()
         self.paper_part_count_default = paper_part_count
         self.answer_key_data: dict = dict(data.get("imported_answer_keys", {}))
+        if not self.answer_key_data:
+            db = getattr(parent, "database", None)
+            subject_key_seed = str(data.get("answer_key_key", "") or "").strip()
+            if not subject_key_seed:
+                seed_name = str(data.get("name", "") or "").strip()
+                seed_block = str(data.get("block", "") or "").strip()
+                subject_key_seed = f"{seed_name}_{seed_block}" if seed_name and seed_block else ""
+            if db is not None and subject_key_seed:
+                try:
+                    fetched = db.fetch_answer_keys_for_subject(subject_key_seed)
+                    if fetched:
+                        self.answer_key_data = fetched
+                except Exception:
+                    pass
 
         lay = QVBoxLayout(self)
         form = QFormLayout()
@@ -271,6 +291,10 @@ class SubjectConfigDialog(QDialog):
         self.answer_key = QLineEdit(str(data.get("answer_key_path", "")))
         self.answer_key_key = QLineEdit(str(data.get("answer_key_key", ""))); self.answer_key_key.setReadOnly(True)
         self.answer_codes = QLineEdit(", ".join(sorted((data.get("imported_answer_keys") or {}).keys()))); self.answer_codes.setReadOnly(True)
+        self.answer_summary = QTextEdit()
+        self.answer_summary.setReadOnly(True)
+        self.answer_summary.setMinimumHeight(110)
+        self.answer_summary.setMaximumHeight(180)
 
         self.paper_part_label = QLabel(str(paper_part_count))
 
@@ -302,7 +326,10 @@ class SubjectConfigDialog(QDialog):
         row_scan = QHBoxLayout(); row_scan.addWidget(self.scan_folder); b_scan = QPushButton("..."); row_scan.addWidget(b_scan)
         b_scan.clicked.connect(self._browse_scan_folder)
         row_key = QHBoxLayout(); row_key.addWidget(self.answer_key); b_key = QPushButton("..."); row_key.addWidget(b_key)
+        b_key_view = QPushButton("Xem/Sửa đáp án...")
+        row_key.addWidget(b_key_view)
         b_key.clicked.connect(self._browse_answer_key)
+        b_key_view.clicked.connect(self._edit_current_answer_keys)
 
         form.addRow("Tên môn", self.subject_name)
         form.addRow("Khối", self.block_name)
@@ -311,6 +338,7 @@ class SubjectConfigDialog(QDialog):
         form.addRow("Đáp án môn", row_key)
         form.addRow("Mã đáp án môn_khối", self.answer_key_key)
         form.addRow("Các mã đề của môn", self.answer_codes)
+        form.addRow("Tóm tắt đáp án", self.answer_summary)
         form.addRow("Số phần giấy thi", self.paper_part_label)
         form.addRow("Cách nhập điểm", self.score_mode)
 
@@ -349,14 +377,12 @@ class SubjectConfigDialog(QDialog):
             w.textChanged.connect(self._update_total_score)
 
         self._update_answer_key_key()
+        self._refresh_answer_key_summary()
         self._update_paper_parts()
         self._refresh_score_mode_ui()
 
-        # Lock window size to avoid resize jumps when toggling score mode.
         self.section_group.setVisible(True)
         self.question_group.setVisible(True)
-        self.adjustSize()
-        self.setFixedSize(self.sizeHint())
         self._refresh_score_mode_ui()
 
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -492,8 +518,115 @@ class SubjectConfigDialog(QDialog):
             }
         self.answer_codes.setText(", ".join(sorted(self.answer_key_data.keys())))
         self.answer_key.setText(path)
+        self._refresh_answer_key_summary()
         self._update_total_score()
         QMessageBox.information(self, "Import đáp án", "Đã gắn toàn bộ mã đề của file đáp án cho môn đang cấu hình.")
+
+    @staticmethod
+    def _build_imported_package_from_answer_data(answer_key_data: dict) -> ImportedAnswerKeyPackage:
+        package = ImportedAnswerKeyPackage()
+        for exam_code, payload in sorted((answer_key_data or {}).items()):
+            if not isinstance(payload, dict):
+                continue
+            key = ImportedAnswerKey()
+            key.mcq_answers = {
+                int(k): str(v)
+                for k, v in (payload.get("mcq_answers", {}) or {}).items()
+                if str(k).strip().lstrip("-").isdigit()
+            }
+            key.true_false_answers = {
+                int(k): {str(sub): bool(flag) for sub, flag in (flags or {}).items()}
+                for k, flags in (payload.get("true_false_answers", {}) or {}).items()
+                if str(k).strip().lstrip("-").isdigit()
+            }
+            key.numeric_answers = {
+                int(k): str(v)
+                for k, v in (payload.get("numeric_answers", {}) or {}).items()
+                if str(k).strip().lstrip("-").isdigit()
+            }
+            key.full_credit_questions = {
+                str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
+                for sec, vals in (payload.get("full_credit_questions", {}) or {}).items()
+            }
+            key.invalid_answer_rows = {
+                str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                for sec, vals in (payload.get("invalid_answer_rows", {}) or {}).items()
+            }
+            package.exam_keys[str(exam_code)] = key
+        return package
+
+    @staticmethod
+    def _answer_payload_from_package(package: ImportedAnswerKeyPackage) -> dict[str, dict]:
+        payload: dict[str, dict] = {}
+        for code, key in (package.exam_keys or {}).items():
+            payload[str(code)] = {
+                "mcq_answers": {int(k): str(v) for k, v in (key.mcq_answers or {}).items()},
+                "true_false_answers": {
+                    int(k): {str(sub): bool(flag) for sub, flag in (flags or {}).items()}
+                    for k, flags in (key.true_false_answers or {}).items()
+                },
+                "numeric_answers": {int(k): str(v) for k, v in (key.numeric_answers or {}).items()},
+                "full_credit_questions": {
+                    str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
+                    for sec, vals in (key.full_credit_questions or {}).items()
+                },
+                "invalid_answer_rows": {
+                    str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                    for sec, vals in (key.invalid_answer_rows or {}).items()
+                },
+            }
+        return payload
+
+    @staticmethod
+    def _describe_answer_key_data(answer_key_data: dict) -> str:
+        if not isinstance(answer_key_data, dict) or not answer_key_data:
+            return "Chưa có đáp án cho môn này."
+        lines: list[str] = []
+        for exam_code, payload in sorted(answer_key_data.items()):
+            if not isinstance(payload, dict):
+                continue
+            lines.append(f"Mã đề {exam_code}:")
+            mcq = ", ".join(
+                f"C{int(q)}:{str(a)}" for q, a in sorted((payload.get('mcq_answers', {}) or {}).items(), key=lambda item: int(item[0]))
+            ) or "-"
+            tf = ", ".join(
+                f"C{int(q)}:{''.join('Đ' if bool((flags or {}).get(ch)) else 'S' for ch in ['a','b','c','d'])}"
+                for q, flags in sorted((payload.get("true_false_answers", {}) or {}).items(), key=lambda item: int(item[0]))
+            ) or "-"
+            numeric = ", ".join(
+                f"C{int(q)}:{str(a)}" for q, a in sorted((payload.get('numeric_answers', {}) or {}).items(), key=lambda item: int(item[0]))
+            ) or "-"
+            invalid_descriptions: list[str] = []
+            for sec, invalid_rows in sorted((payload.get("invalid_answer_rows", {}) or {}).items()):
+                if not invalid_rows:
+                    continue
+                mode = "cho điểm tối đa/giữ mô tả nhập sai"
+                vals = ", ".join(f"C{int(q)}:{str(v)}" for q, v in sorted(invalid_rows.items(), key=lambda item: int(item[0])))
+                invalid_descriptions.append(f"{sec} [{mode}] {vals}")
+            lines.append(f"  - MCQ: {mcq}")
+            lines.append(f"  - TF: {tf}")
+            lines.append(f"  - NUMERIC: {numeric}")
+            if invalid_descriptions:
+                lines.append("  - Dòng nhập sai vẫn giữ để chấm:")
+                lines.extend(f"    * {item}" for item in invalid_descriptions)
+        return "\n".join(lines)
+
+    def _refresh_answer_key_summary(self) -> None:
+        self.answer_codes.setText(", ".join(sorted(self.answer_key_data.keys())))
+        self.answer_summary.setPlainText(self._describe_answer_key_data(self.answer_key_data))
+
+    def _edit_current_answer_keys(self) -> None:
+        if not self.answer_key_data:
+            QMessageBox.information(self, "Đáp án môn", "Môn này chưa có đáp án. Hãy import file hoặc thêm đáp án trước.")
+            return
+        dlg = ImportAnswerKeyDialog(self._build_imported_package_from_answer_data(self.answer_key_data), self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        edited_package = dlg.result_answer_key()
+        self.answer_key_data = self._answer_payload_from_package(edited_package)
+        self._refresh_answer_key_summary()
+        self._update_total_score()
+        QMessageBox.information(self, "Đáp án môn", "Đã cập nhật đáp án hiện tại. Bạn có thể tiếp tục sửa hoặc thay đáp án khác.")
 
     def payload(self) -> dict:
         def f(v: str, label: str) -> float:
@@ -558,6 +691,7 @@ class NewExamDialog(QDialog):
         data = data or {}
         self.setWindowTitle("Sửa kỳ thi" if data else "Tạo kỳ thi mới")
         self.resize(860, 640)
+        self.setWindowState(self.windowState() | Qt.WindowMaximized)
         self.subject_configs: list[dict] = list(data.get("subject_configs", []))
         self.student_list_path_value = str(data.get("student_list_path", "") or "")
         self.student_rows: list[dict] = list(data.get("students", [])) if isinstance(data.get("students", []), list) else []
@@ -937,7 +1071,20 @@ class NewExamDialog(QDialog):
         )
         if dlg.exec() != QDialog.Accepted:
             return
-        self.subject_configs.append(dlg.payload())
+        payload = dlg.payload()
+        self.subject_configs.append(payload)
+        try:
+            self.database.replace_answer_keys_for_subject(str(payload.get("answer_key_key", "") or ""), payload.get("imported_answer_keys", {}) or {})
+            self.database.log_change(
+                "answer_keys",
+                str(payload.get("answer_key_key", "") or ""),
+                "imported_answer_keys",
+                "",
+                payload.get("imported_answer_keys", {}) or {},
+                "add_subject",
+            )
+        except Exception:
+            pass
         self._refresh_subject_list()
 
     def _edit_subject(self) -> None:
@@ -957,6 +1104,23 @@ class NewExamDialog(QDialog):
             return
         old_cfg = dict(self.subject_configs[idx])
         edited = dlg.payload()
+        try:
+            old_subject_key = str(old_cfg.get("answer_key_key", "") or "")
+            new_subject_key = str(edited.get("answer_key_key", "") or "")
+            if old_subject_key and old_subject_key != new_subject_key:
+                self.database.replace_answer_keys_for_subject(old_subject_key, {})
+            self.database.replace_answer_keys_for_subject(new_subject_key, edited.get("imported_answer_keys", {}) or {})
+            if old_cfg.get("imported_answer_keys", {}) != edited.get("imported_answer_keys", {}):
+                self.database.log_change(
+                    "answer_keys",
+                    new_subject_key,
+                    "imported_answer_keys",
+                    old_cfg.get("imported_answer_keys", {}) or {},
+                    edited.get("imported_answer_keys", {}) or {},
+                    "edit_subject",
+                )
+        except Exception:
+            pass
 
         if not self._subject_identity_changed(old_cfg, edited):
             self.subject_configs[idx] = self._copy_noncritical_subject_updates(old_cfg, edited)
@@ -1026,6 +1190,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("OMR Exam Grading System")
         self.resize(1200, 800)
+        self.setWindowState(self.windowState() | Qt.WindowMaximized)
 
         self.session: ExamSession | None = None
         self.template: Template | None = None
@@ -1046,6 +1211,10 @@ class MainWindow(QMainWindow):
         self.active_batch_subject_key: str | None = None
         self.subject_catalog: list[str] = ["Toán", "Ngữ văn", "Tiếng Anh", "Vật lý", "Hóa học", "Sinh học"]
         self.block_catalog: list[str] = ["10", "11", "12"]
+        self.subjects: list[str] = list(self.subject_catalog)
+        self.grades: list[str] = list(self.block_catalog)
+        self.subject_management_mode = "subjects"
+        self.subject_edit_index: int | None = None
         self.batch_editor_return_payload: dict | None = None
         self.batch_editor_return_session_id: str | None = None
 
@@ -1055,15 +1224,21 @@ class MainWindow(QMainWindow):
         self.current_session_id: str | None = None
         self.session_dirty = False
 
-        self.session_registry_path = Path.home() / ".omr_exam_sessions.json"
+        self.database = OMRDatabase.default()
         self.session_registry: list[dict[str, str | bool]] = self._load_session_registry()
-        self.template_repo_path = Path.home() / ".omr_template_repository.json"
-        self.template_repo = TemplateRepository.load_json(self.template_repo_path)
+        self.template_repo = self._load_template_repository()
+        self.template_editor_embedded: TemplateEditorWindow | None = None
+        self.template_editor_mode = "library"
 
         self.stack = QStackedWidget()
         self.stack.addWidget(self._build_exam_list_page())
         self.stack.addWidget(self._build_workspace_page())
         self.stack.addWidget(self._build_subject_management_page())
+        self.stack.addWidget(self._build_template_management_page())
+        self.template_editor_page = QWidget()
+        self.template_editor_layout = QVBoxLayout(self.template_editor_page)
+        self.template_editor_layout.setContentsMargins(0, 0, 0, 0)
+        self.stack.addWidget(self.template_editor_page)
         self.exam_editor_page = QWidget()
         self.exam_editor_layout = QVBoxLayout(self.exam_editor_page)
         self.exam_editor_layout.setContentsMargins(0, 0, 0, 0)
@@ -1082,9 +1257,116 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.stack)
 
         self._build_menu()
+        self.stack.currentChanged.connect(self._handle_stack_changed)
+        db_subjects = self.database.fetch_catalog("subjects")
+        db_blocks = self.database.fetch_catalog("blocks")
+        if db_subjects:
+            self.subject_catalog = db_subjects
+            self.subjects = list(db_subjects)
+        else:
+            self.database.replace_catalog("subjects", self.subject_catalog)
+        if db_blocks:
+            self.block_catalog = db_blocks
+            self.grades = list(db_blocks)
+        else:
+            self.database.replace_catalog("blocks", self.block_catalog)
         self._refresh_exam_list()
         self._refresh_batch_subject_controls()
+        self._handle_stack_changed(self.stack.currentIndex())
         self.stack.setCurrentIndex(0)
+
+    def _build_template_management_page(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        split = QSplitter()
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(0)
+        self.template_library_table = QTableWidget(0, 2)
+        self.template_library_table.setHorizontalHeaderLabels(["STT", "Tên mẫu"])
+        self.template_library_table.verticalHeader().setVisible(False)
+        self.template_library_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.template_library_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.template_library_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.template_library_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.template_library_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.template_library_table.itemSelectionChanged.connect(self._handle_template_library_selection)
+        left_layout.addWidget(self.template_library_table)
+        split.addWidget(left)
+
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
+        self.template_preview_title = QLabel("Chưa chọn mẫu giấy thi")
+        self.template_preview_title.setWordWrap(True)
+        self.template_preview_title.setContentsMargins(0, 0, 0, 4)
+        self.template_preview_image = QLabel("Chọn mẫu giấy thi ở danh sách bên trái")
+        self.template_preview_image.setAlignment(Qt.AlignCenter)
+        self.template_preview_image.setMinimumHeight(420)
+        self.template_preview_image.setStyleSheet("border: 1px solid #cfcfcf; background: #fafafa;")
+        right_layout.addWidget(self.template_preview_title)
+        right_layout.addWidget(self.template_preview_image, 1)
+        split.addWidget(right)
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 2)
+        layout.addWidget(split, 1)
+        return w
+
+    def _refresh_template_library(self) -> None:
+        rows = self.template_repo.list_templates()
+        self.template_library_table.setRowCount(len(rows))
+        selected_row = 0 if rows else -1
+        for idx, (name, path) in enumerate(rows):
+            num_item = QTableWidgetItem(str(idx + 1))
+            name_item = QTableWidgetItem(name)
+            name_item.setData(Qt.UserRole, path)
+            self.template_library_table.setItem(idx, 0, num_item)
+            self.template_library_table.setItem(idx, 1, name_item)
+        if rows:
+            self.template_library_table.selectRow(selected_row)
+            self._update_template_preview_by_row(selected_row)
+        else:
+            self.template_preview_title.setText("Kho mẫu giấy thi đang trống")
+            self.template_preview_image.setPixmap(QPixmap())
+            self.template_preview_image.setText("Chưa có mẫu giấy thi trong kho")
+
+    def _handle_template_library_selection(self) -> None:
+        row = self.template_library_table.currentRow()
+        self._update_template_preview_by_row(row)
+
+    def _update_template_preview_by_row(self, row: int) -> None:
+        if row < 0:
+            self.template_preview_title.setText("Chưa chọn mẫu giấy thi")
+            self.template_preview_image.setPixmap(QPixmap())
+            self.template_preview_image.setText("Chọn mẫu giấy thi ở danh sách bên trái")
+            return
+        item = self.template_library_table.item(row, 1)
+        template_path = str(item.data(Qt.UserRole) if item else "")
+        if not template_path:
+            return
+        try:
+            tpl = Template.load_json(template_path)
+            img_path = Path(tpl.image_path)
+            if not img_path.is_absolute():
+                img_path = (Path(template_path).parent / img_path).resolve()
+            pix = QPixmap(str(img_path))
+            self.template_preview_title.setText(f"{row + 1}. {tpl.name}")
+            if pix.isNull():
+                self.template_preview_image.setPixmap(QPixmap())
+                self.template_preview_image.setText("Không thể tải ảnh mẫu giấy thi")
+                return
+            scaled = pix.scaled(self.template_preview_image.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.template_preview_image.setPixmap(scaled)
+            self.template_preview_image.setText("")
+        except Exception:
+            self.template_preview_title.setText(f"{row + 1}. Không thể đọc mẫu giấy thi")
+            self.template_preview_image.setPixmap(QPixmap())
+            self.template_preview_image.setText("Không thể đọc dữ liệu mẫu giấy thi")
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -1114,7 +1396,7 @@ class MainWindow(QMainWindow):
             return True
         if hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled():
             return True
-        if self.stack.currentIndex() == 3 and self.embedded_exam_dialog:
+        if self.stack.currentIndex() == 5 and self.embedded_exam_dialog:
             return True
         return False
 
@@ -1122,7 +1404,7 @@ class MainWindow(QMainWindow):
         if not self.session:
             return False
 
-        if not self.current_session_path or not Path(self.current_session_path).exists():
+        if not self.current_session_id:
             return bool(getattr(self, "session_dirty", False))
 
         current_payload = self.session.to_dict()
@@ -1131,9 +1413,8 @@ class MainWindow(QMainWindow):
         current_cfg["scoring_results"] = dict(self.scoring_results_by_subject)
         current_payload["config"] = current_cfg
 
-        try:
-            saved_payload = json.loads(Path(self.current_session_path).read_text(encoding="utf-8"))
-        except Exception:
+        saved_payload = self.database.fetch_exam_session(self.current_session_id)
+        if not isinstance(saved_payload, dict):
             return bool(getattr(self, "session_dirty", False))
 
         return json.dumps(current_payload, ensure_ascii=False, sort_keys=True, default=str) != json.dumps(
@@ -1164,7 +1445,7 @@ class MainWindow(QMainWindow):
         return "cancel"
 
     def _save_current_work(self) -> bool:
-        if self.stack.currentIndex() == 3 and self.embedded_exam_dialog:
+        if self.stack.currentIndex() == 5 and self.embedded_exam_dialog:
             return bool(self._save_embedded_exam_editor())
 
         if hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled():
@@ -1203,51 +1484,36 @@ class MainWindow(QMainWindow):
         return self._session_storage_dir() / f"{session_id}.json"
 
     def _load_session_registry(self) -> list[dict[str, str | bool]]:
-        if not self.session_registry_path.exists():
-            return []
         try:
-            data = json.loads(self.session_registry_path.read_text(encoding="utf-8"))
-            if not isinstance(data, list):
-                return []
-            rows: list[dict[str, str | bool]] = []
-            for x in data:
-                if not isinstance(x, dict):
-                    continue
-                # migrate legacy format containing raw path
-                if x.get("session_id"):
-                    rows.append({
-                        "name": str(x.get("name") or "Kỳ thi"),
-                        "session_id": str(x.get("session_id")),
-                        "default": bool(x.get("default", False)),
-                    })
-                elif x.get("path"):
-                    try:
-                        old_path = Path(str(x.get("path")))
-                        if old_path.exists():
-                            sid = self._generate_session_id(str(x.get("name") or old_path.stem))
-                            new_path = self._session_path_from_id(sid)
-                            new_path.write_text(old_path.read_text(encoding="utf-8"), encoding="utf-8")
-                            rows.append({
-                                "name": str(x.get("name") or old_path.stem),
-                                "session_id": sid,
-                                "default": bool(x.get("default", False)),
-                            })
-                    except Exception:
-                        continue
-            return rows
+            rows = self.database.list_exam_sessions()
+            return [dict(x) for x in rows]
         except Exception:
             return []
 
     def _save_session_registry(self) -> None:
-        self.session_registry_path.parent.mkdir(parents=True, exist_ok=True)
-        self.session_registry_path.write_text(json.dumps(self.session_registry, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.session_registry = self._load_session_registry()
 
     def _upsert_session_registry(self, session_id: str, name: str | None = None) -> None:
-        for row in self.session_registry:
-            if row.get("session_id") == session_id:
-                row["name"] = name or row.get("name") or "Kỳ thi"
-                return
-        self.session_registry.append({"name": name or "Kỳ thi", "session_id": session_id, "default": False})
+        payload = self.database.fetch_exam_session(session_id) or {}
+        exam_name = str(name or payload.get("exam_name") or "Kỳ thi")
+        if payload:
+            self.database.save_exam_session(session_id, exam_name, payload)
+        self.session_registry = self._load_session_registry()
+
+    def _load_template_repository(self) -> TemplateRepository:
+        payload = self.database.get_app_state("template_repository", {})
+        if isinstance(payload, dict):
+            try:
+                return TemplateRepository.from_dict(payload)
+            except Exception:
+                pass
+        return TemplateRepository()
+
+    def _save_template_repository(self) -> None:
+        try:
+            self.database.set_app_state("template_repository", self.template_repo.to_dict())
+        except Exception:
+            pass
 
     def _session_name_exists(self, exam_name: str, exclude_session_id: str = "") -> bool:
         name_norm = str(exam_name or "").strip().casefold()
@@ -1290,28 +1556,135 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(w)
         layout.addWidget(QLabel("Quản lý môn học và khối"))
 
+        tables_row = QHBoxLayout()
+
+        self.subjects_table = QTableWidget(0, 1)
+        self.subjects_table.setHorizontalHeaderLabels(["Subject Name"])
+        self.subjects_table.verticalHeader().setVisible(False)
+        self.subjects_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.subjects_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.subjects_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.subjects_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.subjects_table.itemSelectionChanged.connect(lambda: self._handle_subject_management_selection("subjects"))
+
+        self.grades_table = QTableWidget(0, 1)
+        self.grades_table.setHorizontalHeaderLabels(["Grade"])
+        self.grades_table.verticalHeader().setVisible(False)
+        self.grades_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.grades_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.grades_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.grades_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.grades_table.itemSelectionChanged.connect(lambda: self._handle_subject_management_selection("grades"))
+
+        tables_row.addWidget(self.subjects_table)
+        tables_row.addWidget(self.grades_table)
+        layout.addLayout(tables_row)
+
         form = QFormLayout()
-        self.subject_catalog_editor = QLineEdit(", ".join(self.subject_catalog))
-        self.block_catalog_editor = QLineEdit(", ".join(self.block_catalog))
-        form.addRow("Danh sách môn (phân tách dấu phẩy)", self.subject_catalog_editor)
-        form.addRow("Danh sách khối (phân tách dấu phẩy)", self.block_catalog_editor)
+        self.subject_management_label = QLabel("Subject Name")
+        self.subject_management_editor = QLineEdit()
+        self.subject_management_editor.setPlaceholderText("Nhập giá trị đang chọn")
+        form.addRow(self.subject_management_label, self.subject_management_editor)
         layout.addLayout(form)
 
         btn_row = QHBoxLayout()
-        btn_save = QPushButton("Lưu")
+        btn_add = QPushButton("Add")
+        btn_add.clicked.connect(self._subject_management_add)
+        btn_edit = QPushButton("Edit")
+        btn_edit.clicked.connect(self._subject_management_edit)
+        btn_delete = QPushButton("Delete")
+        btn_delete.clicked.connect(self._subject_management_delete)
+        btn_save = QPushButton("Save")
         btn_save.clicked.connect(self._save_subject_management)
         btn_back = QPushButton("Đóng")
         btn_back.clicked.connect(lambda: self.stack.setCurrentIndex(0))
-        btn_row.addWidget(btn_save)
-        btn_row.addWidget(btn_back)
+        for btn in [btn_add, btn_edit, btn_delete, btn_save, btn_back]:
+            btn_row.addWidget(btn)
         btn_row.addStretch()
         layout.addLayout(btn_row)
-        layout.addStretch()
+        self._refresh_subject_management_tables()
         return w
 
-    @staticmethod
-    def _parse_catalog_items(raw_text: str) -> list[str]:
-        return [x.strip() for x in str(raw_text or "").split(",") if x.strip()]
+    def _subject_management_values(self, mode: str) -> list[str]:
+        return self.subjects if mode == "subjects" else self.grades
+
+    def _subject_management_table(self, mode: str) -> QTableWidget:
+        return self.subjects_table if mode == "subjects" else self.grades_table
+
+    def _set_subject_management_mode(self, mode: str) -> None:
+        self.subject_management_mode = mode
+        self.subject_management_label.setText("Subject Name" if mode == "subjects" else "Grade")
+
+    def _refresh_subject_management_tables(self) -> None:
+        self.subjects = list(self.subject_catalog)
+        self.grades = list(self.block_catalog)
+        for mode, values in (("subjects", self.subjects), ("grades", self.grades)):
+            table = self._subject_management_table(mode)
+            table.blockSignals(True)
+            table.setRowCount(len(values))
+            for row, value in enumerate(values):
+                table.setItem(row, 0, QTableWidgetItem(value))
+            table.clearSelection()
+            table.blockSignals(False)
+        self._subject_management_add()
+
+    def _handle_subject_management_selection(self, mode: str) -> None:
+        table = self._subject_management_table(mode)
+        row = table.currentRow()
+        if row < 0:
+            return
+        other_mode = "grades" if mode == "subjects" else "subjects"
+        other_table = self._subject_management_table(other_mode)
+        other_table.blockSignals(True)
+        other_table.clearSelection()
+        other_table.blockSignals(False)
+        values = self._subject_management_values(mode)
+        self._set_subject_management_mode(mode)
+        self.subject_edit_index = row
+        self.subject_management_editor.setText(values[row] if row < len(values) else "")
+
+    def _subject_management_add(self) -> None:
+        self.subject_edit_index = None
+        self.subject_management_editor.clear()
+        self._set_subject_management_mode(self.subject_management_mode or "subjects")
+        self.subject_management_editor.setFocus()
+
+    def _subject_management_edit(self) -> None:
+        table = self._subject_management_table(self.subject_management_mode)
+        row = table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Quản lý môn học", "Vui lòng chọn một dòng để chỉnh sửa.")
+            return
+        values = self._subject_management_values(self.subject_management_mode)
+        self.subject_edit_index = row
+        self.subject_management_editor.setText(values[row] if row < len(values) else "")
+        self.subject_management_editor.setFocus()
+
+    def _subject_management_delete(self) -> None:
+        table = self._subject_management_table(self.subject_management_mode)
+        row = table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Quản lý môn học", "Vui lòng chọn một dòng để xoá.")
+            return
+        values = self._subject_management_values(self.subject_management_mode)
+        if row >= len(values):
+            return
+        del values[row]
+        self._apply_subject_management_values()
+        self._refresh_subject_management_tables()
+        self._set_subject_management_mode(self.subject_management_mode)
+
+    def _apply_subject_management_values(self) -> None:
+        old_subjects = list(self.subject_catalog)
+        old_blocks = list(self.block_catalog)
+        self.subject_catalog = list(self.subjects)
+        self.block_catalog = list(self.grades)
+        self.database.replace_catalog("subjects", self.subject_catalog)
+        self.database.replace_catalog("blocks", self.block_catalog)
+        if old_subjects != self.subject_catalog:
+            self.database.log_change("catalog", "subjects", "subject_catalog", old_subjects, self.subject_catalog, "subject_management")
+        if old_blocks != self.block_catalog:
+            self.database.log_change("catalog", "blocks", "block_catalog", old_blocks, self.block_catalog, "subject_management")
 
     def _sync_subject_configs_with_catalog(self) -> bool:
         if not self.session:
@@ -1335,17 +1708,30 @@ class MainWindow(QMainWindow):
         return changed
 
     def _save_subject_management(self) -> None:
-        subjects = self._parse_catalog_items(self.subject_catalog_editor.text())
-        blocks = self._parse_catalog_items(self.block_catalog_editor.text())
-        if not subjects:
+        value = self.subject_management_editor.text().strip()
+        values = self._subject_management_values(self.subject_management_mode)
+        label = "môn học" if self.subject_management_mode == "subjects" else "khối"
+        if value:
+            if self.subject_edit_index is None:
+                values.append(value)
+            else:
+                values[self.subject_edit_index] = value
+        if not self.subjects:
             QMessageBox.warning(self, "Quản lý môn học", "Danh sách môn học không được để trống.")
             return
-        if not blocks:
+        if not self.grades:
             QMessageBox.warning(self, "Quản lý khối", "Danh sách khối không được để trống.")
             return
 
-        self.subject_catalog = subjects
-        self.block_catalog = blocks
+        normalized = [item.strip() for item in values if item.strip()]
+        if len(normalized) != len(set(x.casefold() for x in normalized)):
+            QMessageBox.warning(self, "Quản lý môn học", f"Danh sách {label} không được trùng lặp.")
+            return
+        if self.subject_management_mode == "subjects":
+            self.subjects = normalized
+        else:
+            self.grades = normalized
+        self._apply_subject_management_values()
         self.session_dirty = True
 
         if self.session:
@@ -1360,7 +1746,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Quản lý môn học", "Đã cập nhật danh sách môn và khối.")
         else:
             QMessageBox.information(self, "Quản lý môn học", "Đã cập nhật danh sách môn và khối.")
-        self.stack.setCurrentIndex(0)
+        self._refresh_subject_management_tables()
+        self._set_subject_management_mode(self.subject_management_mode)
 
     def _build_workspace_page(self) -> QWidget:
         central = QWidget()
@@ -1396,14 +1783,14 @@ class MainWindow(QMainWindow):
         style = self.style()
         for idx, row in enumerate(self.session_registry):
             sid = str(row.get("session_id", ""))
-            path = self._session_path_from_id(sid) if sid else Path()
             name = str(row.get("name") or f"Kỳ thi {idx+1}")
             subject_text = "-"
             subject_count = "0"
             scan_root = "-"
-            if sid and path.exists():
+            payload = self.database.fetch_exam_session(sid) if sid else None
+            if sid and payload:
                 try:
-                    ses = ExamSession.load_json(path)
+                    ses = ExamSession.from_dict(payload)
                     cfg = ses.config or {}
                     subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
                     subject_count = str(len(subject_cfgs))
@@ -1414,7 +1801,7 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
             status = "Mặc định" if bool(row.get("default")) else "Thường"
-            if sid and not path.exists():
+            if sid and not payload:
                 status = "Không tìm thấy"
 
             self.exam_list_table.setItem(idx, 0, QTableWidgetItem(str(idx + 1)))
@@ -1465,14 +1852,14 @@ class MainWindow(QMainWindow):
         self._edit_registry_session_by_id(sid)
 
     def _edit_registry_session_by_id(self, session_id: str) -> None:
-        path = self._session_path_from_id(session_id)
-        if not path.exists():
+        payload = self.database.fetch_exam_session(session_id)
+        if not payload:
             QMessageBox.warning(self, "Sửa kỳ thi", "Không tìm thấy kỳ thi trong kho lưu trữ hệ thống.")
             return False
         if not self._confirm("Xem kỳ thi", "Bạn có chắc muốn xem kỳ thi này?"):
             return
         try:
-            session = ExamSession.load_json(path)
+            session = ExamSession.from_dict(payload)
             cfg = session.config or {}
             payload = {
                 "exam_name": session.exam_name,
@@ -1522,7 +1909,7 @@ class MainWindow(QMainWindow):
         dlg.rejected.connect(self._close_embedded_exam_editor)
         self.embedded_exam_dialog = dlg
         self.exam_editor_layout.addWidget(dlg)
-        self.stack.setCurrentIndex(3)
+        self.stack.setCurrentIndex(5)
 
     def _save_embedded_exam_editor(self) -> bool:
         if not self.embedded_exam_dialog or not self.embedded_exam_session_id:
@@ -1530,12 +1917,12 @@ class MainWindow(QMainWindow):
         edited = self.embedded_exam_dialog.payload()
         self._register_templates_from_payload(edited)
         session_id = self.embedded_exam_session_id
-        path = self._session_path_from_id(session_id)
-        if not path.exists():
+        saved_payload = self.database.fetch_exam_session(session_id)
+        if not saved_payload:
             QMessageBox.warning(self, "Sửa kỳ thi", "Không tìm thấy kỳ thi trong kho lưu trữ hệ thống.")
             return False
         try:
-            session = ExamSession.load_json(path)
+            session = ExamSession.from_dict(saved_payload)
             session.exam_name = edited.get("exam_name", session.exam_name)
             session.template_path = edited.get("common_template", session.template_path)
             session.subjects = [
@@ -1567,11 +1954,11 @@ class MainWindow(QMainWindow):
                 "subject_catalog": self.subject_catalog,
                 "block_catalog": self.block_catalog,
             }
-            session.save_json(path)
+            self.database.save_exam_session(session_id, session.exam_name, session.to_dict())
             self.embedded_exam_original_payload = edited
             self.session = session
             self.current_session_id = session_id
-            self.current_session_path = path
+            self.current_session_path = self._session_path_from_id(session_id)
             self.session_dirty = False
             self._upsert_session_registry(session_id, session.exam_name)
             self._save_session_registry()
@@ -1696,13 +2083,8 @@ class MainWindow(QMainWindow):
     def _delete_registry_session_by_id(self, session_id: str) -> None:
         if not self._confirm("Xoá kỳ thi", "Bạn có chắc muốn xoá kỳ thi khỏi danh sách?"):
             return
-        session_path = self._session_path_from_id(session_id)
-        if session_path.exists():
-            try:
-                session_path.unlink()
-            except Exception:
-                pass
-        self.session_registry = [x for x in self.session_registry if str(x.get("session_id")) != session_id]
+        self.database.delete_exam_session(session_id)
+        self.session_registry = self._load_session_registry()
         self._save_session_registry()
         self._refresh_exam_list()
 
@@ -1717,14 +2099,17 @@ class MainWindow(QMainWindow):
     def _set_default_registry_session_by_id(self, session_id: str) -> None:
         if not self._confirm("Đặt mặc định", "Đặt kỳ thi này làm mặc định?"):
             return
-        for row in self.session_registry:
-            row["default"] = str(row.get("session_id")) == session_id
+        self.database.set_app_state("default_session_id", str(session_id))
+        self.session_registry = self._load_session_registry()
         self._save_session_registry()
         self._refresh_exam_list()
 
     def _open_session_path(self, path: Path) -> None:
         try:
-            self.session = ExamSession.load_json(path)
+            payload = self.database.fetch_exam_session(path.stem)
+            if not payload:
+                raise FileNotFoundError(f"Không tìm thấy session '{path.stem}' trong SQLite.")
+            self.session = ExamSession.from_dict(payload)
             self.current_session_path = path
             self.current_session_id = path.stem
             if self.session.template_path:
@@ -1795,8 +2180,10 @@ class MainWindow(QMainWindow):
         act_close_current.triggered.connect(self.action_close_current_session)
 
         file_menu.addSeparator()
-        act_manage_template = file_menu.addAction("Quản lý mẫu giấy thi")
-        act_manage_template.triggered.connect(self.action_manage_template)
+        self.act_manage_template = file_menu.addAction("Quản lý mẫu giấy thi")
+        self.act_manage_template.triggered.connect(self.action_manage_template)
+        self.act_close_template_module = file_menu.addAction("Đóng quản lý mẫu giấy thi")
+        self.act_close_template_module.triggered.connect(self._close_template_module)
 
         act_manage_subject = file_menu.addAction("Quản lý môn học")
         act_manage_subject.triggered.connect(self.action_manage_subjects)
@@ -1818,21 +2205,57 @@ class MainWindow(QMainWindow):
         scoring_menu = self.menuBar().addMenu("Scoring")
         scoring_menu.addAction("Calculate & Preview Scores", self.action_calculate_scores)
         scoring_menu.addAction("Export Results", self.action_export_results)
+
+        self.template_module_menu = self.menuBar().addMenu("Template Editor")
+        self.template_module_menu.addAction("Tạo mới", self._create_new_template)
+        self.template_module_menu.addAction("Sửa", self._edit_selected_template)
+        self.template_module_menu.addAction("Xoá", self._delete_selected_template)
+        self.template_module_menu.addSeparator()
+        self.template_module_menu.addAction("Save", self._save_current_template)
+        self.template_module_menu.addAction("Save As", self._save_current_template_as)
+        self.template_module_menu.addSeparator()
+        self.template_module_menu.addAction("Close", self._close_template_module)
+
         toolbar = QToolBar("Ribbon")
         toolbar.setMovable(False)
         toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
         self.addToolBar(toolbar)
+        self.main_ribbon = toolbar
 
         style = self.style()
         # Session actions
-        toolbar.addAction(style.standardIcon(QStyle.SP_FileIcon), "Tạo mới", self.action_create_session)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Xem", self._edit_selected_registry_session)
-        toolbar.addAction(style.standardIcon(QStyle.SP_TrashIcon), "Xoá", self._delete_selected_registry_session)
+        self.ribbon_new_exam_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileIcon), "Tạo mới", self.action_create_session)
+        self.ribbon_view_exam_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Xem", self._edit_selected_registry_session)
+        self.ribbon_delete_exam_action = toolbar.addAction(style.standardIcon(QStyle.SP_TrashIcon), "Xoá", self._delete_selected_registry_session)
         toolbar.addSeparator()
         # Workflow actions
-        toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Nhận dạng", self.action_run_batch_scan)
-        toolbar.addAction(style.standardIcon(QStyle.SP_CommandLink), "Tính điểm", self.action_calculate_scores)
-        toolbar.addAction(style.standardIcon(QStyle.SP_DriveNetIcon), "Xuất KQ", self.action_export_results)
+        self.ribbon_batch_scan_action = toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Nhận dạng", self.action_run_batch_scan)
+        self.ribbon_scoring_action = toolbar.addAction(style.standardIcon(QStyle.SP_CommandLink), "Tính điểm", self.action_calculate_scores)
+        self.ribbon_export_action = toolbar.addAction(style.standardIcon(QStyle.SP_DriveNetIcon), "Xuất KQ", self.action_export_results)
+        toolbar.addSeparator()
+        self.ribbon_add_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogNewFolder), "Add Subject", self._subject_management_add)
+        self.ribbon_edit_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Edit", self._subject_management_edit)
+        self.ribbon_delete_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_TrashIcon), "Delete Subject", self._subject_management_delete)
+        self.ribbon_save_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Save", self._save_subject_management)
+        toolbar.addSeparator()
+        self.ribbon_new_template_action = QAction(style.standardIcon(QStyle.SP_FileIcon), "Tạo mới", self)
+        self.ribbon_new_template_action.triggered.connect(self._create_new_template)
+        toolbar.addAction(self.ribbon_new_template_action)
+        self.ribbon_edit_template_action = QAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Sửa", self)
+        self.ribbon_edit_template_action.triggered.connect(self._edit_selected_template)
+        toolbar.addAction(self.ribbon_edit_template_action)
+        self.ribbon_delete_template_action = QAction(style.standardIcon(QStyle.SP_TrashIcon), "Xoá", self)
+        self.ribbon_delete_template_action.triggered.connect(self._delete_selected_template)
+        toolbar.addAction(self.ribbon_delete_template_action)
+        self.ribbon_save_template_action = QAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Save", self)
+        self.ribbon_save_template_action.triggered.connect(self._save_current_template)
+        toolbar.addAction(self.ribbon_save_template_action)
+        self.ribbon_save_template_as_action = QAction(style.standardIcon(QStyle.SP_DriveFDIcon), "Save As", self)
+        self.ribbon_save_template_as_action.triggered.connect(self._save_current_template_as)
+        toolbar.addAction(self.ribbon_save_template_as_action)
+        self.ribbon_close_template_action = QAction(style.standardIcon(QStyle.SP_DialogCloseButton), "Close", self)
+        self.ribbon_close_template_action.triggered.connect(self._close_template_module)
+        toolbar.addAction(self.ribbon_close_template_action)
 
     def open_session(self) -> None:
         if self.session and self.session_dirty:
@@ -1864,7 +2287,7 @@ class MainWindow(QMainWindow):
                 cfg["scoring_phases"] = list(self.scoring_phases)
                 cfg["scoring_results"] = dict(self.scoring_results_by_subject)
                 self.session.config = cfg
-            self.session.save_json(self.current_session_path)
+                self.database.save_exam_session(self.current_session_id, self.session.exam_name, self.session.to_dict())
             self._upsert_session_registry(self.current_session_id, self.session.exam_name if self.session else None)
             self._save_session_registry()
             self._refresh_exam_list()
@@ -1880,7 +2303,7 @@ class MainWindow(QMainWindow):
             self.current_session_id = self._generate_session_id(self.session.exam_name if self.session else "exam")
             self.current_session_path = self._session_path_from_id(self.current_session_id)
         try:
-            self.session.save_json(self.current_session_path)
+            self.database.save_exam_session(self.current_session_id, self.session.exam_name, self.session.to_dict())
             self._upsert_session_registry(self.current_session_id, self.session.exam_name if self.session else None)
             self._save_session_registry()
             self._refresh_exam_list()
@@ -1927,7 +2350,7 @@ class MainWindow(QMainWindow):
             cfg["scoring_phases"] = list(self.scoring_phases)
             cfg["scoring_results"] = dict(self.scoring_results_by_subject)
             self.session.config = cfg
-            self.session.save_json(self.current_session_path)
+            self.database.save_exam_session(self.current_session_id, self.session.exam_name, self.session.to_dict())
             self._upsert_session_registry(self.current_session_id, self.session.exam_name)
             self._save_session_registry()
             self._refresh_exam_list()
@@ -1967,8 +2390,8 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(0)
 
     def manage_subjects(self) -> None:
-        self.subject_catalog_editor.setText(", ".join(self.subject_catalog))
-        self.block_catalog_editor.setText(", ".join(self.block_catalog))
+        self._refresh_subject_management_tables()
+        self._set_subject_management_mode("subjects")
         self.stack.setCurrentIndex(2)
 
     def action_create_session(self) -> None:
@@ -1994,8 +2417,11 @@ class MainWindow(QMainWindow):
 
     def action_save_session(self) -> None:
         if self._confirm("Lưu kỳ thi", "Bạn có chắc muốn lưu kỳ thi?"):
-            if self.stack.currentIndex() == 3 and self.embedded_exam_dialog:
+            if self.stack.currentIndex() == 5 and self.embedded_exam_dialog:
                 self._save_embedded_exam_editor()
+                return
+            if self.stack.currentIndex() == 4 and self.template_editor_embedded:
+                self._save_current_template()
                 return
             self.save_session()
 
@@ -2010,8 +2436,91 @@ class MainWindow(QMainWindow):
             self.close_current_session()
 
     def action_manage_template(self) -> None:
-        if self._confirm("Quản lý mẫu giấy thi", "Mở trình quản lý mẫu giấy thi?"):
-            self.open_template_editor()
+        self.open_template_editor()
+
+    def _rebuild_template_module_menu(self, *, library_mode: bool, editor_mode: bool) -> None:
+        if not hasattr(self, "template_module_menu"):
+            return
+        self.template_module_menu.clear()
+        if editor_mode and self.template_editor_embedded:
+            editor = self.template_editor_embedded
+            self.template_module_menu.addAction(editor.act_load_blank)
+            self.template_module_menu.addAction(editor.act_open_template)
+            self.template_module_menu.addSeparator()
+            self.template_module_menu.addAction(editor.act_save)
+            self.template_module_menu.addAction(editor.act_save_as)
+            self.template_module_menu.addSeparator()
+            self.template_module_menu.addAction(editor.act_preview)
+            self.template_module_menu.addAction(editor.act_test_recognition)
+            self.template_module_menu.addAction(editor.act_template_qc)
+            self.template_module_menu.addAction(editor.act_snap_grid)
+            self.template_module_menu.addSeparator()
+            self.template_module_menu.addAction(editor.act_copy)
+            self.template_module_menu.addAction(editor.act_paste)
+            self.template_module_menu.addAction(editor.act_duplicate)
+            self.template_module_menu.addAction(editor.act_delete)
+            self.template_module_menu.addAction(editor.act_delete_anchor)
+            self.template_module_menu.addSeparator()
+            self.template_module_menu.addAction(editor.act_zoom_in)
+            self.template_module_menu.addAction(editor.act_zoom_out)
+            self.template_module_menu.addSeparator()
+            self.template_module_menu.addAction(self.ribbon_close_template_action)
+            return
+        if library_mode:
+            self.template_module_menu.addAction(self.ribbon_new_template_action)
+            self.template_module_menu.addAction(self.ribbon_edit_template_action)
+            self.template_module_menu.addAction(self.ribbon_delete_template_action)
+            self.template_module_menu.addSeparator()
+            self.template_module_menu.addAction(self.ribbon_close_template_action)
+
+    def _handle_stack_changed(self, index: int) -> None:
+        subject_management_visible = index == 2
+        template_library_visible = index == 3
+        template_editor_visible = index == 4
+        template_visible = template_library_visible or template_editor_visible
+        for action in [
+            getattr(self, "ribbon_new_exam_action", None),
+            getattr(self, "ribbon_view_exam_action", None),
+            getattr(self, "ribbon_delete_exam_action", None),
+            getattr(self, "ribbon_batch_scan_action", None),
+            getattr(self, "ribbon_scoring_action", None),
+            getattr(self, "ribbon_export_action", None),
+        ]:
+            if action is not None:
+                action.setVisible(not subject_management_visible and not template_visible)
+        for action in [
+            getattr(self, "ribbon_add_subject_action", None),
+            getattr(self, "ribbon_edit_subject_action", None),
+            getattr(self, "ribbon_delete_subject_action", None),
+            getattr(self, "ribbon_save_subject_action", None),
+        ]:
+            if action is not None:
+                action.setVisible(subject_management_visible)
+        template_library_actions = [
+            getattr(self, "ribbon_new_template_action", None),
+            getattr(self, "ribbon_edit_template_action", None),
+            getattr(self, "ribbon_delete_template_action", None),
+        ]
+        template_editor_actions = [
+            getattr(self, "ribbon_save_template_action", None),
+            getattr(self, "ribbon_save_template_as_action", None),
+        ]
+        for action in template_library_actions:
+            if action is not None:
+                action.setVisible(template_library_visible)
+        for action in template_editor_actions:
+            if action is not None:
+                action.setVisible(False)
+        if getattr(self, "ribbon_close_template_action", None) is not None:
+            self.ribbon_close_template_action.setVisible(template_library_visible)
+
+        if hasattr(self, "main_ribbon"):
+            self.main_ribbon.setVisible(index != 4)
+        if hasattr(self, "template_module_menu"):
+            self.template_module_menu.menuAction().setVisible(template_visible)
+            self._rebuild_template_module_menu(library_mode=template_library_visible, editor_mode=template_editor_visible)
+        if hasattr(self, "act_close_template_module"):
+            self.act_close_template_module.setVisible(template_visible)
 
     def action_manage_subjects(self) -> None:
         self.manage_subjects()
@@ -2372,6 +2881,7 @@ class MainWindow(QMainWindow):
         self.score_preview_table.setColumnWidth(15, 320)
 
         self.scoring_subject_combo = QComboBox()
+        self.scoring_subject_combo.currentIndexChanged.connect(self._handle_scoring_subject_changed)
         self.scoring_mode_combo = QComboBox()
         self.scoring_mode_combo.addItems(["Tính lại toàn bộ", "Chỉ tính bài chưa có điểm"])
         self.scoring_phase_note = QLineEdit()
@@ -2402,9 +2912,13 @@ class MainWindow(QMainWindow):
         self.scoring_phase_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.scoring_phase_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
 
+        self.dashboard_summary_label = QLabel("Dashboard DB: chưa có dữ liệu.")
+        self.dashboard_summary_label.setWordWrap(True)
+
         scoring_panel_layout = QVBoxLayout(self.scoring_panel)
         scoring_panel_layout.setContentsMargins(0, 0, 0, 0)
         scoring_panel_layout.addLayout(scoring_top)
+        scoring_panel_layout.addWidget(self.dashboard_summary_label)
         scoring_panel_layout.addWidget(self.score_preview_table, 7)
         scoring_panel_layout.addWidget(QLabel("Lịch sử pha chấm điểm"))
         scoring_panel_layout.addWidget(self.scoring_phase_table, 3)
@@ -2493,6 +3007,7 @@ class MainWindow(QMainWindow):
             "mcq_answers": {int(k): str(v) for k, v in (getattr(result, "mcq_answers", {}) or {}).items()},
             "true_false_answers": {int(k): dict(v) for k, v in (getattr(result, "true_false_answers", {}) or {}).items()},
             "numeric_answers": {int(k): str(v) for k, v in (getattr(result, "numeric_answers", {}) or {}).items()},
+            "answer_string": str(getattr(result, "answer_string", "") or ""),
             "confidence_scores": {str(k): float(v) for k, v in (getattr(result, "confidence_scores", {}) or {}).items()},
             "recognition_errors": [str(x) for x in (getattr(result, "recognition_errors", []) or [])],
             "processing_time_sec": float(getattr(result, "processing_time_sec", 0.0) or 0.0),
@@ -2510,6 +3025,7 @@ class MainWindow(QMainWindow):
             mcq_answers={int(k): str(v) for k, v in (payload.get("mcq_answers", {}) or {}).items()},
             true_false_answers={int(k): dict(v) for k, v in (payload.get("true_false_answers", {}) or {}).items()},
             numeric_answers={int(k): str(v) for k, v in (payload.get("numeric_answers", {}) or {}).items()},
+            answer_string=str(payload.get("answer_string", "") or ""),
             confidence_scores={str(k): float(v) for k, v in (payload.get("confidence_scores", {}) or {}).items()},
             recognition_errors=[str(x) for x in (payload.get("recognition_errors", []) or [])],
             processing_time_sec=float(payload.get("processing_time_sec", 0.0) or 0.0),
@@ -2569,6 +3085,16 @@ class MainWindow(QMainWindow):
         return False
 
     def _cached_subject_scans_from_config(self, subject_key: str) -> list[OMRResult]:
+        db_rows = self.database.fetch_scan_results_for_subject(subject_key)
+        if db_rows:
+            out: list[OMRResult] = []
+            for item in db_rows:
+                try:
+                    out.append(self._deserialize_omr_result(item))
+                except Exception:
+                    continue
+            if out:
+                return out
         cfg = self._subject_config_by_subject_key(subject_key)
         if not cfg:
             return []
@@ -2585,6 +3111,31 @@ class MainWindow(QMainWindow):
             except Exception:
                 continue
         return out
+
+    def _refresh_scan_results_from_db(self, subject_key: str) -> list[OMRResult]:
+        rows = self.database.fetch_scan_results_for_subject(subject_key)
+        refreshed: list[OMRResult] = []
+        for item in rows:
+            try:
+                refreshed.append(self._deserialize_omr_result(item))
+            except Exception:
+                continue
+        if refreshed:
+            self.scan_results_by_subject[subject_key] = list(refreshed)
+        return refreshed
+
+    def _refresh_dashboard_summary_from_db(self, subject_key: str) -> None:
+        if not hasattr(self, "dashboard_summary_label"):
+            return
+        summary = self.database.dashboard_summary(subject_key)
+        avg_score = float(summary.get("average_score", 0.0) or 0.0)
+        distribution = summary.get("distribution", []) if isinstance(summary.get("distribution", []), list) else []
+        top_students = summary.get("top_students", []) if isinstance(summary.get("top_students", []), list) else []
+        dist_text = ", ".join(f"{item.get('bucket', 0)}: {item.get('count', 0)}" for item in distribution[:8]) or "-"
+        top_text = ", ".join(f"{item.get('student_code', '-')}: {item.get('score', 0)}" for item in top_students[:5]) or "-"
+        self.dashboard_summary_label.setText(
+            f"Dashboard DB | Điểm TB: {avg_score:.2f} | Phổ điểm: {dist_text} | Top học sinh: {top_text}"
+        )
 
     def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
         if self.answer_keys and any(str(k).startswith(f"{subject_key}::") for k in self.answer_keys.keys.keys()):
@@ -2604,6 +3155,14 @@ class MainWindow(QMainWindow):
                         answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
                         true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
                         numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
+                        full_credit_questions={
+                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
+                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
+                        },
+                        invalid_answer_rows={
+                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
+                        },
                     )
                 )
             self.answer_keys = repo
@@ -2694,8 +3253,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
             return
         self.stack.setCurrentIndex(1)
-        self._populate_scoring_subjects(self._resolve_preferred_scoring_subject())
+        selected_subject = self._resolve_preferred_scoring_subject()
+        self._populate_scoring_subjects(selected_subject)
         self._refresh_scoring_phase_table()
+        self._refresh_dashboard_summary_from_db(selected_subject)
         self._show_scoring_panel()
 
     def _refresh_scoring_phase_table(self) -> None:
@@ -2709,6 +3270,11 @@ class MainWindow(QMainWindow):
             self.scoring_phase_table.setItem(i, 2, QTableWidgetItem(str(p.get("mode", "-"))))
             self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
             self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
+
+    def _handle_scoring_subject_changed(self, _index: int) -> None:
+        subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
+        if subject_key:
+            self._refresh_dashboard_summary_from_db(subject_key)
 
     def _run_scoring_from_panel(self) -> None:
         subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
@@ -2851,11 +3417,43 @@ class MainWindow(QMainWindow):
     def _build_correction_tab(self) -> QWidget:
         w = QWidget()
         splitter = QSplitter(Qt.Horizontal)
+        self.exam_code_correction_combo = QComboBox()
+        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
+        self.student_correction_combo = QComboBox()
+        self.student_correction_combo.setEditable(True)
+        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
+        self.answer_editor_scroll = QScrollArea()
+        self.answer_editor_scroll.setWidgetResizable(True)
+        self.answer_editor_container = QWidget()
+        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
+        self.answer_editor_scroll.setWidget(self.answer_editor_container)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         self.error_list = QListWidget()
         self.preview_label = QLabel("Image preview / bubble overlay placeholder")
         self.preview_label.setAlignment(Qt.AlignCenter)
+        self.correction_ui_loading = False
+        self.correction_pending_payload: dict[str, object] = {}
+        self.correction_save_timer = QTimer(self)
+        self.correction_save_timer.setSingleShot(True)
+        self.correction_save_timer.timeout.connect(self._flush_pending_correction_updates)
+
+        self.exam_code_correction_combo = QComboBox()
+        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
+        self.student_correction_combo = QComboBox()
+        self.student_correction_combo.setEditable(True)
+        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
+
+        self.answer_editor_scroll = QScrollArea()
+        self.answer_editor_scroll.setWidgetResizable(True)
+        self.answer_editor_container = QWidget()
+        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
+        self.answer_editor_layout.setContentsMargins(4, 4, 4, 4)
+        self.answer_editor_layout.setSpacing(8)
+        self.answer_editor_scroll.setWidget(self.answer_editor_container)
+
         self.manual_edit = QTextEdit()
         self.manual_edit.setPlaceholderText("Manual corrections JSON (e.g. {'student_id': '1001', 'answers': {'1':'A'}})")
         self.result_preview = QTextEdit()
@@ -3011,6 +3609,14 @@ class MainWindow(QMainWindow):
                         answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
                         true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
                         numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
+                        full_credit_questions={
+                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
+                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
+                        },
+                        invalid_answer_rows={
+                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
+                        },
                     )
                 )
             self.answer_keys = repo
@@ -3259,6 +3865,17 @@ class MainWindow(QMainWindow):
     def _build_correction_tab(self) -> QWidget:
         w = QWidget()
         splitter = QSplitter(Qt.Horizontal)
+        self.exam_code_correction_combo = QComboBox()
+        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
+        self.student_correction_combo = QComboBox()
+        self.student_correction_combo.setEditable(True)
+        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
+        self.answer_editor_scroll = QScrollArea()
+        self.answer_editor_scroll.setWidgetResizable(True)
+        self.answer_editor_container = QWidget()
+        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
+        self.answer_editor_scroll.setWidget(self.answer_editor_container)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         self.error_list = QListWidget()
@@ -3419,6 +4036,14 @@ class MainWindow(QMainWindow):
                         answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
                         true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
                         numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
+                        full_credit_questions={
+                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
+                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
+                        },
+                        invalid_answer_rows={
+                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
+                        },
                     )
                 )
             self.answer_keys = repo
@@ -3667,6 +4292,17 @@ class MainWindow(QMainWindow):
     def _build_correction_tab(self) -> QWidget:
         w = QWidget()
         splitter = QSplitter(Qt.Horizontal)
+        self.exam_code_correction_combo = QComboBox()
+        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
+        self.student_correction_combo = QComboBox()
+        self.student_correction_combo.setEditable(True)
+        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
+        self.answer_editor_scroll = QScrollArea()
+        self.answer_editor_scroll.setWidgetResizable(True)
+        self.answer_editor_container = QWidget()
+        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
+        self.answer_editor_scroll.setWidget(self.answer_editor_container)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         self.error_list = QListWidget()
@@ -3827,6 +4463,14 @@ class MainWindow(QMainWindow):
                         answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
                         true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
                         numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
+                        full_credit_questions={
+                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
+                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
+                        },
+                        invalid_answer_rows={
+                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
+                        },
                     )
                 )
             self.answer_keys = repo
@@ -4065,6 +4709,17 @@ class MainWindow(QMainWindow):
     def _build_correction_tab(self) -> QWidget:
         w = QWidget()
         splitter = QSplitter(Qt.Horizontal)
+        self.exam_code_correction_combo = QComboBox()
+        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
+        self.student_correction_combo = QComboBox()
+        self.student_correction_combo.setEditable(True)
+        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
+        self.answer_editor_scroll = QScrollArea()
+        self.answer_editor_scroll.setWidgetResizable(True)
+        self.answer_editor_container = QWidget()
+        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
+        self.answer_editor_scroll.setWidget(self.answer_editor_container)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         self.error_list = QListWidget()
@@ -4225,6 +4880,14 @@ class MainWindow(QMainWindow):
                         answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
                         true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
                         numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
+                        full_credit_questions={
+                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
+                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
+                        },
+                        invalid_answer_rows={
+                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
+                        },
                     )
                 )
             self.answer_keys = repo
@@ -4463,6 +5126,17 @@ class MainWindow(QMainWindow):
     def _build_correction_tab(self) -> QWidget:
         w = QWidget()
         splitter = QSplitter(Qt.Horizontal)
+        self.exam_code_correction_combo = QComboBox()
+        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
+        self.student_correction_combo = QComboBox()
+        self.student_correction_combo.setEditable(True)
+        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
+        self.answer_editor_scroll = QScrollArea()
+        self.answer_editor_scroll.setWidgetResizable(True)
+        self.answer_editor_container = QWidget()
+        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
+        self.answer_editor_scroll.setWidget(self.answer_editor_container)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         self.error_list = QListWidget()
@@ -4623,6 +5297,14 @@ class MainWindow(QMainWindow):
                         answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
                         true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
                         numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
+                        full_credit_questions={
+                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
+                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
+                        },
+                        invalid_answer_rows={
+                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
+                        },
                     )
                 )
             self.answer_keys = repo
@@ -4861,6 +5543,17 @@ class MainWindow(QMainWindow):
     def _build_correction_tab(self) -> QWidget:
         w = QWidget()
         splitter = QSplitter(Qt.Horizontal)
+        self.exam_code_correction_combo = QComboBox()
+        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
+        self.student_correction_combo = QComboBox()
+        self.student_correction_combo.setEditable(True)
+        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
+        self.answer_editor_scroll = QScrollArea()
+        self.answer_editor_scroll.setWidgetResizable(True)
+        self.answer_editor_container = QWidget()
+        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
+        self.answer_editor_scroll.setWidget(self.answer_editor_container)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         self.error_list = QListWidget()
@@ -5021,6 +5714,14 @@ class MainWindow(QMainWindow):
                         answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
                         true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
                         numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
+                        full_credit_questions={
+                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
+                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
+                        },
+                        invalid_answer_rows={
+                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
+                        },
                     )
                 )
             self.answer_keys = repo
@@ -5259,6 +5960,17 @@ class MainWindow(QMainWindow):
     def _build_correction_tab(self) -> QWidget:
         w = QWidget()
         splitter = QSplitter(Qt.Horizontal)
+        self.exam_code_correction_combo = QComboBox()
+        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
+        self.student_correction_combo = QComboBox()
+        self.student_correction_combo.setEditable(True)
+        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
+        self.answer_editor_scroll = QScrollArea()
+        self.answer_editor_scroll.setWidgetResizable(True)
+        self.answer_editor_container = QWidget()
+        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
+        self.answer_editor_scroll.setWidget(self.answer_editor_container)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         self.error_list = QListWidget()
@@ -5419,6 +6131,14 @@ class MainWindow(QMainWindow):
                         answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
                         true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
                         numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
+                        full_credit_questions={
+                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
+                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
+                        },
+                        invalid_answer_rows={
+                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
+                        },
                     )
                 )
             self.answer_keys = repo
@@ -5657,6 +6377,17 @@ class MainWindow(QMainWindow):
     def _build_correction_tab(self) -> QWidget:
         w = QWidget()
         splitter = QSplitter(Qt.Horizontal)
+        self.exam_code_correction_combo = QComboBox()
+        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
+        self.student_correction_combo = QComboBox()
+        self.student_correction_combo.setEditable(True)
+        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
+        self.answer_editor_scroll = QScrollArea()
+        self.answer_editor_scroll.setWidgetResizable(True)
+        self.answer_editor_container = QWidget()
+        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
+        self.answer_editor_scroll.setWidget(self.answer_editor_container)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         self.error_list = QListWidget()
@@ -5817,6 +6548,14 @@ class MainWindow(QMainWindow):
                         answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
                         true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
                         numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
+                        full_credit_questions={
+                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
+                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
+                        },
+                        invalid_answer_rows={
+                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
+                        },
                     )
                 )
             self.answer_keys = repo
@@ -6055,6 +6794,17 @@ class MainWindow(QMainWindow):
     def _build_correction_tab(self) -> QWidget:
         w = QWidget()
         splitter = QSplitter(Qt.Horizontal)
+        self.exam_code_correction_combo = QComboBox()
+        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
+        self.student_correction_combo = QComboBox()
+        self.student_correction_combo.setEditable(True)
+        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
+        self.answer_editor_scroll = QScrollArea()
+        self.answer_editor_scroll.setWidgetResizable(True)
+        self.answer_editor_container = QWidget()
+        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
+        self.answer_editor_scroll.setWidget(self.answer_editor_container)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         self.error_list = QListWidget()
@@ -6215,6 +6965,14 @@ class MainWindow(QMainWindow):
                         answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
                         true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
                         numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
+                        full_credit_questions={
+                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
+                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
+                        },
+                        invalid_answer_rows={
+                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
+                        },
                     )
                 )
             self.answer_keys = repo
@@ -6453,6 +7211,17 @@ class MainWindow(QMainWindow):
     def _build_correction_tab(self) -> QWidget:
         w = QWidget()
         splitter = QSplitter(Qt.Horizontal)
+        self.exam_code_correction_combo = QComboBox()
+        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
+        self.student_correction_combo = QComboBox()
+        self.student_correction_combo.setEditable(True)
+        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
+        self.answer_editor_scroll = QScrollArea()
+        self.answer_editor_scroll.setWidgetResizable(True)
+        self.answer_editor_container = QWidget()
+        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
+        self.answer_editor_scroll.setWidget(self.answer_editor_container)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         self.error_list = QListWidget()
@@ -6613,6 +7382,14 @@ class MainWindow(QMainWindow):
                         answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
                         true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
                         numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
+                        full_credit_questions={
+                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
+                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
+                        },
+                        invalid_answer_rows={
+                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
+                        },
                     )
                 )
             self.answer_keys = repo
@@ -6851,6 +7628,17 @@ class MainWindow(QMainWindow):
     def _build_correction_tab(self) -> QWidget:
         w = QWidget()
         splitter = QSplitter(Qt.Horizontal)
+        self.exam_code_correction_combo = QComboBox()
+        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
+        self.student_correction_combo = QComboBox()
+        self.student_correction_combo.setEditable(True)
+        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
+        self.answer_editor_scroll = QScrollArea()
+        self.answer_editor_scroll.setWidgetResizable(True)
+        self.answer_editor_container = QWidget()
+        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
+        self.answer_editor_scroll.setWidget(self.answer_editor_container)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         self.error_list = QListWidget()
@@ -7011,6 +7799,14 @@ class MainWindow(QMainWindow):
                         answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
                         true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
                         numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
+                        full_credit_questions={
+                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
+                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
+                        },
+                        invalid_answer_rows={
+                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
+                        },
                     )
                 )
             self.answer_keys = repo
@@ -7249,6 +8045,17 @@ class MainWindow(QMainWindow):
     def _build_correction_tab(self) -> QWidget:
         w = QWidget()
         splitter = QSplitter(Qt.Horizontal)
+        self.exam_code_correction_combo = QComboBox()
+        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
+        self.student_correction_combo = QComboBox()
+        self.student_correction_combo.setEditable(True)
+        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
+        self.answer_editor_scroll = QScrollArea()
+        self.answer_editor_scroll.setWidgetResizable(True)
+        self.answer_editor_container = QWidget()
+        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
+        self.answer_editor_scroll.setWidget(self.answer_editor_container)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         self.error_list = QListWidget()
@@ -7409,6 +8216,14 @@ class MainWindow(QMainWindow):
                         answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
                         true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
                         numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
+                        full_credit_questions={
+                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
+                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
+                        },
+                        invalid_answer_rows={
+                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
+                        },
                     )
                 )
             self.answer_keys = repo
@@ -7647,6 +8462,17 @@ class MainWindow(QMainWindow):
     def _build_correction_tab(self) -> QWidget:
         w = QWidget()
         splitter = QSplitter(Qt.Horizontal)
+        self.exam_code_correction_combo = QComboBox()
+        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
+        self.student_correction_combo = QComboBox()
+        self.student_correction_combo.setEditable(True)
+        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
+        self.answer_editor_scroll = QScrollArea()
+        self.answer_editor_scroll.setWidgetResizable(True)
+        self.answer_editor_container = QWidget()
+        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
+        self.answer_editor_scroll.setWidget(self.answer_editor_container)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         self.error_list = QListWidget()
@@ -7812,6 +8638,14 @@ class MainWindow(QMainWindow):
                         answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
                         true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
                         numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
+                        full_credit_questions={
+                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
+                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
+                        },
+                        invalid_answer_rows={
+                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
+                        },
                     )
                 )
             self.answer_keys = repo
@@ -8050,6 +8884,17 @@ class MainWindow(QMainWindow):
     def _build_correction_tab(self) -> QWidget:
         w = QWidget()
         splitter = QSplitter(Qt.Horizontal)
+        self.exam_code_correction_combo = QComboBox()
+        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
+        self.student_correction_combo = QComboBox()
+        self.student_correction_combo.setEditable(True)
+        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
+        self.answer_editor_scroll = QScrollArea()
+        self.answer_editor_scroll.setWidgetResizable(True)
+        self.answer_editor_container = QWidget()
+        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
+        self.answer_editor_scroll.setWidget(self.answer_editor_container)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         self.error_list = QListWidget()
@@ -8215,6 +9060,14 @@ class MainWindow(QMainWindow):
                         answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
                         true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
                         numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
+                        full_credit_questions={
+                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
+                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
+                        },
+                        invalid_answer_rows={
+                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
+                        },
                     )
                 )
             self.answer_keys = repo
@@ -8453,6 +9306,17 @@ class MainWindow(QMainWindow):
     def _build_correction_tab(self) -> QWidget:
         w = QWidget()
         splitter = QSplitter(Qt.Horizontal)
+        self.exam_code_correction_combo = QComboBox()
+        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
+        self.student_correction_combo = QComboBox()
+        self.student_correction_combo.setEditable(True)
+        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
+        self.answer_editor_scroll = QScrollArea()
+        self.answer_editor_scroll.setWidgetResizable(True)
+        self.answer_editor_container = QWidget()
+        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
+        self.answer_editor_scroll.setWidget(self.answer_editor_container)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         self.error_list = QListWidget()
@@ -8618,6 +9482,14 @@ class MainWindow(QMainWindow):
                         answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
                         true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
                         numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
+                        full_credit_questions={
+                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
+                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
+                        },
+                        invalid_answer_rows={
+                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
+                        },
                     )
                 )
             self.answer_keys = repo
@@ -8886,6 +9758,17 @@ class MainWindow(QMainWindow):
     def _build_correction_tab(self) -> QWidget:
         w = QWidget()
         splitter = QSplitter(Qt.Horizontal)
+        self.exam_code_correction_combo = QComboBox()
+        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
+        self.student_correction_combo = QComboBox()
+        self.student_correction_combo.setEditable(True)
+        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
+        self.answer_editor_scroll = QScrollArea()
+        self.answer_editor_scroll.setWidgetResizable(True)
+        self.answer_editor_container = QWidget()
+        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
+        self.answer_editor_scroll.setWidget(self.answer_editor_container)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         self.error_list = QListWidget()
@@ -8909,7 +9792,15 @@ class MainWindow(QMainWindow):
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
         right_layout.addWidget(self.preview_label)
+        correction_form = QFormLayout()
+        correction_form.addRow("Mã đề (DB)", self.exam_code_correction_combo)
+        correction_form.addRow("Học sinh (DB)", self.student_correction_combo)
+        right_layout.addLayout(correction_form)
+        right_layout.addWidget(QLabel("Chỉnh sửa đáp án trực quan"))
+        right_layout.addWidget(self.answer_editor_scroll, 4)
         right_layout.addWidget(self.result_preview)
         right_layout.addWidget(QLabel("Manual Edit"))
         right_layout.addWidget(self.manual_edit)
@@ -8921,10 +9812,318 @@ class MainWindow(QMainWindow):
         layout.addWidget(splitter)
         return w
 
+    def _correction_selected_result(self) -> tuple[int, OMRResult] | tuple[None, None]:
+        idx = self.scan_list.currentRow() if hasattr(self, "scan_list") else -1
+        if idx < 0 or idx >= len(self.scan_results):
+            return None, None
+        return idx, self.scan_results[idx]
+
+    def _load_exam_code_correction_options(self, subject_key: str, current_code: str) -> None:
+        self.exam_code_correction_combo.blockSignals(True)
+        self.exam_code_correction_combo.clear()
+        codes = set(self.database.fetch_answer_keys_for_subject(subject_key).keys())
+        codes.update(str(x).strip() for x in (self.imported_exam_codes or []) if str(x).strip())
+        if current_code:
+            codes.add(str(current_code).strip())
+        for code in sorted(codes):
+            self.exam_code_correction_combo.addItem(code, code)
+        if self.exam_code_correction_combo.count() == 0:
+            self.exam_code_correction_combo.addItem(current_code or "-", current_code or "")
+        match_index = max(0, self.exam_code_correction_combo.findData(current_code))
+        self.exam_code_correction_combo.setCurrentIndex(match_index)
+        self.exam_code_correction_combo.blockSignals(False)
+
+    def _load_student_correction_options(self, current_student_id: str) -> None:
+        self.student_correction_combo.blockSignals(True)
+        self.student_correction_combo.clear()
+        students: list[tuple[str, str, str]] = []
+        if self.current_session_id:
+            payload = self.database.fetch_exam_session(self.current_session_id) or {}
+            session_students = payload.get("students", []) if isinstance(payload.get("students", []), list) else []
+            for item in session_students:
+                if not isinstance(item, dict):
+                    continue
+                extra = item.get("extra", {}) if isinstance(item.get("extra", {}), dict) else {}
+                sid = str(item.get("student_id", "") or "").strip()
+                if not sid:
+                    continue
+                students.append((sid, str(item.get("name", "") or "").strip(), str(extra.get("class_name", "") or "").strip()))
+        seen: set[str] = set()
+        for sid, name, class_name in students:
+            if sid in seen:
+                continue
+            seen.add(sid)
+            label = f"[{sid}] - {name or '-'} - {class_name or '-'}"
+            self.student_correction_combo.addItem(label, sid)
+        if current_student_id and current_student_id not in seen:
+            self.student_correction_combo.addItem(f"[{current_student_id}] - - -", current_student_id)
+        idx = self.student_correction_combo.findData(current_student_id)
+        self.student_correction_combo.setCurrentIndex(max(0, idx))
+        self.student_correction_combo.blockSignals(False)
+
+    def _build_visual_answer_editor(self, result: OMRResult) -> None:
+        while self.answer_editor_layout.count():
+            item = self.answer_editor_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        expected = self._expected_questions_by_section(result)
+
+        mcq_box = QGroupBox("MCQ")
+        mcq_layout = QVBoxLayout(mcq_box)
+        for q_no in expected.get("MCQ", []):
+            row = QHBoxLayout()
+            row.addWidget(QLabel(f"Câu {q_no}"))
+            group = QButtonGroup(mcq_box)
+            current_value = str((result.mcq_answers or {}).get(q_no, "") or "")[:1]
+            for choice in ["A", "B", "C", "D", "E"]:
+                radio = QRadioButton(choice)
+                if current_value == choice:
+                    radio.setChecked(True)
+                radio.toggled.connect(lambda checked, q=q_no, v=choice: checked and self._handle_mcq_visual_change(q, v))
+                group.addButton(radio)
+                row.addWidget(radio)
+            clear_btn = QPushButton("Clear")
+            clear_btn.clicked.connect(lambda _=False, q=q_no: self._handle_mcq_visual_change(q, ""))
+            row.addWidget(clear_btn)
+            row.addStretch()
+            mcq_layout.addLayout(row)
+        self.answer_editor_layout.addWidget(mcq_box)
+
+        tf_box = QGroupBox("True/False")
+        tf_layout = QVBoxLayout(tf_box)
+        for q_no in expected.get("TF", []):
+            row = QHBoxLayout()
+            row.addWidget(QLabel(f"Câu {q_no}"))
+            flags = (result.true_false_answers or {}).get(q_no, {}) or {}
+            for key in ["a", "b", "c", "d"]:
+                cb = QCheckBox(key.upper())
+                cb.setChecked(bool(flags.get(key)))
+                cb.toggled.connect(lambda checked, q=q_no, k=key: self._handle_tf_visual_change(q, k, checked))
+                row.addWidget(cb)
+            row.addStretch()
+            tf_layout.addLayout(row)
+        self.answer_editor_layout.addWidget(tf_box)
+
+        num_box = QGroupBox("Numeric")
+        num_layout = QVBoxLayout(num_box)
+        for q_no in expected.get("NUMERIC", []):
+            row = QHBoxLayout()
+            row.addWidget(QLabel(f"Câu {q_no}"))
+            edit = QLineEdit(str((result.numeric_answers or {}).get(q_no, "") or ""))
+            edit.editingFinished.connect(lambda q=q_no, w=edit: self._handle_numeric_visual_change(q, w.text()))
+            row.addWidget(edit)
+            num_layout.addLayout(row)
+        self.answer_editor_layout.addWidget(num_box)
+        self.answer_editor_layout.addStretch()
+
+    def _schedule_correction_update(self, field_name: str, old_value: object, new_value: object, apply_fn) -> None:
+        if self.correction_ui_loading or old_value == new_value:
+            return
+        apply_fn()
+        self.correction_pending_payload[field_name] = {
+            "old": old_value,
+            "new": new_value,
+        }
+        self.correction_save_timer.start(150)
+
+    def _flush_pending_correction_updates(self) -> None:
+        idx, result = self._correction_selected_result()
+        if idx is None or result is None or not self.correction_pending_payload:
+            return
+        changes = [f"{field}: '{payload['old']}' -> '{payload['new']}'" for field, payload in self.correction_pending_payload.items()]
+        self._refresh_student_profile_for_result(result, idx)
+        scoped = self._scoped_result_copy(result)
+        self.scan_blank_summary[idx] = self._compute_blank_questions(scoped)
+        self.scan_list.setItem(idx, 3, QTableWidgetItem(self._build_recognition_content_text(result, self.scan_blank_summary[idx])))
+        sid_item = self.scan_list.item(idx, 0)
+        if sid_item:
+            sid_item.setText((result.student_id or "").strip() or "-")
+            sid_item.setData(Qt.UserRole + 1, result.exam_code or "")
+            sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(result))
+        self._record_adjustment(idx, changes, "visual_correction")
+        self._persist_single_scan_result_to_db(result, note="visual_correction")
+        image_key = str(getattr(result, "image_path", "") or idx)
+        for field_name, payload in self.correction_pending_payload.items():
+            self.database.log_change("scan_results", image_key, field_name, payload["old"], payload["new"], "visual_correction")
+        self.correction_pending_payload = {}
+        self._refresh_all_statuses()
+        self._update_scan_preview(idx)
+        self._load_selected_result_for_correction()
+
+    def _handle_exam_code_correction_changed(self, _index: int) -> None:
+        idx, result = self._correction_selected_result()
+        if idx is None or result is None:
+            return
+        new_code = str(self.exam_code_correction_combo.currentData() or "").strip()
+        old_code = str(result.exam_code or "").strip()
+        self._schedule_correction_update("exam_code", old_code, new_code, lambda: setattr(result, "exam_code", new_code))
+
+    def _handle_student_correction_changed(self, _index: int) -> None:
+        idx, result = self._correction_selected_result()
+        if idx is None or result is None:
+            return
+        new_sid = str(self.student_correction_combo.currentData() or self.student_correction_combo.currentText() or "").strip()
+        old_sid = str(result.student_id or "").strip()
+        self._schedule_correction_update("student_id", old_sid, new_sid, lambda: setattr(result, "student_id", new_sid))
+
+    def _handle_mcq_visual_change(self, question_no: int, answer_value: str) -> None:
+        idx, result = self._correction_selected_result()
+        if idx is None or result is None:
+            return
+        old_value = str((result.mcq_answers or {}).get(question_no, "") or "")[:1]
+
+        def _apply() -> None:
+            current = dict(result.mcq_answers or {})
+            if answer_value:
+                current[int(question_no)] = str(answer_value)[:1]
+            else:
+                current.pop(int(question_no), None)
+            result.mcq_answers = current
+
+        self._schedule_correction_update(f"mcq_answers[{question_no}]", old_value, str(answer_value)[:1], _apply)
+
+    def _handle_tf_visual_change(self, question_no: int, key: str, checked: bool) -> None:
+        idx, result = self._correction_selected_result()
+        if idx is None or result is None:
+            return
+        old_flags = dict((result.true_false_answers or {}).get(question_no, {}) or {})
+        new_flags = dict(old_flags)
+        new_flags[key] = bool(checked)
+
+        def _apply() -> None:
+            current = dict(result.true_false_answers or {})
+            current[int(question_no)] = dict(new_flags)
+            result.true_false_answers = current
+
+        self._schedule_correction_update(f"true_false_answers[{question_no}].{key}", old_flags.get(key), bool(checked), _apply)
+
+    def _handle_numeric_visual_change(self, question_no: int, text: str) -> None:
+        idx, result = self._correction_selected_result()
+        if idx is None or result is None:
+            return
+        old_value = str((result.numeric_answers or {}).get(question_no, "") or "")
+        new_value = str(text or "").strip()
+
+        def _apply() -> None:
+            current = dict(result.numeric_answers or {})
+            if new_value:
+                current[int(question_no)] = new_value
+            else:
+                current.pop(int(question_no), None)
+            result.numeric_answers = current
+
+        self._schedule_correction_update(f"numeric_answers[{question_no}]", old_value, new_value, _apply)
+
+
+    def _selected_template_repository_entry(self) -> tuple[str, str] | None:
+        row = self.template_library_table.currentRow() if hasattr(self, "template_library_table") else -1
+        if row < 0:
+            return None
+        item = self.template_library_table.item(row, 1)
+        if not item:
+            return None
+        return item.text(), str(item.data(Qt.UserRole) or "")
+
+    def _register_single_template(self, template_path: str, display_name: str | None = None) -> None:
+        self.template_repo.register(template_path, display_name=display_name)
+        self._save_template_repository()
+        self._refresh_template_library()
+
+    def _open_embedded_template_editor(self, template_path: str = "") -> bool:
+        if self.template_editor_embedded and not self._close_embedded_template_editor():
+            return False
+        while self.template_editor_layout.count():
+            item = self.template_editor_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        editor = TemplateEditorWindow(self, on_template_saved=lambda path, name: self._handle_template_saved(path, name))
+        editor.setWindowFlags(Qt.Widget)
+        editor.menuBar().setVisible(False)
+        close_action = editor.template_toolbar.addAction(self.style().standardIcon(QStyle.SP_DialogCloseButton), "Close", self._close_template_module)
+        close_action.setToolTip("Close")
+        self.template_editor_embedded = editor
+        self.template_editor_layout.addWidget(editor)
+        self.template_editor_mode = "editor"
+        self.stack.setCurrentIndex(4)
+        if template_path:
+            return bool(editor.load_template_from_path(template_path))
+        return True
+
+    def _handle_template_saved(self, template_path: str, display_name: str) -> None:
+        self._register_single_template(template_path, display_name=display_name)
+
+    def _create_new_template(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Chọn ảnh mẫu giấy thi", "", "Images (*.png *.jpg *.jpeg *.tif *.tiff)")
+        if not path:
+            return
+        if not self._open_embedded_template_editor():
+            return
+        if not self.template_editor_embedded or not self.template_editor_embedded.load_image_from_path(path):
+            return
+        self.stack.setCurrentIndex(4)
+
+    def _edit_selected_template(self) -> None:
+        selected = self._selected_template_repository_entry()
+        if not selected:
+            return
+        _, template_path = selected
+        if not template_path:
+            return
+        if not self._open_embedded_template_editor(template_path):
+            return
+        self.stack.setCurrentIndex(4)
+
+    def _delete_selected_template(self) -> None:
+        selected = self._selected_template_repository_entry()
+        if not selected:
+            return
+        name, template_path = selected
+        if not self._confirm("Xoá mẫu giấy thi", f"Bạn có chắc muốn xoá mẫu giấy thi '{name}' khỏi kho?"):
+            return
+        self.template_repo.templates.pop(name, None)
+        self._save_template_repository()
+        if template_path and Path(template_path).exists():
+            try:
+                Path(template_path).unlink()
+            except Exception:
+                pass
+        self._refresh_template_library()
+
+    def _save_current_template(self) -> bool:
+        if not self.template_editor_embedded:
+            return False
+        return bool(self.template_editor_embedded.save_template())
+
+    def _save_current_template_as(self) -> bool:
+        if not self.template_editor_embedded:
+            return False
+        return bool(self.template_editor_embedded.save_template_as())
+
+    def _close_embedded_template_editor(self) -> bool:
+        if self.template_editor_embedded and not self.template_editor_embedded._confirm_close():
+            return False
+        while self.template_editor_layout.count():
+            item = self.template_editor_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        self.template_editor_embedded = None
+        self.template_editor_mode = "library"
+        self._refresh_template_library()
+        self.stack.setCurrentIndex(3)
+        return True
+
+    def _close_template_module(self) -> bool:
+        if self.template_editor_embedded:
+            return self._close_embedded_template_editor()
+        self.stack.setCurrentIndex(0)
+        return True
 
     def _save_template_repository(self) -> None:
         try:
-            self.template_repo.save_json(self.template_repo_path)
+            self.database.set_app_state("template_repository", self.template_repo.to_dict())
         except Exception:
             pass
 
@@ -9022,8 +10221,9 @@ class MainWindow(QMainWindow):
         self._refresh_session_info()
 
     def open_template_editor(self) -> None:
-        self.editor = TemplateEditorWindow()
-        self.editor.show()
+        self._refresh_template_library()
+        self.template_editor_mode = "library"
+        self.stack.setCurrentIndex(3)
 
     def _subject_configs_in_session(self) -> list[dict]:
         if not self.session:
@@ -9161,12 +10361,12 @@ class MainWindow(QMainWindow):
         return cfg if isinstance(cfg, dict) else None
 
     def _batch_context_session_path(self) -> Path | None:
-        if self.current_session_path and self.current_session_path.exists():
+        if self.current_session_id:
+            return self._session_path_from_id(self.current_session_id)
+        if self.current_session_path:
             return self.current_session_path
         if self.batch_editor_return_session_id:
-            p = self._session_path_from_id(self.batch_editor_return_session_id)
-            if p.exists():
-                return p
+            return self._session_path_from_id(self.batch_editor_return_session_id)
         return None
 
     def _merge_saved_batch_snapshot(self, cfg: dict) -> dict:
@@ -12192,6 +13392,59 @@ class MainWindow(QMainWindow):
             out.add(self._normalize_exam_code_text(raw))
         return {v for v in out if v}
 
+    def _subject_answer_key_for_result(self, result, subject_key: str = ""):
+        subject = str(subject_key or self._current_batch_subject_key() or "").strip()
+        exam_code = str(getattr(result, "exam_code", "") or "").strip()
+        if not subject or not exam_code:
+            return None
+        if self.answer_keys is not None:
+            key = self.answer_keys.get(subject, exam_code)
+            if key is not None:
+                return key
+            normalized = self._normalize_exam_code_text(exam_code)
+            for candidate in (self.imported_exam_codes or []):
+                candidate_text = str(candidate).strip()
+                if candidate_text and self._normalize_exam_code_text(candidate_text) == normalized:
+                    key = self.answer_keys.get(subject, candidate_text)
+                    if key is not None:
+                        return key
+        fetched = self.database.fetch_answer_keys_for_subject(subject)
+        if exam_code in fetched:
+            return fetched[exam_code]
+        normalized = self._normalize_exam_code_text(exam_code)
+        for candidate_text, candidate_key in fetched.items():
+            if self._normalize_exam_code_text(candidate_text) == normalized:
+                return candidate_key
+        return None
+
+    @staticmethod
+    def _answer_string_from_maps(mcq_answers: dict[int, str], tf_answers: dict[int, dict[str, bool]], numeric_answers: dict[int, str], answer_key) -> str:
+        if answer_key is None:
+            return ""
+        parts: list[str] = []
+        for q_no in sorted(int(q) for q in (answer_key.answers or {}).keys() if str(q).strip().lstrip('-').isdigit()):
+            value = str((mcq_answers or {}).get(q_no, "") or "").strip().upper()[:1]
+            parts.append(value or "_")
+        for q_no in sorted(int(q) for q in (answer_key.true_false_answers or {}).keys() if str(q).strip().lstrip('-').isdigit()):
+            flags = (tf_answers or {}).get(q_no, {}) or {}
+            for key in ["a", "b", "c", "d"]:
+                parts.append("Đ" if key in flags and bool(flags.get(key)) else ("S" if key in flags else "_"))
+        for q_no in sorted(int(q) for q in (answer_key.numeric_answers or {}).keys() if str(q).strip().lstrip('-').isdigit()):
+            key_text = str((answer_key.numeric_answers or {}).get(q_no, "") or "")
+            width = len(key_text)
+            if width <= 0:
+                continue
+            student_text = str((numeric_answers or {}).get(q_no, "") or "")
+            normalized = student_text.strip().replace(' ', '')[:width]
+            if len(normalized) < width:
+                normalized = normalized + ("_" * (width - len(normalized)))
+            parts.append(normalized)
+        return "".join(parts)
+
+    def _build_answer_string_for_result(self, result, subject_key: str = "") -> str:
+        key = self._subject_answer_key_for_result(result, subject_key)
+        return self._answer_string_from_maps(result.mcq_answers or {}, result.true_false_answers or {}, result.numeric_answers or {}, key)
+
     def _short_recognition_text_for_result(self, result) -> str:
         parts: list[str] = []
         mcq = self._format_mcq_answers(result.mcq_answers or {})
@@ -12260,6 +13513,17 @@ class MainWindow(QMainWindow):
         if changed <= 0:
             return 0
         self.scoring_results_by_subject[subject] = subject_scores
+        for row in rows:
+            self.database.upsert_score_row(subject, row.student_id, row.exam_code, {
+                "student_id": row.student_id,
+                "name": row.name,
+                "subject": row.subject,
+                "exam_code": row.exam_code,
+                "score": row.score,
+                "correct": row.correct,
+                "wrong": row.wrong,
+                "blank": row.blank,
+            })
         phase = {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "subject": subject,
@@ -12289,6 +13553,22 @@ class MainWindow(QMainWindow):
         self.scan_edit_history.setdefault(idx, []).append(message)
         self.scan_last_adjustment[idx] = message
         self.scan_manual_adjustments[idx] = sorted(set(self.scan_manual_adjustments.get(idx, []) + details))
+        if 0 <= idx < len(self.scan_results):
+            res = self.scan_results[idx]
+            self.database.log_change("scan_results", str(getattr(res, "image_path", "") or idx), source, "", message, source)
+
+    def _persist_scan_results_to_db(self, subject_key: str) -> None:
+        rows = [self._serialize_omr_result(x) for x in (self.scan_results_by_subject.get(subject_key, self.scan_results) or [])]
+        self.database.replace_scan_results_for_subject(subject_key, rows)
+        self.database.log_change("scan_results", subject_key, "replace_subject_rows", "", f"{len(rows)} rows", "batch_save")
+        self._refresh_scan_results_from_db(subject_key)
+
+    def _persist_single_scan_result_to_db(self, result: OMRResult, note: str = "") -> None:
+        subject_key = self._current_batch_subject_key()
+        result.answer_string = self._build_answer_string_for_result(result, subject_key)
+        self.database.update_scan_result_payload(str(getattr(result, "image_path", "") or ""), self._serialize_omr_result(result), note=note)
+        if subject_key:
+            self._refresh_scan_results_from_db(subject_key)
 
     def _refresh_all_statuses(self) -> None:
         for row_idx in range(self.scan_list.rowCount()):
@@ -12391,6 +13671,11 @@ class MainWindow(QMainWindow):
         if idx < 0 or idx >= len(self.scan_results):
             return
         res = self.scan_results[idx]
+        self.correction_ui_loading = True
+        subject_key = self._current_batch_subject_key()
+        self._load_exam_code_correction_options(subject_key, str(res.exam_code or "").strip())
+        self._load_student_correction_options(str(res.student_id or "").strip())
+        self._build_visual_answer_editor(res)
         payload = {
             "student_id": res.student_id,
             "exam_code": res.exam_code,
@@ -12413,6 +13698,7 @@ class MainWindow(QMainWindow):
                 indent=2,
             )
         )
+        self.correction_ui_loading = False
 
     def _open_edit_selected_scan(self, *_args) -> None:
         idx = self.scan_list.currentRow()
@@ -12693,6 +13979,7 @@ class MainWindow(QMainWindow):
                 sid_item.setData(Qt.UserRole + 1, res.exam_code or "")
                 sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(res))
             self._record_adjustment(idx, changes, "dialog_edit")
+            self._persist_single_scan_result_to_db(res, note="dialog_edit")
             self._refresh_all_statuses()
             self._update_scan_preview(idx)
             self._load_selected_result_for_correction()
@@ -12763,7 +14050,8 @@ class MainWindow(QMainWindow):
             self.scan_blank_summary[idx] = self._compute_blank_questions(scoped)
             self.scan_list.setItem(idx, 3, QTableWidgetItem(self._build_recognition_content_text(res, self.scan_blank_summary[idx])))
             self._record_adjustment(idx, changes, "manual_json")
-            self.btn_save_batch_subject.setEnabled(True)
+            self._persist_single_scan_result_to_db(res, note="manual_json")
+            self.btn_save_batch_subject.setEnabled(False)
             invalidated = self._invalidate_scoring_for_student_ids(
                 [old_sid_for_score, str(res.student_id or "").strip()],
                 reason="manual_json",
@@ -12781,7 +14069,7 @@ class MainWindow(QMainWindow):
 
     def calculate_scores(self, subject_key: str = "", mode: str = "Tính lại toàn bộ", note: str = "") -> list:
         subject = (subject_key or self._resolve_preferred_scoring_subject() or "General").strip()
-        subject_scans = self.scan_results_by_subject.get(subject, [])
+        subject_scans = self._refresh_scan_results_from_db(subject) or self.scan_results_by_subject.get(subject, [])
         if not subject_scans:
             subject_scans = self._cached_subject_scans_from_config(subject)
             if subject_scans:
@@ -12913,6 +14201,7 @@ class MainWindow(QMainWindow):
             if not self._persist_session_quietly():
                 QMessageBox.warning(self, "Scoring", "Không thể tự động lưu kết quả chấm điểm. Vui lòng dùng nút Lưu kỳ thi.")
         self._refresh_scoring_phase_table()
+        self._refresh_dashboard_summary_from_db(subject)
 
         formula_text = ""
         if rows:
@@ -13037,6 +14326,7 @@ class MainWindow(QMainWindow):
 
 
 def run() -> None:
+    bootstrap_application_db()
     app = QApplication([])
     window = MainWindow()
     window.showMaximized()
