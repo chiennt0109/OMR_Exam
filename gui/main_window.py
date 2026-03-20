@@ -13864,6 +13864,15 @@ class MainWindow(QMainWindow):
         self._sync_correction_detail_panel(res, rebuild_editor=True)
         self.correction_ui_loading = False
 
+    def _load_selected_result_for_correction(self) -> None:
+        idx = self.scan_list.currentRow()
+        if idx < 0 or idx >= len(self.scan_results):
+            return
+        res = self.scan_results[idx]
+        self.correction_ui_loading = True
+        self._sync_correction_detail_panel(res, rebuild_editor=True)
+        self.correction_ui_loading = False
+
     def _open_edit_selected_scan(self, *_args) -> None:
         idx = self.scan_list.currentRow()
         if idx < 0:
@@ -14069,9 +14078,17 @@ class MainWindow(QMainWindow):
         def _answer_key_for_exam_code(exam_code_text: str):
             subject = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
             code = str(exam_code_text or "").strip()
-            if not subject or not code or not self.answer_keys or "?" in code:
+            if not subject or not self.answer_keys:
                 return None
-            return self.answer_keys.get_flexible(subject, code)
+            if code and "?" not in code:
+                key = self.answer_keys.get_flexible(subject, code)
+                if key is not None:
+                    return key
+            subject_keys = sorted(
+                (item for item in self.answer_keys.keys.values() if getattr(item, "subject", "") == subject),
+                key=lambda item: str(getattr(item, "exam_code", "") or ""),
+            )
+            return subject_keys[0] if subject_keys else None
 
         def _expected_questions_for_dialog(result: OMRResult, exam_code_text: str, data_snapshot: dict[str, object]) -> dict[str, list[int]]:
             key = _answer_key_for_exam_code(exam_code_text)
