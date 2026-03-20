@@ -878,36 +878,6 @@ class OMRProcessor:
             scores[i] = float(np.clip(core_ratio - (0.45 * ring_ratio), 0.0, 1.0))
         return scores
 
-    def _detect_eroded_mark_density(self, binary: np.ndarray, centers: np.ndarray, radius: int) -> np.ndarray:
-        r = max(3, int(round(radius * 0.85)))
-        kernel = np.ones((3, 3), np.uint8)
-        h, w = binary.shape[:2]
-        scores = np.zeros((len(centers),), dtype=np.float32)
-        centers_int = centers.astype(np.int32)
-        for i, (x, y) in enumerate(centers_int):
-            x0, y0 = max(0, x - r), max(0, y - r)
-            x1, y1 = min(w, x + r + 1), min(h, y + r + 1)
-            roi = binary[y0:y1, x0:x1]
-            if roi.size == 0:
-                continue
-            eroded = cv2.erode(roi, kernel, iterations=1)
-            scores[i] = float(np.count_nonzero(eroded)) / float(eroded.size)
-        return scores
-
-    def _detect_square_mark_density(self, binary: np.ndarray, centers: np.ndarray, radius: int) -> np.ndarray:
-        half = max(2, int(round(radius * 0.60)))
-        h, w = binary.shape[:2]
-        scores = np.zeros((len(centers),), dtype=np.float32)
-        centers_int = centers.astype(np.int32)
-        for i, (x, y) in enumerate(centers_int):
-            x0, y0 = max(0, x - half), max(0, y - half)
-            x1, y1 = min(w, x + half + 1), min(h, y + half + 1)
-            roi = binary[y0:y1, x0:x1]
-            if roi.size == 0:
-                continue
-            scores[i] = float(np.count_nonzero(roi)) / float(roi.size)
-        return scores
-
     def classify_bubble(self, ratio: float) -> str:
         if ratio > self.fill_threshold:
             return "filled"
@@ -1053,9 +1023,7 @@ class OMRProcessor:
             core_ratios = self._detect_center_core_marks(binary, centers, radius)
             if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
                 contrast_ratios = self._detect_core_ring_contrast(binary, centers, radius)
-                eroded_ratios = self._detect_eroded_mark_density(binary, centers, radius)
-                square_ratios = self._detect_square_mark_density(binary, centers, radius)
-                ratios = np.clip((0.08 * ratios) + (0.22 * core_ratios) + (0.18 * contrast_ratios) + (0.27 * eroded_ratios) + (0.25 * square_ratios), 0.0, 1.0)
+                ratios = np.clip((0.20 * ratios) + (0.45 * core_ratios) + (0.35 * contrast_ratios), 0.0, 1.0)
             else:
                 ratios = np.clip((0.55 * ratios) + (0.45 * core_ratios), 0.0, 1.0)
         dynamic_thresholds = np.array([self._estimate_local_fill_threshold(binary, center, radius, self.fill_threshold) for center in centers], dtype=np.float32)
@@ -1128,8 +1096,8 @@ class OMRProcessor:
         for c in range(cols):
             col_scores = mat[:, c]
             if is_student_id:
-                col_threshold = max(self.empty_threshold + 0.10, float((self.fill_threshold * 0.90)))
-                col_threshold = max(col_threshold, float(np.mean(col_scores) + (0.25 * np.std(col_scores))))
+                col_threshold = max(self.empty_threshold + 0.08, float(np.mean(col_scores) + (0.18 * np.std(col_scores))))
+                col_threshold = min(col_threshold, 0.52)
                 certainty_margin = self.certainty_margin * 0.40
             elif is_exam_code:
                 col_threshold = max(self.empty_threshold + 0.10, float((self.fill_threshold * 0.95)))
