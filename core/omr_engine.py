@@ -982,10 +982,14 @@ class OMRProcessor:
         anchors = list(template.anchors or [])
         if len(anchors) < 4:
             return np.empty((0, 2), dtype=np.float32), np.empty((0, 2), dtype=np.float32)
-        template_pts = np.array(
-            [[a.x * template.width, a.y * template.height] if a.x <= 1.0 and a.y <= 1.0 else [a.x, a.y] for a in anchors],
-            dtype=np.float32,
-        )
+        named_digit_anchors: list[list[float]] = []
+        fallback_anchor_pts: list[list[float]] = []
+        for a in anchors:
+            pt = [a.x * template.width, a.y * template.height] if a.x <= 1.0 and a.y <= 1.0 else [a.x, a.y]
+            fallback_anchor_pts.append(pt)
+            if str(getattr(a, "name", "") or "").startswith("DIGIT_ANCHOR_"):
+                named_digit_anchors.append(pt)
+        template_pts = np.array(named_digit_anchors or fallback_anchor_pts, dtype=np.float32)
         detected_pts = np.array(self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True, max_points=120), dtype=np.float32)
         if len(detected_pts) < 4:
             return np.empty((0, 2), dtype=np.float32), np.empty((0, 2), dtype=np.float32)
