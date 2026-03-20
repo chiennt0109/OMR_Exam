@@ -46,7 +46,7 @@ from core.scoring_engine import ScoringEngine
 from editor.template_editor import TemplateEditorWindow
 from gui.import_answer_key_dialog import ImportAnswerKeyDialog
 from models.answer_key import AnswerKeyRepository, SubjectKey
-from models.database import OMRDatabase
+from models.database import OMRDatabase, bootstrap_application_db
 from models.exam_session import ExamSession, Student
 from models.template import Template
 from models.template_repository import TemplateRepository
@@ -13855,6 +13855,7 @@ class MainWindow(QMainWindow):
 
 
 def run() -> None:
+    bootstrap_application_db()
     app = QApplication([])
     window = MainWindow()
     window.showMaximized()

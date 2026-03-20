@@ -146,6 +146,10 @@ class OMRDatabase:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         return OMRDatabase(DatabaseConfig(path=db_path, key=str(key or os.environ.get("OMR_DB_KEY", ""))))
 
+    @staticmethod
+    def default_path(path: str | Path | None = None) -> Path:
+        return Path(path or (Path.home() / ".omr_exam" / "omr_exam.db"))
+
     def _connect(self, path: Path, key: str):
         path.parent.mkdir(parents=True, exist_ok=True)
         if sqlcipher_sqlite is not None:
@@ -484,3 +488,12 @@ class OMRDatabase:
             "top_students": [{"student_code": str(r[0]), "score": float(r[1] or 0)} for r in top_rows],
             "distribution": [{"bucket": int(r[0] or 0), "count": int(r[1] or 0)} for r in distribution],
         }
+
+
+def bootstrap_application_db(path: str | Path | None = None, key: str | None = None) -> Path:
+    db = OMRDatabase.default(path=path, key=key)
+    marker = db.get_app_state("db_bootstrap_version", 0)
+    if int(marker or 0) < 1:
+        db.set_app_state("db_bootstrap_version", 1)
+        db.set_app_state("db_path", str(db.config.path))
+    return db.config.path
