@@ -132,6 +132,16 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertGreater(scores[0], 0.45)
         self.assertLess(scores[1], 0.10)
 
+    def test_detect_eroded_mark_density_suppresses_outline_only_bubbles(self):
+        binary = np.zeros((120, 120), dtype=np.uint8)
+        cv2.line(binary, (34, 54), (46, 66), 255, 3)
+        cv2.line(binary, (46, 54), (34, 66), 255, 3)
+        cv2.circle(binary, (80, 60), 10, 255, 1)
+        centers = np.array([[40, 60], [80, 60]], dtype=np.float32)
+        scores = self.processor._detect_eroded_mark_density(binary, centers, 10)
+        self.assertGreater(scores[0], 0.12)
+        self.assertLess(scores[1], 0.05)
+
     def test_template_dict_persists_template_coordinate_space(self):
         tpl = Template(name="t", image_path="x.png", width=1234, height=1754)
         payload = tpl.to_dict()
