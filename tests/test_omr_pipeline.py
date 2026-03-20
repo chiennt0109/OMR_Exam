@@ -96,6 +96,15 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertGreater(ratios[0], 0.75)
         self.assertLess(ratios[1], 0.35)
 
+    def test_detect_center_core_marks_prefers_filled_center_over_outline(self):
+        binary = np.zeros((120, 120), dtype=np.uint8)
+        cv2.circle(binary, (40, 60), 10, 255, -1)
+        cv2.circle(binary, (80, 60), 10, 255, 1)
+        centers = np.array([[40, 60], [80, 60]], dtype=np.float32)
+        ratios = self.processor._detect_center_core_marks(binary, centers, 10)
+        self.assertGreater(ratios[0], 0.8)
+        self.assertLess(ratios[1], 0.25)
+
     def test_template_dict_persists_template_coordinate_space(self):
         tpl = Template(name="t", image_path="x.png", width=1234, height=1754)
         payload = tpl.to_dict()
