@@ -80,6 +80,8 @@ class ImportAnswerKeyDialog(QDialog):
         self.summary_text = QTextEdit()
         self.summary_text.setReadOnly(True)
         self.summary_text.setPlaceholderText("Tóm tắt đáp án hiện tại sẽ hiển thị ở đây.")
+        self.summary_text.setMinimumHeight(100)
+        self.summary_text.setMaximumHeight(180)
 
         btn_box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         btn_box.accepted.connect(self._on_accept)

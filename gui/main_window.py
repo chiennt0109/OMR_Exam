@@ -249,6 +249,7 @@ class SubjectConfigDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Cấu hình môn học")
         self.setWindowState(self.windowState() | Qt.WindowMaximized)
+        self.resize(1180, 820)
         data = data or {}
         subject_options = subject_options or []
         block_options = block_options or ["10", "11", "12"]
@@ -289,7 +290,8 @@ class SubjectConfigDialog(QDialog):
         self.answer_codes = QLineEdit(", ".join(sorted((data.get("imported_answer_keys") or {}).keys()))); self.answer_codes.setReadOnly(True)
         self.answer_summary = QTextEdit()
         self.answer_summary.setReadOnly(True)
-        self.answer_summary.setMinimumHeight(140)
+        self.answer_summary.setMinimumHeight(110)
+        self.answer_summary.setMaximumHeight(180)
 
         self.paper_part_label = QLabel(str(paper_part_count))
 
@@ -376,11 +378,8 @@ class SubjectConfigDialog(QDialog):
         self._update_paper_parts()
         self._refresh_score_mode_ui()
 
-        # Lock window size to avoid resize jumps when toggling score mode.
         self.section_group.setVisible(True)
         self.question_group.setVisible(True)
-        self.adjustSize()
-        self.setFixedSize(self.sizeHint())
         self._refresh_score_mode_ui()
 
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -1205,11 +1204,9 @@ class MainWindow(QMainWindow):
         self.current_session_id: str | None = None
         self.session_dirty = False
 
-        self.session_registry_path = Path.home() / ".omr_exam_sessions.json"
-        self.session_registry: list[dict[str, str | bool]] = self._load_session_registry()
-        self.template_repo_path = Path.home() / ".omr_template_repository.json"
-        self.template_repo = TemplateRepository.load_json(self.template_repo_path)
         self.database = OMRDatabase.default()
+        self.session_registry: list[dict[str, str | bool]] = self._load_session_registry()
+        self.template_repo = self._load_template_repository()
         self.template_editor_embedded: TemplateEditorWindow | None = None
         self.template_editor_mode = "library"
 
@@ -1387,7 +1384,7 @@ class MainWindow(QMainWindow):
         if not self.session:
             return False
 
-        if not self.current_session_path or not Path(self.current_session_path).exists():
+        if not self.current_session_id:
             return bool(getattr(self, "session_dirty", False))
 
         current_payload = self.session.to_dict()
@@ -1396,9 +1393,8 @@ class MainWindow(QMainWindow):
         current_cfg["scoring_results"] = dict(self.scoring_results_by_subject)
         current_payload["config"] = current_cfg
 
-        try:
-            saved_payload = json.loads(Path(self.current_session_path).read_text(encoding="utf-8"))
-        except Exception:
+        saved_payload = self.database.fetch_exam_session(self.current_session_id)
+        if not isinstance(saved_payload, dict):
             return bool(getattr(self, "session_dirty", False))
 
         return json.dumps(current_payload, ensure_ascii=False, sort_keys=True, default=str) != json.dumps(
@@ -1468,51 +1464,36 @@ class MainWindow(QMainWindow):
         return self._session_storage_dir() / f"{session_id}.json"
 
     def _load_session_registry(self) -> list[dict[str, str | bool]]:
-        if not self.session_registry_path.exists():
-            return []
         try:
-            data = json.loads(self.session_registry_path.read_text(encoding="utf-8"))
-            if not isinstance(data, list):
-                return []
-            rows: list[dict[str, str | bool]] = []
-            for x in data:
-                if not isinstance(x, dict):
-                    continue
-                # migrate legacy format containing raw path
-                if x.get("session_id"):
-                    rows.append({
-                        "name": str(x.get("name") or "Kỳ thi"),
-                        "session_id": str(x.get("session_id")),
-                        "default": bool(x.get("default", False)),
-                    })
-                elif x.get("path"):
-                    try:
-                        old_path = Path(str(x.get("path")))
-                        if old_path.exists():
-                            sid = self._generate_session_id(str(x.get("name") or old_path.stem))
-                            new_path = self._session_path_from_id(sid)
-                            new_path.write_text(old_path.read_text(encoding="utf-8"), encoding="utf-8")
-                            rows.append({
-                                "name": str(x.get("name") or old_path.stem),
-                                "session_id": sid,
-                                "default": bool(x.get("default", False)),
-                            })
-                    except Exception:
-                        continue
-            return rows
+            rows = self.database.list_exam_sessions()
+            return [dict(x) for x in rows]
         except Exception:
             return []
 
     def _save_session_registry(self) -> None:
-        self.session_registry_path.parent.mkdir(parents=True, exist_ok=True)
-        self.session_registry_path.write_text(json.dumps(self.session_registry, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.session_registry = self._load_session_registry()
 
     def _upsert_session_registry(self, session_id: str, name: str | None = None) -> None:
-        for row in self.session_registry:
-            if row.get("session_id") == session_id:
-                row["name"] = name or row.get("name") or "Kỳ thi"
-                return
-        self.session_registry.append({"name": name or "Kỳ thi", "session_id": session_id, "default": False})
+        payload = self.database.fetch_exam_session(session_id) or {}
+        exam_name = str(name or payload.get("exam_name") or "Kỳ thi")
+        if payload:
+            self.database.save_exam_session(session_id, exam_name, payload)
+        self.session_registry = self._load_session_registry()
+
+    def _load_template_repository(self) -> TemplateRepository:
+        payload = self.database.get_app_state("template_repository", {})
+        if isinstance(payload, dict):
+            try:
+                return TemplateRepository.from_dict(payload)
+            except Exception:
+                pass
+        return TemplateRepository()
+
+    def _save_template_repository(self) -> None:
+        try:
+            self.database.set_app_state("template_repository", self.template_repo.to_dict())
+        except Exception:
+            pass
 
     def _session_name_exists(self, exam_name: str, exclude_session_id: str = "") -> bool:
         name_norm = str(exam_name or "").strip().casefold()
@@ -1782,14 +1763,14 @@ class MainWindow(QMainWindow):
         style = self.style()
         for idx, row in enumerate(self.session_registry):
             sid = str(row.get("session_id", ""))
-            path = self._session_path_from_id(sid) if sid else Path()
             name = str(row.get("name") or f"Kỳ thi {idx+1}")
             subject_text = "-"
             subject_count = "0"
             scan_root = "-"
-            if sid and path.exists():
+            payload = self.database.fetch_exam_session(sid) if sid else None
+            if sid and payload:
                 try:
-                    ses = ExamSession.load_json(path)
+                    ses = ExamSession.from_dict(payload)
                     cfg = ses.config or {}
                     subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
                     subject_count = str(len(subject_cfgs))
@@ -1800,7 +1781,7 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
             status = "Mặc định" if bool(row.get("default")) else "Thường"
-            if sid and not path.exists():
+            if sid and not payload:
                 status = "Không tìm thấy"
 
             self.exam_list_table.setItem(idx, 0, QTableWidgetItem(str(idx + 1)))
@@ -1851,14 +1832,14 @@ class MainWindow(QMainWindow):
         self._edit_registry_session_by_id(sid)
 
     def _edit_registry_session_by_id(self, session_id: str) -> None:
-        path = self._session_path_from_id(session_id)
-        if not path.exists():
+        payload = self.database.fetch_exam_session(session_id)
+        if not payload:
             QMessageBox.warning(self, "Sửa kỳ thi", "Không tìm thấy kỳ thi trong kho lưu trữ hệ thống.")
             return False
         if not self._confirm("Xem kỳ thi", "Bạn có chắc muốn xem kỳ thi này?"):
             return
         try:
-            session = ExamSession.load_json(path)
+            session = ExamSession.from_dict(payload)
             cfg = session.config or {}
             payload = {
                 "exam_name": session.exam_name,
@@ -1916,12 +1897,12 @@ class MainWindow(QMainWindow):
         edited = self.embedded_exam_dialog.payload()
         self._register_templates_from_payload(edited)
         session_id = self.embedded_exam_session_id
-        path = self._session_path_from_id(session_id)
-        if not path.exists():
+        saved_payload = self.database.fetch_exam_session(session_id)
+        if not saved_payload:
             QMessageBox.warning(self, "Sửa kỳ thi", "Không tìm thấy kỳ thi trong kho lưu trữ hệ thống.")
             return False
         try:
-            session = ExamSession.load_json(path)
+            session = ExamSession.from_dict(saved_payload)
             session.exam_name = edited.get("exam_name", session.exam_name)
             session.template_path = edited.get("common_template", session.template_path)
             session.subjects = [
@@ -1953,11 +1934,11 @@ class MainWindow(QMainWindow):
                 "subject_catalog": self.subject_catalog,
                 "block_catalog": self.block_catalog,
             }
-            session.save_json(path)
+            self.database.save_exam_session(session_id, session.exam_name, session.to_dict())
             self.embedded_exam_original_payload = edited
             self.session = session
             self.current_session_id = session_id
-            self.current_session_path = path
+            self.current_session_path = self._session_path_from_id(session_id)
             self.session_dirty = False
             self._upsert_session_registry(session_id, session.exam_name)
             self._save_session_registry()
@@ -2082,13 +2063,8 @@ class MainWindow(QMainWindow):
     def _delete_registry_session_by_id(self, session_id: str) -> None:
         if not self._confirm("Xoá kỳ thi", "Bạn có chắc muốn xoá kỳ thi khỏi danh sách?"):
             return
-        session_path = self._session_path_from_id(session_id)
-        if session_path.exists():
-            try:
-                session_path.unlink()
-            except Exception:
-                pass
-        self.session_registry = [x for x in self.session_registry if str(x.get("session_id")) != session_id]
+        self.database.delete_exam_session(session_id)
+        self.session_registry = self._load_session_registry()
         self._save_session_registry()
         self._refresh_exam_list()
 
@@ -2103,14 +2079,17 @@ class MainWindow(QMainWindow):
     def _set_default_registry_session_by_id(self, session_id: str) -> None:
         if not self._confirm("Đặt mặc định", "Đặt kỳ thi này làm mặc định?"):
             return
-        for row in self.session_registry:
-            row["default"] = str(row.get("session_id")) == session_id
+        self.database.set_app_state("default_session_id", str(session_id))
+        self.session_registry = self._load_session_registry()
         self._save_session_registry()
         self._refresh_exam_list()
 
     def _open_session_path(self, path: Path) -> None:
         try:
-            self.session = ExamSession.load_json(path)
+            payload = self.database.fetch_exam_session(path.stem)
+            if not payload:
+                raise FileNotFoundError(f"Không tìm thấy session '{path.stem}' trong SQLite.")
+            self.session = ExamSession.from_dict(payload)
             self.current_session_path = path
             self.current_session_id = path.stem
             if self.session.template_path:
@@ -2288,7 +2267,7 @@ class MainWindow(QMainWindow):
                 cfg["scoring_phases"] = list(self.scoring_phases)
                 cfg["scoring_results"] = dict(self.scoring_results_by_subject)
                 self.session.config = cfg
-            self.session.save_json(self.current_session_path)
+                self.database.save_exam_session(self.current_session_id, self.session.exam_name, self.session.to_dict())
             self._upsert_session_registry(self.current_session_id, self.session.exam_name if self.session else None)
             self._save_session_registry()
             self._refresh_exam_list()
@@ -2304,7 +2283,7 @@ class MainWindow(QMainWindow):
             self.current_session_id = self._generate_session_id(self.session.exam_name if self.session else "exam")
             self.current_session_path = self._session_path_from_id(self.current_session_id)
         try:
-            self.session.save_json(self.current_session_path)
+            self.database.save_exam_session(self.current_session_id, self.session.exam_name, self.session.to_dict())
             self._upsert_session_registry(self.current_session_id, self.session.exam_name if self.session else None)
             self._save_session_registry()
             self._refresh_exam_list()
@@ -2351,7 +2330,7 @@ class MainWindow(QMainWindow):
             cfg["scoring_phases"] = list(self.scoring_phases)
             cfg["scoring_results"] = dict(self.scoring_results_by_subject)
             self.session.config = cfg
-            self.session.save_json(self.current_session_path)
+            self.database.save_exam_session(self.current_session_id, self.session.exam_name, self.session.to_dict())
             self._upsert_session_registry(self.current_session_id, self.session.exam_name)
             self._save_session_registry()
             self._refresh_exam_list()
@@ -9669,7 +9648,7 @@ class MainWindow(QMainWindow):
 
     def _save_template_repository(self) -> None:
         try:
-            self.template_repo.save_json(self.template_repo_path)
+            self.database.set_app_state("template_repository", self.template_repo.to_dict())
         except Exception:
             pass
 
@@ -9907,12 +9886,12 @@ class MainWindow(QMainWindow):
         return cfg if isinstance(cfg, dict) else None
 
     def _batch_context_session_path(self) -> Path | None:
-        if self.current_session_path and self.current_session_path.exists():
+        if self.current_session_id:
+            return self._session_path_from_id(self.current_session_id)
+        if self.current_session_path:
             return self.current_session_path
         if self.batch_editor_return_session_id:
-            p = self._session_path_from_id(self.batch_editor_return_session_id)
-            if p.exists():
-                return p
+            return self._session_path_from_id(self.batch_editor_return_session_id)
         return None
 
     def _merge_saved_batch_snapshot(self, cfg: dict) -> dict:

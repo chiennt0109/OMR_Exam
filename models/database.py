@@ -105,6 +105,13 @@ SCHEMA = [
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS app_state (
+        state_key TEXT PRIMARY KEY,
+        state_value TEXT NOT NULL DEFAULT '',
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
 ]
 
 INDEXES = [
@@ -182,6 +189,28 @@ class OMRDatabase:
         cur.executemany(f"INSERT INTO {table_name}(name) VALUES (?)", [(v,) for v in normalized])
         self.conn.commit()
 
+    def set_app_state(self, key: str, value: Any) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO app_state(state_key, state_value, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(state_key) DO UPDATE SET
+                state_value = excluded.state_value,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (str(key), json.dumps(value, ensure_ascii=False)),
+        )
+        self.conn.commit()
+
+    def get_app_state(self, key: str, default: Any = None) -> Any:
+        row = self.conn.execute("SELECT state_value FROM app_state WHERE state_key = ?", (str(key),)).fetchone()
+        if not row:
+            return default
+        try:
+            return json.loads(row[0])
+        except Exception:
+            return default
+
     def log_change(self, entity_type: str, entity_id: str, field_name: str, old_value: Any, new_value: Any, note: str = "") -> None:
         self.conn.execute(
             "INSERT INTO audit_logs(entity_type, entity_id, field_name, old_value, new_value, note) VALUES (?, ?, ?, ?, ?, ?)",
@@ -256,6 +285,55 @@ class OMRDatabase:
                 "invalid_answer_rows": (numeric_payload or {}).get("invalid_answer_rows", {}),
             }
         return payload
+
+    def save_exam_session(self, session_id: str, exam_name: str, payload: dict[str, Any]) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO exams(session_id, exam_name, payload_json, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(session_id) DO UPDATE SET
+                exam_name = excluded.exam_name,
+                payload_json = excluded.payload_json,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (str(session_id), str(exam_name or "Kỳ thi"), json.dumps(payload, ensure_ascii=False)),
+        )
+        self.conn.commit()
+
+    def fetch_exam_session(self, session_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT exam_name, payload_json FROM exams WHERE session_id = ?",
+            (str(session_id),),
+        ).fetchone()
+        if not row:
+            return None
+        payload = json.loads(row[1] or "{}") if row[1] else {}
+        if isinstance(payload, dict) and not payload.get("exam_name"):
+            payload["exam_name"] = row[0]
+        return payload if isinstance(payload, dict) else None
+
+    def list_exam_sessions(self) -> list[dict[str, Any]]:
+        default_id = str(self.get_app_state("default_session_id", "") or "")
+        rows = self.conn.execute(
+            "SELECT session_id, exam_name, payload_json FROM exams ORDER BY updated_at DESC, created_at DESC"
+        ).fetchall()
+        items: list[dict[str, Any]] = []
+        for session_id, exam_name, payload_json in rows:
+            payload = json.loads(payload_json or "{}") if payload_json else {}
+            items.append(
+                {
+                    "session_id": str(session_id or ""),
+                    "name": str((payload or {}).get("exam_name") or exam_name or "Kỳ thi"),
+                    "default": str(session_id or "") == default_id,
+                }
+            )
+        return items
+
+    def delete_exam_session(self, session_id: str) -> None:
+        self.conn.execute("DELETE FROM exams WHERE session_id = ?", (str(session_id),))
+        if str(self.get_app_state("default_session_id", "") or "") == str(session_id):
+            self.set_app_state("default_session_id", "")
+        self.conn.commit()
 
     def upsert_scan_result(self, subject_key: str, result_payload: dict[str, Any]) -> None:
         self.conn.execute(
