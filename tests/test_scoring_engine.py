@@ -59,7 +59,7 @@ class ScoringEngineTests(unittest.TestCase):
         self.assertEqual(row.tf_correct, 0)
         self.assertEqual(row.correct, 0)
         self.assertEqual(row.wrong, 1)
-        self.assertAlmostEqual(row.score, 0.5, places=4)
+        self.assertAlmostEqual(row.score, 0.75, places=4)
 
     def test_numeric_string_matching_normalized_separator_only(self):
         key = SubjectKey(
@@ -238,6 +238,22 @@ class ScoringEngineTests(unittest.TestCase):
         self.assertEqual(row.wrong, 0)
         self.assertEqual(row.blank, 0)
         self.assertAlmostEqual(row.score, 4.0, places=4)
+
+
+    def test_g_answer_is_auto_correct(self):
+        key = SubjectKey(
+            subject="Hoa_hoc_11",
+            exam_code="0213",
+            answers={1: "G"},
+            true_false_answers={},
+            numeric_answers={},
+        )
+        omr = OMRResult(image_path="x.png", mcq_answers={1: "D"})
+
+        row = self.engine.score(omr, key)
+        self.assertEqual(row.correct, 1)
+        self.assertEqual(row.wrong, 0)
+        self.assertAlmostEqual(row.score, 1.0, places=4)
 
 
 if __name__ == "__main__":

@@ -13421,24 +13421,32 @@ class MainWindow(QMainWindow):
     def _answer_string_from_maps(mcq_answers: dict[int, str], tf_answers: dict[int, dict[str, bool]], numeric_answers: dict[int, str], answer_key) -> str:
         if answer_key is None:
             return ""
+
+        def _question_numbers(valid_map, invalid_map) -> list[int]:
+            nums = set()
+            for src in [valid_map or {}, invalid_map or {}]:
+                for key in src.keys():
+                    if str(key).strip().lstrip("-").isdigit():
+                        nums.add(int(key))
+            return sorted(nums)
+
+        invalid_rows = getattr(answer_key, "invalid_answer_rows", {}) or {}
         parts: list[str] = []
-        for q_no in sorted(int(q) for q in (answer_key.answers or {}).keys() if str(q).strip().lstrip('-').isdigit()):
+        for q_no in _question_numbers(getattr(answer_key, "answers", {}) or {}, (invalid_rows.get("MCQ", {}) or {})):
             value = str((mcq_answers or {}).get(q_no, "") or "").strip().upper()[:1]
             parts.append(value or "_")
-        for q_no in sorted(int(q) for q in (answer_key.true_false_answers or {}).keys() if str(q).strip().lstrip('-').isdigit()):
+        for q_no in _question_numbers(getattr(answer_key, "true_false_answers", {}) or {}, (invalid_rows.get("TF", {}) or {})):
             flags = (tf_answers or {}).get(q_no, {}) or {}
             for key in ["a", "b", "c", "d"]:
                 parts.append("Đ" if key in flags and bool(flags.get(key)) else ("S" if key in flags else "_"))
-        for q_no in sorted(int(q) for q in (answer_key.numeric_answers or {}).keys() if str(q).strip().lstrip('-').isdigit()):
-            key_text = str((answer_key.numeric_answers or {}).get(q_no, "") or "")
-            width = len(key_text)
-            if width <= 0:
-                continue
-            student_text = str((numeric_answers or {}).get(q_no, "") or "")
-            normalized = student_text.strip().replace(' ', '')[:width]
-            if len(normalized) < width:
-                normalized = normalized + ("_" * (width - len(normalized)))
-            parts.append(normalized)
+        for q_no in _question_numbers(getattr(answer_key, "numeric_answers", {}) or {}, (invalid_rows.get("NUMERIC", {}) or {})):
+            raw_key = str((getattr(answer_key, "numeric_answers", {}) or {}).get(q_no, ((invalid_rows.get("NUMERIC", {}) or {}).get(q_no, ""))) or "")
+            normalized_key = str(raw_key).strip().replace(" ", "").lstrip("+").replace(".", ",")
+            width = len(normalized_key) if normalized_key else max(1, len(raw_key.strip()))
+            student_text = str((numeric_answers or {}).get(q_no, "") or "").strip().replace(" ", "").lstrip("+").replace(".", ",")[:width]
+            if len(student_text) < width:
+                student_text = student_text + ("_" * (width - len(student_text)))
+            parts.append(student_text)
         return "".join(parts)
 
     def _build_answer_string_for_result(self, result, subject_key: str = "") -> str:
