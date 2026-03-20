@@ -47,12 +47,14 @@ class OMRResult:
 @dataclass
 class RecognitionContext:
     detected_anchors: list[tuple[float, float]] = field(default_factory=list)
+    detected_digit_anchors: list[tuple[float, float]] = field(default_factory=list)
     bubble_states_by_zone: dict[str, list[bool]] = field(default_factory=dict)
     semantic_grids: dict[str, object] = field(default_factory=dict)
     recognized_answers: dict[str, dict] = field(default_factory=dict)
 
     def reset(self) -> None:
         self.detected_anchors = []
+        self.detected_digit_anchors = []
         self.bubble_states_by_zone = {}
         self.semantic_grids = {}
         self.recognized_answers = {
@@ -147,6 +149,8 @@ class OMRProcessor:
             setattr(result, "alignment_debug", dict(self._last_alignment_debug))
             context.detected_anchors = self.detect_anchors(aligned_binary, max_points=120)
             setattr(result, "detected_anchors", context.detected_anchors)
+            context.detected_digit_anchors = self._detect_digit_anchor_ruler(aligned_binary, template)
+            setattr(result, "detected_digit_anchors", context.detected_digit_anchors)
 
             context.bubble_states_by_zone = self.extract_bubble_states(aligned_binary, template)
             setattr(result, "bubble_states_by_zone", context.bubble_states_by_zone)
@@ -922,6 +926,7 @@ class OMRProcessor:
         h, w = binary.shape[:2]
         expected = np.array([(x * w, y * h) if x <= 1.0 and y <= 1.0 else (x, y) for x, y in grid.bubble_positions], dtype=np.float32)
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+            expected = self._apply_anchor_ruler_to_digit_zone(binary, expected, zone, template)
             return self._resolve_column_digit_centers(binary, expected, grid, float(zone.metadata.get("bubble_radius", 9)))
         bubble_radius = float(zone.metadata.get("bubble_radius", 9))
         min_area = max(6.0, 0.25 * np.pi * (bubble_radius ** 2))
@@ -954,6 +959,169 @@ class OMRProcessor:
                     best_pt = cand
             refined.append(best_pt if best_pt is not None else np.array([exp_x, exp_y], dtype=np.float32))
         return np.array(refined, dtype=np.float32)
+
+    def _apply_anchor_ruler_to_digit_zone(self, binary: np.ndarray, expected: np.ndarray, zone: Zone, template: Template) -> np.ndarray:
+        if len(expected) == 0:
+            return expected
+        template_pts, detected_pts = self._match_zone_anchor_ruler(binary, zone, template)
+        if len(template_pts) < 3 or len(detected_pts) < 3:
+            return expected
+        matrix, inliers = cv2.estimateAffinePartial2D(template_pts, detected_pts, method=cv2.RANSAC, ransacReprojThreshold=3.0)
+        if matrix is None:
+            return expected
+        if inliers is not None and int(inliers.sum()) < max(3, int(0.6 * len(template_pts))):
+            return expected
+        transformed = cv2.transform(expected.reshape(1, -1, 2), matrix).reshape(-1, 2)
+        if transformed.shape != expected.shape:
+            return expected
+        shift = transformed - expected
+        median_shift = np.median(shift, axis=0)
+        max_shift_x = max(6.0, float(zone.width * template.width) * 0.18)
+        max_shift_y = max(6.0, float(zone.height * template.height) * 0.10)
+        if abs(float(median_shift[0])) > max_shift_x or abs(float(median_shift[1])) > max_shift_y:
+            return expected
+        return transformed.astype(np.float32)
+
+    def _match_zone_anchor_ruler(self, binary: np.ndarray, zone: Zone, template: Template) -> tuple[np.ndarray, np.ndarray]:
+        anchors = list(template.anchors or [])
+        if len(anchors) < 4:
+            return np.empty((0, 2), dtype=np.float32), np.empty((0, 2), dtype=np.float32)
+        named_digit_anchors: list[list[float]] = []
+        fallback_anchor_pts: list[list[float]] = []
+        for a in anchors:
+            pt = [a.x * template.width, a.y * template.height] if a.x <= 1.0 and a.y <= 1.0 else [a.x, a.y]
+            fallback_anchor_pts.append(pt)
+            if str(getattr(a, "name", "") or "").startswith("DIGIT_ANCHOR_"):
+                named_digit_anchors.append(pt)
+        template_pts = np.array(named_digit_anchors or fallback_anchor_pts, dtype=np.float32)
+        if named_digit_anchors:
+            detected_pts = np.array(self._detect_digit_anchor_ruler(binary, template), dtype=np.float32)
+        else:
+            detected_pts = np.array(self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True, max_points=120), dtype=np.float32)
+        if len(detected_pts) < 4:
+            return np.empty((0, 2), dtype=np.float32), np.empty((0, 2), dtype=np.float32)
+
+        zone_rect = np.array(
+            [
+                zone.x * template.width,
+                zone.y * template.height,
+                (zone.x + zone.width) * template.width,
+                (zone.y + zone.height) * template.height,
+            ],
+            dtype=np.float32,
+        )
+        zone_h = max(1.0, float(zone_rect[3] - zone_rect[1]))
+        side_margin = max(18.0, float(zone.width * template.width) * 0.45)
+        y_pad = max(12.0, zone_h * 0.08)
+
+        right_tpl = template_pts[
+            (template_pts[:, 0] >= (zone_rect[2] - side_margin))
+            & (template_pts[:, 1] >= (zone_rect[1] - y_pad))
+            & (template_pts[:, 1] <= (zone_rect[3] + y_pad))
+        ]
+        if len(right_tpl) < 3:
+            right_tpl = template_pts[
+                (template_pts[:, 0] >= zone_rect[2])
+                & (template_pts[:, 1] >= (zone_rect[1] - y_pad))
+                & (template_pts[:, 1] <= (zone_rect[3] + y_pad))
+            ]
+        if len(right_tpl) < 3:
+            return np.empty((0, 2), dtype=np.float32), np.empty((0, 2), dtype=np.float32)
+
+        det_margin = max(18.0, binary.shape[1] * 0.12)
+        right_det = detected_pts[
+            (detected_pts[:, 0] >= (zone_rect[2] - det_margin))
+            & (detected_pts[:, 1] >= (zone_rect[1] - (y_pad * 1.5)))
+            & (detected_pts[:, 1] <= (zone_rect[3] + (y_pad * 1.5)))
+        ]
+        if len(right_det) < 3:
+            return np.empty((0, 2), dtype=np.float32), np.empty((0, 2), dtype=np.float32)
+
+        right_tpl = right_tpl[np.argsort(right_tpl[:, 1])]
+        right_det = right_det[np.argsort(right_det[:, 1])]
+        count = min(len(right_tpl), len(right_det))
+        if count < 3:
+            return np.empty((0, 2), dtype=np.float32), np.empty((0, 2), dtype=np.float32)
+        if len(right_tpl) != count:
+            tpl_idx = np.linspace(0, len(right_tpl) - 1, count).astype(int)
+            right_tpl = right_tpl[tpl_idx]
+        if len(right_det) != count:
+            det_idx = np.linspace(0, len(right_det) - 1, count).astype(int)
+            right_det = right_det[det_idx]
+        return right_tpl.astype(np.float32), right_det.astype(np.float32)
+
+    def _detect_digit_anchor_ruler(self, binary: np.ndarray, template: Template) -> list[tuple[float, float]]:
+        anchors = [a for a in (template.anchors or []) if str(getattr(a, "name", "") or "").startswith("DIGIT_ANCHOR_")]
+        if not anchors:
+            return []
+        detected: list[tuple[float, float]] = []
+        for anchor in anchors:
+            pt = np.array(
+                [
+                    anchor.x * template.width if anchor.x <= 1.0 else anchor.x,
+                    anchor.y * template.height if anchor.y <= 1.0 else anchor.y,
+                ],
+                dtype=np.float32,
+            )
+            matched = self._detect_anchor_near_expected(binary, pt)
+            if matched is not None:
+                detected.append((float(matched[0]), float(matched[1])))
+        return detected
+
+    def _detect_anchor_near_expected(self, binary: np.ndarray, expected_pt: np.ndarray) -> np.ndarray | None:
+        h, w = binary.shape[:2]
+        exp_x, exp_y = float(expected_pt[0]), float(expected_pt[1])
+        search_pad_x = max(22, int(round(w * 0.03)))
+        search_pad_y = max(22, int(round(h * 0.03)))
+        x0 = int(max(0, exp_x - search_pad_x))
+        y0 = int(max(0, exp_y - search_pad_y))
+        x1 = int(min(w, exp_x + search_pad_x + 1))
+        y1 = int(min(h, exp_y + search_pad_y + 1))
+        roi = binary[y0:y1, x0:x1]
+        if roi.size == 0:
+            return None
+        num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(roi, connectivity=8)
+        best_pt: np.ndarray | None = None
+        best_score = float("-inf")
+        for idx in range(1, num_labels):
+            area = float(stats[idx, cv2.CC_STAT_AREA])
+            if area < 20:
+                continue
+            x = int(stats[idx, cv2.CC_STAT_LEFT])
+            y = int(stats[idx, cv2.CC_STAT_TOP])
+            bw = int(stats[idx, cv2.CC_STAT_WIDTH])
+            bh = int(stats[idx, cv2.CC_STAT_HEIGHT])
+            if bw <= 0 or bh <= 0:
+                continue
+            ratio = bw / float(bh)
+            if not (0.25 <= ratio <= 4.50):
+                continue
+            rect_area = float(bw * bh)
+            density = area / rect_area if rect_area else 0.0
+            if density < 0.10:
+                continue
+            cx = x0 + float(centroids[idx][0])
+            cy = y0 + float(centroids[idx][1])
+            dist = float(np.hypot(cx - exp_x, cy - exp_y))
+            if dist > max(search_pad_x, search_pad_y) * 1.10:
+                continue
+            edge_strength = min(bw, bh)
+            score = (area * 1.6) + (edge_strength * 2.0) + (density * 20.0) - (dist * 2.5)
+            if score > best_score:
+                best_score = score
+                best_pt = np.array([cx, cy], dtype=np.float32)
+        if best_pt is not None:
+            return best_pt
+
+        ys, xs = np.where(roi > 0)
+        if len(xs) < 20:
+            return None
+        cx = x0 + float(np.mean(xs))
+        cy = y0 + float(np.mean(ys))
+        dist = float(np.hypot(cx - exp_x, cy - exp_y))
+        if dist > max(search_pad_x, search_pad_y) * 1.15:
+            return None
+        return np.array([cx, cy], dtype=np.float32)
 
     def _resolve_column_digit_centers(
         self,
