@@ -850,6 +850,34 @@ class OMRProcessor:
             ratios[i] = float(np.count_nonzero(roi)) / float(roi.size)
         return ratios
 
+    def _detect_core_ring_contrast(self, binary: np.ndarray, centers: np.ndarray, radius: int) -> np.ndarray:
+        core_r = max(2, int(round(radius * 0.35)))
+        ring_r = max(core_r + 1, int(round(radius * 0.80)))
+        h, w = binary.shape[:2]
+        scores = np.zeros((len(centers),), dtype=np.float32)
+        centers_int = centers.astype(np.int32)
+        yy, xx = np.indices(((2 * ring_r) + 1, (2 * ring_r) + 1))
+        cx = cy = ring_r
+        dist2 = (xx - cx) ** 2 + (yy - cy) ** 2
+        core_mask = dist2 <= (core_r ** 2)
+        ring_mask = (dist2 > (core_r ** 2)) & (dist2 <= (ring_r ** 2))
+        for i, (x, y) in enumerate(centers_int):
+            x0, y0 = x - ring_r, y - ring_r
+            x1, y1 = x + ring_r + 1, y + ring_r + 1
+            if x1 <= 0 or y1 <= 0 or x0 >= w or y0 >= h:
+                continue
+            x0c, y0c = max(0, x0), max(0, y0)
+            x1c, y1c = min(w, x1), min(h, y1)
+            roi = binary[y0c:y1c, x0c:x1c]
+            local_core = core_mask[(y0c - y0):(y1c - y0), (x0c - x0):(x1c - x0)]
+            local_ring = ring_mask[(y0c - y0):(y1c - y0), (x0c - x0):(x1c - x0)]
+            if roi.size == 0 or not np.any(local_core):
+                continue
+            core_ratio = float(np.count_nonzero(roi[local_core])) / float(np.count_nonzero(local_core))
+            ring_ratio = 0.0 if not np.any(local_ring) else float(np.count_nonzero(roi[local_ring])) / float(np.count_nonzero(local_ring))
+            scores[i] = float(np.clip(core_ratio - (0.45 * ring_ratio), 0.0, 1.0))
+        return scores
+
     def classify_bubble(self, ratio: float) -> str:
         if ratio > self.fill_threshold:
             return "filled"
@@ -994,7 +1022,8 @@ class OMRProcessor:
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
             core_ratios = self._detect_center_core_marks(binary, centers, radius)
             if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
-                ratios = np.clip((0.35 * ratios) + (0.65 * core_ratios), 0.0, 1.0)
+                contrast_ratios = self._detect_core_ring_contrast(binary, centers, radius)
+                ratios = np.clip((0.20 * ratios) + (0.45 * core_ratios) + (0.35 * contrast_ratios), 0.0, 1.0)
             else:
                 ratios = np.clip((0.55 * ratios) + (0.45 * core_ratios), 0.0, 1.0)
         dynamic_thresholds = np.array([self._estimate_local_fill_threshold(binary, center, radius, self.fill_threshold) for center in centers], dtype=np.float32)
