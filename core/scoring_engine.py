@@ -186,6 +186,27 @@ class ScoringEngine:
         omr.answer_string = built
         return built
 
+    @staticmethod
+    def _strict_mcq_match(key: str, student: str) -> bool:
+        key_text = str(key or "")
+        student_text = str(student or "")[:len(key_text)]
+        return len(student_text) == len(key_text) and all(a == b for a, b in zip(key_text, student_text))
+
+    @staticmethod
+    def _strict_tf_match(key: str, student: str) -> tuple[int, bool]:
+        key_text = str(key or "")
+        student_text = str(student or "")[:len(key_text)]
+        correct = sum(1 for a, b in zip(key_text, student_text) if a == b or a == "E")
+        return correct, len(student_text) == len(key_text) and correct == len(key_text)
+
+    @staticmethod
+    def _strict_numeric_match(key: str, student: str, delimiter: str = "|") -> bool:
+        key_parts = [x for x in str(key or "").split(delimiter)]
+        student_parts = [x for x in str(student or "").split(delimiter)][:len(key_parts)]
+        if len(student_parts) != len(key_parts):
+            return False
+        return all(a == b for a, b in zip(key_parts, student_parts))
+
     def _build_tf_compare_text(self, key_tf: str, marked_tf: str, q_no: int) -> str:
         if not key_tf and not marked_tf:
             return ""
