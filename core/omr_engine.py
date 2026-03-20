@@ -47,12 +47,14 @@ class OMRResult:
 @dataclass
 class RecognitionContext:
     detected_anchors: list[tuple[float, float]] = field(default_factory=list)
+    detected_digit_anchors: list[tuple[float, float]] = field(default_factory=list)
     bubble_states_by_zone: dict[str, list[bool]] = field(default_factory=dict)
     semantic_grids: dict[str, object] = field(default_factory=dict)
     recognized_answers: dict[str, dict] = field(default_factory=dict)
 
     def reset(self) -> None:
         self.detected_anchors = []
+        self.detected_digit_anchors = []
         self.bubble_states_by_zone = {}
         self.semantic_grids = {}
         self.recognized_answers = {
@@ -147,6 +149,8 @@ class OMRProcessor:
             setattr(result, "alignment_debug", dict(self._last_alignment_debug))
             context.detected_anchors = self.detect_anchors(aligned_binary, max_points=120)
             setattr(result, "detected_anchors", context.detected_anchors)
+            context.detected_digit_anchors = self._detect_digit_anchor_ruler(aligned_binary, template)
+            setattr(result, "detected_digit_anchors", context.detected_digit_anchors)
 
             context.bubble_states_by_zone = self.extract_bubble_states(aligned_binary, template)
             setattr(result, "bubble_states_by_zone", context.bubble_states_by_zone)
@@ -922,6 +926,7 @@ class OMRProcessor:
         h, w = binary.shape[:2]
         expected = np.array([(x * w, y * h) if x <= 1.0 and y <= 1.0 else (x, y) for x, y in grid.bubble_positions], dtype=np.float32)
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+            expected = self._apply_anchor_ruler_to_digit_zone(binary, expected, zone, template)
             return self._resolve_column_digit_centers(binary, expected, grid, float(zone.metadata.get("bubble_radius", 9)))
         bubble_radius = float(zone.metadata.get("bubble_radius", 9))
         min_area = max(6.0, 0.25 * np.pi * (bubble_radius ** 2))
@@ -954,6 +959,44 @@ class OMRProcessor:
                     best_pt = cand
             refined.append(best_pt if best_pt is not None else np.array([exp_x, exp_y], dtype=np.float32))
         return np.array(refined, dtype=np.float32)
+
+    def _apply_anchor_ruler_to_digit_zone(self, binary: np.ndarray, expected: np.ndarray, zone: Zone, template: Template) -> np.ndarray:
+        if len(expected) == 0 or not zone.grid:
+            return expected
+        guide_pts = self._get_manual_digit_anchor_points(template)
+        rows = max(1, int(zone.grid.rows))
+        cols = max(1, int(zone.grid.cols))
+        if len(guide_pts) < rows + 1 or len(expected) != rows * cols:
+            return expected
+
+        guided = expected.copy()
+        for r in range(rows):
+            top_y = float(guide_pts[r][1])
+            bottom_y = float(guide_pts[r + 1][1])
+            center_y = (top_y + bottom_y) * 0.5
+            for c in range(cols):
+                idx = (r * cols) + c
+                guided[idx][1] = center_y
+        return guided.astype(np.float32)
+
+    def _detect_digit_anchor_ruler(self, binary: np.ndarray, template: Template) -> list[tuple[float, float]]:
+        return [(float(pt[0]), float(pt[1])) for pt in self._get_manual_digit_anchor_points(template)]
+
+    def _get_manual_digit_anchor_points(self, template: Template) -> np.ndarray:
+        anchors = [a for a in (template.anchors or []) if str(getattr(a, "name", "") or "").startswith("DIGIT_ANCHOR_")]
+        if not anchors:
+            return np.empty((0, 2), dtype=np.float32)
+        pts = np.array(
+            [
+                [
+                    a.x * template.width if a.x <= 1.0 else a.x,
+                    a.y * template.height if a.y <= 1.0 else a.y,
+                ]
+                for a in anchors
+            ],
+            dtype=np.float32,
+        )
+        return pts[np.argsort(pts[:, 1])]
 
     def _resolve_column_digit_centers(
         self,
