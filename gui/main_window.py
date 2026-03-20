@@ -13873,6 +13873,15 @@ class MainWindow(QMainWindow):
         self._sync_correction_detail_panel(res, rebuild_editor=True)
         self.correction_ui_loading = False
 
+    def _load_selected_result_for_correction(self) -> None:
+        idx = self.scan_list.currentRow()
+        if idx < 0 or idx >= len(self.scan_results):
+            return
+        res = self.scan_results[idx]
+        self.correction_ui_loading = True
+        self._sync_correction_detail_panel(res, rebuild_editor=True)
+        self.correction_ui_loading = False
+
     def _open_edit_selected_scan(self, *_args) -> None:
         idx = self.scan_list.currentRow()
         if idx < 0:
@@ -13944,6 +13953,7 @@ class MainWindow(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle(f"Sửa bài thi: {Path(self.scan_results[dialog_state['index']].image_path).name}")
         dlg.setWindowState(Qt.WindowMaximized)
+        QTimer.singleShot(0, dlg.showMaximized)
         lay = QHBoxLayout(dlg)
         splitter = QSplitter(Qt.Horizontal)
         left = QWidget()
@@ -14074,6 +14084,32 @@ class MainWindow(QMainWindow):
                 combo.setCurrentIndex(idx_found)
             else:
                 combo.setEditText(value)
+
+        def _populate_exam_code_combo(combo: QComboBox, subject_key: str, current_code: str) -> None:
+            combo.blockSignals(True)
+            combo.clear()
+            codes: set[str] = set()
+            subject = str(subject_key or "").strip()
+            if subject:
+                try:
+                    codes.update(str(x).strip() for x in self.database.fetch_answer_keys_for_subject(subject).keys() if str(x).strip())
+                except Exception:
+                    pass
+                if self.answer_keys:
+                    codes.update(
+                        str(item.exam_code).strip()
+                        for item in self.answer_keys.keys.values()
+                        if str(getattr(item, "subject", "") or "").strip() == subject and str(getattr(item, "exam_code", "") or "").strip()
+                    )
+            codes.update(str(x).strip() for x in (self.imported_exam_codes or []) if str(x).strip())
+            if current_code:
+                codes.add(str(current_code).strip())
+            for code in sorted(codes):
+                combo.addItem(code, code)
+            if combo.count() == 0:
+                combo.addItem(current_code or "-", current_code or "")
+            _set_combo_to_value(combo, str(current_code or "").strip())
+            combo.blockSignals(False)
 
         def _answer_key_for_exam_code(exam_code_text: str):
             subject = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
@@ -14406,13 +14442,7 @@ class MainWindow(QMainWindow):
 
             subject_key = self._current_batch_subject_key()
             current_code = str((preserve_snapshot or {}).get("exam_code", result.exam_code or ""))
-            self._load_exam_code_correction_options(subject_key, current_code)
-            inp_code.blockSignals(True)
-            inp_code.clear()
-            for i in range(self.exam_code_correction_combo.count()):
-                inp_code.addItem(self.exam_code_correction_combo.itemText(i), self.exam_code_correction_combo.itemData(i))
-            _set_combo_to_value(inp_code, current_code)
-            inp_code.blockSignals(False)
+            _populate_exam_code_combo(inp_code, subject_key, current_code)
 
             data_snapshot = preserve_snapshot or loaded_snapshots.get(new_index) or _snapshot_from_result(result)
             loaded_snapshots[new_index] = {
