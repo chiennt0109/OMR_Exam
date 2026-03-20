@@ -805,6 +805,19 @@ class TemplateEditorWindow(QMainWindow):
                 "- Khi test recognition, các điểm detect được sẽ được đánh dấu X giống anchor góc giấy."
             )
 
+    def generate_digit_zone_anchors(self) -> None:
+        """Backward-compatible hook for older QAction wiring.
+
+        Previous revisions exposed a "Generate Digit Anchors" action that called this
+        method directly. The current workflow is manual ("Add Digit Anchor"), so this
+        compatibility shim simply enables that mode instead of crashing when older UI
+        code still calls/ connects `generate_digit_zone_anchors`.
+        """
+        if hasattr(self, "digit_anchor_btn"):
+            self.digit_anchor_btn.setChecked(True)
+            return
+        self._toggle_add_digit_anchor_mode(True)
+
     def copy_block(self):
         z = self._selected_zone()
         if z and z.zone_type in BLOCK_TYPES:
