@@ -46,6 +46,7 @@ class TemplateCanvas(QWidget):
         self.zoom = 1.0
         self.preview_mode = False
         self.add_anchor_mode = False
+        self.add_digit_anchor_mode = False
         self.current_zone_type = ZoneType.MCQ_BLOCK
         self.selected_zone = -1
         self.selected_anchor = -1
@@ -103,6 +104,10 @@ class TemplateCanvas(QWidget):
 
         if self.add_anchor_mode:
             self.template.anchors.append(AnchorPoint(p.x() / self.template.width, p.y() / self.template.height, f"A{len(self.template.anchors)+1}"))
+            self.zones_changed.emit(); self.update(); return
+        if self.add_digit_anchor_mode:
+            digit_count = len([a for a in self.template.anchors if str(getattr(a, "name", "") or "").startswith("DIGIT_ANCHOR_")])
+            self.template.anchors.append(AnchorPoint(p.x() / self.template.width, p.y() / self.template.height, f"DIGIT_ANCHOR_{digit_count+1:02d}"))
             self.zones_changed.emit(); self.update(); return
 
         a_idx = self._hit_anchor(p)
@@ -417,8 +422,11 @@ class TemplateEditorWindow(QMainWindow):
             self.template_toolbar.addAction(act)
 
         self.anchor_btn = QPushButton("Add Anchor"); self.anchor_btn.setCheckable(True)
-        self.anchor_btn.toggled.connect(lambda c: setattr(self.canvas, "add_anchor_mode", c))
+        self.anchor_btn.toggled.connect(self._toggle_add_anchor_mode)
         self.template_toolbar.addWidget(self.anchor_btn)
+        self.digit_anchor_btn = QPushButton("Add Digit Anchor"); self.digit_anchor_btn.setCheckable(True)
+        self.digit_anchor_btn.toggled.connect(self._toggle_add_digit_anchor_mode)
+        self.template_toolbar.addWidget(self.digit_anchor_btn)
 
         self.template_toolbar.addWidget(QLabel(" Zone Type: "))
         self.zone_type = QComboBox(); self.zone_type.addItems([z.value for z in [ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK, ZoneType.MCQ_BLOCK, ZoneType.TRUE_FALSE_BLOCK, ZoneType.NUMERIC_BLOCK]])
@@ -769,6 +777,28 @@ class TemplateEditorWindow(QMainWindow):
         self._mark_dirty()
         self.canvas.update()
 
+    def _toggle_add_anchor_mode(self, checked: bool) -> None:
+        self.canvas.add_anchor_mode = checked
+        if checked and hasattr(self, "digit_anchor_btn"):
+            self.digit_anchor_btn.blockSignals(True)
+            self.digit_anchor_btn.setChecked(False)
+            self.digit_anchor_btn.blockSignals(False)
+            self.canvas.add_digit_anchor_mode = False
+
+    def _toggle_add_digit_anchor_mode(self, checked: bool) -> None:
+        self.canvas.add_digit_anchor_mode = checked
+        if checked:
+            self.anchor_btn.blockSignals(True)
+            self.anchor_btn.setChecked(False)
+            self.anchor_btn.blockSignals(False)
+            self.canvas.add_anchor_mode = False
+            self.result_box.setPlainText(
+                "Chế độ Add Digit Anchor đang bật.\n"
+                "- Hãy click vào các marker hình chữ nhật bên phải vùng Student ID / Exam Code.\n"
+                "- Mỗi điểm sẽ được lưu dưới tên DIGIT_ANCHOR_XX.\n"
+                "- Khi test recognition, các điểm detect được sẽ được đánh dấu X giống anchor góc giấy."
+            )
+
     def copy_block(self):
         z = self._selected_zone()
         if z and z.zone_type in BLOCK_TYPES:
@@ -890,7 +920,9 @@ class TemplateEditorWindow(QMainWindow):
 
         # Show detected anchors and recognized options overlay (green X = selected/seen).
         self.canvas.recognition_overlay.clear()
-        self.canvas.detected_anchor_points = list(getattr(res, "detected_anchors", []))
+        combined_detected_anchors = list(getattr(res, "detected_anchors", []))
+        combined_detected_anchors.extend(list(getattr(res, "detected_digit_anchors", [])))
+        self.canvas.detected_anchor_points = combined_detected_anchors
         self.canvas.recognition_overlay.update(getattr(res, "bubble_states_by_zone", {}) or self.omr.extract_bubble_states(aligned_binary, self.template))
 
         self.result_box.append(f"\nDetected anchors: {len(self.canvas.detected_anchor_points)}")
