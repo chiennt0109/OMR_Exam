@@ -29,6 +29,17 @@ class OMRPipelineTests(unittest.TestCase):
         anchors = self.processor.detect_anchors(img)
         self.assertGreaterEqual(len(anchors), 4)
 
+    def test_detect_anchors_ignores_inner_bubbles_when_border_mode_enabled(self):
+        img = np.zeros((400, 300), dtype=np.uint8)
+        for x, y in [(20, 20), (260, 20), (20, 360), (260, 360)]:
+            cv2.rectangle(img, (x, y), (x + 18, y + 18), 255, -1)
+        for x in range(80, 220, 35):
+            for y in range(80, 320, 45):
+                cv2.circle(img, (x, y), 10, 255, 2)
+
+        anchors = self.processor.detect_anchors(img, use_border_padding=True, relaxed_polygon=True, max_points=40)
+        self.assertLessEqual(len(anchors), 8)
+
     def test_detect_bubbles_ratio(self):
         binary = np.zeros((120, 120), dtype=np.uint8)
         cv2.circle(binary, (40, 60), 10, 255, -1)

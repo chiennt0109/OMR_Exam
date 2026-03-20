@@ -282,6 +282,7 @@ class OMRProcessor:
         contours, _ = cv2.findContours(padded, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
         h, w = binary.shape[:2]
         min_area = max(50, int((h * w) * 0.00003))
+        border_margin = max(24.0, min(w, h) * 0.18)
         anchors: list[tuple[float, float, float]] = []
 
         for cnt in contours:
@@ -316,7 +317,14 @@ class OMRProcessor:
             cy = (m["m01"] / m["m00"]) - float(pad)
             if cx < 0 or cy < 0 or cx >= w or cy >= h:
                 continue
-            score = area * fill_ratio * darkness
+            if use_border_padding:
+                near_border = min(cx, cy, (w - 1) - cx, (h - 1) - cy)
+                if near_border > border_margin:
+                    continue
+                border_bonus = 1.0 + max(0.0, (border_margin - near_border) / max(1.0, border_margin))
+            else:
+                border_bonus = 1.0
+            score = area * fill_ratio * darkness * border_bonus
             anchors.append((cx, cy, score))
 
         anchors.sort(key=lambda p: p[2], reverse=True)
@@ -839,51 +847,37 @@ class OMRProcessor:
             return np.empty((0, 2), dtype=np.float32)
         h, w = binary.shape[:2]
         expected = np.array([(x * w, y * h) if x <= 1.0 and y <= 1.0 else (x, y) for x, y in grid.bubble_positions], dtype=np.float32)
-        rows, cols = max(1, grid.rows), max(1, grid.cols)
-        x0 = int(max(0, np.min(expected[:, 0]) - max(8, zone.metadata.get("bubble_radius", 9) * 2)))
-        y0 = int(max(0, np.min(expected[:, 1]) - max(8, zone.metadata.get("bubble_radius", 9) * 2)))
-        x1 = int(min(w, np.max(expected[:, 0]) + max(8, zone.metadata.get("bubble_radius", 9) * 2)))
-        y1 = int(min(h, np.max(expected[:, 1]) + max(8, zone.metadata.get("bubble_radius", 9) * 2)))
-        roi = binary[y0:y1, x0:x1]
-        if roi.size == 0:
-            return expected
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(roi, connectivity=8)
-        candidates: list[np.ndarray] = []
         bubble_radius = float(zone.metadata.get("bubble_radius", 9))
         min_area = max(6.0, 0.25 * np.pi * (bubble_radius ** 2))
         max_area = max(min_area * 3.5, 4.0 * np.pi * (bubble_radius ** 2))
-        for idx in range(1, num_labels):
-            area = float(stats[idx, cv2.CC_STAT_AREA])
-            if area < min_area or area > max_area:
+        search_pad = max(10, int(round(bubble_radius * 2.2)))
+        refined: list[np.ndarray] = []
+        for exp_x, exp_y in expected:
+            x0 = int(max(0, exp_x - search_pad))
+            y0 = int(max(0, exp_y - search_pad))
+            x1 = int(min(w, exp_x + search_pad + 1))
+            y1 = int(min(h, exp_y + search_pad + 1))
+            roi = binary[y0:y1, x0:x1]
+            if roi.size == 0:
+                refined.append(np.array([exp_x, exp_y], dtype=np.float32))
                 continue
-            cx, cy = centroids[idx]
-            candidates.append(np.array([cx + x0, cy + y0], dtype=np.float32))
-        if len(candidates) < max(4, min(len(expected), rows * cols // 3)):
-            return expected
-        candidates_arr = np.array(candidates, dtype=np.float32)
-        order_y = np.argsort(candidates_arr[:, 1])
-        candidates_arr = candidates_arr[order_y]
-        row_bins = np.array_split(candidates_arr, rows)
-        snapped: list[np.ndarray] = []
-        for row_idx, row_pts in enumerate(row_bins):
-            row_sorted = row_pts[np.argsort(row_pts[:, 0])]
-            if len(row_sorted) == 0:
-                continue
-            if len(row_sorted) >= cols:
-                pick_idx = np.linspace(0, len(row_sorted) - 1, cols).astype(int)
-                row_sorted = row_sorted[pick_idx]
-            else:
-                augmented = []
-                for col_idx in range(cols):
-                    exp_idx = min(len(expected) - 1, row_idx * cols + col_idx)
-                    exp_pt = expected[exp_idx]
-                    d2 = np.sum((row_sorted - exp_pt) ** 2, axis=1)
-                    augmented.append(row_sorted[int(np.argmin(d2))])
-                row_sorted = np.array(augmented, dtype=np.float32)
-            snapped.extend(list(row_sorted[:cols]))
-        if len(snapped) != len(expected):
-            return expected
-        return np.array(snapped, dtype=np.float32)
+            num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(roi, connectivity=8)
+            best_pt: np.ndarray | None = None
+            best_score = float("inf")
+            for idx in range(1, num_labels):
+                area = float(stats[idx, cv2.CC_STAT_AREA])
+                if area < min_area or area > max_area:
+                    continue
+                cx, cy = centroids[idx]
+                cand = np.array([cx + x0, cy + y0], dtype=np.float32)
+                dist = float(np.linalg.norm(cand - np.array([exp_x, exp_y], dtype=np.float32)))
+                if dist > max(6.0, bubble_radius * 1.6):
+                    continue
+                if dist < best_score:
+                    best_score = dist
+                    best_pt = cand
+            refined.append(best_pt if best_pt is not None else np.array([exp_x, exp_y], dtype=np.float32))
+        return np.array(refined, dtype=np.float32)
 
     def recognize_block(self, binary: np.ndarray, zone: Zone, template: Template, result: OMRResult, debug_overlay: np.ndarray | None = None) -> None:
         grid = zone.grid
