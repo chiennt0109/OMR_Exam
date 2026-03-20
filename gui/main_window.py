@@ -13788,6 +13788,7 @@ class MainWindow(QMainWindow):
                 indent=2,
             )
         )
+        self.correction_ui_loading = False
 
     def _load_selected_result_for_correction(self) -> None:
         idx = self.scan_list.currentRow()
