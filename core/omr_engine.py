@@ -994,7 +994,7 @@ class OMRProcessor:
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
             core_ratios = self._detect_center_core_marks(binary, centers, radius)
             if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
-                ratios = np.clip((0.20 * ratios) + (0.65 * core_ratios), 0.0, 1.0)
+                ratios = np.clip((0.35 * ratios) + (0.65 * core_ratios), 0.0, 1.0)
             else:
                 ratios = np.clip((0.55 * ratios) + (0.45 * core_ratios), 0.0, 1.0)
         dynamic_thresholds = np.array([self._estimate_local_fill_threshold(binary, center, radius, self.fill_threshold) for center in centers], dtype=np.float32)
@@ -1069,7 +1069,7 @@ class OMRProcessor:
             if is_student_id:
                 col_threshold = max(self.empty_threshold + 0.10, float((self.fill_threshold * 0.90)))
                 col_threshold = max(col_threshold, float(np.mean(col_scores) + (0.25 * np.std(col_scores))))
-                certainty_margin = self.certainty_margin * 0.60
+                certainty_margin = self.certainty_margin * 0.40
             elif is_exam_code:
                 col_threshold = max(self.empty_threshold + 0.10, float((self.fill_threshold * 0.95)))
                 col_threshold = max(col_threshold, float(np.mean(col_scores) + (0.30 * np.std(col_scores))))
@@ -1082,7 +1082,7 @@ class OMRProcessor:
             top, second = float(col_scores[top_i]), float(col_scores[second_i]) if len(order) > 1 else 0.0
             if len(np.where(col_scores > col_threshold)[0]) > 1:
                 result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: double mark")
-            ratio_gate = second <= 0.0 or top >= (second * (1.14 if is_student_id else 1.10 if is_exam_code else 1.18))
+            ratio_gate = second <= 0.0 or top >= (second * (1.08 if is_student_id else 1.10 if is_exam_code else 1.18))
             if top <= col_threshold or ((top - second) <= certainty_margin and not ratio_gate):
                 digits.append("?")
                 result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: uncertain")

@@ -541,6 +541,23 @@ class OMRPipelineTests(unittest.TestCase):
         digits, _ = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
         self.assertEqual(digits, "0")
 
+    def test_student_id_decode_accepts_small_but_consistent_lead(self):
+        zone = Zone(
+            id="sid_small_gap",
+            name="sid",
+            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        mat = np.array([[0.57], [0.18], [0.52], [0.17], [0.16], [0.15], [0.14], [0.13], [0.12], [0.11]], dtype=np.float32)
+        result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
+        digits, _ = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
+        self.assertEqual(digits, "0")
+
     def test_student_id_recognize_block_weights_center_core_more_than_outline_ratio(self):
         template = Template(
             name="sid_weight",
