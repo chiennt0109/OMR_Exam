@@ -59,7 +59,7 @@ class ScoringEngineTests(unittest.TestCase):
         self.assertEqual(row.tf_correct, 0)
         self.assertEqual(row.correct, 0)
         self.assertEqual(row.wrong, 1)
-        self.assertAlmostEqual(row.score, 0.5, places=4)
+        self.assertAlmostEqual(row.score, 0.75, places=4)
 
     def test_numeric_string_matching_normalized_separator_only(self):
         key = SubjectKey(
@@ -82,10 +82,10 @@ class ScoringEngineTests(unittest.TestCase):
 
         row = self.engine.score(omr, key, subject_config=cfg)
         # String matching with minimal normalization: '+', spaces and decimal separator are normalized.
-        self.assertEqual(row.numeric_correct, 2)
-        self.assertEqual(row.correct, 2)
-        self.assertEqual(row.wrong, 2)
-        self.assertAlmostEqual(row.score, 2.0, places=4)
+        self.assertEqual(row.numeric_correct, 3)
+        self.assertEqual(row.correct, 3)
+        self.assertEqual(row.wrong, 1)
+        self.assertAlmostEqual(row.score, 3.0, places=4)
 
     def test_compare_columns_still_have_debug_when_marked_missing(self):
         key = SubjectKey(
@@ -197,6 +197,79 @@ class ScoringEngineTests(unittest.TestCase):
         self.assertEqual(row.wrong, 0)
         self.assertEqual(row.blank, 0)
         self.assertAlmostEqual(row.score, 3.0, places=4)
+
+
+    def test_answer_string_is_built_by_section_order_with_blank_placeholders(self):
+        key = SubjectKey(
+            subject="Hoa_hoc_11",
+            exam_code="0211",
+            answers={13: "A", 14: "B"},
+            true_false_answers={16: "ĐĐĐS"},
+            numeric_answers={18: "0,56"},
+        )
+        omr = OMRResult(
+            image_path="x.png",
+            mcq_answers={1: "A"},
+            true_false_answers={1: {"a": True, "c": False}},
+            numeric_answers={1: "0.5"},
+        )
+
+        row = self.engine.score(omr, key)
+        self.assertEqual(omr.answer_string, "A_ĐS__0,5_")
+        self.assertEqual(row.mcq_compare, "Q13:A|A; Q14:B|-")
+        self.assertIn("Q16:ĐĐĐS|ĐS--", row.tf_compare)
+        self.assertIn("Q18:0,56|0,5", row.numeric_compare)
+
+    def test_prebuilt_answer_string_is_scored_by_fixed_width_slices(self):
+        key = SubjectKey(
+            subject="Hoa_hoc_11",
+            exam_code="0212",
+            answers={1: "A", 2: "B"},
+            true_false_answers={3: "ĐĐĐS"},
+            numeric_answers={4: "12,5"},
+        )
+        omr = OMRResult(
+            image_path="x.png",
+            answer_string="ABĐĐĐS12,5",
+        )
+
+        row = self.engine.score(omr, key)
+        self.assertEqual(row.correct, 4)
+        self.assertEqual(row.wrong, 0)
+        self.assertEqual(row.blank, 0)
+        self.assertAlmostEqual(row.score, 4.0, places=4)
+
+
+    def test_g_answer_is_auto_correct(self):
+        key = SubjectKey(
+            subject="Hoa_hoc_11",
+            exam_code="0213",
+            answers={1: "G"},
+            true_false_answers={},
+            numeric_answers={},
+        )
+        omr = OMRResult(image_path="x.png", mcq_answers={1: "D"})
+
+        row = self.engine.score(omr, key)
+        self.assertEqual(row.correct, 1)
+        self.assertEqual(row.wrong, 0)
+        self.assertAlmostEqual(row.score, 1.0, places=4)
+
+
+    def test_invalid_tf_answer_rows_do_not_crash_question_definition(self):
+        key = SubjectKey(
+            subject="Hoa_hoc_11",
+            exam_code="0214",
+            answers={},
+            true_false_answers={1: {"a": True, "b": False, "c": True, "d": False}},
+            numeric_answers={},
+            invalid_answer_rows={"TF": {2: "ABCD"}},
+        )
+        omr = OMRResult(image_path="x.png", true_false_answers={1: "ĐSĐS", 2: "SSSS"})
+
+        row = self.engine.score(omr, key)
+        self.assertIn("Q1:ĐSĐS|ĐSĐS", row.tf_compare)
+        self.assertIn("Q2:ABCD|SSSS", row.tf_compare)
 
 
 if __name__ == "__main__":
