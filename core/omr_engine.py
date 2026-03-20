@@ -1096,8 +1096,8 @@ class OMRProcessor:
         for c in range(cols):
             col_scores = mat[:, c]
             if is_student_id:
-                col_threshold = max(self.empty_threshold + 0.08, float(np.mean(col_scores) + (0.18 * np.std(col_scores))))
-                col_threshold = min(col_threshold, 0.52)
+                col_threshold = max(self.empty_threshold + 0.10, float((self.fill_threshold * 0.90)))
+                col_threshold = max(col_threshold, float(np.mean(col_scores) + (0.25 * np.std(col_scores))))
                 certainty_margin = self.certainty_margin * 0.40
             elif is_exam_code:
                 col_threshold = max(self.empty_threshold + 0.10, float((self.fill_threshold * 0.95)))
@@ -1113,6 +1113,12 @@ class OMRProcessor:
                 result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: double mark")
             ratio_gate = second <= 0.0 or top >= (second * (1.08 if is_student_id else 1.10 if is_exam_code else 1.18))
             if top <= col_threshold or ((top - second) <= certainty_margin and not ratio_gate):
+                if is_student_id and top > (self.empty_threshold + 0.08):
+                    mapped = digit_map[top_i] if top_i < len(digit_map) else top_i
+                    digits.append(str(mapped))
+                    result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: soft-picked")
+                    confs.append(top - second)
+                    continue
                 digits.append("?")
                 result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: uncertain")
             else:

@@ -567,9 +567,9 @@ class OMRPipelineTests(unittest.TestCase):
         digits, _ = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
         self.assertEqual(digits, "0")
 
-    def test_student_id_decode_is_not_forced_up_to_global_fill_threshold(self):
+    def test_student_id_decode_soft_picks_plausible_top_digit(self):
         zone = Zone(
-            id="sid_threshold",
+            id="sid_soft_pick",
             name="sid",
             zone_type=ZoneType.STUDENT_ID_BLOCK,
             x=0,
@@ -579,15 +579,10 @@ class OMRPipelineTests(unittest.TestCase):
             grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[]),
             metadata={},
         )
-        prev_fill = self.processor.fill_threshold
-        self.processor.fill_threshold = 0.65
-        try:
-            mat = np.array([[0.54], [0.20], [0.41], [0.19], [0.18], [0.17], [0.16], [0.15], [0.14], [0.13]], dtype=np.float32)
-            result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
-            digits, _ = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
-            self.assertEqual(digits, "0")
-        finally:
-            self.processor.fill_threshold = prev_fill
+        mat = np.array([[0.24], [0.22], [0.31], [0.21], [0.18], [0.17], [0.16], [0.15], [0.14], [0.13]], dtype=np.float32)
+        result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
+        digits, _ = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
+        self.assertEqual(digits, "2")
 
     def test_student_id_recognize_block_weights_center_core_more_than_outline_ratio(self):
         template = Template(
