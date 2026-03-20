@@ -28,6 +28,7 @@ class OMRResult:
     mcq_answers: dict[int, str] = field(default_factory=dict)
     true_false_answers: dict[int, dict[str, bool]] = field(default_factory=dict)
     numeric_answers: dict[int, str] = field(default_factory=dict)
+    answer_string: str = ""
     confidence_scores: dict[str, float] = field(default_factory=dict)
     recognition_errors: list[str] = field(default_factory=list)
     issues: list[OMRIssue] = field(default_factory=list)
