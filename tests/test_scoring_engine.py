@@ -256,5 +256,21 @@ class ScoringEngineTests(unittest.TestCase):
         self.assertAlmostEqual(row.score, 1.0, places=4)
 
 
+    def test_invalid_tf_answer_rows_do_not_crash_question_definition(self):
+        key = SubjectKey(
+            subject="Hoa_hoc_11",
+            exam_code="0214",
+            answers={},
+            true_false_answers={1: {"a": True, "b": False, "c": True, "d": False}},
+            numeric_answers={},
+            invalid_answer_rows={"TF": {2: "ABCD"}},
+        )
+        omr = OMRResult(image_path="x.png", true_false_answers={1: "ĐSĐS", 2: "SSSS"})
+
+        row = self.engine.score(omr, key)
+        self.assertIn("Q1:ĐSĐS|ĐSĐS", row.tf_compare)
+        self.assertIn("Q2:ABCD|SSSS", row.tf_compare)
+
+
 if __name__ == "__main__":
     unittest.main()

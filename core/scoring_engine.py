@@ -158,7 +158,7 @@ class ScoringEngine:
         for q_no in tf_qs:
             key_value = (subject_key.true_false_answers or {}).get(q_no, None)
             raw_invalid = str((invalid.get("TF", {}) or {}).get(q_no, "") or "").strip()
-            display = self._tf_to_canonical_string(key_value) if key_value not in {None, ""} else raw_invalid.upper().replace(" ", "")
+            display = self._tf_to_canonical_string(key_value) if key_value is not None and key_value != "" else raw_invalid.upper().replace(" ", "")
             defs["TF"].append({"q_no": q_no, "display": display or "-", "match": display or "", "width": 4, "auto_full": str(raw_invalid or display).strip().upper() == "G"})
 
         num_qs = sorted(set(self._sorted_numeric_keys(subject_key.numeric_answers) + self._sorted_numeric_keys(invalid.get("NUMERIC", {}))))
@@ -371,14 +371,7 @@ class ScoringEngine:
                 correct += 1
                 tf_correct += 1
             else:
-                score += tf_points.get(correct_count, 0.0)
-                if tf_full_match:
-                    tf_correct += 1
-                    correct += 1
-                elif raw_student == "_" * len(key_tf):
-                    blank += 1
-                else:
-                    wrong += 1
+                wrong += 1
 
         for item in defs["NUMERIC"]:
             q_no = int(item["q_no"])
