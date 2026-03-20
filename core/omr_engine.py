@@ -44,8 +44,6 @@ class OMRResult:
         self.errors = self.recognition_errors
 
 
-
-
 @dataclass
 class RecognitionContext:
     detected_anchors: list[tuple[float, float]] = field(default_factory=list)
@@ -65,6 +63,7 @@ class RecognitionContext:
             "numeric_answers": {},
         }
 
+
 class OMRProcessor:
     def __init__(
         self,
@@ -80,8 +79,9 @@ class OMRProcessor:
         self.debug_mode = debug_mode
         self.debug_dir = Path(debug_dir) if debug_dir else None
         self._mask_cache: dict[int, tuple[np.ndarray, float]] = {}
-        # alignment_profile: auto | legacy | border | hybrid | one_side
         self.alignment_profile: str = "auto"
+        self.standard_width: int = 1200
+        self._last_alignment_debug: dict[str, object] = {}
 
     def recognize_sheet(self, image: str | Path | np.ndarray, template: Template, context: RecognitionContext | None = None) -> OMRResult:
         started = time.perf_counter()
@@ -90,7 +90,6 @@ class OMRProcessor:
         context = context or RecognitionContext()
         context.reset()
 
-        # Reset sheet-level recognition state explicitly for every image.
         result.mcq_answers = {}
         result.true_false_answers = {}
         result.numeric_answers = {}
@@ -121,12 +120,13 @@ class OMRProcessor:
             if aligned_binary is None:
                 aligned_binary = aligned_pre["binary"]
 
-            # Keep template geometry in sync with recognition canvas.
             aligned_h, aligned_w = aligned_binary.shape[:2]
             template.width = int(aligned_w)
             template.height = int(aligned_h)
 
             debug_overlay = aligned.copy() if self.debug_mode else None
+            if debug_overlay is not None:
+                self._draw_alignment_debug(debug_overlay, template)
 
             for zone in template.zones:
                 if zone.zone_type == ZoneType.ANCHOR:
@@ -142,9 +142,9 @@ class OMRProcessor:
                 cv2.imwrite(str(out_path), debug_overlay)
                 result.debug_image_path = str(out_path)
 
-            # Attach aligned artifacts for editor preview/debug without re-running recognition.
             setattr(result, "aligned_image", aligned)
             setattr(result, "aligned_binary", aligned_binary)
+            setattr(result, "alignment_debug", dict(self._last_alignment_debug))
             context.detected_anchors = self.detect_anchors(aligned_binary, max_points=120)
             setattr(result, "detected_anchors", context.detected_anchors)
 
@@ -167,7 +167,6 @@ class OMRProcessor:
             self.alignment_profile = prev_profile
 
     def run_recognition_test(self, image: str | Path | np.ndarray, template: Template, context: RecognitionContext | None = None) -> OMRResult:
-        """Shared recognition entrypoint for template QC and production scan."""
         return self.recognize_sheet(image, template, context)
 
     def extract_bubble_states(self, binary_image: np.ndarray, template: Template) -> dict[str, list[bool]]:
@@ -179,26 +178,20 @@ class OMRProcessor:
             if not z.grid:
                 continue
             states: list[bool] = []
-            for bx, by in z.grid.bubble_positions:
-                x = int(bx * w)
-                y = int(by * h)
-                x0, y0 = max(0, x - 6), max(0, y - 6)
-                x1, y1 = min(w, x + 6), min(h, y + 6)
-                roi = binary_image[y0:y1, x0:x1]
-                ratio = 0.0 if roi.size == 0 else float(np.count_nonzero(roi)) / float(roi.size)
-                states.append(ratio >= self.fill_threshold)
+            centers = self._resolve_zone_centers(binary_image, z, template)
+            if centers is None or len(centers) == 0:
+                centers = np.array([(bx * w, by * h) if bx <= 1.0 and by <= 1.0 else (bx, by) for bx, by in z.grid.bubble_positions], dtype=np.float32)
+            radius = int(z.metadata.get("bubble_radius", 9))
+            ratios = self.detect_bubbles(binary_image, centers, radius)
+            for ratio in ratios:
+                states.append(float(ratio) >= self.fill_threshold)
             states_by_zone[z.id] = states
         return states_by_zone
 
     def process_image(self, image_path: str | Path, template: Template) -> OMRResult:
         return self.recognize_sheet(image_path, template, RecognitionContext())
 
-    def process_batch(
-        self,
-        image_paths: list[str],
-        template: Template,
-        progress_callback: Callable[[int, int, str], None] | None = None,
-    ) -> list[OMRResult]:
+    def process_batch(self, image_paths: list[str], template: Template, progress_callback: Callable[[int, int, str], None] | None = None) -> list[OMRResult]:
         total = len(image_paths)
         results: list[OMRResult] = []
         for idx, image_path in enumerate(image_paths, start=1):
@@ -231,22 +224,24 @@ class OMRProcessor:
         cv2.imwrite(out_path, out)
         return out_path, f"Input DPI={dpi}. Normalized to 200 DPI scale."
 
+    def _resize_for_processing(self, image: np.ndarray) -> tuple[np.ndarray, float]:
+        h, w = image.shape[:2]
+        if w <= self.standard_width:
+            return image, 1.0
+        scale = self.standard_width / float(w)
+        resized = cv2.resize(image, (self.standard_width, max(1, int(round(h * scale)))), interpolation=cv2.INTER_AREA)
+        return resized, scale
+
     def _preprocess(self, image: np.ndarray) -> dict[str, np.ndarray]:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
         gray = clahe.apply(gray)
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        binary = cv2.adaptiveThreshold(
-            blur,
-            255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY_INV,
-            25,
-            5,
-        )
+        binary = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 25, 5)
         kernel = np.ones((3, 3), np.uint8)
         binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
-        return {"gray": gray, "blur": blur, "binary": binary}
+        edges = cv2.Canny(blur, 50, 150)
+        return {"gray": gray, "blur": blur, "binary": binary, "edges": edges}
 
     def _correct_rotation(self, image: np.ndarray) -> np.ndarray:
         angle = self._estimate_rotation_angle(image)
@@ -282,7 +277,6 @@ class OMRProcessor:
         return float(angle)
 
     def detect_anchors(self, binary: np.ndarray, use_border_padding: bool = True, relaxed_polygon: bool = True, max_points: int = 40) -> list[tuple[float, float]]:
-        # Pad image before contour extraction so anchors touching page border are not clipped.
         pad = 8 if use_border_padding else 0
         padded = cv2.copyMakeBorder(binary, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=0) if pad else binary
         contours, _ = cv2.findContours(padded, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
@@ -346,23 +340,75 @@ class OMRProcessor:
         anchors = list(template.anchors or [])
         if len(anchors) < 4:
             return False
-        pts = np.array(
-            [
-                [a.x * template.width, a.y * template.height] if a.x <= 1.0 and a.y <= 1.0 else [a.x, a.y]
-                for a in anchors
-            ],
-            dtype=np.float32,
-        )
+        pts = np.array([[a.x * template.width, a.y * template.height] if a.x <= 1.0 and a.y <= 1.0 else [a.x, a.y] for a in anchors], dtype=np.float32)
         x_span = float(np.max(pts[:, 0]) - np.min(pts[:, 0]))
         y_span = float(np.max(pts[:, 1]) - np.min(pts[:, 1]))
         if y_span <= 1.0:
             return False
-        # Vertical ruler: x spread small compared to y spread.
         if x_span / y_span > 0.20:
             return False
         mean_x = float(np.mean(pts[:, 0]))
-        # Prefer truly side anchors.
         return mean_x <= template.width * 0.18 or mean_x >= template.width * 0.82
+
+    def _detect_page_corners(self, image: np.ndarray) -> np.ndarray | None:
+        working, scale = self._resize_for_processing(image)
+        prep = self._preprocess(working)
+        edges = prep["edges"]
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)
+        for cnt in contours[:10]:
+            peri = cv2.arcLength(cnt, True)
+            approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
+            if len(approx) == 4:
+                return self._order_points((approx.reshape(4, 2) / scale).astype(np.float32))
+            hull = cv2.convexHull(cnt)
+            peri_h = cv2.arcLength(hull, True)
+            approx_h = cv2.approxPolyDP(hull, 0.02 * peri_h, True)
+            if len(approx_h) == 4:
+                return self._order_points((approx_h.reshape(4, 2) / scale).astype(np.float32))
+
+        line_pts = self._detect_page_corners_from_hough(edges)
+        if line_pts is not None:
+            return self._order_points((line_pts / scale).astype(np.float32))
+        return None
+
+    def _detect_page_corners_from_hough(self, edges: np.ndarray) -> np.ndarray | None:
+        lines = cv2.HoughLinesP(edges, 1, np.pi / 180.0, threshold=120, minLineLength=max(80, edges.shape[1] // 4), maxLineGap=25)
+        if lines is None:
+            return None
+        vertical: list[np.ndarray] = []
+        horizontal: list[np.ndarray] = []
+        for line in lines[:, 0, :]:
+            x1, y1, x2, y2 = map(float, line)
+            angle = abs(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
+            if angle < 20 or angle > 160:
+                horizontal.append(np.array([x1, y1, x2, y2], dtype=np.float32))
+            elif 70 < angle < 110:
+                vertical.append(np.array([x1, y1, x2, y2], dtype=np.float32))
+        if len(horizontal) < 2 or len(vertical) < 2:
+            return None
+
+        def _line_pos(line: np.ndarray, axis: int) -> float:
+            return float((line[axis] + line[axis + 2]) * 0.5)
+
+        top = min(horizontal, key=lambda ln: _line_pos(ln, 1))
+        bottom = max(horizontal, key=lambda ln: _line_pos(ln, 1))
+        left = min(vertical, key=lambda ln: _line_pos(ln, 0))
+        right = max(vertical, key=lambda ln: _line_pos(ln, 0))
+        corners = [self._line_intersection(left, top), self._line_intersection(right, top), self._line_intersection(right, bottom), self._line_intersection(left, bottom)]
+        if any(pt is None for pt in corners):
+            return None
+        return np.array(corners, dtype=np.float32)
+
+    def _line_intersection(self, a: np.ndarray, b: np.ndarray) -> tuple[float, float] | None:
+        x1, y1, x2, y2 = map(float, a)
+        x3, y3, x4, y4 = map(float, b)
+        denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+        if abs(denom) < 1e-6:
+            return None
+        px = ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / denom
+        py = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / denom
+        return float(px), float(py)
 
     def _detect_anchors_by_profile(self, binary: np.ndarray, profile: str) -> list[tuple[float, float]]:
         p = str(profile or "auto").strip().lower()
@@ -380,20 +426,11 @@ class OMRProcessor:
                 if not any((pt[0] - q[0]) ** 2 + (pt[1] - q[1]) ** 2 < 36.0 for q in merged):
                     merged.append(pt)
             return merged[:20]
-        # auto fallback defaults to border-safe detector.
         return self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True, max_points=60)
 
     def _try_anchor_alignment(self, image: np.ndarray, binary: np.ndarray, template: Template, profile: str) -> tuple[np.ndarray, np.ndarray] | None:
         detected = self._detect_anchors_by_profile(binary, profile)
-        template_pts = np.array(
-            [
-                (a.x * template.width, a.y * template.height)
-                if a.x <= 1.0 and a.y <= 1.0
-                else (a.x, a.y)
-                for a in template.anchors
-            ],
-            dtype=np.float32,
-        )
+        template_pts = np.array([(a.x * template.width, a.y * template.height) if a.x <= 1.0 and a.y <= 1.0 else (a.x, a.y) for a in template.anchors], dtype=np.float32)
         if len(detected) < 4 or len(template_pts) < 4:
             return None
         src_pts, dst_pts = self._match_anchor_sets(np.array(detected, dtype=np.float32), template_pts)
@@ -404,23 +441,12 @@ class OMRProcessor:
         aligned_binary = cv2.warpPerspective(binary, h, (template.width, template.height))
         return aligned, aligned_binary
 
-    def _refine_alignment_with_one_side_anchors(
-        self,
-        aligned: np.ndarray,
-        aligned_binary: np.ndarray,
-        template: Template,
-    ) -> tuple[np.ndarray, np.ndarray]:
+    def _refine_alignment_with_one_side_anchors(self, aligned: np.ndarray, aligned_binary: np.ndarray, template: Template) -> tuple[np.ndarray, np.ndarray]:
         anchors = list(template.anchors or [])
         if len(anchors) < 4:
             return aligned, aligned_binary
 
-        tpl = np.array(
-            [
-                [a.x * template.width, a.y * template.height] if a.x <= 1.0 and a.y <= 1.0 else [a.x, a.y]
-                for a in anchors
-            ],
-            dtype=np.float32,
-        )
+        tpl = np.array([[a.x * template.width, a.y * template.height] if a.x <= 1.0 and a.y <= 1.0 else [a.x, a.y] for a in anchors], dtype=np.float32)
         mean_x = float(np.mean(tpl[:, 0]))
         right_side = mean_x >= (template.width * 0.5)
 
@@ -438,11 +464,9 @@ class OMRProcessor:
         if len(det_side) < 4 or len(tpl_side) < 4:
             return aligned, aligned_binary
 
-        # Top-down row-wise pairing by y-order.
         det_side = det_side[np.argsort(det_side[:, 1])]
         tpl_side = tpl_side[np.argsort(tpl_side[:, 1])]
 
-        # Trim outliers on both ends if very dense.
         def _trim(arr: np.ndarray) -> np.ndarray:
             if len(arr) <= 10:
                 return arr
@@ -463,8 +487,6 @@ class OMRProcessor:
             idx = np.linspace(0, len(tpl_side) - 1, n).astype(int)
             tpl_side = tpl_side[idx]
 
-        # Robust affine from row markers (used only to estimate stable shift;
-        # keep rendering geometry unchanged to avoid stretch artifacts).
         m, inliers = cv2.estimateAffinePartial2D(det_side, tpl_side, method=cv2.RANSAC, ransacReprojThreshold=3.0)
         if m is None:
             return aligned, aligned_binary
@@ -473,47 +495,29 @@ class OMRProcessor:
 
         sx = float(np.hypot(m[0, 0], m[1, 0]))
         sy = float(np.hypot(m[0, 1], m[1, 1]))
-        # Reject any noticeable scaling to preserve original sheet geometry.
         if sx < 0.985 or sx > 1.015 or sy < 0.985 or sy > 1.015:
             return aligned, aligned_binary
         if abs(float(m[0, 2])) > template.width * 0.10 or abs(float(m[1, 2])) > template.height * 0.12:
             return aligned, aligned_binary
 
-        # Use translation-only correction from matched anchors to avoid stretch.
         dx = float(np.median(tpl_side[:, 0] - det_side[:, 0]))
         dy = float(np.median(tpl_side[:, 1] - det_side[:, 1]))
         m_shift = np.array([[1.0, 0.0, dx], [0.0, 1.0, dy]], dtype=np.float32)
 
-        # Improvement gate on y-fit.
         probe = cv2.transform(det_side.reshape(1, -1, 2), m_shift).reshape(-1, 2)
         base_err = float(np.mean(np.abs(det_side[:, 1] - tpl_side[:, 1])))
         new_err = float(np.mean(np.abs(probe[:, 1] - tpl_side[:, 1])))
         if new_err > base_err - 0.2:
             return aligned, aligned_binary
 
-        refined = cv2.warpAffine(
-            aligned,
-            m_shift,
-            (template.width, template.height),
-            flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_REPLICATE,
-        )
-        refined_bin = cv2.warpAffine(
-            aligned_binary,
-            m_shift,
-            (template.width, template.height),
-            flags=cv2.INTER_NEAREST,
-            borderMode=cv2.BORDER_REPLICATE,
-        )
+        refined = cv2.warpAffine(aligned, m_shift, (template.width, template.height), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        refined_bin = cv2.warpAffine(aligned_binary, m_shift, (template.width, template.height), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_REPLICATE)
         return refined, refined_bin
 
-    def correct_perspective(
-        self,
-        image: np.ndarray,
-        binary: np.ndarray,
-        template: Template,
-        result: OMRResult,
-    ) -> tuple[np.ndarray, np.ndarray | None]:
+    def correct_perspective(self, image: np.ndarray, binary: np.ndarray, template: Template, result: OMRResult) -> tuple[np.ndarray, np.ndarray | None]:
+        self._last_alignment_debug = {}
+        aligned: np.ndarray | None = None
+        aligned_binary: np.ndarray | None = None
         mode = str(getattr(self, "alignment_profile", "auto") or "auto").strip().lower()
         candidates: list[str] = []
         if mode == "auto":
@@ -530,54 +534,126 @@ class OMRProcessor:
 
         for candidate in candidates:
             if candidate == "one_side":
-                # One-side ruler templates are sensitive to page warping artifacts.
-                # Use a conservative coarse alignment that falls back to plain resize
-                # when contour homography looks non-physical.
                 coarse_img, coarse_bin = self._fallback_align_page_contour(image, template, conservative=True)
                 refined_img, refined_bin = self._refine_alignment_with_one_side_anchors(coarse_img, coarse_bin, template)
-                return refined_img, refined_bin
+                oriented_img, oriented_bin = self._auto_orient(refined_img, refined_bin, template)
+                shifted_img, shifted_bin = self._refine_corner_translation(oriented_img, oriented_bin, template)
+                self._last_alignment_debug["alignment_mode"] = "one_side"
+                return shifted_img, shifted_bin
 
             attempt = self._try_anchor_alignment(image, binary, template, candidate)
             if attempt is None:
                 continue
-            aligned, aligned_binary = attempt
-            if candidate == "legacy":
-                return aligned, aligned_binary
-            refined_img, refined_bin = self._refine_alignment_with_template_anchors(aligned, aligned_binary, template)
-            return refined_img, refined_bin
+            coarse_img, coarse_bin = attempt
+            refined_img, refined_bin = (coarse_img, coarse_bin) if candidate == "legacy" else self._refine_alignment_with_template_anchors(coarse_img, coarse_bin, template)
+            oriented_img, oriented_bin = self._auto_orient(refined_img, refined_bin, template)
+            shifted_img, shifted_bin = self._refine_corner_translation(oriented_img, oriented_bin, template)
+            self._last_alignment_debug["alignment_mode"] = candidate
+            return shifted_img, shifted_bin
 
         result.issues.append(OMRIssue("MISSING_ANCHORS", "Anchor detection failed; using page contour fallback"))
-        fallback_img, fallback_bin = self._fallback_align_page_contour(image, template)
-        refined_img, refined_bin = self._refine_alignment_with_template_anchors(fallback_img, fallback_bin, template)
-        return refined_img, refined_bin
+        aligned, aligned_binary = self._fallback_align_page_contour(image, template)
+        refined_img, refined_bin = self._refine_alignment_with_template_anchors(aligned, aligned_binary, template)
+        oriented_img, oriented_bin = self._auto_orient(refined_img, refined_bin, template)
+        shifted_img, shifted_bin = self._refine_corner_translation(oriented_img, oriented_bin, template)
+        self._last_alignment_debug.setdefault("alignment_mode", "page_contour")
+        return shifted_img, shifted_bin
 
-    def _refine_alignment_with_template_anchors(
-        self,
-        aligned: np.ndarray,
-        aligned_binary: np.ndarray,
-        template: Template,
-    ) -> tuple[np.ndarray, np.ndarray]:
+    def _auto_orient(self, aligned: np.ndarray, aligned_binary: np.ndarray, template: Template) -> tuple[np.ndarray, np.ndarray]:
+        candidates = []
+        for rotation in (0, 90, 180, 270):
+            if rotation == 0:
+                img_r = aligned
+                bin_r = aligned_binary
+            elif rotation == 90:
+                img_r = cv2.rotate(aligned, cv2.ROTATE_90_CLOCKWISE)
+                bin_r = cv2.rotate(aligned_binary, cv2.ROTATE_90_CLOCKWISE)
+            elif rotation == 180:
+                img_r = cv2.rotate(aligned, cv2.ROTATE_180)
+                bin_r = cv2.rotate(aligned_binary, cv2.ROTATE_180)
+            else:
+                img_r = cv2.rotate(aligned, cv2.ROTATE_90_COUNTERCLOCKWISE)
+                bin_r = cv2.rotate(aligned_binary, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            if img_r.shape[1] != template.width or img_r.shape[0] != template.height:
+                img_r = cv2.resize(img_r, (template.width, template.height), interpolation=cv2.INTER_LINEAR)
+                bin_r = cv2.resize(bin_r, (template.width, template.height), interpolation=cv2.INTER_NEAREST)
+            score = self._orientation_score(bin_r, template)
+            candidates.append((score, rotation, img_r, bin_r))
+        by_rotation = {rotation: (score, img_r, bin_r) for score, rotation, img_r, bin_r in candidates}
+        zero_score = by_rotation[0][0]
+        best_score, best_rotation, best_img, best_bin = max(candidates, key=lambda item: item[0])
+        flip_score = by_rotation[180][0]
+
+        chosen_rotation = 0
+        chosen_img = by_rotation[0][1]
+        chosen_bin = by_rotation[0][2]
+
+        if flip_score > zero_score + 12.0:
+            chosen_rotation = 180
+            chosen_img = by_rotation[180][1]
+            chosen_bin = by_rotation[180][2]
+
+        if best_rotation in {90, 270} and best_score > max(zero_score, flip_score) + 40.0:
+            chosen_rotation = int(best_rotation)
+            chosen_img = best_img
+            chosen_bin = best_bin
+
+        self._last_alignment_debug["orientation_rotation"] = int(chosen_rotation)
+        return chosen_img, chosen_bin
+
+    def _orientation_score(self, binary: np.ndarray, template: Template) -> float:
+        score = 0.0
+        anchors = np.array(self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True, max_points=80), dtype=np.float32)
+        if len(anchors) >= 4 and len(template.anchors) >= 4:
+            tpl = np.array([(a.x * template.width, a.y * template.height) if a.x <= 1.0 and a.y <= 1.0 else (a.x, a.y) for a in template.anchors], dtype=np.float32)
+            tpl = self._pick_corner_like_points(tpl)
+            total = 0.0
+            for pt in tpl:
+                d2 = np.sum((anchors - pt) ** 2, axis=1)
+                total += float(np.sqrt(float(np.min(d2))))
+            score -= total
+            score += float(min(len(anchors), 12)) * 6.0
+        vert = np.sum(binary > 0, axis=0).astype(np.float32)
+        horz = np.sum(binary > 0, axis=1).astype(np.float32)
+        score += float(np.std(vert) + np.std(horz)) * 0.02
+        m = cv2.moments(binary)
+        if abs(m.get("mu02", 0.0)) > 1e-6:
+            angle = 0.5 * np.degrees(np.arctan2(2.0 * m.get("mu11", 0.0), m.get("mu20", 0.0) - m.get("mu02", 0.0)))
+            score -= abs(float(angle)) * 0.1
+        return score
+
+    def _refine_corner_translation(self, aligned: np.ndarray, aligned_binary: np.ndarray, template: Template) -> tuple[np.ndarray, np.ndarray]:
+        if len(template.anchors) < 4:
+            return aligned, aligned_binary
+        template_pts = np.array([(a.x * template.width, a.y * template.height) if a.x <= 1.0 and a.y <= 1.0 else (a.x, a.y) for a in template.anchors], dtype=np.float32)
+        ordered_template = self._order_points(self._pick_corner_like_points(template_pts))
+        detected = np.array(self.detect_anchors(aligned_binary, use_border_padding=True, relaxed_polygon=True, max_points=120), dtype=np.float32)
+        if len(detected) < 4:
+            return aligned, aligned_binary
+        ordered_detected = self._order_points(self._pick_corner_like_points(detected))
+        delta = ordered_template - ordered_detected
+        dx = float(np.median(delta[:, 0]))
+        dy = float(np.median(delta[:, 1]))
+        if abs(dx) < 0.25 and abs(dy) < 0.25:
+            return aligned, aligned_binary
+        shift = np.array([[1.0, 0.0, dx], [0.0, 1.0, dy]], dtype=np.float32)
+        shifted = cv2.warpAffine(aligned, shift, (template.width, template.height), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        shifted_bin = cv2.warpAffine(aligned_binary, shift, (template.width, template.height), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_REPLICATE)
+        self._last_alignment_debug["fine_offset"] = {"dx": dx, "dy": dy}
+        return shifted, shifted_bin
+
+    def _refine_alignment_with_template_anchors(self, aligned: np.ndarray, aligned_binary: np.ndarray, template: Template) -> tuple[np.ndarray, np.ndarray]:
         if len(template.anchors) < 4:
             return aligned, aligned_binary
         detected = self.detect_anchors(aligned_binary)
         if len(detected) < 4:
             return aligned, aligned_binary
 
-        template_pts = np.array(
-            [
-                (a.x * template.width, a.y * template.height)
-                if a.x <= 1.0 and a.y <= 1.0
-                else (a.x, a.y)
-                for a in template.anchors
-            ],
-            dtype=np.float32,
-        )
+        template_pts = np.array([(a.x * template.width, a.y * template.height) if a.x <= 1.0 and a.y <= 1.0 else (a.x, a.y) for a in template.anchors], dtype=np.float32)
         detected_arr = np.array(detected, dtype=np.float32)
         if len(template_pts) < 4:
             return aligned, aligned_binary
 
-        # Match by nearest position in template coordinate space after coarse alignment.
-        # Keep this gate strict to avoid over-correcting already-good legacy templates.
         max_dist = max(8.0, 0.02 * float(np.hypot(template.width, template.height)))
         src_matches: list[np.ndarray] = []
         dst_matches: list[np.ndarray] = []
@@ -603,22 +679,16 @@ class OMRProcessor:
         if mask is not None and int(mask.sum()) < 5:
             return aligned, aligned_binary
 
-        # Guard rails: refinement should be a small correction in template space.
         h = h.astype(np.float64)
         if abs(float(h[2, 0])) > 2e-4 or abs(float(h[2, 1])) > 2e-4:
             return aligned, aligned_binary
 
-        # Reprojection quality check on matched points.
         proj = cv2.perspectiveTransform(src.reshape(-1, 1, 2), h).reshape(-1, 2)
         rmse = float(np.sqrt(np.mean(np.sum((proj - dst) ** 2, axis=1))))
         if not np.isfinite(rmse) or rmse > 3.5:
             return aligned, aligned_binary
 
-        # Scale/shift sanity to prevent large accidental warps on legacy templates.
-        corners = np.array(
-            [[[0.0, 0.0]], [[template.width - 1.0, 0.0]], [[template.width - 1.0, template.height - 1.0]], [[0.0, template.height - 1.0]]],
-            dtype=np.float32,
-        )
+        corners = np.array([[[0.0, 0.0]], [[template.width - 1.0, 0.0]], [[template.width - 1.0, template.height - 1.0]], [[0.0, template.height - 1.0]]], dtype=np.float32)
         warped_corners = cv2.perspectiveTransform(corners, h).reshape(4, 2)
         orig_area = float(template.width * template.height)
         warped_area = abs(float(cv2.contourArea(warped_corners.astype(np.float32))))
@@ -636,7 +706,6 @@ class OMRProcessor:
         refined = cv2.warpPerspective(aligned, h, (template.width, template.height))
         refined_bin = cv2.warpPerspective(aligned_binary, h, (template.width, template.height))
 
-        # Final acceptance: refined result must not degrade anchor fit.
         refined_detected = self.detect_anchors(refined_bin)
         if len(refined_detected) >= 4:
             ref_arr = np.array(refined_detected, dtype=np.float32)
@@ -651,45 +720,28 @@ class OMRProcessor:
 
             base_err = _nearest_avg(base_arr, template_pts)
             refined_err = _nearest_avg(ref_arr, template_pts)
-            # Require meaningful improvement; otherwise keep coarse alignment.
             if not np.isfinite(refined_err) or refined_err > (base_err - 0.5):
                 return aligned, aligned_binary
 
         return refined, refined_bin
 
     def _fallback_align_page_contour(self, image: np.ndarray, template: Template, conservative: bool = False) -> tuple[np.ndarray, np.ndarray]:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(blur, 50, 150)
-        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
+        corners = self._detect_page_corners(image)
+        if corners is None:
             resized = cv2.resize(image, (template.width, template.height))
             return resized, self._preprocess(resized)["binary"]
-        page = max(contours, key=cv2.contourArea)
-        peri = cv2.arcLength(page, True)
-        approx = cv2.approxPolyDP(page, 0.02 * peri, True)
-        if len(approx) != 4:
+        if not self._is_reasonable_page_warp(corners, image.shape[:2], template):
             resized = cv2.resize(image, (template.width, template.height))
             return resized, self._preprocess(resized)["binary"]
-        src = self._order_points(approx.reshape(4, 2).astype(np.float32))
-        dst = np.array(
-            [[0, 0], [template.width - 1, 0], [template.width - 1, template.height - 1], [0, template.height - 1]],
-            dtype=np.float32,
-        )
-        h = cv2.getPerspectiveTransform(src, dst)
+        self._last_alignment_debug["page_corners"] = corners.tolist()
+        dst = np.array([[0, 0], [template.width - 1, 0], [template.width - 1, template.height - 1], [0, template.height - 1]], dtype=np.float32)
+        h = cv2.getPerspectiveTransform(corners.astype(np.float32), dst)
         if conservative:
-            # Gate perspective warps aggressively for one-side profile to avoid
-            # visible stretch/keystone distortions in recognition preview.
             h64 = h.astype(np.float64)
             if abs(float(h64[2, 0])) > 1.2e-4 or abs(float(h64[2, 1])) > 1.2e-4:
                 resized = cv2.resize(image, (template.width, template.height))
                 return resized, self._preprocess(resized)["binary"]
-
-            corners = np.array(
-                [[[0.0, 0.0]], [[template.width - 1.0, 0.0]], [[template.width - 1.0, template.height - 1.0]], [[0.0, template.height - 1.0]]],
-                dtype=np.float32,
-            )
-            warped_corners = cv2.perspectiveTransform(corners, h64.astype(np.float32)).reshape(4, 2)
+            warped_corners = cv2.perspectiveTransform(np.array([[[0.0, 0.0]], [[template.width - 1.0, 0.0]], [[template.width - 1.0, template.height - 1.0]], [[0.0, template.height - 1.0]]], dtype=np.float32), h64.astype(np.float32)).reshape(4, 2)
             warped_area = abs(float(cv2.contourArea(warped_corners.astype(np.float32))))
             base_area = float(template.width * template.height)
             if base_area <= 0:
@@ -699,12 +751,30 @@ class OMRProcessor:
             if area_ratio < 0.96 or area_ratio > 1.04:
                 resized = cv2.resize(image, (template.width, template.height))
                 return resized, self._preprocess(resized)["binary"]
+        aligned = cv2.warpPerspective(image, h, (template.width, template.height), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        aligned_binary = cv2.warpPerspective(self._preprocess(image)["binary"], h, (template.width, template.height), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_REPLICATE)
+        return aligned, aligned_binary
 
-        aligned = cv2.warpPerspective(image, h, (template.width, template.height))
-        return aligned, cv2.warpPerspective(self._preprocess(image)["binary"], h, (template.width, template.height))
+    def _is_reasonable_page_warp(self, corners: np.ndarray, image_shape: tuple[int, int], template: Template) -> bool:
+        img_h, img_w = image_shape
+        if len(corners) != 4:
+            return False
+        area = abs(float(cv2.contourArea(corners.astype(np.float32))))
+        image_area = float(img_w * img_h)
+        if image_area <= 0 or area < image_area * 0.45:
+            return False
+        width_top = float(np.linalg.norm(corners[1] - corners[0]))
+        width_bottom = float(np.linalg.norm(corners[2] - corners[3]))
+        height_left = float(np.linalg.norm(corners[3] - corners[0]))
+        height_right = float(np.linalg.norm(corners[2] - corners[1]))
+        avg_width = max(1.0, 0.5 * (width_top + width_bottom))
+        avg_height = max(1.0, 0.5 * (height_left + height_right))
+        source_ratio = avg_width / avg_height
+        template_ratio = float(template.width) / max(1.0, float(template.height))
+        ratio_delta = abs(np.log(max(source_ratio, 1e-6) / max(template_ratio, 1e-6)))
+        return ratio_delta <= 0.35
 
     def _match_anchor_sets(self, detected: np.ndarray, template_pts: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        # stable match by relative quadrant ordering; robust to extra detections
         det = self._order_points(self._pick_corner_like_points(detected))
         dst = self._order_points(self._pick_corner_like_points(template_pts))
         return det.astype(np.float32), dst.astype(np.float32)
@@ -714,16 +784,21 @@ class OMRProcessor:
             return pts[:4]
         sums = pts[:, 0] + pts[:, 1]
         diffs = pts[:, 0] - pts[:, 1]
-        picks = [
-            pts[np.argmin(sums)],
-            pts[np.argmin(diffs)],
-            pts[np.argmax(sums)],
-            pts[np.argmax(diffs)],
-        ]
+        picks = [pts[np.argmin(sums)], pts[np.argmax(diffs)], pts[np.argmax(sums)], pts[np.argmin(diffs)]]
         return np.array(picks, dtype=np.float32)
 
+    def _estimate_local_fill_threshold(self, binary: np.ndarray, center: np.ndarray, radius: int, fallback: float) -> float:
+        x, y = map(int, center)
+        pad = max(radius * 2, 12)
+        x0, y0 = max(0, x - pad), max(0, y - pad)
+        x1, y1 = min(binary.shape[1], x + pad + 1), min(binary.shape[0], y + pad + 1)
+        roi = binary[y0:y1, x0:x1]
+        if roi.size == 0:
+            return fallback
+        local_density = float(np.count_nonzero(roi)) / float(roi.size)
+        return float(np.clip(0.65 * fallback + 0.35 * max(self.empty_threshold + 0.02, local_density * 1.15), self.empty_threshold + 0.02, 0.85))
+
     def detect_bubbles(self, binary: np.ndarray, centers: np.ndarray, radius: int) -> np.ndarray:
-        # X-stroke mask is more robust than circular-area ratio for irregular/partially filled marks.
         mask = self._get_x_mask(radius)
         r = max(3, int(radius))
         h, w = binary.shape[:2]
@@ -738,12 +813,14 @@ class OMRProcessor:
             x0c, y0c = max(0, x0), max(0, y0)
             x1c, y1c = min(w, x1), min(h, y1)
             roi = binary[y0c:y1c, x0c:x1c]
-            local_mask = mask[(y0c - y0) : (y1c - y0), (x0c - x0) : (x1c - x0)]
+            local_mask = mask[(y0c - y0):(y1c - y0), (x0c - x0):(x1c - x0)]
             den = float(np.count_nonzero(local_mask))
             if roi.size == 0 or den == 0:
                 continue
             dark_pixels = cv2.countNonZero(roi[local_mask])
-            ratios[i] = float(dark_pixels) / den
+            fill_ratio = float(dark_pixels) / den
+            mean_density = float(np.count_nonzero(roi)) / float(roi.size)
+            ratios[i] = float(np.clip(0.8 * fill_ratio + 0.2 * mean_density, 0.0, 1.0))
         return ratios
 
     def classify_bubble(self, ratio: float) -> str:
@@ -753,77 +830,124 @@ class OMRProcessor:
             return "empty"
         return "uncertain"
 
-    def recognize_block(
-        self,
-        binary: np.ndarray,
-        zone: Zone,
-        template: Template,
-        result: OMRResult,
-        debug_overlay: np.ndarray | None = None,
-    ) -> None:
+    def _resolve_zone_centers(self, binary: np.ndarray, zone: Zone, template: Template) -> np.ndarray:
+        grid = zone.grid
+        if not grid or not grid.bubble_positions:
+            return np.empty((0, 2), dtype=np.float32)
+        h, w = binary.shape[:2]
+        expected = np.array([(x * w, y * h) if x <= 1.0 and y <= 1.0 else (x, y) for x, y in grid.bubble_positions], dtype=np.float32)
+        rows, cols = max(1, grid.rows), max(1, grid.cols)
+        x0 = int(max(0, np.min(expected[:, 0]) - max(8, zone.metadata.get("bubble_radius", 9) * 2)))
+        y0 = int(max(0, np.min(expected[:, 1]) - max(8, zone.metadata.get("bubble_radius", 9) * 2)))
+        x1 = int(min(w, np.max(expected[:, 0]) + max(8, zone.metadata.get("bubble_radius", 9) * 2)))
+        y1 = int(min(h, np.max(expected[:, 1]) + max(8, zone.metadata.get("bubble_radius", 9) * 2)))
+        roi = binary[y0:y1, x0:x1]
+        if roi.size == 0:
+            return expected
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(roi, connectivity=8)
+        candidates: list[np.ndarray] = []
+        bubble_radius = float(zone.metadata.get("bubble_radius", 9))
+        min_area = max(6.0, 0.25 * np.pi * (bubble_radius ** 2))
+        max_area = max(min_area * 3.5, 4.0 * np.pi * (bubble_radius ** 2))
+        for idx in range(1, num_labels):
+            area = float(stats[idx, cv2.CC_STAT_AREA])
+            if area < min_area or area > max_area:
+                continue
+            cx, cy = centroids[idx]
+            candidates.append(np.array([cx + x0, cy + y0], dtype=np.float32))
+        if len(candidates) < max(4, min(len(expected), rows * cols // 3)):
+            return expected
+        candidates_arr = np.array(candidates, dtype=np.float32)
+        order_y = np.argsort(candidates_arr[:, 1])
+        candidates_arr = candidates_arr[order_y]
+        row_bins = np.array_split(candidates_arr, rows)
+        snapped: list[np.ndarray] = []
+        for row_idx, row_pts in enumerate(row_bins):
+            row_sorted = row_pts[np.argsort(row_pts[:, 0])]
+            if len(row_sorted) == 0:
+                continue
+            if len(row_sorted) >= cols:
+                pick_idx = np.linspace(0, len(row_sorted) - 1, cols).astype(int)
+                row_sorted = row_sorted[pick_idx]
+            else:
+                augmented = []
+                for col_idx in range(cols):
+                    exp_idx = min(len(expected) - 1, row_idx * cols + col_idx)
+                    exp_pt = expected[exp_idx]
+                    d2 = np.sum((row_sorted - exp_pt) ** 2, axis=1)
+                    augmented.append(row_sorted[int(np.argmin(d2))])
+                row_sorted = np.array(augmented, dtype=np.float32)
+            snapped.extend(list(row_sorted[:cols]))
+        if len(snapped) != len(expected):
+            return expected
+        return np.array(snapped, dtype=np.float32)
+
+    def recognize_block(self, binary: np.ndarray, zone: Zone, template: Template, result: OMRResult, debug_overlay: np.ndarray | None = None) -> None:
         grid = zone.grid
         if not grid or not grid.bubble_positions:
             return
 
-        h, w = binary.shape[:2]
-        centers = np.array(
-            [
-                (x * w, y * h) if x <= 1.0 and y <= 1.0 else (x, y)
-                for x, y in grid.bubble_positions
-            ],
-            dtype=np.float32,
-        )
+        centers = self._resolve_zone_centers(binary, zone, template)
         radius = int(zone.metadata.get("bubble_radius", 9))
         ratios = self.detect_bubbles(binary, centers, radius)
+        dynamic_thresholds = np.array([self._estimate_local_fill_threshold(binary, center, radius, self.fill_threshold) for center in centers], dtype=np.float32)
 
         rows, cols = max(1, grid.rows), max(1, grid.cols)
         need = rows * cols
         if len(ratios) < need:
             ratios = np.pad(ratios, (0, need - len(ratios)), constant_values=0.0)
+            dynamic_thresholds = np.pad(dynamic_thresholds, (0, need - len(dynamic_thresholds)), constant_values=self.fill_threshold)
         mat = ratios[:need].reshape(rows, cols)
+        local_fill = dynamic_thresholds[:need].reshape(rows, cols)
 
-        if debug_overlay is not None:
-            self._draw_debug_overlay(debug_overlay, centers, ratios, radius)
+        orig_fill = self.fill_threshold
+        self.fill_threshold = float(np.clip(np.median(local_fill), orig_fill - 0.08, orig_fill + 0.08))
+        try:
+            if debug_overlay is not None:
+                self._draw_debug_overlay(debug_overlay, centers, ratios, radius, zone)
 
-        if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
-            value, confs = self._decode_column_digits(mat, zone, grid, result)
-            key = "student_id" if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else "exam_code"
-            if key == "student_id":
-                result.student_id = value
-            else:
-                result.exam_code = value
-            result.confidence_scores[f"{key}:{zone.id}"] = float(np.mean(confs)) if confs else 0.0
-            return
+            if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+                value, confs = self._decode_column_digits(mat, zone, grid, result)
+                key = "student_id" if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else "exam_code"
+                if key == "student_id":
+                    result.student_id = value
+                else:
+                    result.exam_code = value
+                result.confidence_scores[f"{key}:{zone.id}"] = float(np.mean(confs)) if confs else 0.0
+                return
 
-        if zone.zone_type == ZoneType.MCQ_BLOCK:
-            labels = grid.options if grid.options else [chr(65 + i) for i in range(cols)]
-            confs: list[float] = []
-            q_count = min(grid.question_count or rows, rows)
-            for r in range(q_count):
-                qno = grid.question_start + r
-                row_scores = mat[r, :]
-                order = np.argsort(row_scores)[::-1]
-                top_i, second_i = int(order[0]), int(order[1]) if len(order) > 1 else int(order[0])
-                top, second = float(row_scores[top_i]), float(row_scores[second_i]) if len(order) > 1 else 0.0
-                filled = np.where(row_scores > self.fill_threshold)[0]
-                if len(filled) > 1:
-                    result.recognition_errors.append(f"MCQ Q{qno}: multiple answer")
-                    continue
-                if self.classify_bubble(top) != "filled" or (top - second) <= self.certainty_margin:
-                    result.recognition_errors.append(f"MCQ Q{qno}: uncertain")
-                    continue
-                result.mcq_answers[qno] = labels[top_i]
-                confs.append(top - second)
-            result.confidence_scores[f"mcq:{zone.id}"] = float(np.mean(confs)) if confs else 0.0
-            return
+            if zone.zone_type == ZoneType.MCQ_BLOCK:
+                labels = grid.options if grid.options else [chr(65 + i) for i in range(cols)]
+                confs: list[float] = []
+                q_count = min(grid.question_count or rows, rows)
+                for r in range(q_count):
+                    qno = grid.question_start + r
+                    row_scores = mat[r, :]
+                    row_threshold = float(np.median(local_fill[r, :])) if local_fill.shape[1] else self.fill_threshold
+                    order = np.argsort(row_scores)[::-1]
+                    top_i, second_i = int(order[0]), int(order[1]) if len(order) > 1 else int(order[0])
+                    top, second = float(row_scores[top_i]), float(row_scores[second_i]) if len(order) > 1 else 0.0
+                    filled = np.where(row_scores > row_threshold)[0]
+                    if len(filled) > 1:
+                        result.recognition_errors.append(f"MCQ Q{qno}: multiple answer")
+                        continue
+                    if top <= row_threshold or (top - second) <= self.certainty_margin:
+                        result.recognition_errors.append(f"MCQ Q{qno}: uncertain")
+                        continue
+                    result.mcq_answers[qno] = labels[top_i]
+                    confs.append(top - second)
+                result.confidence_scores[f"mcq:{zone.id}"] = float(np.mean(confs)) if confs else 0.0
+                return
 
-        if zone.zone_type == ZoneType.TRUE_FALSE_BLOCK:
-            self._decode_true_false(mat, zone, grid, result)
-            return
+            if zone.zone_type == ZoneType.TRUE_FALSE_BLOCK:
+                self._decode_true_false(mat, zone, grid, result)
+                return
 
-        if zone.zone_type == ZoneType.NUMERIC_BLOCK:
-            self._decode_numeric(mat, zone, grid, result)
-            return
+            if zone.zone_type == ZoneType.NUMERIC_BLOCK:
+                self._decode_numeric(mat, zone, grid, result)
+                return
+        finally:
+            self.fill_threshold = orig_fill
 
     def _decode_column_digits(self, mat: np.ndarray, zone: Zone, grid, result: OMRResult) -> tuple[str, list[float]]:
         rows, cols = mat.shape
@@ -930,8 +1054,6 @@ class OMRProcessor:
             else:
                 value = value.rstrip("?")
             if sign_mark is not None:
-                # If sign is marked, drop uncertain placeholder(s) immediately after sign.
-                # Keep internal placeholders for later digits to preserve uncertainty signal.
                 value = value.lstrip("?")
                 value = sign_symbol + value
             result.numeric_answers[grid.question_start + q] = value
@@ -988,22 +1110,32 @@ class OMRProcessor:
         self._mask_cache[r] = (mask, float(np.count_nonzero(mask)))
         return mask
 
-    def _draw_debug_overlay(self, image: np.ndarray, centers: np.ndarray, ratios: np.ndarray, radius: int) -> None:
+    def _draw_alignment_debug(self, image: np.ndarray, template: Template) -> None:
+        corners = self._last_alignment_debug.get("page_corners") or []
+        if len(corners) == 4:
+            for idx, pt in enumerate(np.array(corners, dtype=np.int32)):
+                cv2.circle(image, tuple(pt), 8, (0, 165, 255), -1)
+                cv2.putText(image, f"C{idx+1}", (int(pt[0]) + 8, int(pt[1]) - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1, cv2.LINE_AA)
+        for zone in template.zones:
+            x = int(zone.x * template.width)
+            y = int(zone.y * template.height)
+            ww = int(zone.width * template.width)
+            hh = int(zone.height * template.height)
+            cv2.rectangle(image, (x, y), (x + ww, y + hh), (255, 128, 0), 1)
+
+    def _draw_debug_overlay(self, image: np.ndarray, centers: np.ndarray, ratios: np.ndarray, radius: int, zone: Zone | None = None) -> None:
+        if zone is not None:
+            x = int(zone.x * image.shape[1])
+            y = int(zone.y * image.shape[0])
+            w = int(zone.width * image.shape[1])
+            h = int(zone.height * image.shape[0])
+            cv2.rectangle(image, (x, y), (x + w, y + h), (255, 128, 0), 1)
         for (x, y), ratio in zip(centers.astype(np.int32), ratios):
             state = self.classify_bubble(float(ratio))
             color = (0, 255, 0) if state == "filled" else (0, 0, 255) if state == "empty" else (255, 255, 0)
             cv2.circle(image, (int(x), int(y)), radius, (255, 0, 0), 1)
             cv2.circle(image, (int(x), int(y)), max(2, radius // 4), color, -1)
-            cv2.putText(
-                image,
-                f"{ratio:.2f}",
-                (int(x + radius + 2), int(y)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.35,
-                color,
-                1,
-                cv2.LINE_AA,
-            )
+            cv2.putText(image, f"{ratio:.2f}", (int(x + radius + 2), int(y)), cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1, cv2.LINE_AA)
 
     def _order_points(self, pts: np.ndarray) -> np.ndarray:
         if len(pts) < 4:

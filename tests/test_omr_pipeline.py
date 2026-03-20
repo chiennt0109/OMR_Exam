@@ -493,6 +493,131 @@ class OMRPipelineTests(unittest.TestCase):
         result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
         self.processor.recognize_block(binary, template.zones[0], template, result_stub)
         self.assertEqual(result_stub.numeric_answers.get(1), "-9?3")
+    def _build_sheet_with_corner_markers(self, width: int = 600, height: int = 900) -> np.ndarray:
+        img = np.full((height, width, 3), 255, dtype=np.uint8)
+        cv2.rectangle(img, (30, 30), (80, 80), (0, 0, 0), -1)
+        cv2.rectangle(img, (width - 80, 30), (width - 30, 80), (0, 0, 0), -1)
+        cv2.rectangle(img, (width - 80, height - 80), (width - 30, height - 30), (0, 0, 0), -1)
+        cv2.rectangle(img, (30, height - 80), (80, height - 30), (0, 0, 0), -1)
+        cv2.rectangle(img, (10, 10), (width - 10, height - 10), (0, 0, 0), 4)
+        return img
+
+    def test_detect_page_corners_from_sheet_border(self):
+        image = self._build_sheet_with_corner_markers()
+        corners = self.processor._detect_page_corners(image)
+        self.assertIsNotNone(corners)
+        self.assertEqual(corners.shape, (4, 2))
+        self.assertLess(np.linalg.norm(corners[0] - np.array([9.0, 9.0], dtype=np.float32)), 40.0)
+        self.assertLess(np.linalg.norm(corners[2] - np.array([590.0, 890.0], dtype=np.float32)), 40.0)
+
+    def test_correct_perspective_handles_rotation_and_perspective_distortion(self):
+        template = Template(
+            name="sheet",
+            image_path="",
+            width=400,
+            height=600,
+            anchors=[AnchorPoint(0.08, 0.08), AnchorPoint(0.92, 0.08), AnchorPoint(0.92, 0.92), AnchorPoint(0.08, 0.92)],
+            zones=[],
+        )
+        base = np.full((600, 400, 3), 255, dtype=np.uint8)
+        cv2.rectangle(base, (0, 0), (399, 599), (0, 0, 0), 4)
+        for x, y in [(32, 48), (368, 48), (368, 552), (32, 552)]:
+            cv2.rectangle(base, (x - 14, y - 14), (x + 14, y + 14), (0, 0, 0), -1)
+
+        src = np.array([[0, 0], [399, 0], [399, 599], [0, 599]], dtype=np.float32)
+        dst = np.array([[30, 20], [360, 5], [390, 590], [10, 560]], dtype=np.float32)
+        warped = cv2.warpPerspective(base, cv2.getPerspectiveTransform(src, dst), (400, 600), borderValue=(255, 255, 255))
+        rotated = cv2.warpAffine(warped, cv2.getRotationMatrix2D((200, 300), 7.0, 1.0), (400, 600), borderValue=(255, 255, 255))
+        binary = self.processor._preprocess(rotated)["binary"]
+        result_stub = type("R", (), {"issues": []})()
+
+        aligned, aligned_binary = self.processor.correct_perspective(rotated, binary, template, result_stub)
+        anchors = np.array(self.processor.detect_anchors(aligned_binary, max_points=20), dtype=np.float32)
+        expected = np.array([[32, 48], [368, 48], [368, 552], [32, 552]], dtype=np.float32)
+        distances = []
+        for pt in expected:
+            d2 = np.sum((anchors - pt) ** 2, axis=1)
+            distances.append(np.sqrt(np.min(d2)))
+        self.assertLess(float(np.mean(distances)), 20.0)
+        self.assertEqual(aligned.shape[:2], (600, 400))
+
+    def test_resolve_zone_centers_uses_connected_components_grid_relaxation(self):
+        template = Template(
+            name="mcq",
+            image_path="",
+            width=200,
+            height=120,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="mcq1",
+                    name="mcq",
+                    zone_type=ZoneType.MCQ_BLOCK,
+                    x=0.0,
+                    y=0.0,
+                    width=1.0,
+                    height=1.0,
+                    grid=BubbleGrid(
+                        rows=1,
+                        cols=4,
+                        question_start=1,
+                        question_count=1,
+                        options=["A", "B", "C", "D"],
+                        bubble_positions=[(40, 60), (80, 60), (120, 60), (160, 60)],
+                    ),
+                    metadata={"bubble_radius": 10},
+                )
+            ],
+        )
+        binary = np.zeros((120, 200), dtype=np.uint8)
+        actual = np.array([[36, 58], [79, 61], [123, 59], [165, 62]], dtype=np.int32)
+        for x, y in actual:
+            cv2.circle(binary, (int(x), int(y)), 8, 255, -1)
+
+        centers = self.processor._resolve_zone_centers(binary, template.zones[0], template)
+        self.assertEqual(centers.shape, (4, 2))
+        self.assertLess(float(np.mean(np.linalg.norm(centers - actual.astype(np.float32), axis=1))), 8.0)
+
+    def test_auto_orient_keeps_original_when_90_degree_score_is_ambiguous(self):
+        template = Template(
+            name="sheet",
+            image_path="",
+            width=400,
+            height=600,
+            anchors=[AnchorPoint(0.08, 0.08), AnchorPoint(0.92, 0.08), AnchorPoint(0.92, 0.92), AnchorPoint(0.08, 0.92)],
+            zones=[],
+        )
+        aligned = np.full((600, 400, 3), 255, dtype=np.uint8)
+        aligned_binary = np.zeros((600, 400), dtype=np.uint8)
+        with patch.object(self.processor, "_orientation_score", side_effect=[120.0, 135.0, 118.0, 110.0]):
+            out_img, out_bin = self.processor._auto_orient(aligned, aligned_binary, template)
+
+        self.assertEqual(out_img.shape[:2], (600, 400))
+        self.assertEqual(out_bin.shape[:2], (600, 400))
+        self.assertEqual(self.processor._last_alignment_debug["orientation_rotation"], 0)
+
+    def test_reasonable_page_warp_rejects_small_inner_contours(self):
+        template = Template(name="sheet", image_path="", width=400, height=600, anchors=[], zones=[])
+        inner = np.array([[80, 120], [320, 120], [320, 480], [80, 480]], dtype=np.float32)
+        self.assertFalse(self.processor._is_reasonable_page_warp(inner, (600, 400), template))
+
+    def test_correct_perspective_fallback_path_does_not_use_uninitialized_alignment(self):
+        template = Template(name="sheet", image_path="", width=400, height=600, anchors=[], zones=[])
+        image = np.zeros((600, 400, 3), dtype=np.uint8)
+        binary = np.zeros((600, 400), dtype=np.uint8)
+        result_stub = type("R", (), {"issues": []})()
+        fallback_img = np.zeros_like(image)
+        fallback_bin = np.zeros_like(binary)
+
+        with patch.object(self.processor, "_fallback_align_page_contour", return_value=(fallback_img, fallback_bin)), \
+            patch.object(self.processor, "_refine_alignment_with_template_anchors", side_effect=lambda img, bin_img, _tpl: (img, bin_img)), \
+            patch.object(self.processor, "_auto_orient", side_effect=lambda img, bin_img, _tpl: (img, bin_img)), \
+            patch.object(self.processor, "_refine_corner_translation", side_effect=lambda img, bin_img, _tpl: (img, bin_img)):
+            aligned, aligned_binary = self.processor.correct_perspective(image, binary, template, result_stub)
+
+        self.assertEqual(aligned.shape, image.shape)
+        self.assertEqual(aligned_binary.shape, binary.shape)
+        self.assertEqual(result_stub.issues[0].code, "MISSING_ANCHORS")
 
 
 if __name__ == "__main__":
