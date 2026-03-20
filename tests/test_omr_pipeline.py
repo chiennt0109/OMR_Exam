@@ -142,14 +142,15 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertGreater(scores[0], 0.12)
         self.assertLess(scores[1], 0.05)
 
-    def test_detect_square_mark_density_prefers_marked_square_core(self):
+    def test_detect_square_mark_density_prefers_cross_mark_for_student_id(self):
         binary = np.zeros((120, 120), dtype=np.uint8)
-        cv2.rectangle(binary, (34, 54), (46, 66), 255, -1)
+        cv2.line(binary, (32, 52), (48, 68), 255, 3)
+        cv2.line(binary, (48, 52), (32, 68), 255, 3)
         cv2.circle(binary, (80, 60), 10, 255, 1)
         centers = np.array([[40, 60], [80, 60]], dtype=np.float32)
         scores = self.processor._detect_square_mark_density(binary, centers, 10)
-        self.assertGreater(scores[0], 0.60)
-        self.assertLess(scores[1], 0.20)
+        self.assertGreater(scores[0], 0.15)
+        self.assertLess(scores[1], 0.12)
 
     def test_template_dict_persists_template_coordinate_space(self):
         tpl = Template(name="t", image_path="x.png", width=1234, height=1754)
