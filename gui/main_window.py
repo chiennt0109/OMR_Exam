@@ -5,11 +5,13 @@ import json
 from datetime import date, datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QEvent, QPointF
+from PySide6.QtCore import Qt, QEvent, QPointF, QTimer
 from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPixmap, QTransform, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -26,6 +28,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -3417,6 +3420,27 @@ class MainWindow(QMainWindow):
         self.error_list = QListWidget()
         self.preview_label = QLabel("Image preview / bubble overlay placeholder")
         self.preview_label.setAlignment(Qt.AlignCenter)
+        self.correction_ui_loading = False
+        self.correction_pending_payload: dict[str, object] = {}
+        self.correction_save_timer = QTimer(self)
+        self.correction_save_timer.setSingleShot(True)
+        self.correction_save_timer.timeout.connect(self._flush_pending_correction_updates)
+
+        self.exam_code_correction_combo = QComboBox()
+        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
+        self.student_correction_combo = QComboBox()
+        self.student_correction_combo.setEditable(True)
+        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
+
+        self.answer_editor_scroll = QScrollArea()
+        self.answer_editor_scroll.setWidgetResizable(True)
+        self.answer_editor_container = QWidget()
+        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
+        self.answer_editor_layout.setContentsMargins(4, 4, 4, 4)
+        self.answer_editor_layout.setSpacing(8)
+        self.answer_editor_scroll.setWidget(self.answer_editor_container)
+
         self.manual_edit = QTextEdit()
         self.manual_edit.setPlaceholderText("Manual corrections JSON (e.g. {'student_id': '1001', 'answers': {'1':'A'}})")
         self.result_preview = QTextEdit()
@@ -9593,6 +9617,12 @@ class MainWindow(QMainWindow):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
         right_layout.addWidget(self.preview_label)
+        correction_form = QFormLayout()
+        correction_form.addRow("Mã đề (DB)", self.exam_code_correction_combo)
+        correction_form.addRow("Học sinh (DB)", self.student_correction_combo)
+        right_layout.addLayout(correction_form)
+        right_layout.addWidget(QLabel("Chỉnh sửa đáp án trực quan"))
+        right_layout.addWidget(self.answer_editor_scroll, 4)
         right_layout.addWidget(self.result_preview)
         right_layout.addWidget(QLabel("Manual Edit"))
         right_layout.addWidget(self.manual_edit)
@@ -9604,6 +9634,314 @@ class MainWindow(QMainWindow):
         layout.addWidget(splitter)
         return w
 
+    def _correction_selected_result(self) -> tuple[int, OMRResult] | tuple[None, None]:
+        idx = self.scan_list.currentRow() if hasattr(self, "scan_list") else -1
+        if idx < 0 or idx >= len(self.scan_results):
+            return None, None
+        return idx, self.scan_results[idx]
+
+    def _load_exam_code_correction_options(self, subject_key: str, current_code: str) -> None:
+        self.exam_code_correction_combo.blockSignals(True)
+        self.exam_code_correction_combo.clear()
+        codes = set(self.database.fetch_answer_keys_for_subject(subject_key).keys())
+        codes.update(str(x).strip() for x in (self.imported_exam_codes or []) if str(x).strip())
+        if current_code:
+            codes.add(str(current_code).strip())
+        for code in sorted(codes):
+            self.exam_code_correction_combo.addItem(code, code)
+        if self.exam_code_correction_combo.count() == 0:
+            self.exam_code_correction_combo.addItem(current_code or "-", current_code or "")
+        match_index = max(0, self.exam_code_correction_combo.findData(current_code))
+        self.exam_code_correction_combo.setCurrentIndex(match_index)
+        self.exam_code_correction_combo.blockSignals(False)
+
+    def _load_student_correction_options(self, current_student_id: str) -> None:
+        self.student_correction_combo.blockSignals(True)
+        self.student_correction_combo.clear()
+        students: list[tuple[str, str, str]] = []
+        if self.current_session_id:
+            payload = self.database.fetch_exam_session(self.current_session_id) or {}
+            session_students = payload.get("students", []) if isinstance(payload.get("students", []), list) else []
+            for item in session_students:
+                if not isinstance(item, dict):
+                    continue
+                extra = item.get("extra", {}) if isinstance(item.get("extra", {}), dict) else {}
+                sid = str(item.get("student_id", "") or "").strip()
+                if not sid:
+                    continue
+                students.append((sid, str(item.get("name", "") or "").strip(), str(extra.get("class_name", "") or "").strip()))
+        seen: set[str] = set()
+        for sid, name, class_name in students:
+            if sid in seen:
+                continue
+            seen.add(sid)
+            label = f"[{sid}] - {name or '-'} - {class_name or '-'}"
+            self.student_correction_combo.addItem(label, sid)
+        if current_student_id and current_student_id not in seen:
+            self.student_correction_combo.addItem(f"[{current_student_id}] - - -", current_student_id)
+        idx = self.student_correction_combo.findData(current_student_id)
+        self.student_correction_combo.setCurrentIndex(max(0, idx))
+        self.student_correction_combo.blockSignals(False)
+
+    def _build_visual_answer_editor(self, result: OMRResult) -> None:
+        while self.answer_editor_layout.count():
+            item = self.answer_editor_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        expected = self._expected_questions_by_section(result)
+
+        mcq_box = QGroupBox("MCQ")
+        mcq_layout = QVBoxLayout(mcq_box)
+        for q_no in expected.get("MCQ", []):
+            row = QHBoxLayout()
+            row.addWidget(QLabel(f"Câu {q_no}"))
+            group = QButtonGroup(mcq_box)
+            current_value = str((result.mcq_answers or {}).get(q_no, "") or "")[:1]
+            for choice in ["A", "B", "C", "D", "E"]:
+                radio = QRadioButton(choice)
+                if current_value == choice:
+                    radio.setChecked(True)
+                radio.toggled.connect(lambda checked, q=q_no, v=choice: checked and self._handle_mcq_visual_change(q, v))
+                group.addButton(radio)
+                row.addWidget(radio)
+            clear_btn = QPushButton("Clear")
+            clear_btn.clicked.connect(lambda _=False, q=q_no: self._handle_mcq_visual_change(q, ""))
+            row.addWidget(clear_btn)
+            row.addStretch()
+            mcq_layout.addLayout(row)
+        self.answer_editor_layout.addWidget(mcq_box)
+
+        tf_box = QGroupBox("True/False")
+        tf_layout = QVBoxLayout(tf_box)
+        for q_no in expected.get("TF", []):
+            row = QHBoxLayout()
+            row.addWidget(QLabel(f"Câu {q_no}"))
+            flags = (result.true_false_answers or {}).get(q_no, {}) or {}
+            for key in ["a", "b", "c", "d"]:
+                cb = QCheckBox(key.upper())
+                cb.setChecked(bool(flags.get(key)))
+                cb.toggled.connect(lambda checked, q=q_no, k=key: self._handle_tf_visual_change(q, k, checked))
+                row.addWidget(cb)
+            row.addStretch()
+            tf_layout.addLayout(row)
+        self.answer_editor_layout.addWidget(tf_box)
+
+        num_box = QGroupBox("Numeric")
+        num_layout = QVBoxLayout(num_box)
+        for q_no in expected.get("NUMERIC", []):
+            row = QHBoxLayout()
+            row.addWidget(QLabel(f"Câu {q_no}"))
+            edit = QLineEdit(str((result.numeric_answers or {}).get(q_no, "") or ""))
+            edit.editingFinished.connect(lambda q=q_no, w=edit: self._handle_numeric_visual_change(q, w.text()))
+            row.addWidget(edit)
+            num_layout.addLayout(row)
+        self.answer_editor_layout.addWidget(num_box)
+        self.answer_editor_layout.addStretch()
+
+    def _schedule_correction_update(self, field_name: str, old_value: object, new_value: object, apply_fn) -> None:
+        if self.correction_ui_loading or old_value == new_value:
+            return
+        apply_fn()
+        self.correction_pending_payload[field_name] = {
+            "old": old_value,
+            "new": new_value,
+        }
+        self.correction_save_timer.start(150)
+
+    def _flush_pending_correction_updates(self) -> None:
+        idx, result = self._correction_selected_result()
+        if idx is None or result is None or not self.correction_pending_payload:
+            return
+        changes = [f"{field}: '{payload['old']}' -> '{payload['new']}'" for field, payload in self.correction_pending_payload.items()]
+        self._refresh_student_profile_for_result(result, idx)
+        scoped = self._scoped_result_copy(result)
+        self.scan_blank_summary[idx] = self._compute_blank_questions(scoped)
+        self.scan_list.setItem(idx, 3, QTableWidgetItem(self._build_recognition_content_text(result, self.scan_blank_summary[idx])))
+        sid_item = self.scan_list.item(idx, 0)
+        if sid_item:
+            sid_item.setText((result.student_id or "").strip() or "-")
+            sid_item.setData(Qt.UserRole + 1, result.exam_code or "")
+            sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(result))
+        self._record_adjustment(idx, changes, "visual_correction")
+        self._persist_single_scan_result_to_db(result, note="visual_correction")
+        image_key = str(getattr(result, "image_path", "") or idx)
+        for field_name, payload in self.correction_pending_payload.items():
+            self.database.log_change("scan_results", image_key, field_name, payload["old"], payload["new"], "visual_correction")
+        self.correction_pending_payload = {}
+        self._refresh_all_statuses()
+        self._update_scan_preview(idx)
+        self._load_selected_result_for_correction()
+
+    def _handle_exam_code_correction_changed(self, _index: int) -> None:
+        idx, result = self._correction_selected_result()
+        if idx is None or result is None:
+            return
+        new_code = str(self.exam_code_correction_combo.currentData() or "").strip()
+        old_code = str(result.exam_code or "").strip()
+        self._schedule_correction_update("exam_code", old_code, new_code, lambda: setattr(result, "exam_code", new_code))
+
+    def _handle_student_correction_changed(self, _index: int) -> None:
+        idx, result = self._correction_selected_result()
+        if idx is None or result is None:
+            return
+        new_sid = str(self.student_correction_combo.currentData() or self.student_correction_combo.currentText() or "").strip()
+        old_sid = str(result.student_id or "").strip()
+        self._schedule_correction_update("student_id", old_sid, new_sid, lambda: setattr(result, "student_id", new_sid))
+
+    def _handle_mcq_visual_change(self, question_no: int, answer_value: str) -> None:
+        idx, result = self._correction_selected_result()
+        if idx is None or result is None:
+            return
+        old_value = str((result.mcq_answers or {}).get(question_no, "") or "")[:1]
+
+        def _apply() -> None:
+            current = dict(result.mcq_answers or {})
+            if answer_value:
+                current[int(question_no)] = str(answer_value)[:1]
+            else:
+                current.pop(int(question_no), None)
+            result.mcq_answers = current
+
+        self._schedule_correction_update(f"mcq_answers[{question_no}]", old_value, str(answer_value)[:1], _apply)
+
+    def _handle_tf_visual_change(self, question_no: int, key: str, checked: bool) -> None:
+        idx, result = self._correction_selected_result()
+        if idx is None or result is None:
+            return
+        old_flags = dict((result.true_false_answers or {}).get(question_no, {}) or {})
+        new_flags = dict(old_flags)
+        new_flags[key] = bool(checked)
+
+        def _apply() -> None:
+            current = dict(result.true_false_answers or {})
+            current[int(question_no)] = dict(new_flags)
+            result.true_false_answers = current
+
+        self._schedule_correction_update(f"true_false_answers[{question_no}].{key}", old_flags.get(key), bool(checked), _apply)
+
+    def _handle_numeric_visual_change(self, question_no: int, text: str) -> None:
+        idx, result = self._correction_selected_result()
+        if idx is None or result is None:
+            return
+        old_value = str((result.numeric_answers or {}).get(question_no, "") or "")
+        new_value = str(text or "").strip()
+
+        def _apply() -> None:
+            current = dict(result.numeric_answers or {})
+            if new_value:
+                current[int(question_no)] = new_value
+            else:
+                current.pop(int(question_no), None)
+            result.numeric_answers = current
+
+        self._schedule_correction_update(f"numeric_answers[{question_no}]", old_value, new_value, _apply)
+
+
+    def _selected_template_repository_entry(self) -> tuple[str, str] | None:
+        row = self.template_library_table.currentRow() if hasattr(self, "template_library_table") else -1
+        if row < 0:
+            return None
+        item = self.template_library_table.item(row, 1)
+        if not item:
+            return None
+        return item.text(), str(item.data(Qt.UserRole) or "")
+
+    def _register_single_template(self, template_path: str, display_name: str | None = None) -> None:
+        self.template_repo.register(template_path, display_name=display_name)
+        self._save_template_repository()
+        self._refresh_template_library()
+
+    def _open_embedded_template_editor(self, template_path: str = "") -> bool:
+        if self.template_editor_embedded and not self._close_embedded_template_editor():
+            return False
+        while self.template_editor_layout.count():
+            item = self.template_editor_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        editor = TemplateEditorWindow(self, on_template_saved=lambda path, name: self._handle_template_saved(path, name))
+        editor.setWindowFlags(Qt.Widget)
+        editor.menuBar().setVisible(False)
+        close_action = editor.template_toolbar.addAction(self.style().standardIcon(QStyle.SP_DialogCloseButton), "Close", self._close_template_module)
+        close_action.setToolTip("Close")
+        self.template_editor_embedded = editor
+        self.template_editor_layout.addWidget(editor)
+        self.template_editor_mode = "editor"
+        self.stack.setCurrentIndex(4)
+        if template_path:
+            return bool(editor.load_template_from_path(template_path))
+        return True
+
+    def _handle_template_saved(self, template_path: str, display_name: str) -> None:
+        self._register_single_template(template_path, display_name=display_name)
+
+    def _create_new_template(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Chọn ảnh mẫu giấy thi", "", "Images (*.png *.jpg *.jpeg *.tif *.tiff)")
+        if not path:
+            return
+        if not self._open_embedded_template_editor():
+            return
+        if not self.template_editor_embedded or not self.template_editor_embedded.load_image_from_path(path):
+            return
+        self.stack.setCurrentIndex(4)
+
+    def _edit_selected_template(self) -> None:
+        selected = self._selected_template_repository_entry()
+        if not selected:
+            return
+        _, template_path = selected
+        if not template_path:
+            return
+        if not self._open_embedded_template_editor(template_path):
+            return
+        self.stack.setCurrentIndex(4)
+
+    def _delete_selected_template(self) -> None:
+        selected = self._selected_template_repository_entry()
+        if not selected:
+            return
+        name, template_path = selected
+        if not self._confirm("Xoá mẫu giấy thi", f"Bạn có chắc muốn xoá mẫu giấy thi '{name}' khỏi kho?"):
+            return
+        self.template_repo.templates.pop(name, None)
+        self._save_template_repository()
+        if template_path and Path(template_path).exists():
+            try:
+                Path(template_path).unlink()
+            except Exception:
+                pass
+        self._refresh_template_library()
+
+    def _save_current_template(self) -> bool:
+        if not self.template_editor_embedded:
+            return False
+        return bool(self.template_editor_embedded.save_template())
+
+    def _save_current_template_as(self) -> bool:
+        if not self.template_editor_embedded:
+            return False
+        return bool(self.template_editor_embedded.save_template_as())
+
+    def _close_embedded_template_editor(self) -> bool:
+        if self.template_editor_embedded and not self.template_editor_embedded._confirm_close():
+            return False
+        while self.template_editor_layout.count():
+            item = self.template_editor_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        self.template_editor_embedded = None
+        self.template_editor_mode = "library"
+        self._refresh_template_library()
+        self.stack.setCurrentIndex(3)
+        return True
+
+    def _close_template_module(self) -> bool:
+        if self.template_editor_embedded:
+            return self._close_embedded_template_editor()
+        self.stack.setCurrentIndex(0)
+        return True
 
     def _selected_template_repository_entry(self) -> tuple[str, str] | None:
         row = self.template_library_table.currentRow() if hasattr(self, "template_library_table") else -1
@@ -13206,6 +13544,11 @@ class MainWindow(QMainWindow):
         if idx < 0 or idx >= len(self.scan_results):
             return
         res = self.scan_results[idx]
+        self.correction_ui_loading = True
+        subject_key = self._current_batch_subject_key()
+        self._load_exam_code_correction_options(subject_key, str(res.exam_code or "").strip())
+        self._load_student_correction_options(str(res.student_id or "").strip())
+        self._build_visual_answer_editor(res)
         payload = {
             "student_id": res.student_id,
             "exam_code": res.exam_code,
@@ -13228,6 +13571,7 @@ class MainWindow(QMainWindow):
                 indent=2,
             )
         )
+        self.correction_ui_loading = False
 
     def _open_edit_selected_scan(self, *_args) -> None:
         idx = self.scan_list.currentRow()
