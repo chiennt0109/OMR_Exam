@@ -329,6 +329,8 @@ class OMRProcessor:
 
         anchors.sort(key=lambda p: p[2], reverse=True)
         max_keep = max(4, int(max_points or 40))
+        if use_border_padding:
+            max_keep = min(max_keep, 24)
         return [(x, y) for x, y, _ in anchors[:max_keep]]
 
     def _template_has_border_anchors(self, template: Template) -> bool:
@@ -847,6 +849,8 @@ class OMRProcessor:
             return np.empty((0, 2), dtype=np.float32)
         h, w = binary.shape[:2]
         expected = np.array([(x * w, y * h) if x <= 1.0 and y <= 1.0 else (x, y) for x, y in grid.bubble_positions], dtype=np.float32)
+        if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+            return expected
         bubble_radius = float(zone.metadata.get("bubble_radius", 9))
         min_area = max(6.0, 0.25 * np.pi * (bubble_radius ** 2))
         max_area = max(min_area * 3.5, 4.0 * np.pi * (bubble_radius ** 2))
@@ -954,12 +958,13 @@ class OMRProcessor:
         confs: list[float] = []
         for c in range(cols):
             col_scores = mat[:, c]
+            col_threshold = max(self.fill_threshold, float(np.mean(col_scores) + (0.35 * np.std(col_scores))))
             order = np.argsort(col_scores)[::-1]
             top_i, second_i = int(order[0]), int(order[1]) if len(order) > 1 else int(order[0])
             top, second = float(col_scores[top_i]), float(col_scores[second_i]) if len(order) > 1 else 0.0
-            if len(np.where(col_scores > self.fill_threshold)[0]) > 1:
+            if len(np.where(col_scores > col_threshold)[0]) > 1:
                 result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: double mark")
-            if self.classify_bubble(top) != "filled" or (top - second) <= self.certainty_margin:
+            if top <= col_threshold or (top - second) <= self.certainty_margin:
                 digits.append("?")
                 result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: uncertain")
             else:

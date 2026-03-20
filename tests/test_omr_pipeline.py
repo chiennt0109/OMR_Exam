@@ -40,6 +40,32 @@ class OMRPipelineTests(unittest.TestCase):
         anchors = self.processor.detect_anchors(img, use_border_padding=True, relaxed_polygon=True, max_points=40)
         self.assertLessEqual(len(anchors), 8)
 
+    def test_student_id_zone_keeps_expected_centers(self):
+        template = Template(
+            name="sid",
+            image_path="",
+            width=200,
+            height=200,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="sid",
+                    name="sid",
+                    zone_type=ZoneType.STUDENT_ID_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=10, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(40 + c * 60, 20 + r * 16) for r in range(10) for c in range(2)]),
+                    metadata={"bubble_radius": 5},
+                )
+            ],
+        )
+        binary = np.zeros((200, 200), dtype=np.uint8)
+        centers = self.processor._resolve_zone_centers(binary, template.zones[0], template)
+        expected = np.array(template.zones[0].grid.bubble_positions, dtype=np.float32)
+        self.assertTrue(np.allclose(centers, expected))
+
     def test_detect_bubbles_ratio(self):
         binary = np.zeros((120, 120), dtype=np.uint8)
         cv2.circle(binary, (40, 60), 10, 255, -1)
