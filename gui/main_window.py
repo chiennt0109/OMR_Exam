@@ -9943,6 +9943,111 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(0)
         return True
 
+    def _selected_template_repository_entry(self) -> tuple[str, str] | None:
+        row = self.template_library_table.currentRow() if hasattr(self, "template_library_table") else -1
+        if row < 0:
+            return None
+        item = self.template_library_table.item(row, 1)
+        if not item:
+            return None
+        return item.text(), str(item.data(Qt.UserRole) or "")
+
+    def _register_single_template(self, template_path: str, display_name: str | None = None) -> None:
+        self.template_repo.register(template_path, display_name=display_name)
+        self._save_template_repository()
+        self._refresh_template_library()
+
+    def _open_embedded_template_editor(self, template_path: str = "") -> bool:
+        if self.template_editor_embedded and not self._close_embedded_template_editor():
+            return False
+        while self.template_editor_layout.count():
+            item = self.template_editor_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        editor = TemplateEditorWindow(self, on_template_saved=lambda path, name: self._handle_template_saved(path, name))
+        editor.setWindowFlags(Qt.Widget)
+        editor.menuBar().setVisible(False)
+        close_action = editor.template_toolbar.addAction(self.style().standardIcon(QStyle.SP_DialogCloseButton), "Close", self._close_template_module)
+        close_action.setToolTip("Close")
+        self.template_editor_embedded = editor
+        self.template_editor_layout.addWidget(editor)
+        self.template_editor_mode = "editor"
+        self.stack.setCurrentIndex(4)
+        if template_path:
+            return bool(editor.load_template_from_path(template_path))
+        return True
+
+    def _handle_template_saved(self, template_path: str, display_name: str) -> None:
+        self._register_single_template(template_path, display_name=display_name)
+
+    def _create_new_template(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Chọn ảnh mẫu giấy thi", "", "Images (*.png *.jpg *.jpeg *.tif *.tiff)")
+        if not path:
+            return
+        if not self._open_embedded_template_editor():
+            return
+        if not self.template_editor_embedded or not self.template_editor_embedded.load_image_from_path(path):
+            return
+        self.stack.setCurrentIndex(4)
+
+    def _edit_selected_template(self) -> None:
+        selected = self._selected_template_repository_entry()
+        if not selected:
+            return
+        _, template_path = selected
+        if not template_path:
+            return
+        if not self._open_embedded_template_editor(template_path):
+            return
+        self.stack.setCurrentIndex(4)
+
+    def _delete_selected_template(self) -> None:
+        selected = self._selected_template_repository_entry()
+        if not selected:
+            return
+        name, template_path = selected
+        if not self._confirm("Xoá mẫu giấy thi", f"Bạn có chắc muốn xoá mẫu giấy thi '{name}' khỏi kho?"):
+            return
+        self.template_repo.templates.pop(name, None)
+        self._save_template_repository()
+        if template_path and Path(template_path).exists():
+            try:
+                Path(template_path).unlink()
+            except Exception:
+                pass
+        self._refresh_template_library()
+
+    def _save_current_template(self) -> bool:
+        if not self.template_editor_embedded:
+            return False
+        return bool(self.template_editor_embedded.save_template())
+
+    def _save_current_template_as(self) -> bool:
+        if not self.template_editor_embedded:
+            return False
+        return bool(self.template_editor_embedded.save_template_as())
+
+    def _close_embedded_template_editor(self) -> bool:
+        if self.template_editor_embedded and not self.template_editor_embedded._confirm_close():
+            return False
+        while self.template_editor_layout.count():
+            item = self.template_editor_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        self.template_editor_embedded = None
+        self.template_editor_mode = "library"
+        self._refresh_template_library()
+        self.stack.setCurrentIndex(3)
+        return True
+
+    def _close_template_module(self) -> bool:
+        if self.template_editor_embedded:
+            return self._close_embedded_template_editor()
+        self.stack.setCurrentIndex(0)
+        return True
+
     def _save_template_repository(self) -> None:
         try:
             self.database.set_app_state("template_repository", self.template_repo.to_dict())
