@@ -918,29 +918,14 @@ class OMRProcessor:
             col_pts = expected[c::cols]
             offsets: list[np.ndarray] = []
             for exp_x, exp_y in col_pts:
-                x0 = int(max(0, exp_x - search_pad))
-                y0 = int(max(0, exp_y - search_pad))
-                x1 = int(min(w, exp_x + search_pad + 1))
-                y1 = int(min(h, exp_y + search_pad + 1))
-                roi = binary[y0:y1, x0:x1]
-                if roi.size == 0:
-                    continue
-                num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(roi, connectivity=8)
-                best_offset: np.ndarray | None = None
-                best_score = float("inf")
-                for idx in range(1, num_labels):
-                    area = float(stats[idx, cv2.CC_STAT_AREA])
-                    if area < min_area or area > max_area:
-                        continue
-                    cx, cy = centroids[idx]
-                    cand = np.array([cx + x0, cy + y0], dtype=np.float32)
-                    offset = cand - np.array([exp_x, exp_y], dtype=np.float32)
-                    dist = float(np.linalg.norm(offset))
-                    if dist > max_dist:
-                        continue
-                    if dist < best_score:
-                        best_score = dist
-                        best_offset = offset
+                best_offset = self._find_local_component_offset(
+                    binary,
+                    np.array([exp_x, exp_y], dtype=np.float32),
+                    search_pad,
+                    min_area,
+                    max_area,
+                    max_dist,
+                )
                 if best_offset is not None:
                     offsets.append(best_offset)
 
@@ -949,9 +934,54 @@ class OMRProcessor:
             median_offset = np.median(np.array(offsets, dtype=np.float32), axis=0)
             for r in range(rows):
                 idx = (r * cols) + c
-                refined[idx] = expected[idx] + median_offset
+                shifted = expected[idx] + median_offset
+                local_offset = self._find_local_component_offset(
+                    binary,
+                    shifted.astype(np.float32),
+                    max(8, int(round(search_pad * 0.75))),
+                    min_area,
+                    max_area,
+                    max(5.0, bubble_radius * 1.15),
+                )
+                refined[idx] = shifted if local_offset is None else shifted + local_offset
 
         return refined.astype(np.float32)
+
+    def _find_local_component_offset(
+        self,
+        binary: np.ndarray,
+        center: np.ndarray,
+        search_pad: int,
+        min_area: float,
+        max_area: float,
+        max_dist: float,
+    ) -> np.ndarray | None:
+        h, w = binary.shape[:2]
+        exp_x, exp_y = float(center[0]), float(center[1])
+        x0 = int(max(0, exp_x - search_pad))
+        y0 = int(max(0, exp_y - search_pad))
+        x1 = int(min(w, exp_x + search_pad + 1))
+        y1 = int(min(h, exp_y + search_pad + 1))
+        roi = binary[y0:y1, x0:x1]
+        if roi.size == 0:
+            return None
+        num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(roi, connectivity=8)
+        best_offset: np.ndarray | None = None
+        best_score = float("inf")
+        for idx in range(1, num_labels):
+            area = float(stats[idx, cv2.CC_STAT_AREA])
+            if area < min_area or area > max_area:
+                continue
+            cx, cy = centroids[idx]
+            cand = np.array([cx + x0, cy + y0], dtype=np.float32)
+            offset = cand - np.array([exp_x, exp_y], dtype=np.float32)
+            dist = float(np.linalg.norm(offset))
+            if dist > max_dist:
+                continue
+            if dist < best_score:
+                best_score = dist
+                best_offset = offset
+        return best_offset
 
     def recognize_block(self, binary: np.ndarray, zone: Zone, template: Template, result: OMRResult, debug_overlay: np.ndarray | None = None) -> None:
         grid = zone.grid

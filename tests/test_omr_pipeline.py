@@ -87,6 +87,24 @@ class OMRPipelineTests(unittest.TestCase):
         centers = self.processor._resolve_zone_centers(binary, template.zones[0], template)
         self.assertLess(float(np.mean(np.linalg.norm(centers - shifted, axis=1))), 3.5)
 
+    def test_student_id_zone_refines_each_row_after_column_shift(self):
+        grid = BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(40, 20 + r * 20) for r in range(4)])
+        template = Template(
+            name="sid_row_refine",
+            image_path="",
+            width=100,
+            height=120,
+            anchors=[],
+            zones=[Zone(id="sid_row_refine", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0, y=0, width=1, height=1, grid=grid, metadata={"bubble_radius": 5})],
+        )
+        binary = np.zeros((120, 100), dtype=np.uint8)
+        shifted = np.array([[42, 20], [43, 41], [42, 60], [44, 81]], dtype=np.int32)
+        for x, y in shifted:
+            cv2.circle(binary, (int(x), int(y)), 5, 255, 1)
+
+        centers = self.processor._resolve_zone_centers(binary, template.zones[0], template)
+        self.assertLess(float(np.mean(np.linalg.norm(centers - shifted.astype(np.float32), axis=1))), 3.0)
+
     def test_detect_bubbles_ratio(self):
         binary = np.zeros((120, 120), dtype=np.uint8)
         cv2.circle(binary, (40, 60), 10, 255, -1)
