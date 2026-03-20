@@ -1071,8 +1071,8 @@ class OMRProcessor:
     def _detect_anchor_near_expected(self, binary: np.ndarray, expected_pt: np.ndarray) -> np.ndarray | None:
         h, w = binary.shape[:2]
         exp_x, exp_y = float(expected_pt[0]), float(expected_pt[1])
-        search_pad_x = max(18, int(round(w * 0.025)))
-        search_pad_y = max(18, int(round(h * 0.025)))
+        search_pad_x = max(22, int(round(w * 0.03)))
+        search_pad_y = max(22, int(round(h * 0.03)))
         x0 = int(max(0, exp_x - search_pad_x))
         y0 = int(max(0, exp_y - search_pad_y))
         x1 = int(min(w, exp_x + search_pad_x + 1))
@@ -1110,7 +1110,18 @@ class OMRProcessor:
             if score > best_score:
                 best_score = score
                 best_pt = np.array([cx, cy], dtype=np.float32)
-        return best_pt
+        if best_pt is not None:
+            return best_pt
+
+        ys, xs = np.where(roi > 0)
+        if len(xs) < 20:
+            return None
+        cx = x0 + float(np.mean(xs))
+        cy = y0 + float(np.mean(ys))
+        dist = float(np.hypot(cx - exp_x, cy - exp_y))
+        if dist > max(search_pad_x, search_pad_y) * 1.15:
+            return None
+        return np.array([cx, cy], dtype=np.float32)
 
     def _resolve_column_digit_centers(
         self,
