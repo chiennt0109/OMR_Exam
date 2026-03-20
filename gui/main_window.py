@@ -13855,6 +13855,15 @@ class MainWindow(QMainWindow):
         self._sync_correction_detail_panel(res, rebuild_editor=True)
         self.correction_ui_loading = False
 
+    def _load_selected_result_for_correction(self) -> None:
+        idx = self.scan_list.currentRow()
+        if idx < 0 or idx >= len(self.scan_results):
+            return
+        res = self.scan_results[idx]
+        self.correction_ui_loading = True
+        self._sync_correction_detail_panel(res, rebuild_editor=True)
+        self.correction_ui_loading = False
+
     def _open_edit_selected_scan(self, *_args) -> None:
         idx = self.scan_list.currentRow()
         if idx < 0:
@@ -13920,11 +13929,11 @@ class MainWindow(QMainWindow):
                     f"Đã đánh dấu {invalidated} bản ghi cần chấm lại do sửa bài. Vui lòng chạy lại Tính điểm.",
                 )
             return
-        res = self.scan_results[idx]
-        old_sid_for_score = str(res.student_id or "").strip()
+        dialog_state = {"index": idx, "loading": False}
+        default_zoom_factor = 0.34
 
         dlg = QDialog(self)
-        dlg.setWindowTitle(f"Sửa bài thi: {Path(res.image_path).name}")
+        dlg.setWindowTitle(f"Sửa bài thi: {Path(self.scan_results[dialog_state['index']].image_path).name}")
         dlg.setWindowState(Qt.WindowMaximized)
         lay = QHBoxLayout(dlg)
         splitter = QSplitter(Qt.Horizontal)
@@ -13935,54 +13944,193 @@ class MainWindow(QMainWindow):
         inp_sid = QComboBox()
         inp_sid.setEditable(True)
         inp_sid.setInsertPolicy(QComboBox.NoInsert)
-        self._load_student_correction_options(str(res.student_id or "").strip())
-        for i in range(self.student_correction_combo.count()):
-            inp_sid.addItem(self.student_correction_combo.itemText(i), self.student_correction_combo.itemData(i))
-        idx_sid = inp_sid.findData(str(res.student_id or "").strip())
-        inp_sid.setCurrentIndex(max(0, idx_sid))
-        inp_sid.setCompleter(self.student_correction_combo.completer())
 
         inp_code = QComboBox()
-        subject_key = self._current_batch_subject_key()
-        self._load_exam_code_correction_options(subject_key, str(res.exam_code or "").strip())
-        for i in range(self.exam_code_correction_combo.count()):
-            inp_code.addItem(self.exam_code_correction_combo.itemText(i), self.exam_code_correction_combo.itemData(i))
-        idx_code = inp_code.findData(str(res.exam_code or "").strip())
-        inp_code.setCurrentIndex(max(0, idx_code))
-        expected = self._expected_questions_by_section(res)
+        inp_code.setEditable(True)
+        inp_code.setInsertPolicy(QComboBox.NoInsert)
 
-        def _build_pair_table(data: dict[int, str], value_placeholder: str = "") -> QTableWidget:
+        mcq_label = QLabel("MCQ")
+        mcq_hint = QLabel("Nhập đáp án trực tiếp vào từng ô MCQ")
+        tf_label = QLabel("True / False")
+        numeric_label = QLabel("Numeric")
+        mcq_host = QWidget()
+        mcq_host_lay = QVBoxLayout(mcq_host)
+        mcq_host_lay.setContentsMargins(0, 0, 0, 0)
+        tf_host = QWidget()
+        tf_host_lay = QVBoxLayout(tf_host)
+        tf_host_lay.setContentsMargins(0, 0, 0, 0)
+        numeric_host = QWidget()
+        numeric_host_lay = QVBoxLayout(numeric_host)
+        numeric_host_lay.setContentsMargins(0, 0, 0, 0)
+
+        form.addRow("Student ID", inp_sid)
+        form.addRow("Exam Code", inp_code)
+        left_lay.addLayout(form)
+        left_lay.addWidget(mcq_label)
+        left_lay.addWidget(mcq_host)
+        row_mcq = QHBoxLayout()
+        row_mcq.addWidget(mcq_hint)
+        row_mcq.addStretch()
+        left_lay.addLayout(row_mcq)
+        left_lay.addWidget(tf_label)
+        left_lay.addWidget(tf_host)
+        tf_actions = QHBoxLayout()
+        btn_add_tf = QPushButton("Thêm dòng TF")
+        btn_del_tf = QPushButton("Xoá dòng chọn")
+        tf_actions.addWidget(btn_add_tf)
+        tf_actions.addWidget(btn_del_tf)
+        tf_actions.addStretch()
+        left_lay.addLayout(tf_actions)
+        left_lay.addWidget(numeric_label)
+        left_lay.addWidget(numeric_host)
+        num_actions = QHBoxLayout()
+        btn_add_num = QPushButton("Thêm dòng Numeric")
+        btn_del_num = QPushButton("Xoá dòng chọn")
+        num_actions.addWidget(btn_add_num)
+        num_actions.addWidget(btn_del_num)
+        num_actions.addStretch()
+        left_lay.addLayout(num_actions)
+
+        button_row = QHBoxLayout()
+        btn_prev = QPushButton("← Bài trước")
+        btn_next = QPushButton("Bài tiếp →")
+        btn_save = QPushButton("Save")
+        btn_close = QPushButton("Close")
+        button_row.addWidget(btn_prev)
+        button_row.addWidget(btn_next)
+        button_row.addStretch()
+        button_row.addWidget(btn_save)
+        button_row.addWidget(btn_close)
+        left_lay.addLayout(button_row)
+
+        splitter.addWidget(left)
+        right = QWidget()
+        right_lay = QVBoxLayout(right)
+        right_lay.addWidget(QLabel("Ảnh bài làm"))
+        zoom_row = QHBoxLayout()
+        btn_prev_top = QPushButton("←")
+        btn_zoom_out_dlg = QPushButton("-")
+        btn_zoom_reset_dlg = QPushButton("34%")
+        btn_zoom_in_dlg = QPushButton("+")
+        btn_next_top = QPushButton("→")
+        for btn in [btn_prev_top, btn_zoom_out_dlg, btn_zoom_reset_dlg, btn_zoom_in_dlg, btn_next_top]:
+            btn.setMaximumWidth(60)
+        zoom_row.addWidget(btn_prev_top)
+        zoom_row.addWidget(btn_zoom_out_dlg)
+        zoom_row.addWidget(btn_zoom_reset_dlg)
+        zoom_row.addWidget(btn_zoom_in_dlg)
+        zoom_row.addWidget(btn_next_top)
+        zoom_row.addStretch()
+        right_lay.addLayout(zoom_row)
+        preview = QLabel()
+        preview.setAlignment(Qt.AlignCenter)
+        preview.setText("Đang tải ảnh bài làm...")
+        preview_scroll = QScrollArea()
+        preview_scroll.setWidgetResizable(False)
+        preview_scroll.setAlignment(Qt.AlignCenter)
+        preview_scroll.setWidget(preview)
+        right_lay.addWidget(preview_scroll, 1)
+        splitter.addWidget(right)
+        splitter.setChildrenCollapsible(False)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 1)
+        lay.addWidget(splitter)
+        QTimer.singleShot(0, lambda s=splitter: s.setSizes([max(1, s.width() // 2), max(1, s.width() // 2)]))
+
+        editor_refs: dict[str, object] = {"mcq_edits": {}, "table_tf": None, "table_num": None}
+        preview_state: dict[str, object] = {"pix": QPixmap(), "image_name": "-", "zoom": default_zoom_factor}
+        loaded_snapshots: dict[int, dict[str, object]] = {}
+
+        def _question_numbers(values) -> list[int]:
+            out = {int(q) for q in (values or {}).keys() if str(q).strip().lstrip('-').isdigit()}
+            return sorted(out)
+
+        def _current_result() -> OMRResult:
+            return self.scan_results[dialog_state["index"]]
+
+        def _snapshot_from_result(result: OMRResult) -> dict[str, object]:
+            return {
+                "student_id": str(result.student_id or "").strip(),
+                "exam_code": str(result.exam_code or "").strip(),
+                "mcq_answers": {int(q): str(v) for q, v in (result.mcq_answers or {}).items()},
+                "true_false_answers": {int(q): dict(v or {}) for q, v in (result.true_false_answers or {}).items()},
+                "numeric_answers": {int(q): str(v) for q, v in (result.numeric_answers or {}).items()},
+            }
+
+        def _set_combo_to_value(combo: QComboBox, value: str) -> None:
+            idx_found = combo.findData(value)
+            if idx_found < 0:
+                idx_found = combo.findText(value)
+            if idx_found >= 0:
+                combo.setCurrentIndex(idx_found)
+            else:
+                combo.setEditText(value)
+
+        def _answer_key_for_exam_code(exam_code_text: str):
+            subject = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+            code = str(exam_code_text or "").strip()
+            if not subject or not code or not self.answer_keys or "?" in code:
+                return None
+            return self.answer_keys.get_flexible(subject, code)
+
+        def _expected_questions_for_dialog(result: OMRResult, exam_code_text: str, data_snapshot: dict[str, object]) -> dict[str, list[int]]:
+            key = _answer_key_for_exam_code(exam_code_text)
+            if key is not None:
+                return {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                }
+            return {
+                "MCQ": _question_numbers(data_snapshot.get("mcq_answers", {})),
+                "TF": _question_numbers(data_snapshot.get("true_false_answers", {})),
+                "NUMERIC": _question_numbers(data_snapshot.get("numeric_answers", {})),
+            }
+
+        def _clear_layout(layout_obj: QVBoxLayout) -> None:
+            while layout_obj.count():
+                item = layout_obj.takeAt(0)
+                widget = item.widget()
+                child_layout = item.layout()
+                if widget is not None:
+                    widget.deleteLater()
+                elif child_layout is not None:
+                    while child_layout.count():
+                        sub = child_layout.takeAt(0)
+                        if sub.widget() is not None:
+                            sub.widget().deleteLater()
+
+        def _build_pair_table(question_numbers: list[int], data: dict[int, str], value_placeholder: str = "") -> QTableWidget:
             table = QTableWidget(0, 2)
             table.setHorizontalHeaderLabels(["Câu", "Giá trị"])
             table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
             table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-            for q, v in sorted((data or {}).items(), key=lambda x: int(x[0])):
+            rows = question_numbers or sorted(int(q) for q in (data or {}).keys())
+            for q in rows:
                 r = table.rowCount()
                 table.insertRow(r)
                 table.setItem(r, 0, QTableWidgetItem(str(int(q))))
-                item_v = QTableWidgetItem(str(v))
+                item_v = QTableWidgetItem(str((data or {}).get(int(q), "") or ""))
                 if value_placeholder:
                     item_v.setToolTip(value_placeholder)
                 table.setItem(r, 1, item_v)
             return table
 
-        def _build_mcq_grid(data: dict[int, str]) -> tuple[QWidget, dict[int, QLineEdit]]:
+        def _build_mcq_grid(question_numbers: list[int], data: dict[int, str]) -> tuple[QWidget, dict[int, QLineEdit]]:
             box = QWidget()
             grid = QGridLayout(box)
             grid.setContentsMargins(0, 0, 0, 0)
             grid.setHorizontalSpacing(8)
             grid.setVerticalSpacing(6)
             edits: dict[int, QLineEdit] = {}
-            questions = list(expected.get("MCQ", [])) or sorted(int(q) for q in (data or {}).keys())
-            if not questions:
-                questions = []
+            questions = question_numbers or sorted(int(q) for q in (data or {}).keys())
             cols = 8
             for idx_q, q_no in enumerate(questions):
                 row = (idx_q // cols) * 2
                 col = idx_q % cols
                 lbl = QLabel(str(q_no))
                 lbl.setAlignment(Qt.AlignCenter)
-                edit = QLineEdit(str((data or {}).get(q_no, "") or ""))
+                edit = QLineEdit(str((data or {}).get(int(q_no), "") or ""))
                 edit.setMaxLength(1)
                 edit.setMaximumWidth(52)
                 edit.setAlignment(Qt.AlignCenter)
@@ -13992,18 +14140,19 @@ class MainWindow(QMainWindow):
             grid.setColumnStretch(cols, 1)
             return box, edits
 
-        def _build_tf_table(data: dict[int, dict[str, bool]]) -> QTableWidget:
+        def _build_tf_table(question_numbers: list[int], data: dict[int, dict[str, bool]]) -> QTableWidget:
             table = QTableWidget(0, 5)
             labels = ["a", "b", "c", "d"]
             table.setHorizontalHeaderLabels(["Câu", *[s.upper() for s in labels]])
             table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
             for c in range(1, 5):
                 table.horizontalHeader().setSectionResizeMode(c, QHeaderView.ResizeToContents)
-            for q, flags in sorted((data or {}).items(), key=lambda x: int(x[0])):
+            rows = question_numbers or sorted(int(q) for q in (data or {}).keys())
+            for q in rows:
                 r = table.rowCount()
                 table.insertRow(r)
                 table.setItem(r, 0, QTableWidgetItem(str(int(q))))
-                flags = dict(flags or {})
+                flags = dict((data or {}).get(int(q), {}) or {})
                 for i, key in enumerate(labels, start=1):
                     cb = QComboBox()
                     cb.addItem("-", None)
@@ -14019,245 +14168,310 @@ class MainWindow(QMainWindow):
                     table.setCellWidget(r, i, cb)
             return table
 
-        mcq_widget, mcq_edits = _build_mcq_grid(res.mcq_answers)
-        table_num = _build_pair_table(res.numeric_answers, "Ví dụ: -12.5")
-        table_tf = _build_tf_table(res.true_false_answers)
-
-        def _add_pair_row(table: QTableWidget) -> None:
-            r = table.rowCount()
-            table.insertRow(r)
-            table.setItem(r, 0, QTableWidgetItem(""))
-            table.setItem(r, 1, QTableWidgetItem(""))
-
-        def _add_tf_row() -> None:
-            r = table_tf.rowCount()
-            table_tf.insertRow(r)
-            table_tf.setItem(r, 0, QTableWidgetItem(""))
-            for i in range(1, 5):
-                cb = QComboBox()
-                cb.addItem("-", None)
-                cb.addItem("Đúng", True)
-                cb.addItem("Sai", False)
-                table_tf.setCellWidget(r, i, cb)
-
-        def _remove_selected_row(table: QTableWidget) -> None:
-            row = table.currentRow()
-            if row >= 0:
-                table.removeRow(row)
-
-        form.addRow("Student ID", inp_sid)
-        form.addRow("Exam Code", inp_code)
-        splitter.addWidget(left)
-        right = QWidget()
-        right_lay = QVBoxLayout(right)
-        right_lay.addWidget(QLabel("Ảnh bài làm"))
-        zoom_row = QHBoxLayout()
-        btn_zoom_out_dlg = QPushButton("-")
-        btn_zoom_reset_dlg = QPushButton("100%")
-        btn_zoom_in_dlg = QPushButton("+")
-        for btn in [btn_zoom_out_dlg, btn_zoom_reset_dlg, btn_zoom_in_dlg]:
-            btn.setMaximumWidth(52)
-        zoom_row.addWidget(btn_zoom_out_dlg)
-        zoom_row.addWidget(btn_zoom_reset_dlg)
-        zoom_row.addWidget(btn_zoom_in_dlg)
-        zoom_row.addStretch()
-        right_lay.addLayout(zoom_row)
-        preview = QLabel()
-        preview.setAlignment(Qt.AlignCenter)
-        preview.setText("Đang tải ảnh bài làm...")
-
-        image_path = str(getattr(res, "image_path", "") or "").strip()
-        image_name = Path(image_path).name if image_path else "-"
-        aligned_pix = self._aligned_image_to_qpixmap(getattr(res, "aligned_image", None))
-        if not aligned_pix.isNull():
-            pix = aligned_pix
-        elif hasattr(self, "preview_source_pixmap") and not self.preview_source_pixmap.isNull() and self.scan_list.currentRow() == idx:
-            pix = self.preview_source_pixmap
-        else:
-            pix = QPixmap(image_path) if image_path else QPixmap()
-        base_pix = pix
-
-        preview_scroll = QScrollArea()
-        preview_scroll.setWidgetResizable(False)
-        preview_scroll.setAlignment(Qt.AlignCenter)
-        preview_scroll.setWidget(preview)
-        zoom_state = {"factor": 1.0}
-
-        def _fit_preview_to_viewport() -> None:
-            if base_pix.isNull():
-                preview.resize(preview_scroll.viewport().size())
-                return
-            viewport = preview_scroll.viewport().size()
-            if viewport.width() <= 0 or viewport.height() <= 0:
-                return
-            scale_w = viewport.width() / max(1, base_pix.width())
-            scale_h = viewport.height() / max(1, base_pix.height())
-            zoom_state["factor"] = max(0.2, min(1.0, min(scale_w, scale_h)))
-            _apply_preview_zoom()
-
-        def _apply_preview_zoom() -> None:
-            if base_pix.isNull():
-                preview.setPixmap(QPixmap())
-                preview.setText(f"Không thể tải ảnh bài làm tương ứng.\n{image_name}")
-                preview.resize(preview_scroll.viewport().size())
-                btn_zoom_reset_dlg.setText("100%")
-                return
-            scaled = base_pix.scaled(base_pix.size() * zoom_state["factor"], Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            preview.setText("")
-            preview.setPixmap(scaled)
-            preview.resize(scaled.size())
-            preview.setMinimumSize(scaled.size())
-            preview.adjustSize()
-            btn_zoom_reset_dlg.setText(f"{int(zoom_state['factor'] * 100)}%")
-
-        btn_zoom_out_dlg.clicked.connect(lambda: (zoom_state.__setitem__("factor", max(0.2, zoom_state["factor"] / 1.2)), _apply_preview_zoom()))
-        btn_zoom_in_dlg.clicked.connect(lambda: (zoom_state.__setitem__("factor", min(5.0, zoom_state["factor"] * 1.2)), _apply_preview_zoom()))
-        btn_zoom_reset_dlg.clicked.connect(lambda: (zoom_state.__setitem__("factor", 1.0), _apply_preview_zoom()))
-        right_lay.addWidget(preview_scroll, 1)
-        splitter.addWidget(right)
-        splitter.setChildrenCollapsible(False)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 1)
-        lay.addWidget(splitter)
-        QTimer.singleShot(0, lambda s=splitter: s.setSizes([max(1, s.width() // 2), max(1, s.width() // 2)]))
-        QTimer.singleShot(0, _fit_preview_to_viewport)
-        left_lay.addLayout(form)
-        left_lay.addWidget(QLabel("MCQ"))
-        left_lay.addWidget(mcq_widget)
-        row_mcq = QHBoxLayout()
-        row_mcq.addWidget(QLabel("Nhập đáp án trực tiếp vào từng ô MCQ"))
-        row_mcq.addStretch()
-        left_lay.addLayout(row_mcq)
-
-        left_lay.addWidget(QLabel("True / False"))
-        left_lay.addWidget(table_tf)
-        row_tf = QHBoxLayout()
-        btn_add_tf = QPushButton("Thêm dòng TF")
-        btn_del_tf = QPushButton("Xoá dòng chọn")
-        btn_add_tf.clicked.connect(_add_tf_row)
-        btn_del_tf.clicked.connect(lambda: _remove_selected_row(table_tf))
-        row_tf.addWidget(btn_add_tf)
-        row_tf.addWidget(btn_del_tf)
-        row_tf.addStretch()
-        left_lay.addLayout(row_tf)
-
-        left_lay.addWidget(QLabel("Numeric"))
-        left_lay.addWidget(table_num)
-        row_num = QHBoxLayout()
-        btn_add_num = QPushButton("Thêm dòng Numeric")
-        btn_del_num = QPushButton("Xoá dòng chọn")
-        btn_add_num.clicked.connect(lambda: _add_pair_row(table_num))
-        btn_del_num.clicked.connect(lambda: _remove_selected_row(table_num))
-        row_num.addWidget(btn_add_num)
-        row_num.addWidget(btn_del_num)
-        row_num.addStretch()
-        left_lay.addLayout(row_num)
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(dlg.accept)
-        buttons.rejected.connect(dlg.reject)
-        left_lay.addWidget(buttons)
-
-        if dlg.exec() != QDialog.Accepted:
-            return
-
-        changes: list[str] = []
-        new_sid = str(inp_sid.currentData() or inp_sid.currentText() or "").strip()
-        new_code = str(inp_code.currentData() or inp_code.currentText() or "").strip()
-        if new_sid != (res.student_id or ""):
-            old_sid = res.student_id or ""
-            res.student_id = new_sid
-            sid_item = QTableWidgetItem(new_sid or "-")
-            sid_item.setData(Qt.UserRole, str(res.image_path))
-            sid_item.setData(Qt.UserRole + 1, new_code)
-            sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(res))
-            self.scan_list.setItem(idx, 0, sid_item)
-            changes.append(f"student_id: '{old_sid}' -> '{new_sid}'")
-        if new_code != (res.exam_code or ""):
-            old_code = res.exam_code or ""
-            res.exam_code = new_code
-            changes.append(f"exam_code: '{old_code}' -> '{new_code}'")
-
-        try:
-            new_mcq_answers: dict[int, str] = {}
+        def _collect_editor_snapshot(validate: bool = True) -> dict[str, object]:
+            result = _current_result()
+            snapshot = {
+                "student_id": str(inp_sid.currentData() or inp_sid.currentText() or "").strip(),
+                "exam_code": str(inp_code.currentData() or inp_code.currentText() or "").strip(),
+                "mcq_answers": {},
+                "true_false_answers": {},
+                "numeric_answers": {},
+            }
+            mcq_edits = editor_refs.get("mcq_edits", {}) or {}
             for q_no, edit in mcq_edits.items():
                 v_text = str(edit.text() if edit else "").strip().upper()[:1]
                 if v_text:
-                    new_mcq_answers[int(q_no)] = v_text
+                    snapshot["mcq_answers"][int(q_no)] = v_text
 
-            new_numeric_answers: dict[int, str] = {}
-            for r in range(table_num.rowCount()):
-                q_item = table_num.item(r, 0)
-                v_item = table_num.item(r, 1)
-                q_text = str(q_item.text() if q_item else "").strip()
-                v_text = str(v_item.text() if v_item else "").strip()
-                if not q_text and not v_text:
-                    continue
-                if not q_text.lstrip("-").isdigit():
-                    raise ValueError(f"Numeric dòng {r+1}: Câu phải là số nguyên.")
-                if not v_text:
-                    continue
-                new_numeric_answers[int(q_text)] = v_text
-
-            new_tf_answers: dict[int, dict[str, bool]] = {}
-            labels = ["a", "b", "c", "d"]
-            for r in range(table_tf.rowCount()):
-                q_item = table_tf.item(r, 0)
-                q_text = str(q_item.text() if q_item else "").strip()
-                if not q_text:
-                    continue
-                if not q_text.lstrip("-").isdigit():
-                    raise ValueError(f"TF dòng {r+1}: Câu phải là số nguyên.")
-                q = int(q_text)
-                flags: dict[str, bool] = {}
-                for i, key in enumerate(labels, start=1):
-                    cb = table_tf.cellWidget(r, i)
-                    if not isinstance(cb, QComboBox):
+            table_num = editor_refs.get("table_num")
+            if isinstance(table_num, QTableWidget):
+                for r in range(table_num.rowCount()):
+                    q_item = table_num.item(r, 0)
+                    v_item = table_num.item(r, 1)
+                    q_text = str(q_item.text() if q_item else "").strip()
+                    v_text = str(v_item.text() if v_item else "").strip()
+                    if not q_text and not v_text:
                         continue
-                    val = cb.currentData()
-                    if isinstance(val, bool):
-                        flags[key] = val
-                if flags:
-                    new_tf_answers[q] = flags
+                    if validate and not q_text.lstrip('-').isdigit():
+                        raise ValueError(f"Numeric dòng {r+1}: Câu phải là số nguyên.")
+                    if not q_text.lstrip('-').isdigit() or not v_text:
+                        continue
+                    snapshot["numeric_answers"][int(q_text)] = v_text
 
-            if new_mcq_answers != (res.mcq_answers or {}):
-                res.mcq_answers = new_mcq_answers
+            table_tf = editor_refs.get("table_tf")
+            if isinstance(table_tf, QTableWidget):
+                labels = ["a", "b", "c", "d"]
+                for r in range(table_tf.rowCount()):
+                    q_item = table_tf.item(r, 0)
+                    q_text = str(q_item.text() if q_item else "").strip()
+                    if not q_text:
+                        continue
+                    if validate and not q_text.lstrip('-').isdigit():
+                        raise ValueError(f"TF dòng {r+1}: Câu phải là số nguyên.")
+                    if not q_text.lstrip('-').isdigit():
+                        continue
+                    q = int(q_text)
+                    flags: dict[str, bool] = {}
+                    for i, key in enumerate(labels, start=1):
+                        cb = table_tf.cellWidget(r, i)
+                        if not isinstance(cb, QComboBox):
+                            continue
+                        val = cb.currentData()
+                        if isinstance(val, bool):
+                            flags[key] = val
+                    if flags:
+                        snapshot["true_false_answers"][q] = flags
+            return snapshot
+
+        def _remove_selected_row(table_key: str) -> None:
+            table = editor_refs.get(table_key)
+            if isinstance(table, QTableWidget):
+                row = table.currentRow()
+                if row >= 0:
+                    table.removeRow(row)
+
+        def _add_pair_row() -> None:
+            table = editor_refs.get("table_num")
+            if isinstance(table, QTableWidget):
+                r = table.rowCount()
+                table.insertRow(r)
+                table.setItem(r, 0, QTableWidgetItem(""))
+                table.setItem(r, 1, QTableWidgetItem(""))
+
+        def _add_tf_row() -> None:
+            table = editor_refs.get("table_tf")
+            if isinstance(table, QTableWidget):
+                r = table.rowCount()
+                table.insertRow(r)
+                table.setItem(r, 0, QTableWidgetItem(""))
+                for i in range(1, 5):
+                    cb = QComboBox()
+                    cb.addItem("-", None)
+                    cb.addItem("Đúng", True)
+                    cb.addItem("Sai", False)
+                    table.setCellWidget(r, i, cb)
+
+        btn_add_tf.clicked.connect(_add_tf_row)
+        btn_del_tf.clicked.connect(lambda: _remove_selected_row("table_tf"))
+        btn_add_num.clicked.connect(_add_pair_row)
+        btn_del_num.clicked.connect(lambda: _remove_selected_row("table_num"))
+
+        def _render_preview_for_result(result: OMRResult) -> None:
+            image_path = str(getattr(result, "image_path", "") or "").strip()
+            image_name = Path(image_path).name if image_path else "-"
+            aligned_pix = self._aligned_image_to_qpixmap(getattr(result, "aligned_image", None))
+            if not aligned_pix.isNull():
+                pix = aligned_pix
+            elif hasattr(self, "preview_source_pixmap") and not self.preview_source_pixmap.isNull() and self.scan_list.currentRow() == dialog_state["index"]:
+                pix = self.preview_source_pixmap
+            else:
+                pix = QPixmap(image_path) if image_path else QPixmap()
+            preview_state["pix"] = pix
+            preview_state["image_name"] = image_name
+            preview_state["zoom"] = default_zoom_factor
+            _apply_preview_zoom()
+
+        def _apply_preview_zoom() -> None:
+            base_pix = preview_state.get("pix", QPixmap())
+            image_name = str(preview_state.get("image_name", "-"))
+            factor = float(preview_state.get("zoom", default_zoom_factor) or default_zoom_factor)
+            if isinstance(base_pix, QPixmap) and not base_pix.isNull():
+                scaled = base_pix.scaled(base_pix.size() * factor, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                preview.setText("")
+                preview.setPixmap(scaled)
+                preview.resize(scaled.size())
+                preview.setMinimumSize(scaled.size())
+                preview.adjustSize()
+            else:
+                preview.setPixmap(QPixmap())
+                preview.setText(f"Không thể tải ảnh bài làm tương ứng.\n{image_name}")
+                preview.resize(preview_scroll.viewport().size())
+            btn_zoom_reset_dlg.setText(f"{int(round(factor * 100))}%")
+
+        btn_zoom_out_dlg.clicked.connect(lambda: (preview_state.__setitem__("zoom", max(0.1, float(preview_state.get("zoom", default_zoom_factor)) / 1.2)), _apply_preview_zoom()))
+        btn_zoom_in_dlg.clicked.connect(lambda: (preview_state.__setitem__("zoom", min(5.0, float(preview_state.get("zoom", default_zoom_factor)) * 1.2)), _apply_preview_zoom()))
+        btn_zoom_reset_dlg.clicked.connect(lambda: (preview_state.__setitem__("zoom", default_zoom_factor), _apply_preview_zoom()))
+
+        def _refresh_editor_widgets(data_snapshot: dict[str, object]) -> None:
+            result = _current_result()
+            expected = _expected_questions_for_dialog(result, str(data_snapshot.get("exam_code", "") or ""), data_snapshot)
+            mcq_widget, mcq_edits = _build_mcq_grid(expected.get("MCQ", []), data_snapshot.get("mcq_answers", {}) or {})
+            table_tf = _build_tf_table(expected.get("TF", []), data_snapshot.get("true_false_answers", {}) or {})
+            table_num = _build_pair_table(expected.get("NUMERIC", []), data_snapshot.get("numeric_answers", {}) or {}, "Ví dụ: -12.5")
+            _clear_layout(mcq_host_lay)
+            _clear_layout(tf_host_lay)
+            _clear_layout(numeric_host_lay)
+            mcq_host_lay.addWidget(mcq_widget)
+            tf_host_lay.addWidget(table_tf)
+            numeric_host_lay.addWidget(table_num)
+            editor_refs["mcq_edits"] = mcq_edits
+            editor_refs["table_tf"] = table_tf
+            editor_refs["table_num"] = table_num
+
+        def _apply_changes(save_feedback: bool = False) -> bool:
+            result = _current_result()
+            idx_local = dialog_state["index"]
+            try:
+                snapshot = _collect_editor_snapshot(validate=True)
+            except Exception as exc:
+                QMessageBox.warning(self, "Dữ liệu không hợp lệ", str(exc))
+                return False
+
+            old_sid_for_score = str(result.student_id or "").strip()
+            changes: list[str] = []
+            new_sid = str(snapshot["student_id"] or "").strip()
+            new_code = str(snapshot["exam_code"] or "").strip()
+            new_mcq_answers = {int(q): str(v) for q, v in (snapshot.get("mcq_answers", {}) or {}).items()}
+            new_tf_answers = {int(q): dict(v or {}) for q, v in (snapshot.get("true_false_answers", {}) or {}).items()}
+            new_numeric_answers = {int(q): str(v) for q, v in (snapshot.get("numeric_answers", {}) or {}).items()}
+
+            if new_sid != (result.student_id or ""):
+                changes.append(f"student_id: '{result.student_id or ''}' -> '{new_sid}'")
+                result.student_id = new_sid
+            if new_code != (result.exam_code or ""):
+                changes.append(f"exam_code: '{result.exam_code or ''}' -> '{new_code}'")
+                result.exam_code = new_code
+            if new_mcq_answers != (result.mcq_answers or {}):
+                result.mcq_answers = new_mcq_answers
                 changes.append("mcq_answers updated")
-            if new_tf_answers != (res.true_false_answers or {}):
-                res.true_false_answers = new_tf_answers
+            if new_tf_answers != (result.true_false_answers or {}):
+                result.true_false_answers = new_tf_answers
                 changes.append("true_false_answers updated")
-            if new_numeric_answers != (res.numeric_answers or {}):
-                res.numeric_answers = new_numeric_answers
+            if new_numeric_answers != (result.numeric_answers or {}):
+                result.numeric_answers = new_numeric_answers
                 changes.append("numeric_answers updated")
-        except Exception as exc:
-            QMessageBox.warning(self, "Dữ liệu không hợp lệ", str(exc))
-            return
 
-        if changes:
-            self._refresh_student_profile_for_result(res, idx)
-            scoped = self._scoped_result_copy(res)
-            self.scan_blank_summary[idx] = self._compute_blank_questions(scoped)
-            self.scan_list.setItem(idx, 3, QTableWidgetItem(self._build_recognition_content_text(res, self.scan_blank_summary[idx])))
-            sid_item = self.scan_list.item(idx, 0)
-            if sid_item:
-                sid_item.setData(Qt.UserRole + 1, res.exam_code or "")
-                sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(res))
-            self._record_adjustment(idx, changes, "dialog_edit")
-            self._persist_single_scan_result_to_db(res, note="dialog_edit")
+            if not changes:
+                return True
+
+            sid_item = QTableWidgetItem((result.student_id or "").strip() or "-")
+            sid_item.setData(Qt.UserRole, str(result.image_path))
+            sid_item.setData(Qt.UserRole + 1, result.exam_code or "")
+            sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(result))
+            self.scan_list.setItem(idx_local, 0, sid_item)
+            self.scan_list.setItem(idx_local, 1, QTableWidgetItem(result.exam_code or "-"))
+            self._refresh_student_profile_for_result(result, idx_local)
+            scoped = self._scoped_result_copy(result)
+            self.scan_blank_summary[idx_local] = self._compute_blank_questions(scoped)
+            self.scan_list.setItem(idx_local, 3, QTableWidgetItem(self._build_recognition_content_text(result, self.scan_blank_summary[idx_local])))
+            self._record_adjustment(idx_local, changes, "dialog_edit")
+            self._persist_single_scan_result_to_db(result, note="dialog_edit")
             self._refresh_all_statuses()
-            self._update_scan_preview(idx)
+            self.scan_list.setCurrentCell(idx_local, 0)
+            self._update_scan_preview(idx_local)
             self._load_selected_result_for_correction()
             self.btn_save_batch_subject.setEnabled(True)
-            invalidated = self._invalidate_scoring_for_student_ids(
-                [old_sid_for_score, str(res.student_id or "").strip()],
-                reason="dialog_edit",
-            )
-            if invalidated > 0:
-                QMessageBox.information(
-                    self,
-                    "Tính điểm",
-                    f"Đã đánh dấu {invalidated} bản ghi cần chấm lại do sửa bài. Vui lòng chạy lại Tính điểm.",
-                )
+            invalidated = self._invalidate_scoring_for_student_ids([old_sid_for_score, str(result.student_id or "").strip()], reason="dialog_edit")
+            loaded_snapshots[idx_local] = _snapshot_from_result(result)
+            if save_feedback:
+                notices = ["Đã lưu thay đổi cho bài hiện tại."]
+                if invalidated > 0:
+                    notices.append(f"Đã đánh dấu {invalidated} bản ghi cần chấm lại. Vui lòng chạy lại Tính điểm.")
+                QMessageBox.information(self, "Sửa bài thi", "\n".join(notices))
+            return True
 
+        def _load_result_into_dialog(new_index: int, preserve_snapshot: dict[str, object] | None = None) -> None:
+            if new_index < 0 or new_index >= len(self.scan_results):
+                return
+            dialog_state["loading"] = True
+            dialog_state["index"] = new_index
+            self.scan_list.setCurrentCell(new_index, 0)
+            result = self.scan_results[new_index]
+            dlg.setWindowTitle(f"Sửa bài thi: {Path(result.image_path).name}")
+            self._load_student_correction_options(str(result.student_id or "").strip())
+            inp_sid.blockSignals(True)
+            inp_sid.clear()
+            for i in range(self.student_correction_combo.count()):
+                inp_sid.addItem(self.student_correction_combo.itemText(i), self.student_correction_combo.itemData(i))
+            _set_combo_to_value(inp_sid, str((preserve_snapshot or {}).get("student_id", result.student_id or "")))
+            inp_sid.setCompleter(self.student_correction_combo.completer())
+            inp_sid.blockSignals(False)
+
+            subject_key = self._current_batch_subject_key()
+            current_code = str((preserve_snapshot or {}).get("exam_code", result.exam_code or ""))
+            self._load_exam_code_correction_options(subject_key, current_code)
+            inp_code.blockSignals(True)
+            inp_code.clear()
+            for i in range(self.exam_code_correction_combo.count()):
+                inp_code.addItem(self.exam_code_correction_combo.itemText(i), self.exam_code_correction_combo.itemData(i))
+            _set_combo_to_value(inp_code, current_code)
+            inp_code.blockSignals(False)
+
+            data_snapshot = preserve_snapshot or loaded_snapshots.get(new_index) or _snapshot_from_result(result)
+            loaded_snapshots[new_index] = {
+                "student_id": str(data_snapshot.get("student_id", "") or "").strip(),
+                "exam_code": str(data_snapshot.get("exam_code", "") or "").strip(),
+                "mcq_answers": {int(q): str(v) for q, v in (data_snapshot.get("mcq_answers", {}) or {}).items()},
+                "true_false_answers": {int(q): dict(v or {}) for q, v in (data_snapshot.get("true_false_answers", {}) or {}).items()},
+                "numeric_answers": {int(q): str(v) for q, v in (data_snapshot.get("numeric_answers", {}) or {}).items()},
+            }
+            _refresh_editor_widgets(loaded_snapshots[new_index])
+            _render_preview_for_result(result)
+            btn_prev.setEnabled(new_index > 0)
+            btn_prev_top.setEnabled(new_index > 0)
+            btn_next.setEnabled(new_index < len(self.scan_results) - 1)
+            btn_next_top.setEnabled(new_index < len(self.scan_results) - 1)
+            dialog_state["loading"] = False
+
+        def _rebuild_for_exam_code_change() -> None:
+            if dialog_state["loading"]:
+                return
+            try:
+                snapshot = _collect_editor_snapshot(validate=False)
+            except Exception:
+                snapshot = _snapshot_from_result(_current_result())
+            loaded_snapshots[dialog_state["index"]] = {
+                "student_id": str(snapshot.get("student_id", "") or "").strip(),
+                "exam_code": str(snapshot.get("exam_code", "") or "").strip(),
+                "mcq_answers": {int(q): str(v) for q, v in (snapshot.get("mcq_answers", {}) or {}).items()},
+                "true_false_answers": {int(q): dict(v or {}) for q, v in (snapshot.get("true_false_answers", {}) or {}).items()},
+                "numeric_answers": {int(q): str(v) for q, v in (snapshot.get("numeric_answers", {}) or {}).items()},
+            }
+            _refresh_editor_widgets(loaded_snapshots[dialog_state["index"]])
+
+        def _navigate(offset: int) -> None:
+            target = dialog_state["index"] + offset
+            if target < 0 or target >= len(self.scan_results):
+                return
+            if not _apply_changes(save_feedback=False):
+                return
+            _load_result_into_dialog(target)
+
+        def _has_unsaved_changes() -> bool:
+            try:
+                snapshot = _collect_editor_snapshot(validate=False)
+            except Exception:
+                return False
+            baseline = loaded_snapshots.get(dialog_state["index"], _snapshot_from_result(_current_result()))
+            return snapshot != baseline
+
+        def _request_close() -> None:
+            if _has_unsaved_changes():
+                msg = QMessageBox(self)
+                msg.setWindowTitle("Sửa bài thi")
+                msg.setText("Bài hiện tại có thay đổi chưa lưu.")
+                msg.setInformativeText("Bạn muốn lưu trước khi đóng cửa sổ sửa bài?")
+                msg.setStandardButtons(QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
+                msg.setDefaultButton(QMessageBox.Save)
+                choice = msg.exec()
+                if choice == QMessageBox.Cancel:
+                    return
+                if choice == QMessageBox.Save and not _apply_changes(save_feedback=False):
+                    return
+            dlg.accept()
+
+        inp_code.currentIndexChanged.connect(lambda _=0: _rebuild_for_exam_code_change())
+        inp_code.editTextChanged.connect(lambda _text="": _rebuild_for_exam_code_change())
+        btn_prev.clicked.connect(lambda: _navigate(-1))
+        btn_prev_top.clicked.connect(lambda: _navigate(-1))
+        btn_next.clicked.connect(lambda: _navigate(1))
+        btn_next_top.clicked.connect(lambda: _navigate(1))
+        btn_save.clicked.connect(lambda: _apply_changes(save_feedback=True))
+        btn_close.clicked.connect(_request_close)
+        dlg.reject = _request_close
+
+        _load_result_into_dialog(dialog_state["index"])
+        dlg.exec()
     def apply_manual_correction(self) -> None:
         idx = self.scan_list.currentRow()
         if idx < 0 or idx >= len(self.scan_results):
