@@ -10,6 +10,7 @@ from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QImage, QMouseEvent, QKeyEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
+    QCheckBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -418,18 +419,6 @@ class TemplateCanvas(QWidget):
                 py = float(y) * self.zoom
                 painter.drawLine(QPointF(px - 6, py - 6), QPointF(px + 6, py + 6))
                 painter.drawLine(QPointF(px - 6, py + 6), QPointF(px + 6, py - 6))
-
-        painter.setPen(QPen(QColor(0, 200, 200), 1.2, Qt.DashLine))
-        painter.setBrush(Qt.NoBrush)
-        for x, y, w, h in debug.get("guide_regions", []) or []:
-            painter.drawRect(QRectF(float(x) * self.zoom, float(y) * self.zoom, float(w) * self.zoom, float(h) * self.zoom))
-
-        painter.setPen(QPen(QColor(0, 220, 220), 2))
-        for x, y in debug.get("guide_points", []) or []:
-            px = float(x) * self.zoom
-            py = float(y) * self.zoom
-            painter.drawLine(QPointF(px - 6, py - 6), QPointF(px + 6, py + 6))
-            painter.drawLine(QPointF(px - 6, py + 6), QPointF(px + 6, py - 6))
 
 
 class TemplateEditorWindow(QMainWindow):
