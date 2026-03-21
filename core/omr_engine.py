@@ -1210,20 +1210,40 @@ class OMRProcessor:
             cluster = in_band
         return cluster[np.argsort(cluster[:, 1])]
 
+    def _expand_digit_anchor_points(self, indexed_points: list[tuple[int, np.ndarray]], total_count: int) -> np.ndarray:
+        if len(indexed_points) < 2:
+            return np.array([pt for _, pt in indexed_points], dtype=np.float32) if indexed_points else np.empty((0, 2), dtype=np.float32)
+        indexed_points = sorted(indexed_points, key=lambda item: item[0])
+        series: dict[int, np.ndarray] = {idx: np.asarray(pt, dtype=np.float32) for idx, pt in indexed_points}
+        for (idx_a, pt_a), (idx_b, pt_b) in zip(indexed_points, indexed_points[1:]):
+            if idx_b <= idx_a + 1:
+                continue
+            for idx in range(idx_a + 1, idx_b):
+                alpha = float((idx - idx_a) / float(idx_b - idx_a))
+                series[idx] = ((1.0 - alpha) * pt_a) + (alpha * pt_b)
+        keys = sorted(k for k in series.keys() if 1 <= k <= total_count)
+        return np.array([series[k] for k in keys], dtype=np.float32)
+
     def _get_manual_digit_anchor_points(self, template: Template, zone: Zone | None = None) -> np.ndarray:
         anchors = [a for a in (template.anchors or []) if str(getattr(a, "name", "") or "").startswith("DIGIT_ANCHOR_")]
         if not anchors:
             return np.empty((0, 2), dtype=np.float32)
-        pts = np.array(
-            [
-                [
-                    a.x * template.width if a.x <= 1.0 else a.x,
-                    a.y * template.height if a.y <= 1.0 else a.y,
-                ]
-                for a in anchors
-            ],
-            dtype=np.float32,
-        )
+        indexed_points: list[tuple[int, np.ndarray]] = []
+        for a in anchors:
+            name = str(getattr(a, "name", "") or "")
+            try:
+                idx = int(name.rsplit("_", 1)[-1])
+            except Exception:
+                continue
+            pt = np.array([
+                a.x * template.width if a.x <= 1.0 else a.x,
+                a.y * template.height if a.y <= 1.0 else a.y,
+            ], dtype=np.float32)
+            indexed_points.append((idx, pt))
+        if not indexed_points:
+            return np.empty((0, 2), dtype=np.float32)
+        total_count = max(2, int(getattr(zone.grid, "rows", 0) or 0) + 1) if zone is not None and getattr(zone, 'grid', None) else max(idx for idx, _ in indexed_points)
+        pts = self._expand_digit_anchor_points(indexed_points, total_count)
         return self._select_digit_anchor_cluster(pts, template, zone)
 
     def _get_detected_corner_anchor_pairs(self, binary: np.ndarray, template: Template) -> tuple[np.ndarray, np.ndarray]:
