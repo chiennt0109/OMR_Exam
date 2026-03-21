@@ -47,14 +47,18 @@ class OMRResult:
 @dataclass
 class RecognitionContext:
     detected_anchors: list[tuple[float, float]] = field(default_factory=list)
+    detected_digit_anchors: list[tuple[float, float]] = field(default_factory=list)
     bubble_states_by_zone: dict[str, list[bool]] = field(default_factory=dict)
     semantic_grids: dict[str, object] = field(default_factory=dict)
     recognized_answers: dict[str, dict] = field(default_factory=dict)
+    digit_zone_debug: dict[str, dict[str, object]] = field(default_factory=dict)
 
     def reset(self) -> None:
         self.detected_anchors = []
+        self.detected_digit_anchors = []
         self.bubble_states_by_zone = {}
         self.semantic_grids = {}
+        self.digit_zone_debug = {}
         self.recognized_answers = {
             "student_id": "",
             "exam_code": "",
@@ -147,9 +151,13 @@ class OMRProcessor:
             setattr(result, "alignment_debug", dict(self._last_alignment_debug))
             context.detected_anchors = self.detect_anchors(aligned_binary, max_points=120)
             setattr(result, "detected_anchors", context.detected_anchors)
+            context.detected_digit_anchors = self._detect_digit_anchor_ruler(aligned_binary, template)
+            setattr(result, "detected_digit_anchors", context.detected_digit_anchors)
 
             context.bubble_states_by_zone = self.extract_bubble_states(aligned_binary, template)
             setattr(result, "bubble_states_by_zone", context.bubble_states_by_zone)
+            context.digit_zone_debug = dict(getattr(result, "digit_zone_debug", {}) or {})
+            setattr(result, "digit_zone_debug", context.digit_zone_debug)
 
             context.recognized_answers = {
                 "student_id": result.student_id,
@@ -908,6 +916,32 @@ class OMRProcessor:
             scores[i] = float(np.count_nonzero(roi)) / float(roi.size)
         return scores
 
+    def _detect_digit_zone_multi_probe_marks(self, binary: np.ndarray, centers: np.ndarray, radius: int) -> np.ndarray:
+        probe_r = max(2, int(round(radius * 0.62)))
+        offset = max(1, int(round(radius * 0.38)))
+        offsets = ((0, 0), (offset, 0), (-offset, 0), (0, offset), (0, -offset))
+        h, w = binary.shape[:2]
+        scores = np.zeros((len(centers),), dtype=np.float32)
+        centers_int = centers.astype(np.int32)
+        for i, (x, y) in enumerate(centers_int):
+            probe_scores: list[float] = []
+            for dx, dy in offsets:
+                cx = int(x + dx)
+                cy = int(y + dy)
+                x0, y0 = max(0, cx - probe_r), max(0, cy - probe_r)
+                x1, y1 = min(w, cx + probe_r + 1), min(h, cy + probe_r + 1)
+                roi = binary[y0:y1, x0:x1]
+                if roi.size == 0:
+                    continue
+                probe_scores.append(float(np.count_nonzero(roi)) / float(roi.size))
+            if not probe_scores:
+                continue
+            probe_scores.sort(reverse=True)
+            best = probe_scores[0]
+            top2 = float(np.mean(probe_scores[: min(2, len(probe_scores))]))
+            scores[i] = float(np.clip((0.65 * best) + (0.35 * top2), 0.0, 1.0))
+        return scores
+
     def classify_bubble(self, ratio: float) -> str:
         if ratio > self.fill_threshold:
             return "filled"
@@ -922,6 +956,7 @@ class OMRProcessor:
         h, w = binary.shape[:2]
         expected = np.array([(x * w, y * h) if x <= 1.0 and y <= 1.0 else (x, y) for x, y in grid.bubble_positions], dtype=np.float32)
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+            expected, _ = self._digit_zone_guidance(binary, expected, zone, template)
             return self._resolve_column_digit_centers(binary, expected, grid, float(zone.metadata.get("bubble_radius", 9)))
         bubble_radius = float(zone.metadata.get("bubble_radius", 9))
         min_area = max(6.0, 0.25 * np.pi * (bubble_radius ** 2))
@@ -954,6 +989,223 @@ class OMRProcessor:
                     best_pt = cand
             refined.append(best_pt if best_pt is not None else np.array([exp_x, exp_y], dtype=np.float32))
         return np.array(refined, dtype=np.float32)
+
+    def _apply_anchor_ruler_to_digit_zone(self, binary: np.ndarray, expected: np.ndarray, zone: Zone, template: Template) -> np.ndarray:
+        guided, _ = self._digit_zone_guidance(binary, expected, zone, template)
+        return guided
+
+    def _digit_zone_guidance(self, binary: np.ndarray, expected: np.ndarray, zone: Zone, template: Template) -> tuple[np.ndarray, dict[str, object]]:
+        return expected, {}
+
+    def _warp_digit_block(
+        self,
+        aligned_image: np.ndarray | None,
+        aligned_binary: np.ndarray,
+        zone: Zone,
+        template: Template,
+    ) -> tuple[np.ndarray | None, np.ndarray, dict[str, object]]:
+        detected = np.array(self._detect_digit_anchor_ruler(aligned_binary, template, zone), dtype=np.float32)
+        template_pts = np.array(self._get_manual_digit_anchor_points(template, zone), dtype=np.float32)
+        debug: dict[str, object] = {
+            "detected_digit_anchors": [(float(x), float(y)) for x, y in detected] if len(detected) else [],
+            "template_digit_anchors": [(float(x), float(y)) for x, y in template_pts] if len(template_pts) else [],
+            "warp_applied": False,
+        }
+        if len(detected) < 4 or len(template_pts) < 4:
+            return aligned_image, aligned_binary, debug
+
+        if len(detected) != len(template_pts):
+            n = min(len(detected), len(template_pts))
+            if n < 4:
+                return aligned_image, aligned_binary, debug
+            det_idx = np.linspace(0, len(detected) - 1, n).astype(int)
+            tpl_idx = np.linspace(0, len(template_pts) - 1, n).astype(int)
+            detected = detected[det_idx]
+            template_pts = template_pts[tpl_idx]
+
+        h_matrix, mask = cv2.findHomography(
+            detected.astype(np.float32),
+            template_pts.astype(np.float32),
+            cv2.RANSAC,
+            3.0,
+        )
+        if h_matrix is None:
+            return aligned_image, aligned_binary, debug
+
+        warped_img = (
+            None
+            if aligned_image is None
+            else cv2.warpPerspective(
+                aligned_image,
+                h_matrix,
+                (template.width, template.height),
+                flags=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_REPLICATE,
+            )
+        )
+        warped_bin = cv2.warpPerspective(
+            aligned_binary,
+            h_matrix,
+            (template.width, template.height),
+            flags=cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT,
+        )
+        debug["warp_applied"] = True
+        debug["homography_mask_inliers"] = int(mask.sum()) if mask is not None else 0
+        return warped_img, warped_bin, debug
+
+    def _detect_digit_anchor_ruler(self, binary: np.ndarray, template: Template, zone: Zone | None = None) -> list[tuple[float, float]]:
+        manual_pts = self._get_manual_digit_anchor_points(template, zone)
+        if len(manual_pts) == 0:
+            return []
+        detected: list[tuple[float, float]] = []
+        for pt in manual_pts:
+            matched = self._find_digit_anchor_from_manual_point(binary, pt)
+            if matched is not None:
+                detected.append((float(matched[0]), float(matched[1])))
+        return detected
+
+    def _select_digit_anchor_cluster(self, pts: np.ndarray, template: Template, zone: Zone | None = None) -> np.ndarray:
+        pts = np.array(pts, dtype=np.float32)
+        if len(pts) == 0:
+            return np.empty((0, 2), dtype=np.float32)
+        pts = pts[np.argsort(pts[:, 1])]
+        if zone is None or len(pts) <= 1:
+            return pts
+        zone_left = float(zone.x * template.width if zone.x <= 1.0 else zone.x)
+        zone_top = float(zone.y * template.height if zone.y <= 1.0 else zone.y)
+        zone_width = float(zone.width * template.width if zone.width <= 1.0 else zone.width)
+        zone_height = float(zone.height * template.height if zone.height <= 1.0 else zone.height)
+        zone_right = zone_left + zone_width
+        zone_bottom = zone_top + zone_height
+        zone_center_x = zone_left + (zone_width * 0.5)
+        desired_count = max(2, int(getattr(zone.grid, "rows", 0) or 0) + 1)
+
+        x_tol = max(10.0, template.width * 0.03)
+        x_sorted = pts[np.argsort(pts[:, 0])]
+        clusters: list[np.ndarray] = []
+        current: list[np.ndarray] = [x_sorted[0]]
+        for pt in x_sorted[1:]:
+            if abs(float(pt[0]) - float(current[-1][0])) <= x_tol:
+                current.append(pt)
+            else:
+                clusters.append(np.array(current, dtype=np.float32))
+                current = [pt]
+        clusters.append(np.array(current, dtype=np.float32))
+
+        def _cluster_score(cluster: np.ndarray) -> tuple[float, float, float]:
+            mean_x = float(np.mean(cluster[:, 0]))
+            edge_dist = min(abs(mean_x - zone_left), abs(mean_x - zone_right), abs(mean_x - zone_center_x))
+            vertical_penalty = 0.0
+            if len(cluster):
+                top = float(np.min(cluster[:, 1]))
+                bottom = float(np.max(cluster[:, 1]))
+                vertical_penalty = max(0.0, zone_top - bottom) + max(0.0, top - zone_bottom)
+            count_penalty = 0.0 if len(cluster) >= desired_count else float((desired_count - len(cluster)) * max(8.0, zone_height * 0.1))
+            return (edge_dist + (vertical_penalty * 0.35) + count_penalty, count_penalty, abs(len(cluster) - desired_count))
+
+        cluster = min(clusters, key=_cluster_score)
+        cluster = cluster[np.argsort(cluster[:, 1])]
+        if len(clusters) == 1:
+            return cluster[np.argsort(cluster[:, 1])]
+
+        expanded_top = zone_top - max(10.0, zone_height * 0.20)
+        expanded_bottom = zone_bottom + max(10.0, zone_height * 0.20)
+        in_band = cluster[(cluster[:, 1] >= expanded_top) & (cluster[:, 1] <= expanded_bottom)]
+        if len(in_band) >= desired_count:
+            cluster = in_band
+        return cluster[np.argsort(cluster[:, 1])]
+
+    def _get_manual_digit_anchor_points(self, template: Template, zone: Zone | None = None) -> np.ndarray:
+        anchors = [a for a in (template.anchors or []) if str(getattr(a, "name", "") or "").startswith("DIGIT_ANCHOR_")]
+        if not anchors:
+            return np.empty((0, 2), dtype=np.float32)
+        pts = np.array(
+            [
+                [
+                    a.x * template.width if a.x <= 1.0 else a.x,
+                    a.y * template.height if a.y <= 1.0 else a.y,
+                ]
+                for a in anchors
+            ],
+            dtype=np.float32,
+        )
+        return self._select_digit_anchor_cluster(pts, template, zone)
+
+    def _get_detected_corner_anchor_pairs(self, binary: np.ndarray, template: Template) -> tuple[np.ndarray, np.ndarray]:
+        template_pts = []
+        for a in (template.anchors or []):
+            if str(getattr(a, "name", "") or "").startswith("DIGIT_ANCHOR_"):
+                continue
+            template_pts.append([
+                a.x * template.width if a.x <= 1.0 else a.x,
+                a.y * template.height if a.y <= 1.0 else a.y,
+            ])
+        if len(template_pts) < 4:
+            return np.empty((0, 2), dtype=np.float32), np.empty((0, 2), dtype=np.float32)
+        template_pts_arr = np.array(template_pts, dtype=np.float32)
+        detected_all = np.array(self.detect_anchors(binary, max_points=120), dtype=np.float32)
+        if len(detected_all) < 4:
+            return np.empty((0, 2), dtype=np.float32), np.empty((0, 2), dtype=np.float32)
+
+        def _corner_set(pts: np.ndarray, width: float, height: float) -> np.ndarray:
+            corners = np.array([[0.0, 0.0], [width, 0.0], [width, height], [0.0, height]], dtype=np.float32)
+            picks = []
+            for corner in corners:
+                d2 = np.sum((pts - corner) ** 2, axis=1)
+                picks.append(pts[int(np.argmin(d2))])
+            return np.array(picks, dtype=np.float32)
+
+        template_corner_pts = _corner_set(template_pts_arr, float(template.width), float(template.height))
+        detected_corner_pts = _corner_set(detected_all, float(template.width), float(template.height))
+        return template_corner_pts, detected_corner_pts
+
+    def _find_digit_anchor_from_manual_point(self, binary: np.ndarray, expected_pt: np.ndarray) -> np.ndarray | None:
+        h, w = binary.shape[:2]
+        exp_x, exp_y = float(expected_pt[0]), float(expected_pt[1])
+        search_pad_x = max(20, int(round(w * 0.025)))
+        search_pad_y = max(20, int(round(h * 0.025)))
+        x0 = int(max(0, exp_x - search_pad_x))
+        y0 = int(max(0, exp_y - search_pad_y))
+        x1 = int(min(w, exp_x + search_pad_x + 1))
+        y1 = int(min(h, exp_y + search_pad_y + 1))
+        roi = binary[y0:y1, x0:x1]
+        if roi.size == 0:
+            return None
+
+        num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(roi, connectivity=8)
+        best_pt: np.ndarray | None = None
+        best_score = float("-inf")
+        for idx in range(1, num_labels):
+            area = float(stats[idx, cv2.CC_STAT_AREA])
+            if area < 18:
+                continue
+            bw = int(stats[idx, cv2.CC_STAT_WIDTH])
+            bh = int(stats[idx, cv2.CC_STAT_HEIGHT])
+            if bw <= 0 or bh <= 0:
+                continue
+            cx = x0 + float(centroids[idx][0])
+            cy = y0 + float(centroids[idx][1])
+            dist = float(np.hypot(cx - exp_x, cy - exp_y))
+            if dist > max(search_pad_x, search_pad_y) * 1.15:
+                continue
+            density = area / float(max(1, bw * bh))
+            score = (area * 1.4) + (density * 18.0) - (dist * 2.2)
+            if score > best_score:
+                best_score = score
+                best_pt = np.array([cx, cy], dtype=np.float32)
+
+        if best_pt is not None:
+            return best_pt
+
+        ys, xs = np.where(roi > 0)
+        if len(xs) < 16:
+            return None
+        cx = x0 + float(np.mean(xs))
+        cy = y0 + float(np.mean(ys))
+        if float(np.hypot(cx - exp_x, cy - exp_y)) > max(search_pad_x, search_pad_y) * 1.15:
+            return None
+        return np.array([cx, cy], dtype=np.float32)
 
     def _resolve_column_digit_centers(
         self,
@@ -1004,11 +1256,40 @@ class OMRProcessor:
                     max(8, int(round(col_search_pad * 0.75))),
                     min_area,
                     max_area,
-                    max(5.0, bubble_radius * (1.25 if c == 0 or c == (cols - 1) else 1.15)),
+                    max(6.0, bubble_radius * (1.45 if c == 0 or c == (cols - 1) else 1.30)),
                 )
                 refined[idx] = shifted if local_offset is None else shifted + local_offset
 
-        return refined.astype(np.float32)
+        regularized = refined.copy()
+        if cols > 1:
+            row_centers_y: list[float] = []
+            row_shift_x: list[float] = []
+            for r in range(rows):
+                row_slice = slice(r * cols, (r + 1) * cols)
+                row_centers_y.append(float(np.median(refined[row_slice, 1])))
+                row_shift_x.append(float(np.median(refined[row_slice, 0] - expected[row_slice, 0])))
+
+            if len(row_centers_y) >= 2:
+                y_arr = np.array(row_centers_y, dtype=np.float32)
+                shift_arr = np.array(row_shift_x, dtype=np.float32)
+                y_mean = float(np.mean(y_arr))
+                denom = float(np.sum((y_arr - y_mean) ** 2))
+                if denom > 1e-6:
+                    shear = float(np.sum((y_arr - y_mean) * (shift_arr - float(np.mean(shift_arr)))) / denom)
+                else:
+                    shear = 0.0
+                shift0 = float(np.mean(shift_arr) - (shear * y_mean))
+            else:
+                shear = 0.0
+                shift0 = row_shift_x[0] if row_shift_x else 0.0
+
+            for r in range(rows):
+                row_slice = slice(r * cols, (r + 1) * cols)
+                row_y = float(np.median(refined[row_slice, 1]))
+                smoothed_shift = shift0 + (shear * row_y)
+                regularized[row_slice, 0] = expected[row_slice, 0] + smoothed_shift
+
+        return regularized.astype(np.float32)
 
     def _find_local_component_offset(
         self,
@@ -1051,18 +1332,52 @@ class OMRProcessor:
         if not grid or not grid.bubble_positions:
             return
 
-        centers = self._resolve_zone_centers(binary, zone, template)
-        radius = int(zone.metadata.get("bubble_radius", 9))
-        ratios = self.detect_bubbles(binary, centers, radius)
+        working_binary = binary
+        working_image = getattr(result, "aligned_image", None)
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
-            core_ratios = self._detect_center_core_marks(binary, centers, radius)
+            working_image, working_binary, warp_debug = self._warp_digit_block(working_image, binary, zone, template)
+            expected = np.array(
+                [(x * working_binary.shape[1], y * working_binary.shape[0]) if x <= 1.0 and y <= 1.0 else (x, y) for x, y in grid.bubble_positions],
+                dtype=np.float32,
+            )
+            guided, digit_debug = self._digit_zone_guidance(working_binary, expected, zone, template)
+            centers = self._resolve_column_digit_centers(working_binary, guided, grid, float(zone.metadata.get("bubble_radius", 9)))
+            zone_debug = dict(getattr(result, "digit_zone_debug", {}) or {})
+            final_col_lines = [float(np.median(centers[c::grid.cols, 0])) for c in range(grid.cols)] if grid.cols > 0 else []
+            zone_debug[zone.id] = digit_debug | warp_debug | {
+                "centers": [(float(x), float(y)) for x, y in centers],
+                "col_lines": final_col_lines,
+                "col_segments": [],
+            }
+            setattr(result, "digit_zone_debug", zone_debug)
+            if self.debug_mode and working_image is not None:
+                digit_overlay = working_image.copy()
+                for x, y in warp_debug.get("detected_digit_anchors", []):
+                    cv2.circle(digit_overlay, (int(round(x)), int(round(y))), 6, (0, 255, 255), 2)
+                for x, y in centers:
+                    cv2.circle(digit_overlay, (int(round(x)), int(round(y))), 5, (0, 0, 255), 1)
+                out_dir = self.debug_dir or Path(result.image_path).parent
+                out_dir.mkdir(parents=True, exist_ok=True)
+                out_path = out_dir / f"{Path(result.image_path).stem}_{zone.id}_digit_debug.png"
+                cv2.imwrite(str(out_path), digit_overlay)
+        else:
+            centers = self._resolve_zone_centers(working_binary, zone, template)
+        radius = int(zone.metadata.get("bubble_radius", 9))
+        ratios = self.detect_bubbles(working_binary, centers, radius)
+        if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+            core_ratios = self._detect_center_core_marks(working_binary, centers, radius)
+            multi_probe_ratios = self._detect_digit_zone_multi_probe_marks(working_binary, centers, radius)
             if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
-                square_ratios = self._detect_square_mark_density(binary, centers, radius)
-                eroded_ratios = self._detect_eroded_mark_density(binary, centers, radius)
-                ratios = np.clip((0.15 * ratios) + (0.30 * core_ratios) + (0.30 * square_ratios) + (0.25 * eroded_ratios), 0.0, 1.0)
+                square_ratios = self._detect_square_mark_density(working_binary, centers, radius)
+                eroded_ratios = self._detect_eroded_mark_density(working_binary, centers, radius)
+                legacy_ratios = np.clip((0.15 * ratios) + (0.30 * core_ratios) + (0.30 * square_ratios) + (0.25 * eroded_ratios), 0.0, 1.0)
+                widened_ratios = np.clip((0.10 * ratios) + (0.22 * core_ratios) + (0.22 * square_ratios) + (0.18 * eroded_ratios) + (0.28 * multi_probe_ratios), 0.0, 1.0)
+                ratios = np.maximum(legacy_ratios, widened_ratios)
             else:
-                ratios = np.clip((0.55 * ratios) + (0.45 * core_ratios), 0.0, 1.0)
-        dynamic_thresholds = np.array([self._estimate_local_fill_threshold(binary, center, radius, self.fill_threshold) for center in centers], dtype=np.float32)
+                legacy_ratios = np.clip((0.55 * ratios) + (0.45 * core_ratios), 0.0, 1.0)
+                widened_ratios = np.clip((0.30 * ratios) + (0.28 * core_ratios) + (0.42 * multi_probe_ratios), 0.0, 1.0)
+                ratios = np.maximum(legacy_ratios, widened_ratios)
+        dynamic_thresholds = np.array([self._estimate_local_fill_threshold(working_binary, center, radius, self.fill_threshold) for center in centers], dtype=np.float32)
 
         rows, cols = max(1, grid.rows), max(1, grid.cols)
         need = rows * cols
@@ -1149,11 +1464,15 @@ class OMRProcessor:
             order = np.argsort(col_scores)[::-1]
             top_i, second_i = int(order[0]), int(order[1]) if len(order) > 1 else int(order[0])
             top, second = float(col_scores[top_i]), float(col_scores[second_i]) if len(order) > 1 else 0.0
-            if len(np.where(col_scores > col_threshold)[0]) > 1:
-                result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: double mark")
+            filled = np.where(col_scores > col_threshold)[0]
+            if len(filled) > 1:
+                ordered_filled = sorted((float(col_scores[idx]), int(idx)) for idx in filled)[::-1]
+                if len(ordered_filled) >= 2 and abs(ordered_filled[0][0] - ordered_filled[1][0]) < 0.10:
+                    result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: double mark")
             student_ratio = 1.05 if is_student_id and (c == 0 or c == (cols - 1)) else 1.08
             ratio_gate = second <= 0.0 or top >= (second * (student_ratio if is_student_id else 1.10 if is_exam_code else 1.18))
-            if top <= col_threshold or ((top - second) <= certainty_margin and not ratio_gate):
+            confidence = top - second
+            if top <= col_threshold or (confidence < 0.04) or (confidence <= certainty_margin and not ratio_gate):
                 digits.append("?")
                 result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: uncertain")
                 if is_student_id:
@@ -1163,7 +1482,7 @@ class OMRProcessor:
             else:
                 mapped = digit_map[top_i] if top_i < len(digit_map) else top_i
                 digits.append(str(mapped))
-            confs.append(top - second)
+            confs.append(confidence)
         if is_student_id:
             uncertain_cols = [idx for idx, value in enumerate(digits) if value == "?"]
             if uncertain_cols and len(uncertain_cols) <= 2:
