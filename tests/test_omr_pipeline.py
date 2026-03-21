@@ -536,6 +536,20 @@ class OMRPipelineTests(unittest.TestCase):
         digits, _ = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
         self.assertEqual(digits, "3456")
 
+    def test_resolve_column_digit_centers_returns_refined_array_without_name_error(self):
+        grid = BubbleGrid(
+            rows=4,
+            cols=2,
+            question_start=1,
+            question_count=2,
+            options=[],
+            bubble_positions=[(40 + c * 30, 20 + r * 18) for r in range(4) for c in range(2)],
+        )
+        expected = np.array(grid.bubble_positions, dtype=np.float32)
+        binary = np.zeros((120, 120), dtype=np.uint8)
+        centers = self.processor._resolve_column_digit_centers(binary, expected, grid, 5.0)
+        self.assertEqual(centers.shape, expected.shape)
+
     def test_recognize_block_keeps_template_x_and_uses_digit_guidance_y(self):
         template = Template(
             name="sid_guided_block",
