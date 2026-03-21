@@ -262,7 +262,11 @@ class TemplateCanvas(QWidget):
                 p.setPen(QPen(QColor(255, 180, 0), 2)); p.setBrush(QColor(255, 180, 0))
             else:
                 p.setPen(QPen(Qt.black, 2)); p.setBrush(Qt.black)
-            p.drawRect(QRectF(a.x * self.template.width * self.zoom - 4, a.y * self.template.height * self.zoom - 4, 8, 8))
+            ax = a.x * self.template.width * self.zoom
+            ay = a.y * self.template.height * self.zoom
+            p.drawRect(QRectF(ax - 4, ay - 4, 8, 8))
+            p.setPen(QPen(QColor(20, 20, 20), 1))
+            p.drawText(QPointF(ax + 6, ay - 6), str(getattr(a, "name", "") or f"A{i+1}"))
 
         # Detected anchors from test-recognition pass.
         if self.detected_anchor_points:
@@ -381,6 +385,18 @@ class TemplateCanvas(QWidget):
             for x in debug.get("col_lines", []) or []:
                 xx = float(x) * self.zoom
                 painter.drawLine(QPointF(xx, top), QPointF(xx, bottom))
+
+        painter.setPen(QPen(QColor(0, 200, 200), 1.2, Qt.DashLine))
+        painter.setBrush(Qt.NoBrush)
+        for x, y, w, h in debug.get("guide_regions", []) or []:
+            painter.drawRect(QRectF(float(x) * self.zoom, float(y) * self.zoom, float(w) * self.zoom, float(h) * self.zoom))
+
+        painter.setPen(QPen(QColor(0, 220, 220), 2))
+        for x, y in debug.get("guide_points", []) or []:
+            px = float(x) * self.zoom
+            py = float(y) * self.zoom
+            painter.drawLine(QPointF(px - 6, py - 6), QPointF(px + 6, py + 6))
+            painter.drawLine(QPointF(px - 6, py + 6), QPointF(px + 6, py - 6))
 
 
 class TemplateEditorWindow(QMainWindow):
@@ -810,8 +826,6 @@ class TemplateEditorWindow(QMainWindow):
             "decimal_symbol": self.p_decimal_symbol.text() or ".",
         })
         z.grid = self.template_engine.generate_semantic_grid(z)
-        if self.template and z.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
-            self.template_engine.rebuild_digit_zone_anchors(self.template)
         self._mark_dirty()
         self.canvas.update()
 
@@ -971,9 +985,7 @@ class TemplateEditorWindow(QMainWindow):
 
         # Show detected anchors and recognized options overlay (green X = selected/seen).
         self.canvas.recognition_overlay.clear()
-        combined_detected_anchors = list(getattr(res, "detected_anchors", []))
-        combined_detected_anchors.extend(list(getattr(res, "detected_digit_anchors", [])))
-        self.canvas.detected_anchor_points = combined_detected_anchors
+        self.canvas.detected_anchor_points = list(getattr(res, "detected_anchors", []))
         self.canvas.digit_zone_debug = dict(getattr(res, "digit_zone_debug", {}) or {})
         self.canvas.recognition_overlay.update(getattr(res, "bubble_states_by_zone", {}) or self.omr.extract_bubble_states(aligned_binary, self.template))
 
