@@ -1288,11 +1288,10 @@ class OMRProcessor:
         search_pad = max(10, int(round(bubble_radius * 2.4)))
         max_dist = max(6.0, bubble_radius * 1.75)
         refined = expected.copy()
-        max_x_shift = 3.0
-
         for c in range(cols):
             col_pts = expected[c::cols]
             offsets_x: list[float] = []
+            col_max_x_shift = 4.0 if c == 0 or c == (cols - 1) else 3.0
             for exp_x, exp_y in col_pts:
                 best_offset = self._find_local_component_offset(
                     binary,
@@ -1307,39 +1306,10 @@ class OMRProcessor:
             if not offsets_x:
                 continue
             median_shift_x = float(np.median(np.array(offsets_x, dtype=np.float32)))
-            median_shift_x = float(np.clip(median_shift_x, -max_x_shift, max_x_shift))
+            median_shift_x = float(np.clip(median_shift_x, -col_max_x_shift, col_max_x_shift))
             for r in range(rows):
                 idx = (r * cols) + c
                 refined[idx, 0] = expected[idx, 0] + median_shift_x
-
-        regularized = refined.copy()
-        if cols > 1:
-            row_centers_y: list[float] = []
-            row_shift_x: list[float] = []
-            for r in range(rows):
-                row_slice = slice(r * cols, (r + 1) * cols)
-                row_centers_y.append(float(np.median(refined[row_slice, 1])))
-                row_shift_x.append(float(np.median(refined[row_slice, 0] - expected[row_slice, 0])))
-
-            if len(row_centers_y) >= 2:
-                y_arr = np.array(row_centers_y, dtype=np.float32)
-                shift_arr = np.array(row_shift_x, dtype=np.float32)
-                y_mean = float(np.mean(y_arr))
-                denom = float(np.sum((y_arr - y_mean) ** 2))
-                if denom > 1e-6:
-                    shear = float(np.sum((y_arr - y_mean) * (shift_arr - float(np.mean(shift_arr)))) / denom)
-                else:
-                    shear = 0.0
-                shift0 = float(np.mean(shift_arr) - (shear * y_mean))
-            else:
-                shear = 0.0
-                shift0 = row_shift_x[0] if row_shift_x else 0.0
-
-            for r in range(rows):
-                row_slice = slice(r * cols, (r + 1) * cols)
-                row_y = float(np.median(refined[row_slice, 1]))
-                smoothed_shift = shift0 + (shear * row_y)
-                regularized[row_slice, 0] = expected[row_slice, 0] + smoothed_shift
 
         return regularized.astype(np.float32)
 
@@ -1503,18 +1473,19 @@ class OMRProcessor:
         fallback_candidates: list[tuple[int, float, int]] = []
         for c in range(cols):
             col_scores = mat[:, c]
+            is_edge_col = c == 0 or c == (cols - 1)
             if is_student_id:
                 col_threshold = max(self.empty_threshold + 0.10, float((self.fill_threshold * 0.90)))
                 col_threshold = max(col_threshold, float(np.mean(col_scores) + (0.25 * np.std(col_scores))))
                 certainty_margin = self.certainty_margin * 0.40
-                if c == 0 or c == (cols - 1):
+                if is_edge_col:
                     col_threshold *= 0.92
                     certainty_margin *= 0.70
             elif is_exam_code:
                 col_threshold = max(self.empty_threshold + 0.10, float((self.fill_threshold * 0.95)))
                 col_threshold = max(col_threshold, float(np.mean(col_scores) + (0.30 * np.std(col_scores))))
                 certainty_margin = self.certainty_margin * 0.75
-                if c == 0 or c == (cols - 1):
+                if is_edge_col:
                     col_threshold *= 0.92
                     certainty_margin *= 0.70
             else:
@@ -1531,6 +1502,7 @@ class OMRProcessor:
             student_ratio = 1.05 if is_student_id and (c == 0 or c == (cols - 1)) else 1.08
             ratio_gate = second <= 0.0 or top >= (second * (student_ratio if is_student_id else 1.10 if is_exam_code else 1.18))
             confidence = top - second
+            edge_fallback_ok = is_edge_col and top > (col_threshold * 0.85) and (confidence >= 0.02 or top >= (second * 1.03))
             if top <= col_threshold or (confidence < 0.04) or (confidence <= certainty_margin and not ratio_gate):
                 digits.append("?")
                 result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: uncertain")
@@ -1538,7 +1510,11 @@ class OMRProcessor:
                     mapped = digit_map[top_i] if top_i < len(digit_map) else top_i
                     fallback_score = top - max(col_threshold * 0.85, second)
                     fallback_candidates.append((c, float(fallback_score), int(mapped)))
+                    if edge_fallback_ok:
+                        digits[-1] = str(mapped)
                 elif is_exam_code and top > (col_threshold * 0.9):
+                    digits[-1] = str(digit_map[top_i] if top_i < len(digit_map) else top_i)
+                elif is_exam_code and edge_fallback_ok:
                     digits[-1] = str(digit_map[top_i] if top_i < len(digit_map) else top_i)
             else:
                 mapped = digit_map[top_i] if top_i < len(digit_map) else top_i

@@ -89,7 +89,7 @@ class OMRPipelineTests(unittest.TestCase):
         centers = self.processor._resolve_zone_centers(binary, template.zones[0], template)
         expected_x = np.array(grid.bubble_positions, dtype=np.float32)[:, 0]
         expected_x[0::2] += 2.0
-        expected_x[1::2] += 3.0
+        expected_x[1::2] += 4.0
         self.assertTrue(np.allclose(centers[:, 0], expected_x, atol=0.5))
         self.assertLess(float(np.mean(np.abs(centers[:, 1] - shifted[:, 1]))), 2.5)
 
@@ -163,7 +163,7 @@ class OMRPipelineTests(unittest.TestCase):
         with patch.object(self.processor, "detect_anchors", return_value=detected_ruler):
             centers = self.processor._resolve_zone_centers(binary, zone, template)
 
-        self.assertTrue(np.allclose(centers[:, 0], np.array(grid.bubble_positions, dtype=np.float32)[:, 0] + 3.0, atol=0.5))
+        self.assertTrue(np.allclose(centers[:, 0], np.array(grid.bubble_positions, dtype=np.float32)[:, 0] + 4.0, atol=0.5))
         self.assertLess(float(np.mean(np.abs(centers[:, 1] - shifted[:, 1]))), 2.0)
 
     def test_detect_digit_anchor_ruler_finds_actual_positions_near_manual_points(self):
@@ -501,9 +501,40 @@ class OMRPipelineTests(unittest.TestCase):
         with patch.object(self.processor, "_find_local_component_offset", side_effect=offsets):
             centers = self.processor._resolve_column_digit_centers(binary, expected, grid, 5.0)
 
-        self.assertTrue(np.allclose(centers[0::2, 0], expected[0::2, 0] + 3.0))
-        self.assertTrue(np.allclose(centers[1::2, 0], expected[1::2, 0] - 3.0))
+        self.assertTrue(np.allclose(centers[0::2, 0], expected[0::2, 0] + 4.0))
+        self.assertTrue(np.allclose(centers[1::2, 0], expected[1::2, 0] - 4.0))
         self.assertTrue(np.allclose(centers[:, 1], expected[:, 1]))
+
+    def test_exam_code_decode_accepts_soft_edge_fallback_for_last_column(self):
+        zone = Zone(
+            id="exam_edge_fallback",
+            name="exam",
+            zone_type=ZoneType.EXAM_CODE_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=4, question_start=1, question_count=4, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        mat = np.array(
+            [
+                [0.10, 0.12, 0.11, 0.18],
+                [0.11, 0.13, 0.12, 0.17],
+                [0.12, 0.14, 0.13, 0.16],
+                [0.70, 0.15, 0.14, 0.15],
+                [0.13, 0.73, 0.15, 0.14],
+                [0.12, 0.14, 0.75, 0.13],
+                [0.11, 0.13, 0.12, 0.48],
+                [0.10, 0.12, 0.11, 0.45],
+                [0.09, 0.11, 0.10, 0.12],
+                [0.08, 0.10, 0.09, 0.11],
+            ],
+            dtype=np.float32,
+        )
+        result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
+        digits, _ = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
+        self.assertEqual(digits, "3456")
 
     def test_recognize_block_keeps_template_x_and_uses_digit_guidance_y(self):
         template = Template(
