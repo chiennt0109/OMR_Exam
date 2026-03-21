@@ -881,7 +881,7 @@ class TemplateEditorWindow(QMainWindow):
         for r in range(rows):
             top_pt = row_tops[r]
             gap = float(np.dot(row_tops[r + 1] - top_pt, row_unit)) if r + 1 < len(row_tops) else median_gap
-            center_base = top_pt + (0.5 * gap * row_unit)
+            center_base = top_pt + (0.35 * gap * row_unit)
             center = center_base + (float(off[0]) * col_unit) + (float(off[1]) * row_unit)
             row_centers.append(center)
             row_start = top_pt + (float(off[0]) * col_unit) + (float(off[1]) * row_unit)
