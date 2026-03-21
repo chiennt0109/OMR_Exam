@@ -971,9 +971,7 @@ class TemplateEditorWindow(QMainWindow):
 
         # Show detected anchors and recognized options overlay (green X = selected/seen).
         self.canvas.recognition_overlay.clear()
-        combined_detected_anchors = list(getattr(res, "detected_anchors", []))
-        combined_detected_anchors.extend(list(getattr(res, "detected_digit_anchors", [])))
-        self.canvas.detected_anchor_points = combined_detected_anchors
+        self.canvas.detected_anchor_points = list(getattr(res, "detected_anchors", []))
         self.canvas.digit_zone_debug = dict(getattr(res, "digit_zone_debug", {}) or {})
         self.canvas.recognition_overlay.update(getattr(res, "bubble_states_by_zone", {}) or self.omr.extract_bubble_states(aligned_binary, self.template))
 
