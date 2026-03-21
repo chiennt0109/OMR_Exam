@@ -370,9 +370,17 @@ class TemplateCanvas(QWidget):
             painter.drawLine(QPointF(left, yy), QPointF(right, yy))
 
         painter.setPen(QPen(QColor(150, 60, 220), 1.2))
-        for x in debug.get("col_lines", []) or []:
-            xx = float(x) * self.zoom
-            painter.drawLine(QPointF(xx, top), QPointF(xx, bottom))
+        segments = debug.get("col_segments", []) or []
+        if segments:
+            for start, end in segments:
+                painter.drawLine(
+                    QPointF(float(start[0]) * self.zoom, float(start[1]) * self.zoom),
+                    QPointF(float(end[0]) * self.zoom, float(end[1]) * self.zoom),
+                )
+        else:
+            for x in debug.get("col_lines", []) or []:
+                xx = float(x) * self.zoom
+                painter.drawLine(QPointF(xx, top), QPointF(xx, bottom))
 
 
 class TemplateEditorWindow(QMainWindow):

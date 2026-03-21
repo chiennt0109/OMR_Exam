@@ -1182,7 +1182,22 @@ class OMRProcessor:
                 )
                 refined[idx] = shifted if local_offset is None else shifted + local_offset
 
-        return refined.astype(np.float32)
+        regularized = refined.copy()
+        if cols > 1:
+            indices = np.arange(cols, dtype=np.float32)
+            row_slopes: list[float] = []
+            for r in range(rows):
+                row_x = refined[r * cols:(r + 1) * cols, 0]
+                if len(row_x) > 1:
+                    row_slopes.append(float(np.median(np.diff(row_x))))
+            global_slope = float(np.median(row_slopes)) if row_slopes else float(np.median(np.diff(expected[:cols, 0]))) if cols > 1 else 0.0
+            for r in range(rows):
+                row_slice = slice(r * cols, (r + 1) * cols)
+                row_x = refined[row_slice, 0]
+                intercept = float(np.median(row_x - (indices * global_slope)))
+                regularized[row_slice, 0] = intercept + (indices * global_slope)
+
+        return regularized.astype(np.float32)
 
     def _find_local_component_offset(
         self,
@@ -1234,9 +1249,16 @@ class OMRProcessor:
             centers = self._resolve_column_digit_centers(binary, guided, grid, float(zone.metadata.get("bubble_radius", 9)))
             zone_debug = dict(getattr(result, "digit_zone_debug", {}) or {})
             final_col_lines = [float(np.median(centers[c::grid.cols, 0])) for c in range(grid.cols)] if grid.cols > 0 else []
+            col_segments = []
+            if grid.cols > 0 and grid.rows > 0:
+                for c in range(grid.cols):
+                    top_pt = centers[c]
+                    bottom_pt = centers[((grid.rows - 1) * grid.cols) + c]
+                    col_segments.append(((float(top_pt[0]), float(top_pt[1])), (float(bottom_pt[0]), float(bottom_pt[1]))))
             zone_debug[zone.id] = digit_debug | {
                 "centers": [(float(x), float(y)) for x, y in centers],
                 "col_lines": final_col_lines,
+                "col_segments": col_segments,
             }
             setattr(result, "digit_zone_debug", zone_debug)
         else:
