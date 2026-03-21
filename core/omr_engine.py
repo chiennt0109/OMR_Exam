@@ -1455,10 +1455,13 @@ class OMRProcessor:
                 value, confs = self._decode_column_digits(mat, zone, grid, result)
                 key = "student_id" if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else "exam_code"
                 expected_len = max(1, cols)
-                is_valid = len(value) == expected_len and "?" not in value
+                missing_digits = value.count("?")
+                is_valid = len(value) == expected_len and missing_digits < 2
                 if not is_valid:
                     result.recognition_errors.append(f"{zone.zone_type.value}: invalid length or ambiguous digit sequence")
                     value = ""
+                elif missing_digits > 0:
+                    result.recognition_errors.append(f"{zone.zone_type.value}: LOW_CONFIDENCE")
                 if key == "student_id":
                     result.student_id = value
                 else:
@@ -1505,6 +1508,7 @@ class OMRProcessor:
         digit_map = zone.metadata.get("digit_map", default_digit_map)
         digits: list[str] = []
         confs: list[float] = []
+        soft_fallbacks: list[tuple[int, int, float]] = []
         for c in range(cols):
             col_scores = np.asarray(mat[:, c], dtype=np.float32)
             raw_max = float(np.max(col_scores)) if col_scores.size else 0.0
@@ -1521,26 +1525,46 @@ class OMRProcessor:
                 norm_scores = activated_scores / activated_max
             else:
                 norm_scores = np.zeros_like(activated_scores)
-            col_sum = float(np.sum(activated_scores))
+            top3 = np.sort(col_scores)[-min(3, len(col_scores)) :] if len(col_scores) else np.array([], dtype=np.float32)
+            top3_mean = float(np.mean(top3)) if top3.size else 0.0
             order = np.argsort(norm_scores)[::-1]
             top_i, second_i = int(order[0]), int(order[1]) if len(order) > 1 else int(order[0])
-            top = float(norm_scores[top_i])
-            second = float(norm_scores[second_i]) if len(order) > 1 else 0.0
+            mapped = digit_map[top_i] if top_i < len(digit_map) else top_i
             raw_second = float(col_scores[second_i]) if len(order) > 1 else 0.0
-            confidence = (float(activated_scores[top_i]) / col_sum) if col_sum > 1e-6 else 0.0
+            confidence = (raw_max / top3_mean) if top3_mean > 1e-6 else 0.0
+            fallback_ok = raw_max > (col_threshold * 1.2)
             if raw_max < col_threshold:
-                digits.append("?")
-                result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: below threshold")
-            elif (raw_max - raw_second) < 0.08:
-                digits.append("?")
-                result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: ambiguous")
-            elif confidence < 0.5:
-                digits.append("?")
-                result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: low confidence")
+                if fallback_ok:
+                    digits.append(str(mapped))
+                    result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: fallback accepted")
+                else:
+                    digits.append("?")
+                    result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: below threshold")
+            elif raw_second > (0.7 * raw_max):
+                if fallback_ok:
+                    digits.append(str(mapped))
+                    result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: fallback accepted")
+                else:
+                    digits.append("?")
+                    result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: ambiguous")
+            elif confidence < 1.2:
+                if fallback_ok:
+                    digits.append(str(mapped))
+                    result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: fallback accepted")
+                else:
+                    digits.append("?")
+                    result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: low confidence")
             else:
-                mapped = digit_map[top_i] if top_i < len(digit_map) else top_i
                 digits.append(str(mapped))
+            soft_fallbacks.append((c, int(mapped), raw_max))
             confs.append(confidence)
+        missing_cols = [idx for idx, digit in enumerate(digits) if digit == "?"]
+        if len(missing_cols) <= 1:
+            for idx in missing_cols:
+                _, mapped, _ = soft_fallbacks[idx]
+                digits[idx] = str(mapped)
+            if missing_cols:
+                result.recognition_errors.append(f"{zone.zone_type.value}: LOW_CONFIDENCE")
         return "".join(digits), confs
 
     def _cluster_digit_columns(
@@ -1554,39 +1578,58 @@ class OMRProcessor:
         count = rows * cols
         if count <= 0:
             return np.zeros((max(1, rows), max(1, cols)), dtype=np.float32)
-        pts = np.asarray(centers[:count], dtype=np.float32)
-        vals = np.asarray(values[:count], dtype=np.float32)
-        if pts.shape[0] < count:
-            pts = np.pad(pts, ((0, count - pts.shape[0]), (0, 0)), constant_values=0.0)
-            vals = np.pad(vals, (0, count - vals.shape[0]), constant_values=fill_value)
+        actual_count = min(count, len(centers), len(values))
+        pts = np.asarray(centers[:actual_count], dtype=np.float32)
+        vals = np.asarray(values[:actual_count], dtype=np.float32)
+        if pts.size == 0:
+            return np.full((rows, cols), float(fill_value), dtype=np.float32)
 
         xs = pts[:, 0].astype(np.float32)
         order_x = np.argsort(xs)
         sorted_xs = xs[order_x]
         if cols <= 1:
             labels = np.zeros(len(xs), dtype=np.int32)
+            split_xs = np.array([float(np.mean(sorted_xs)) if sorted_xs.size else 0.0], dtype=np.float32)
         else:
-            split_xs = np.array(
-                [np.median(chunk) for chunk in np.array_split(sorted_xs, cols)],
-                dtype=np.float32,
-            )
-            if split_xs.shape[0] < cols:
-                split_xs = np.pad(split_xs, (0, cols - split_xs.shape[0]), mode="edge")
-            for _ in range(16):
+            gaps = np.diff(sorted_xs) if sorted_xs.size > 1 else np.array([], dtype=np.float32)
+            cut_positions = np.argsort(gaps)[-(cols - 1) :] + 1 if gaps.size else np.array([], dtype=np.int32)
+            cut_positions = np.sort(cut_positions[: cols - 1])
+            segment_bounds = [0] + cut_positions.tolist() + [len(sorted_xs)]
+            split_xs = []
+            sorted_labels = np.zeros(len(sorted_xs), dtype=np.int32)
+            for seg_idx in range(min(cols, len(segment_bounds) - 1)):
+                start = int(segment_bounds[seg_idx])
+                end = int(segment_bounds[seg_idx + 1])
+                segment = sorted_xs[start:end]
+                if segment.size == 0:
+                    continue
+                split_xs.append(float(np.mean(segment)))
+                sorted_labels[start:end] = seg_idx
+            if len(split_xs) < cols:
+                fill = split_xs[-1] if split_xs else (float(np.mean(sorted_xs)) if sorted_xs.size else 0.0)
+                split_xs.extend([fill] * (cols - len(split_xs)))
+            split_xs = np.array(split_xs[:cols], dtype=np.float32)
+            labels = np.zeros(len(xs), dtype=np.int32)
+            labels[order_x] = sorted_labels[: len(order_x)]
+            non_empty = [idx for idx in range(cols) if np.any(labels == idx)]
+            if non_empty:
+                if len(non_empty) >= 2:
+                    spacing = float(np.median(np.diff(split_xs[non_empty])))
+                else:
+                    spacing = 1.0
+                for idx in range(cols):
+                    if np.any(labels == idx):
+                        continue
+                    left = max([j for j in non_empty if j < idx], default=None)
+                    right = min([j for j in non_empty if j > idx], default=None)
+                    if left is not None and right is not None:
+                        split_xs[idx] = float((split_xs[left] + split_xs[right]) * 0.5)
+                    elif left is not None:
+                        split_xs[idx] = float(split_xs[left] + spacing * (idx - left))
+                    elif right is not None:
+                        split_xs[idx] = float(split_xs[right] - spacing * (right - idx))
                 dists = np.abs(xs[:, None] - split_xs[None, :])
                 labels = np.argmin(dists, axis=1).astype(np.int32)
-                new_centers = split_xs.copy()
-                for idx in range(cols):
-                    members = xs[labels == idx]
-                    if members.size:
-                        new_centers[idx] = float(np.mean(members))
-                if np.allclose(new_centers, split_xs, atol=1e-3):
-                    split_xs = new_centers
-                    break
-                split_xs = new_centers
-            sort_idx = np.argsort(split_xs)
-            remap = {int(old): int(new) for new, old in enumerate(sort_idx.tolist())}
-            labels = np.array([remap[int(label)] for label in labels], dtype=np.int32)
 
         mat = np.full((rows, cols), float(fill_value), dtype=np.float32)
         for col_idx in range(cols):
