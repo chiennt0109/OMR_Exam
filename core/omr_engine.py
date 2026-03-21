@@ -997,10 +997,24 @@ class OMRProcessor:
     def _digit_zone_guidance(self, binary: np.ndarray, expected: np.ndarray, zone: Zone, template: Template) -> tuple[np.ndarray, dict[str, object]]:
         if len(expected) == 0 or not zone.grid:
             return expected, {}
-        detected = np.array(self._detect_digit_anchor_ruler(binary, template, zone), dtype=np.float32)
         template_pts = np.array(self._get_manual_digit_anchor_points(template, zone), dtype=np.float32)
-        if len(detected) < 2 or len(template_pts) < 2:
+        if len(template_pts) < 2:
             return expected, {}
+        detected_pts: list[tuple[float, float]] = []
+        guide_regions: list[tuple[float, float, float, float]] = []
+        for pt in template_pts:
+            matched, region = self._find_digit_anchor_match(binary, pt)
+            if region is not None:
+                guide_regions.append(tuple(float(v) for v in region))
+            if matched is not None:
+                detected_pts.append((float(matched[0]), float(matched[1])))
+        detected = np.array(detected_pts, dtype=np.float32)
+        if len(detected) < 2:
+            return expected, {
+                "guide_points": detected_pts,
+                "guide_regions": guide_regions,
+                "template_guide_points": [(float(x), float(y)) for x, y in template_pts],
+            }
 
         n = min(len(detected), len(template_pts))
         if n < 2:
@@ -1054,6 +1068,7 @@ class OMRProcessor:
 
         debug: dict[str, object] = {
             "guide_points": [(float(x), float(y)) for x, y in detected],
+            "guide_regions": guide_regions,
             "template_guide_points": [(float(x), float(y)) for x, y in template_pts],
             "fitted_line": fitted_line,
             "row_lines": row_lines,
@@ -1226,7 +1241,7 @@ class OMRProcessor:
         detected_corner_pts = _corner_set(detected_all, float(template.width), float(template.height))
         return template_corner_pts, detected_corner_pts
 
-    def _find_digit_anchor_from_manual_point(self, binary: np.ndarray, expected_pt: np.ndarray) -> np.ndarray | None:
+    def _find_digit_anchor_match(self, binary: np.ndarray, expected_pt: np.ndarray) -> tuple[np.ndarray | None, tuple[int, int, int, int]]:
         h, w = binary.shape[:2]
         exp_x, exp_y = float(expected_pt[0]), float(expected_pt[1])
         search_pad_x = max(20, int(round(w * 0.025)))
@@ -1236,8 +1251,9 @@ class OMRProcessor:
         x1 = int(min(w, exp_x + search_pad_x + 1))
         y1 = int(min(h, exp_y + search_pad_y + 1))
         roi = binary[y0:y1, x0:x1]
+        region = (x0, y0, max(1, x1 - x0), max(1, y1 - y0))
         if roi.size == 0:
-            return None
+            return None, region
 
         num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(roi, connectivity=8)
         best_pt: np.ndarray | None = None
@@ -1262,16 +1278,20 @@ class OMRProcessor:
                 best_pt = np.array([cx, cy], dtype=np.float32)
 
         if best_pt is not None:
-            return best_pt
+            return best_pt, region
 
         ys, xs = np.where(roi > 0)
         if len(xs) < 16:
-            return None
+            return None, region
         cx = x0 + float(np.mean(xs))
         cy = y0 + float(np.mean(ys))
         if float(np.hypot(cx - exp_x, cy - exp_y)) > max(search_pad_x, search_pad_y) * 1.15:
-            return None
-        return np.array([cx, cy], dtype=np.float32)
+            return None, region
+        return np.array([cx, cy], dtype=np.float32), region
+
+    def _find_digit_anchor_from_manual_point(self, binary: np.ndarray, expected_pt: np.ndarray) -> np.ndarray | None:
+        best_pt, _ = self._find_digit_anchor_match(binary, expected_pt)
+        return best_pt
 
     def _resolve_column_digit_centers(
         self,
