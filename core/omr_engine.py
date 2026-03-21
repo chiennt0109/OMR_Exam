@@ -1311,7 +1311,8 @@ class OMRProcessor:
                 idx = (r * cols) + c
                 refined[idx, 0] = expected[idx, 0] + median_shift_x
 
-        return regularized.astype(np.float32)
+        refined_centers = refined.astype(np.float32)
+        return refined_centers
 
     def _find_local_component_offset(
         self,
