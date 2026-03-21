@@ -1528,21 +1528,18 @@ class OMRProcessor:
         return x0, y0, max(1, x1 - x0), max(1, y1 - y0)
 
     def _sample_digit_cell(self, img: np.ndarray, cx: int, cy: int, cell_w: float, cell_h: float) -> float:
-        cy = int(cy + (cell_h * 0.15))
+        cy = cy + (cell_h * 0.18)
         radius = max(1, int(min(cell_w, cell_h) * 0.22))
 
         h, w = img.shape[:2]
-        x1 = max(cx - radius, 0)
-        x2 = min(cx + radius, w)
-        y1 = max(cy - radius, 0)
-        y2 = min(cy + radius, h)
+        x1 = max(int(cx - radius), 0)
+        x2 = min(int(cx + radius), w)
+        y1 = max(int(cy - radius), 0)
+        y2 = min(int(cy + radius), h)
 
         patch = img[y1:y2, x1:x2]
         if patch.size == 0:
             return 0.0
-
-        mask = np.zeros_like(patch, dtype=np.uint8)
-        cv2.circle(mask, (patch.shape[1] // 2, patch.shape[0] // 2), radius, 255, -1)
 
         _, th = cv2.threshold(
             patch,
@@ -1550,12 +1547,7 @@ class OMRProcessor:
             255,
             cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU,
         )
-
-        dark = float(np.sum((th > 0) & (mask == 255)))
-        total = float(np.sum(mask == 255))
-        if total <= 0.0:
-            return 0.0
-        return float(dark / total)
+        return float(np.mean(th) / 255.0)
 
     def _read_digit_grid_sampling(
         self,
@@ -1588,23 +1580,15 @@ class OMRProcessor:
                 mat[row, col] = self._sample_digit_cell(img, cx, cy, cell_w, cell_h)
         results: list[int | None | str] = []
         for col in range(num_cols):
-            column_values = [(row, float(mat[row, col]), None) for row in range(num_rows)]
-            scores = [score for _, score, _ in column_values]
-            max_score = max(scores) if scores else 0.0
-            mean_score = float(np.mean(scores)) if scores else 0.0
-
-            filled_rows: list[int] = []
-            for row, score, _ in column_values:
-                if score > (max_score * 0.7) and score > (mean_score + 0.1):
-                    filled_rows.append(row)
-
-            if len(filled_rows) == 1:
-                results.append(int(filled_rows[0]))
-            elif len(filled_rows) == 0:
+            column_scores = [(row, float(mat[row, col])) for row in range(num_rows)]
+            if self.debug_mode:
+                print(f"Column {col} -> {column_scores}")
+            best_row = max(column_scores, key=lambda x: x[1])[0] if column_scores else None
+            scores = [score for _, score in column_scores]
+            if not scores or max(scores) < float(threshold):
                 results.append(None)
             else:
-                best = max(column_values, key=lambda x: x[1])[0]
-                results.append(int(best))
+                results.append(int(best_row) if best_row is not None else None)
         debug = {
             "bbox": bbox,
             "centers": debug_centers,
@@ -1702,7 +1686,7 @@ class OMRProcessor:
                 bbox,
                 cols,
                 rows,
-                threshold=max(0.40, self.fill_threshold * 0.7),
+                threshold=0.25,
                 centers=centers,
             )
             zone_debug = dict(getattr(result, "digit_zone_debug", {}) or {})
