@@ -1233,7 +1233,11 @@ class OMRProcessor:
             guided, digit_debug = self._digit_zone_guidance(binary, expected, zone, template)
             centers = self._resolve_column_digit_centers(binary, guided, grid, float(zone.metadata.get("bubble_radius", 9)))
             zone_debug = dict(getattr(result, "digit_zone_debug", {}) or {})
-            zone_debug[zone.id] = digit_debug | {"centers": [(float(x), float(y)) for x, y in centers]}
+            final_col_lines = [float(np.median(centers[c::grid.cols, 0])) for c in range(grid.cols)] if grid.cols > 0 else []
+            zone_debug[zone.id] = digit_debug | {
+                "centers": [(float(x), float(y)) for x, y in centers],
+                "col_lines": final_col_lines,
+            }
             setattr(result, "digit_zone_debug", zone_debug)
         else:
             centers = self._resolve_zone_centers(binary, zone, template)
