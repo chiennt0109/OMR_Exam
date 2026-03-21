@@ -208,6 +208,31 @@ class OMRPipelineTests(unittest.TestCase):
         for row_idx, center_y in enumerate(target_centers):
             self.assertAlmostEqual(float(guided[row_idx * 2][1]), float(center_y), places=3)
 
+    def test_manual_digit_anchor_guides_use_positions_2_to_11_as_row_tops(self):
+        grid = BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(120, 20 + r * 20) for r in range(4)])
+        zone = Zone(id="sid_row_tops", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0.4, y=0.1, width=0.2, height=0.6, grid=grid, metadata={"bubble_radius": 5})
+        template = Template(
+            name="digit_row_tops",
+            image_path="",
+            width=240,
+            height=160,
+            anchors=[
+                AnchorPoint(0.84, 0.08, "DIGIT_ANCHOR_01"),
+                AnchorPoint(0.84, 0.16, "DIGIT_ANCHOR_02"),
+                AnchorPoint(0.84, 0.28, "DIGIT_ANCHOR_03"),
+                AnchorPoint(0.84, 0.40, "DIGIT_ANCHOR_04"),
+                AnchorPoint(0.84, 0.52, "DIGIT_ANCHOR_05"),
+            ],
+            zones=[zone],
+        )
+        expected = np.array(grid.bubble_positions, dtype=np.float32)
+
+        guided = self.processor._apply_anchor_ruler_to_digit_zone(np.zeros((160, 240), dtype=np.uint8), expected, zone, template)
+
+        expected_centers = [(0.16 + 0.06) * 160, (0.28 + 0.06) * 160, (0.40 + 0.06) * 160, (0.52 + 0.06) * 160]
+        for row_idx, center_y in enumerate(expected_centers):
+            self.assertAlmostEqual(float(guided[row_idx][1]), float(center_y), places=3)
+
     def test_detect_bubbles_ratio(self):
         binary = np.zeros((120, 120), dtype=np.uint8)
         cv2.circle(binary, (40, 60), 10, 255, -1)

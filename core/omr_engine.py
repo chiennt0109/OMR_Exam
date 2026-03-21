@@ -970,6 +970,18 @@ class OMRProcessor:
             return expected
 
         guided = expected.copy()
+        row_tops = guide_pts[1 : rows + 1]
+        if len(row_tops) == rows:
+            row_steps = np.diff(row_tops[:, 1]) if rows > 1 else np.array([], dtype=np.float32)
+            default_step = float(np.median(row_steps)) if len(row_steps) else float(zone.height * template.height) / max(1, rows)
+            for r in range(rows):
+                step = float(row_steps[r]) if r < len(row_steps) else default_step
+                center_y = float(row_tops[r][1]) + (step * 0.5)
+                for c in range(cols):
+                    idx = (r * cols) + c
+                    guided[idx][1] = center_y
+            return guided.astype(np.float32)
+
         for r in range(rows):
             top_y = float(guide_pts[r][1])
             bottom_y = float(guide_pts[r + 1][1])
