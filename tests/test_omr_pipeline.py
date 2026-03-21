@@ -296,6 +296,23 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertGreater(float(guided[0][0]), float(expected[0][0]))
         self.assertGreater(float(guided[0][1]), float(expected[0][1]))
 
+    def test_digit_columns_are_regularized_to_even_spacing_with_tilt(self):
+        grid = BubbleGrid(rows=4, cols=4, question_start=1, question_count=4, options=[], bubble_positions=[(90 + c * 22, 30 + r * 20) for r in range(4) for c in range(4)])
+        expected = np.array(grid.bubble_positions, dtype=np.float32)
+        binary = np.zeros((180, 240), dtype=np.uint8)
+        for r in range(4):
+            for c in range(4):
+                x = 92 + (c * 23) + r
+                y = 30 + (r * 20)
+                cv2.circle(binary, (x, y), 5, 255, 1)
+
+        centers = self.processor._resolve_column_digit_centers(binary, expected, grid, 5.0)
+
+        for r in range(4):
+            row = centers[r * 4:(r + 1) * 4, 0]
+            diffs = np.diff(row)
+            self.assertLess(float(np.max(diffs) - np.min(diffs)), 1.0)
+
     def test_detect_bubbles_ratio(self):
         binary = np.zeros((120, 120), dtype=np.uint8)
         cv2.circle(binary, (40, 60), 10, 255, -1)

@@ -1185,17 +1185,45 @@ class OMRProcessor:
         regularized = refined.copy()
         if cols > 1:
             indices = np.arange(cols, dtype=np.float32)
-            row_slopes: list[float] = []
-            for r in range(rows):
-                row_x = refined[r * cols:(r + 1) * cols, 0]
-                if len(row_x) > 1:
-                    row_slopes.append(float(np.median(np.diff(row_x))))
-            global_slope = float(np.median(row_slopes)) if row_slopes else float(np.median(np.diff(expected[:cols, 0]))) if cols > 1 else 0.0
+            col_step_samples: list[float] = []
+            row_intercepts: list[float] = []
+            row_centers_y: list[float] = []
             for r in range(rows):
                 row_slice = slice(r * cols, (r + 1) * cols)
-                row_x = refined[row_slice, 0]
-                intercept = float(np.median(row_x - (indices * global_slope)))
-                regularized[row_slice, 0] = intercept + (indices * global_slope)
+                row_pts = refined[row_slice]
+                row_x = row_pts[:, 0]
+                row_y = row_pts[:, 1]
+                if len(row_x) > 1:
+                    col_step_samples.append(float(np.median(np.diff(row_x))))
+                step_guess = float(np.median(np.diff(row_x))) if len(row_x) > 1 else 0.0
+                row_intercepts.append(float(np.median(row_x - (indices * step_guess))))
+                row_centers_y.append(float(np.median(row_y)))
+
+            global_step = (
+                float(np.median(col_step_samples))
+                if col_step_samples
+                else float(np.median(np.diff(expected[:cols, 0])))
+            )
+
+            if len(row_centers_y) >= 2:
+                y_arr = np.array(row_centers_y, dtype=np.float32)
+                intercept_arr = np.array(row_intercepts, dtype=np.float32)
+                y_mean = float(np.mean(y_arr))
+                denom = float(np.sum((y_arr - y_mean) ** 2))
+                if denom > 1e-6:
+                    shear = float(np.sum((y_arr - y_mean) * (intercept_arr - float(np.mean(intercept_arr)))) / denom)
+                else:
+                    shear = 0.0
+                intercept0 = float(np.mean(intercept_arr) - (shear * y_mean))
+            else:
+                shear = 0.0
+                intercept0 = row_intercepts[0] if row_intercepts else float(expected[0, 0])
+
+            for r in range(rows):
+                row_slice = slice(r * cols, (r + 1) * cols)
+                row_y = float(np.median(refined[row_slice, 1]))
+                intercept = intercept0 + (shear * row_y)
+                regularized[row_slice, 0] = intercept + (indices * global_step)
 
         return regularized.astype(np.float32)
 
@@ -1250,10 +1278,21 @@ class OMRProcessor:
             zone_debug = dict(getattr(result, "digit_zone_debug", {}) or {})
             final_col_lines = [float(np.median(centers[c::grid.cols, 0])) for c in range(grid.cols)] if grid.cols > 0 else []
             col_segments = []
+            row_lines = list((digit_debug.get("row_lines", []) or []))
             if grid.cols > 0 and grid.rows > 0:
                 for c in range(grid.cols):
                     top_pt = centers[c]
                     bottom_pt = centers[((grid.rows - 1) * grid.cols) + c]
+                    if row_lines and len(row_lines) >= 2:
+                        y0 = float(row_lines[0])
+                        y1 = float(row_lines[-1])
+                        dy = float(bottom_pt[1] - top_pt[1])
+                        if abs(dy) > 1e-6:
+                            slope = float(bottom_pt[0] - top_pt[0]) / dy
+                            x0 = float(top_pt[0] + ((y0 - float(top_pt[1])) * slope))
+                            x1 = float(top_pt[0] + ((y1 - float(top_pt[1])) * slope))
+                            col_segments.append(((x0, y0), (x1, y1)))
+                            continue
                     col_segments.append(((float(top_pt[0]), float(top_pt[1])), (float(bottom_pt[0]), float(bottom_pt[1]))))
             zone_debug[zone.id] = digit_debug | {
                 "centers": [(float(x), float(y)) for x, y in centers],
