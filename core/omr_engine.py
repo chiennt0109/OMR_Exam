@@ -1458,7 +1458,7 @@ class OMRProcessor:
                 expected_len = max(1, cols)
                 missing_digits = value.count("?")
                 is_valid = len(value) == expected_len and missing_digits == 0
-                global_score = float(sum(1 for conf in confs if conf >= 1.2)) / float(expected_len or 1)
+                global_score = float(expected_len - missing_digits) / float(expected_len or 1)
                 if not is_valid or global_score < 0.85:
                     result.recognition_errors.append(f"{zone.zone_type.value}: LOW_CONFIDENCE")
                     if not is_valid:
