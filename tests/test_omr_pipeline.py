@@ -161,7 +161,7 @@ class OMRPipelineTests(unittest.TestCase):
 
         self.assertLess(float(np.mean(np.linalg.norm(centers - shifted, axis=1))), 3.0)
 
-    def test_detect_digit_anchor_ruler_returns_manual_anchor_positions(self):
+    def test_detect_digit_anchor_ruler_finds_actual_positions_near_manual_points(self):
         template = Template(
             name="digit_template",
             image_path="",
@@ -176,12 +176,14 @@ class OMRPipelineTests(unittest.TestCase):
             zones=[],
         )
         binary = np.zeros((140, 240), dtype=np.uint8)
+        for x, y in [(196, 30), (197, 63), (196, 95), (197, 127)]:
+            cv2.rectangle(binary, (x - 5, y - 4), (x + 5, y + 4), 255, -1)
 
         detected = self.processor._detect_digit_anchor_ruler(binary, template)
 
         self.assertEqual(len(detected), 4)
-        self.assertAlmostEqual(detected[0][0], 192.0, places=3)
-        self.assertAlmostEqual(detected[0][1], 25.2, places=1)
+        self.assertLess(float(np.mean([abs(x - 196.5) for x, _ in detected])), 4.0)
+        self.assertLess(float(np.mean([abs(y - tgt) for (_, y), tgt in zip(detected, [30.0, 63.0, 95.0, 127.0])])), 4.0)
 
     def test_manual_digit_anchor_guides_define_row_centers(self):
         grid = BubbleGrid(rows=4, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(100 + c * 20, 20 + r * 20) for r in range(4) for c in range(2)])
@@ -202,9 +204,13 @@ class OMRPipelineTests(unittest.TestCase):
         )
         expected = np.array(grid.bubble_positions, dtype=np.float32)
 
-        guided = self.processor._apply_anchor_ruler_to_digit_zone(np.zeros((160, 240), dtype=np.uint8), expected, zone, template)
+        binary = np.zeros((160, 240), dtype=np.uint8)
+        for x, y in [(202, 18), (203, 38), (202, 58), (203, 78), (202, 98)]:
+            cv2.rectangle(binary, (x - 4, y - 4), (x + 4, y + 4), 255, -1)
 
-        target_centers = [((0.10 + 0.22) * 0.5) * 160, ((0.22 + 0.34) * 0.5) * 160, ((0.34 + 0.46) * 0.5) * 160, ((0.46 + 0.58) * 0.5) * 160]
+        guided = self.processor._apply_anchor_ruler_to_digit_zone(binary, expected, zone, template)
+
+        target_centers = [48.0, 68.0, 88.0, 108.0]
         for row_idx, center_y in enumerate(target_centers):
             self.assertAlmostEqual(float(guided[row_idx * 2][1]), float(center_y), places=3)
 
