@@ -545,6 +545,35 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(int(np.argmax(mat[:, 0])), 7)
         self.assertGreater(float(mat[7, 0]), float(np.max(np.delete(mat[:, 0], 7))))
 
+    def test_read_digit_grid_sampling_prefers_guided_centers_over_bbox_grid(self):
+        zone = Zone(
+            id="sid_guided_sampling",
+            name="sid",
+            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[]),
+            metadata={"bubble_radius": 6},
+        )
+        binary = np.zeros((220, 140), dtype=np.uint8)
+        guided = np.array([(20 + c * 30, 20 + r * 18) for r in range(10) for c in range(2)], dtype=np.float32)
+        cv2.circle(binary, (20, 20 + 2 * 18), 6, 255, -1)
+        cv2.circle(binary, (50, 20 + 8 * 18), 6, 255, -1)
+        source = self.processor._preprocess_digit_sampling(binary)
+        digits, mat, _ = self.processor._read_digit_grid_sampling(
+            source,
+            bbox=(0, 0, 140, 220),
+            num_cols=2,
+            num_rows=10,
+            threshold=max(0.40, self.processor.fill_threshold * 0.7),
+            centers=guided,
+        )
+        self.assertEqual(digits, [2, 8])
+        self.assertEqual(int(np.argmax(mat[:, 0])), 2)
+        self.assertEqual(int(np.argmax(mat[:, 1])), 8)
+
     def test_decode_sampled_digit_grid_accepts_single_filled_row(self):
         zone = Zone(
             id="sid_sampled",

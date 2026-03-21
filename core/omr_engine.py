@@ -1475,18 +1475,32 @@ class OMRProcessor:
         num_cols: int,
         num_rows: int,
         threshold: float,
+        centers: np.ndarray | None = None,
     ) -> tuple[list[int | None | str], np.ndarray, dict[str, object]]:
         x0, y0, bw, bh = bbox
         cell_w = bw / float(max(1, num_cols))
         cell_h = bh / float(max(1, num_rows))
         radius = max(2, int(round(cell_h * 0.3)))
         mat = np.zeros((num_rows, num_cols), dtype=np.float32)
-        centers: list[tuple[float, float]] = []
+        debug_centers: list[tuple[float, float]] = []
+        center_array = None
+        if centers is not None:
+            arr = np.asarray(centers, dtype=np.float32)
+            if arr.shape == (num_rows * num_cols, 2):
+                center_array = arr.reshape(num_rows, num_cols, 2)
+                if num_rows > 1:
+                    row_step = float(np.median(np.abs(np.diff(center_array[:, :, 1], axis=0))))
+                    if row_step > 1.0:
+                        radius = max(radius, int(round(row_step * 0.28)))
         for col in range(num_cols):
             for row in range(num_rows):
-                cx = int(round(x0 + (col * cell_w) + (cell_w * 0.5)))
-                cy = int(round(y0 + (row * cell_h) + (cell_h * 0.5)))
-                centers.append((float(cx), float(cy)))
+                if center_array is not None:
+                    cx = int(round(float(center_array[row, col, 0])))
+                    cy = int(round(float(center_array[row, col, 1])))
+                else:
+                    cx = int(round(x0 + (col * cell_w) + (cell_w * 0.5)))
+                    cy = int(round(y0 + (row * cell_h) + (cell_h * 0.5)))
+                debug_centers.append((float(cx), float(cy)))
                 mat[row, col] = self._sample_digit_cell(img, cx, cy, radius)
         results: list[int | None | str] = []
         for col in range(num_cols):
@@ -1501,7 +1515,7 @@ class OMRProcessor:
                 results.append("INVALID")
         debug = {
             "bbox": bbox,
-            "centers": centers,
+            "centers": debug_centers,
             "row_lines": [float(y0 + (row * cell_h) + (cell_h * 0.5)) for row in range(num_rows)],
             "col_lines": [float(x0 + (col * cell_w) + (cell_w * 0.5)) for col in range(num_cols)],
             "scores": mat.tolist(),
@@ -1586,7 +1600,14 @@ class OMRProcessor:
             rows, cols = 10, max(1, grid.cols)
             source_img = self._preprocess_digit_sampling(working_image if working_image is not None else working_binary)
             bbox = self._digit_zone_bbox(zone, source_img.shape[:2])
-            digits, mat, sampling_debug = self._read_digit_grid_sampling(source_img, bbox, cols, rows, threshold=max(0.40, self.fill_threshold * 0.7))
+            digits, mat, sampling_debug = self._read_digit_grid_sampling(
+                source_img,
+                bbox,
+                cols,
+                rows,
+                threshold=max(0.40, self.fill_threshold * 0.7),
+                centers=centers,
+            )
             zone_debug = dict(getattr(result, "digit_zone_debug", {}) or {})
             zone_debug[zone.id] = dict(zone_debug.get(zone.id, {})) | sampling_debug
             setattr(result, "digit_zone_debug", zone_debug)
