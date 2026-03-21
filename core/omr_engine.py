@@ -1416,6 +1416,105 @@ class OMRProcessor:
                 mat[r, c] = score
         return mat
 
+    def _preprocess_digit_sampling(self, image: np.ndarray) -> np.ndarray:
+        if image.ndim == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image.copy()
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        return cv2.normalize(blur, None, 0, 255, cv2.NORM_MINMAX)
+
+    def _digit_zone_bbox(self, zone: Zone, image_shape: tuple[int, int]) -> tuple[int, int, int, int]:
+        h, w = image_shape[:2]
+        zx = float(zone.x * w) if zone.x <= 1.0 else float(zone.x)
+        zy = float(zone.y * h) if zone.y <= 1.0 else float(zone.y)
+        zw = float(zone.width * w) if zone.width <= 1.0 else float(zone.width)
+        zh = float(zone.height * h) if zone.height <= 1.0 else float(zone.height)
+        zone_bbox = (int(round(zx)), int(round(zy)), int(round(zw)), int(round(zh)))
+        grid = getattr(zone, "grid", None)
+        positions = getattr(grid, "bubble_positions", None) or []
+        if not positions:
+            return zone_bbox
+        xs = [float(x * w) if x <= 1.0 else float(x) for x, _ in positions]
+        ys = [float(y * h) if y <= 1.0 else float(y) for _, y in positions]
+        if not xs or not ys:
+            return zone_bbox
+        cols = max(1, int(getattr(grid, "cols", 1) or 1))
+        rows = 10 if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK) else max(1, int(getattr(grid, "rows", 1) or 1))
+        x_pad = ((max(xs) - min(xs)) / max(1, cols - 1)) * 0.5 if cols > 1 else max(6.0, zw * 0.1)
+        y_pad = ((max(ys) - min(ys)) / max(1, rows - 1)) * 0.5 if rows > 1 else max(6.0, zh * 0.1)
+        x0 = max(zone_bbox[0], int(round(min(xs) - x_pad)))
+        y0 = max(zone_bbox[1], int(round(min(ys) - y_pad)))
+        x1 = min(zone_bbox[0] + zone_bbox[2], int(round(max(xs) + x_pad)))
+        y1 = min(zone_bbox[1] + zone_bbox[3], int(round(max(ys) + y_pad)))
+        return x0, y0, max(1, x1 - x0), max(1, y1 - y0)
+
+    def _sample_digit_cell(self, img: np.ndarray, cx: int, cy: int, radius: int) -> float:
+        h, w = img.shape[:2]
+        x1 = max(0, cx - radius)
+        x2 = min(w, cx + radius)
+        y1 = max(0, cy - radius)
+        y2 = min(h, cy + radius)
+        patch = img[y1:y2, x1:x2]
+        if patch.size == 0:
+            return 0.0
+        ph, pw = patch.shape[:2]
+        mask = np.zeros((ph, pw), dtype=np.uint8)
+        cv2.circle(mask, (pw // 2, ph // 2), max(1, min(radius, pw // 2, ph // 2)), 255, -1)
+        threshold_mode = cv2.THRESH_BINARY_INV if float(np.mean(img)) >= 127.0 else cv2.THRESH_BINARY
+        _, th = cv2.threshold(patch, 0, 255, threshold_mode + cv2.THRESH_OTSU)
+        den = float(np.count_nonzero(mask == 255))
+        if den <= 0.0:
+            return 0.0
+        return float(np.count_nonzero((th > 0) & (mask == 255)) / den)
+
+    def _read_digit_grid_sampling(
+        self,
+        img: np.ndarray,
+        bbox: tuple[int, int, int, int],
+        num_cols: int,
+        num_rows: int,
+        threshold: float,
+    ) -> tuple[list[int | None | str], np.ndarray, dict[str, object]]:
+        x0, y0, bw, bh = bbox
+        cell_w = bw / float(max(1, num_cols))
+        cell_h = bh / float(max(1, num_rows))
+        radius = max(2, int(round(cell_h * 0.3)))
+        mat = np.zeros((num_rows, num_cols), dtype=np.float32)
+        centers: list[tuple[float, float]] = []
+        for col in range(num_cols):
+            for row in range(num_rows):
+                cx = int(round(x0 + (col * cell_w) + (cell_w * 0.5)))
+                cy = int(round(y0 + (row * cell_h) + (cell_h * 0.5)))
+                centers.append((float(cx), float(cy)))
+                mat[row, col] = self._sample_digit_cell(img, cx, cy, radius)
+        results: list[int | None | str] = []
+        for col in range(num_cols):
+            col_scores = mat[:, col]
+            thr = max(threshold, float(np.mean(col_scores) + (0.2 * np.std(col_scores))))
+            filled_rows = [row for row, score in enumerate(col_scores.tolist()) if float(score) > thr]
+            if len(filled_rows) == 1:
+                results.append(int(filled_rows[0]))
+            elif len(filled_rows) == 0:
+                results.append(None)
+            else:
+                results.append("INVALID")
+        debug = {
+            "bbox": bbox,
+            "centers": centers,
+            "row_lines": [float(y0 + (row * cell_h) + (cell_h * 0.5)) for row in range(num_rows)],
+            "col_lines": [float(x0 + (col * cell_w) + (cell_w * 0.5)) for col in range(num_cols)],
+            "scores": mat.tolist(),
+        }
+        return results, mat, debug
+
+    def _validate_sampled_digits(self, digits: list[int | None | str]) -> bool:
+        if any(d == "INVALID" for d in digits):
+            return False
+        if digits.count(None) > 1:
+            return False
+        return True
+
     def _decode_sampled_digit_grid(self, mat: np.ndarray, zone: Zone, grid, result: OMRResult) -> tuple[str, list[float]]:
         rows, cols = mat.shape
         default_digit_map = list(range(10)) if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK) else list(range(rows))
@@ -1460,7 +1559,7 @@ class OMRProcessor:
                 dtype=np.float32,
             )
             guided, digit_debug = self._digit_zone_guidance(working_binary, expected, zone, template)
-            centers = self._resolve_column_digit_centers(working_binary, guided, grid, float(zone.metadata.get("bubble_radius", 9)))
+            centers = guided.astype(np.float32)
             zone_debug = dict(getattr(result, "digit_zone_debug", {}) or {})
             final_col_lines = [float(np.median(centers[c::grid.cols, 0])) for c in range(grid.cols)] if grid.cols > 0 else []
             zone_debug[zone.id] = digit_debug | {
@@ -1484,17 +1583,20 @@ class OMRProcessor:
                 out_dir.mkdir(parents=True, exist_ok=True)
                 out_path = out_dir / f"{Path(result.image_path).stem}_{zone.id}_digit_debug.png"
                 cv2.imwrite(str(out_path), digit_overlay)
-            rows, cols = max(1, grid.rows), max(1, grid.cols)
-            radius = float(zone.metadata.get("bubble_radius", 9))
-            mat = self._sample_digit_grid(working_binary, centers, rows, cols, radius)
-            value, confs = self._decode_sampled_digit_grid(mat, zone, grid, result)
+            rows, cols = 10, max(1, grid.cols)
+            source_img = self._preprocess_digit_sampling(working_image if working_image is not None else working_binary)
+            bbox = self._digit_zone_bbox(zone, source_img.shape[:2])
+            digits, mat, sampling_debug = self._read_digit_grid_sampling(source_img, bbox, cols, rows, threshold=max(0.40, self.fill_threshold * 0.7))
+            zone_debug = dict(getattr(result, "digit_zone_debug", {}) or {})
+            zone_debug[zone.id] = dict(zone_debug.get(zone.id, {})) | sampling_debug
+            setattr(result, "digit_zone_debug", zone_debug)
             key = "student_id" if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else "exam_code"
-            expected_len = max(1, cols)
-            missing_digits = value.count("?")
-            global_score = float(expected_len - missing_digits) / float(expected_len or 1)
-            if len(value) != expected_len or missing_digits > 0 or global_score < 0.85:
+            confs = [1.0 if isinstance(d, int) else 0.0 for d in digits]
+            if not self._validate_sampled_digits(digits):
                 result.recognition_errors.append(f"{zone.zone_type.value}: LOW_CONFIDENCE")
                 value = ""
+            else:
+                value = "".join("_" if d is None else str(d) for d in digits)
             if key == "student_id" and value:
                 longest_run = 1
                 current_run = 1
