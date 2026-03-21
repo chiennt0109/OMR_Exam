@@ -763,8 +763,12 @@ class TemplateEditorWindow(QMainWindow):
         self.p_sign_symbol.setText(str(md.get("sign_symbol", "-")))
         self.p_decimal_symbol.setText(str(md.get("decimal_symbol", ".")))
         dmodel = self._digit_model()
-        self.p_digit_col_scale.setValue(float(dmodel.get("col_spacing_scale", 1.0) or 1.0))
-        self.p_digit_row_scale.setValue(float(dmodel.get("row_spacing_scale", 1.0) or 1.0))
+        if z.zone_type == ZoneType.STUDENT_ID_BLOCK:
+            self.p_digit_col_scale.setValue(float(dmodel.get("sid_col_spacing_scale", 1.0) or 1.0))
+            self.p_digit_row_scale.setValue(float(dmodel.get("sid_row_spacing_scale", 1.0) or 1.0))
+        else:
+            self.p_digit_col_scale.setValue(float(dmodel.get("exam_col_spacing_scale", 1.0) or 1.0))
+            self.p_digit_row_scale.setValue(float(dmodel.get("exam_row_spacing_scale", 1.0) or 1.0))
         self.p_digit_rotation.setValue(float(dmodel.get("rotation_deg", 0.0) or 0.0))
         sid_off = dmodel.get("offset_sid", [0.0, 0.0]) or [0.0, 0.0]
         exam_off = dmodel.get("offset_exam", [0.0, 0.0]) or [0.0, 0.0]
@@ -781,16 +785,21 @@ class TemplateEditorWindow(QMainWindow):
         if self._sync:
             return
         if self.template:
-            self.template.metadata["digit_model"] = {
-                "col_spacing_scale": float(self.p_digit_col_scale.value()),
-                "row_spacing_scale": float(self.p_digit_row_scale.value()),
-                "rotation_deg": float(self.p_digit_rotation.value()),
-                "offset_sid": [float(self.p_sid_offset_x.value()), float(self.p_sid_offset_y.value())],
-                "offset_exam": [float(self.p_exam_offset_x.value()), float(self.p_exam_offset_y.value())],
-                "show_grid": bool(self.show_digit_grid_chk.isChecked()),
-                "show_anchors": bool(self.show_digit_anchors_chk.isChecked()),
-                "show_points": bool(self.show_digit_points_chk.isChecked()),
-            }
+            model = self._digit_model()
+            model["rotation_deg"] = float(self.p_digit_rotation.value())
+            model["offset_sid"] = [float(self.p_sid_offset_x.value()), float(self.p_sid_offset_y.value())]
+            model["offset_exam"] = [float(self.p_exam_offset_x.value()), float(self.p_exam_offset_y.value())]
+            model["show_grid"] = bool(self.show_digit_grid_chk.isChecked())
+            model["show_anchors"] = bool(self.show_digit_anchors_chk.isChecked())
+            model["show_points"] = bool(self.show_digit_points_chk.isChecked())
+            z = self._selected_zone()
+            if z and z.zone_type == ZoneType.STUDENT_ID_BLOCK:
+                model["sid_col_spacing_scale"] = float(self.p_digit_col_scale.value())
+                model["sid_row_spacing_scale"] = float(self.p_digit_row_scale.value())
+            elif z and z.zone_type == ZoneType.EXAM_CODE_BLOCK:
+                model["exam_col_spacing_scale"] = float(self.p_digit_col_scale.value())
+                model["exam_row_spacing_scale"] = float(self.p_digit_row_scale.value())
+            self.template.metadata["digit_model"] = model
         self.regenerate_selected_grid(auto=True)
         self._refresh_digit_model_overlay()
 
@@ -798,8 +807,10 @@ class TemplateEditorWindow(QMainWindow):
         if not self.template:
             return {}
         model = dict((self.template.metadata or {}).get("digit_model", {}) or {})
-        model.setdefault("col_spacing_scale", 1.0)
-        model.setdefault("row_spacing_scale", 1.0)
+        model.setdefault("sid_col_spacing_scale", 1.0)
+        model.setdefault("sid_row_spacing_scale", 1.0)
+        model.setdefault("exam_col_spacing_scale", 1.0)
+        model.setdefault("exam_row_spacing_scale", 1.0)
         model.setdefault("rotation_deg", 0.0)
         model.setdefault("offset_sid", [0.0, 0.0])
         model.setdefault("offset_exam", [0.0, 0.0])
@@ -827,7 +838,8 @@ class TemplateEditorWindow(QMainWindow):
         rows = max(1, int(zone.metadata.get('rows', 10)))
         cols = max(1, int(zone.metadata.get('columns', 8 if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else 4)))
         model = self._digit_model()
-        top_points = np.array(anchors, dtype=np.float32)
+        ref_anchor = np.array(anchors[0], dtype=np.float32)
+        top_points = np.array(anchors[1:] if len(anchors) > 2 else anchors, dtype=np.float32)
         if len(top_points) > rows:
             top_points = top_points[:rows]
         elif len(top_points) < rows and len(top_points) >= 2:
@@ -849,8 +861,12 @@ class TemplateEditorWindow(QMainWindow):
         zh = float(zone.height * self.template.height if zone.height <= 1.0 else zone.height)
         base_col_spacing = (zw / max(1, cols - 1)) if cols > 1 else max(1.0, zw)
         base_row_spacing = (zh / max(1, rows)) if rows > 0 else max(1.0, zh)
-        col_spacing = base_col_spacing * float(model.get('col_spacing_scale', 1.0) or 1.0)
-        row_spacing = base_row_spacing * float(model.get('row_spacing_scale', 1.0) or 1.0)
+        if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
+            col_spacing = base_col_spacing * float(model.get('sid_col_spacing_scale', 1.0) or 1.0)
+            row_spacing = base_row_spacing * float(model.get('sid_row_spacing_scale', 1.0) or 1.0)
+        else:
+            col_spacing = base_col_spacing * float(model.get('exam_col_spacing_scale', 1.0) or 1.0)
+            row_spacing = base_row_spacing * float(model.get('exam_row_spacing_scale', 1.0) or 1.0)
         off_key = 'offset_sid' if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else 'offset_exam'
         off = model.get(off_key, [0.0, 0.0]) or [0.0, 0.0]
         row_tops = [np.array(pt, dtype=np.float32) for pt in top_points]
@@ -884,7 +900,7 @@ class TemplateEditorWindow(QMainWindow):
         return {
             'bubble_positions': points,
             'anchor_points': anchors,
-            'anchor_line': [tuple(top_points[0].tolist()), tuple(top_points[-1].tolist())],
+            'anchor_line': [tuple(ref_anchor.tolist()), tuple((ref_anchor + (row_unit * max(median_gap * rows, 1.0))).tolist())],
             'col_lines': col_lines,
             'row_segments': row_segments,
             'bubble_centers': [(p[0]*self.template.width, p[1]*self.template.height) for p in points],
