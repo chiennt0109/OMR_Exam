@@ -975,9 +975,11 @@ class OMRProcessor:
         if len(row_tops) == rows:
             row_steps = np.diff(row_tops[:, 1]) if rows > 1 else np.array([], dtype=np.float32)
             default_step = float(np.median(row_steps)) if len(row_steps) else float(zone.height * template.height) / max(1, rows)
+            indices = np.arange(rows, dtype=np.float32)
+            base_top = float(np.median(row_tops[:, 1] - (indices * default_step)))
             for r in range(rows):
-                step = float(row_steps[r]) if r < len(row_steps) else default_step
-                center_y = float(row_tops[r][1]) + (step * 0.5)
+                top_y = base_top + (r * default_step)
+                center_y = top_y + (default_step * 0.5)
                 for c in range(cols):
                     idx = (r * cols) + c
                     guided[idx][1] = center_y

@@ -239,6 +239,30 @@ class OMRPipelineTests(unittest.TestCase):
         for row_idx, center_y in enumerate(expected_centers):
             self.assertAlmostEqual(float(guided[row_idx][1]), float(center_y), places=3)
 
+    def test_manual_digit_anchor_row_tops_are_regularized_to_even_spacing(self):
+        grid = BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(120, 20 + r * 20) for r in range(4)])
+        zone = Zone(id="sid_regularized", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0.4, y=0.1, width=0.2, height=0.6, grid=grid, metadata={"bubble_radius": 5})
+        template = Template(
+            name="digit_regularized",
+            image_path="",
+            width=240,
+            height=160,
+            anchors=[
+                AnchorPoint(0.84, 0.08, "DIGIT_ANCHOR_01"),
+                AnchorPoint(0.84, 0.16, "DIGIT_ANCHOR_02"),
+                AnchorPoint(0.84, 0.29, "DIGIT_ANCHOR_03"),
+                AnchorPoint(0.84, 0.39, "DIGIT_ANCHOR_04"),
+                AnchorPoint(0.84, 0.53, "DIGIT_ANCHOR_05"),
+            ],
+            zones=[zone],
+        )
+        expected = np.array(grid.bubble_positions, dtype=np.float32)
+
+        guided = self.processor._apply_anchor_ruler_to_digit_zone(np.zeros((160, 240), dtype=np.uint8), expected, zone, template)
+
+        spacings = np.diff([float(guided[i][1]) for i in range(4)])
+        self.assertLess(float(np.max(spacings) - np.min(spacings)), 1.0)
+
     def test_detect_bubbles_ratio(self):
         binary = np.zeros((120, 120), dtype=np.uint8)
         cv2.circle(binary, (40, 60), 10, 255, -1)
