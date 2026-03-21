@@ -185,6 +185,36 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertLess(float(np.mean([abs(x - 196.5) for x, _ in detected])), 4.0)
         self.assertLess(float(np.mean([abs(y - tgt) for (_, y), tgt in zip(detected, [30.0, 63.0, 95.0, 127.0])])), 4.0)
 
+
+    def test_digit_zone_uses_nearest_manual_anchor_cluster_per_zone(self):
+        processor = self.processor
+        sid_grid = BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(50, 20 + r * 20) for r in range(4)])
+        exam_grid = BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(170, 20 + r * 20) for r in range(4)])
+        sid_zone = Zone(id="sid_cluster", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=40 / 240, y=10 / 140, width=24 / 240, height=90 / 140, grid=sid_grid, metadata={"bubble_radius": 5})
+        exam_zone = Zone(id="exam_cluster", name="exam", zone_type=ZoneType.EXAM_CODE_BLOCK, x=160 / 240, y=10 / 140, width=24 / 240, height=90 / 140, grid=exam_grid, metadata={"bubble_radius": 5})
+        template = Template(
+            name="dual_digit_clusters",
+            image_path="",
+            width=240,
+            height=140,
+            anchors=[],
+            zones=[sid_zone, exam_zone],
+        )
+        template.anchors = [
+            AnchorPoint(72 / 240, y / 140, f"DIGIT_ANCHOR_{i:02d}")
+            for i, y in enumerate((12, 32, 52, 72, 92), start=1)
+        ] + [
+            AnchorPoint(196 / 240, y / 140, f"DIGIT_ANCHOR_{i:02d}")
+            for i, y in enumerate((18, 38, 58, 78, 98), start=6)
+        ]
+
+        sid_guides = processor._get_manual_digit_anchor_points(template, sid_zone)
+        exam_guides = processor._get_manual_digit_anchor_points(template, exam_zone)
+
+        self.assertEqual(len(sid_guides), 5)
+        self.assertEqual(len(exam_guides), 5)
+        self.assertTrue(np.all(sid_guides[:, 0] < 120))
+        self.assertTrue(np.all(exam_guides[:, 0] > 120))
     def test_manual_digit_anchor_guides_define_row_centers(self):
         grid = BubbleGrid(rows=4, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(100 + c * 20, 20 + r * 20) for r in range(4) for c in range(2)])
         zone = Zone(id="sid_guides", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0.4, y=0.1, width=0.2, height=0.6, grid=grid, metadata={"bubble_radius": 5})

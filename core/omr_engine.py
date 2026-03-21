@@ -971,15 +971,21 @@ class OMRProcessor:
     def _digit_zone_guidance(self, binary: np.ndarray, expected: np.ndarray, zone: Zone, template: Template) -> tuple[np.ndarray, dict[str, object]]:
         if len(expected) == 0 or not zone.grid:
             return expected, {}
-        detected_guides = np.array(self._detect_digit_anchor_ruler(binary, template), dtype=np.float32)
-        guide_pts = detected_guides if len(detected_guides) else self._get_manual_digit_anchor_points(template)
+        detected_guides = np.array(self._detect_digit_anchor_ruler(binary, template, zone), dtype=np.float32)
+        guide_pts = detected_guides if len(detected_guides) else self._get_manual_digit_anchor_points(template, zone)
         rows = max(1, int(zone.grid.rows))
         cols = max(1, int(zone.grid.cols))
+        template_guides = self._get_manual_digit_anchor_points(template, zone)
+        if len(template_guides) and (len(guide_pts) < rows + 1 or len(detected_guides) == 0):
+            detected_anchor_pts = np.array(self.detect_anchors(binary, max_points=120), dtype=np.float32)
+            if len(detected_anchor_pts):
+                fallback_guides = self._select_digit_anchor_cluster(detected_anchor_pts, template, zone)
+                if len(fallback_guides) >= rows + 1:
+                    guide_pts = fallback_guides
         if len(guide_pts) < rows + 1 or len(expected) != rows * cols:
             return expected, {}
 
         guided = expected.copy()
-        template_guides = self._get_manual_digit_anchor_points(template)
         template_corners, detected_corners = self._get_detected_corner_anchor_pairs(binary, template)
         if len(template_guides) == len(guide_pts) and len(template_corners) == len(detected_corners):
             src = np.vstack([template_corners, template_guides]).astype(np.float32) if len(template_corners) else template_guides.astype(np.float32)
@@ -990,8 +996,18 @@ class OMRProcessor:
                     transformed = cv2.transform(expected.reshape(1, -1, 2), matrix).reshape(-1, 2)
                     if transformed.shape == guided.shape:
                         guided = transformed.astype(np.float32)
+                        x_shifts = guided[:, 0] - expected[:, 0]
+                        if len(x_shifts) and float(np.min(x_shifts)) < 0.0 < float(np.max(x_shifts)):
+                            guided[:, 0] = expected[:, 0] + float(np.median(x_shifts))
+                        if len(template_guides) == len(guide_pts):
+                            guide_delta = np.median(guide_pts - template_guides, axis=0).astype(np.float32)
+                            mean_delta = np.mean(guided - expected, axis=0).astype(np.float32)
+                            if abs(float(guide_delta[0])) >= 1.0 and (float(mean_delta[0]) * float(guide_delta[0])) < 0.0:
+                                guided[:, 0] = expected[:, 0] + float(guide_delta[0])
+                            if abs(float(guide_delta[1])) >= 1.0 and (float(mean_delta[1]) * float(guide_delta[1])) < 0.0:
+                                guided[:, 1] = expected[:, 1] + float(guide_delta[1])
 
-        row_tops = guide_pts[1 : rows + 1]
+        row_tops = guide_pts[1 : rows + 1] if len(guide_pts) == (rows + 1) else guide_pts[: rows + 1]
         debug: dict[str, object] = {
             "guide_points": [(float(x), float(y)) for x, y in guide_pts],
             "row_lines": [],
@@ -1027,8 +1043,8 @@ class OMRProcessor:
         debug["col_lines"] = [float(np.median(guided[c::cols, 0])) for c in range(cols)]
         return guided.astype(np.float32), debug
 
-    def _detect_digit_anchor_ruler(self, binary: np.ndarray, template: Template) -> list[tuple[float, float]]:
-        manual_pts = self._get_manual_digit_anchor_points(template)
+    def _detect_digit_anchor_ruler(self, binary: np.ndarray, template: Template, zone: Zone | None = None) -> list[tuple[float, float]]:
+        manual_pts = self._get_manual_digit_anchor_points(template, zone)
         if len(manual_pts) == 0:
             return []
         detected: list[tuple[float, float]] = []
@@ -1038,7 +1054,58 @@ class OMRProcessor:
                 detected.append((float(matched[0]), float(matched[1])))
         return detected
 
-    def _get_manual_digit_anchor_points(self, template: Template) -> np.ndarray:
+    def _select_digit_anchor_cluster(self, pts: np.ndarray, template: Template, zone: Zone | None = None) -> np.ndarray:
+        pts = np.array(pts, dtype=np.float32)
+        if len(pts) == 0:
+            return np.empty((0, 2), dtype=np.float32)
+        pts = pts[np.argsort(pts[:, 1])]
+        if zone is None or len(pts) <= 1:
+            return pts
+        zone_left = float(zone.x * template.width if zone.x <= 1.0 else zone.x)
+        zone_top = float(zone.y * template.height if zone.y <= 1.0 else zone.y)
+        zone_width = float(zone.width * template.width if zone.width <= 1.0 else zone.width)
+        zone_height = float(zone.height * template.height if zone.height <= 1.0 else zone.height)
+        zone_right = zone_left + zone_width
+        zone_bottom = zone_top + zone_height
+        zone_center_x = zone_left + (zone_width * 0.5)
+        desired_count = max(2, int(getattr(zone.grid, "rows", 0) or 0) + 1)
+
+        x_tol = max(10.0, template.width * 0.03)
+        x_sorted = pts[np.argsort(pts[:, 0])]
+        clusters: list[np.ndarray] = []
+        current: list[np.ndarray] = [x_sorted[0]]
+        for pt in x_sorted[1:]:
+            if abs(float(pt[0]) - float(current[-1][0])) <= x_tol:
+                current.append(pt)
+            else:
+                clusters.append(np.array(current, dtype=np.float32))
+                current = [pt]
+        clusters.append(np.array(current, dtype=np.float32))
+
+        def _cluster_score(cluster: np.ndarray) -> tuple[float, float, float]:
+            mean_x = float(np.mean(cluster[:, 0]))
+            edge_dist = min(abs(mean_x - zone_left), abs(mean_x - zone_right), abs(mean_x - zone_center_x))
+            vertical_penalty = 0.0
+            if len(cluster):
+                top = float(np.min(cluster[:, 1]))
+                bottom = float(np.max(cluster[:, 1]))
+                vertical_penalty = max(0.0, zone_top - bottom) + max(0.0, top - zone_bottom)
+            count_penalty = 0.0 if len(cluster) >= desired_count else float((desired_count - len(cluster)) * max(8.0, zone_height * 0.1))
+            return (edge_dist + (vertical_penalty * 0.35) + count_penalty, count_penalty, abs(len(cluster) - desired_count))
+
+        cluster = min(clusters, key=_cluster_score)
+        cluster = cluster[np.argsort(cluster[:, 1])]
+        if len(clusters) == 1:
+            return cluster[np.argsort(cluster[:, 1])]
+
+        expanded_top = zone_top - max(10.0, zone_height * 0.20)
+        expanded_bottom = zone_bottom + max(10.0, zone_height * 0.20)
+        in_band = cluster[(cluster[:, 1] >= expanded_top) & (cluster[:, 1] <= expanded_bottom)]
+        if len(in_band) >= desired_count:
+            cluster = in_band
+        return cluster[np.argsort(cluster[:, 1])]
+
+    def _get_manual_digit_anchor_points(self, template: Template, zone: Zone | None = None) -> np.ndarray:
         anchors = [a for a in (template.anchors or []) if str(getattr(a, "name", "") or "").startswith("DIGIT_ANCHOR_")]
         if not anchors:
             return np.empty((0, 2), dtype=np.float32)
@@ -1052,7 +1119,7 @@ class OMRProcessor:
             ],
             dtype=np.float32,
         )
-        return pts[np.argsort(pts[:, 1])]
+        return self._select_digit_anchor_cluster(pts, template, zone)
 
     def _get_detected_corner_anchor_pairs(self, binary: np.ndarray, template: Template) -> tuple[np.ndarray, np.ndarray]:
         template_pts = []
