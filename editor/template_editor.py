@@ -262,7 +262,11 @@ class TemplateCanvas(QWidget):
                 p.setPen(QPen(QColor(255, 180, 0), 2)); p.setBrush(QColor(255, 180, 0))
             else:
                 p.setPen(QPen(Qt.black, 2)); p.setBrush(Qt.black)
-            p.drawRect(QRectF(a.x * self.template.width * self.zoom - 4, a.y * self.template.height * self.zoom - 4, 8, 8))
+            ax = a.x * self.template.width * self.zoom
+            ay = a.y * self.template.height * self.zoom
+            p.drawRect(QRectF(ax - 4, ay - 4, 8, 8))
+            p.setPen(QPen(QColor(20, 20, 20), 1))
+            p.drawText(QPointF(ax + 6, ay - 6), str(getattr(a, "name", "") or f"A{i+1}"))
 
         # Detected anchors from test-recognition pass.
         if self.detected_anchor_points:
@@ -822,8 +826,6 @@ class TemplateEditorWindow(QMainWindow):
             "decimal_symbol": self.p_decimal_symbol.text() or ".",
         })
         z.grid = self.template_engine.generate_semantic_grid(z)
-        if self.template and z.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
-            self.template_engine.rebuild_digit_zone_anchors(self.template)
         self._mark_dirty()
         self.canvas.update()
 

@@ -994,6 +994,19 @@ class OMRProcessor:
         guided, _ = self._digit_zone_guidance(binary, expected, zone, template)
         return guided
 
+    def _build_digit_row_lines(self, anchor_ys: np.ndarray, rows: int) -> list[float]:
+        ys = np.asarray(anchor_ys, dtype=np.float32)
+        if rows <= 0 or ys.size < 2:
+            return []
+        ys = np.sort(ys)
+        if ys.size >= rows + 1:
+            ys = ys[: rows + 1]
+            if rows >= 2:
+                tail = np.linspace(float(ys[1]), float(ys[-1]), rows, dtype=np.float32)
+                return [float(ys[0])] + [float(v) for v in tail]
+            return [float(v) for v in ys[: rows + 1]]
+        return np.linspace(float(ys[0]), float(ys[-1]), rows + 1, dtype=np.float32).astype(float).tolist()
+
     def _digit_zone_guidance(self, binary: np.ndarray, expected: np.ndarray, zone: Zone, template: Template) -> tuple[np.ndarray, dict[str, object]]:
         if len(expected) == 0 or not zone.grid:
             return expected, {}
@@ -1043,20 +1056,20 @@ class OMRProcessor:
 
         rows = max(1, int(zone.grid.rows))
         cols = max(1, int(zone.grid.cols))
-        row_lines: list[float] = []
+        row_lines = self._build_digit_row_lines(detected[:, 1] if len(detected) else np.array([], dtype=np.float32), rows)
         if len(guided) == rows * cols:
-            row_centers = [float(np.median(guided[r * cols:(r + 1) * cols, 1])) for r in range(rows)]
-            smoothed = row_centers[:]
-            for r in range(1, rows - 1):
-                smoothed[r] = float(np.median([row_centers[r - 1], row_centers[r], row_centers[r + 1]]))
+            if len(row_lines) == rows + 1:
+                row_centers = [float((row_lines[r] + row_lines[r + 1]) * 0.5) for r in range(rows)]
+            else:
+                row_centers = [float(np.median(guided[r * cols:(r + 1) * cols, 1])) for r in range(rows)]
             for r in range(rows):
                 row_slice = slice(r * cols, (r + 1) * cols)
-                guided[row_slice, 1] = smoothed[r]
-            if len(smoothed) >= 2:
-                mid_steps = np.diff(np.array(smoothed, dtype=np.float32))
+                guided[row_slice, 1] = row_centers[r]
+            if not row_lines and len(row_centers) >= 2:
+                mid_steps = np.diff(np.array(row_centers, dtype=np.float32))
                 step = float(np.median(mid_steps)) if len(mid_steps) else 0.0
-                row_lines = [float(smoothed[0] - (step * 0.5))]
-                for center_y in smoothed:
+                row_lines = [float(row_centers[0] - (step * 0.5))]
+                for center_y in row_centers:
                     row_lines.append(float(center_y + (step * 0.5)))
 
         fitted_line = []
