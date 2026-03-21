@@ -7,12 +7,14 @@ import cv2
 import numpy as np
 
 from core.omr_engine import OMRProcessor
+from core.template_engine import TemplateEngine
 from models.template import AnchorPoint, BubbleGrid, Template, Zone, ZoneType
 
 
 class OMRPipelineTests(unittest.TestCase):
     def setUp(self) -> None:
         self.processor = OMRProcessor(debug_mode=False)
+        self.template_engine = TemplateEngine()
 
     def test_classify_bubble_thresholds(self):
         self.assertEqual(self.processor.classify_bubble(0.6), "filled")
