@@ -1457,11 +1457,26 @@ class OMRProcessor:
                 expected_len = max(1, cols)
                 missing_digits = value.count("?")
                 is_valid = len(value) == expected_len and missing_digits < 2
+                global_score = float(sum(1 for conf in confs if conf >= 1.2)) / float(expected_len or 1)
                 if not is_valid:
                     result.recognition_errors.append(f"{zone.zone_type.value}: invalid length or ambiguous digit sequence")
                     value = ""
                 elif missing_digits > 0:
                     result.recognition_errors.append(f"{zone.zone_type.value}: LOW_CONFIDENCE")
+                elif global_score < 0.8:
+                    result.recognition_errors.append(f"{zone.zone_type.value}: LOW_CONFIDENCE")
+                if key == "student_id" and value:
+                    longest_run = 1
+                    current_run = 1
+                    for idx in range(1, len(value)):
+                        if value[idx] == value[idx - 1]:
+                            current_run += 1
+                            longest_run = max(longest_run, current_run)
+                        else:
+                            current_run = 1
+                    if len(value) >= 6 and longest_run >= 4:
+                        result.recognition_errors.append(f"{zone.zone_type.value}: invalid repeated-digit pattern")
+                        value = ""
                 if key == "student_id":
                     result.student_id = value
                 else:
@@ -1540,7 +1555,7 @@ class OMRProcessor:
                 else:
                     digits.append("?")
                     result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: below threshold")
-            elif raw_second > (0.7 * raw_max):
+            elif raw_max <= (1.3 * raw_second):
                 if fallback_ok:
                     digits.append(str(mapped))
                     result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: fallback accepted")
@@ -1631,18 +1646,29 @@ class OMRProcessor:
                 dists = np.abs(xs[:, None] - split_xs[None, :])
                 labels = np.argmin(dists, axis=1).astype(np.int32)
 
+        ys = pts[:, 1].astype(np.float32)
+        order_y_all = np.argsort(ys)
+        sorted_ys = ys[order_y_all]
+        row_bounds = np.array_split(sorted_ys, rows)
+        row_centers = np.array(
+            [float(np.mean(chunk)) if len(chunk) else 0.0 for chunk in row_bounds],
+            dtype=np.float32,
+        )
+        row_centers = np.sort(row_centers)
+        row_spacing = float(np.median(np.diff(row_centers))) if len(row_centers) > 1 else 1.0
+        col_spacing = float(np.median(np.diff(split_xs))) if len(split_xs) > 1 else 1.0
+        max_dx = max(4.0, col_spacing * 0.45)
+        max_dy = max(4.0, row_spacing * 0.45)
+
         mat = np.full((rows, cols), float(fill_value), dtype=np.float32)
-        for col_idx in range(cols):
-            member_idx = np.where(labels == col_idx)[0]
-            if member_idx.size == 0:
+        for idx, pt in enumerate(pts):
+            col_idx = int(np.argmin(np.abs(split_xs - pt[0])))
+            row_idx = int(np.argmin(np.abs(row_centers - pt[1])))
+            if abs(float(pt[0] - split_xs[col_idx])) > max_dx:
                 continue
-            col_pts = pts[member_idx]
-            col_vals = vals[member_idx]
-            order_y = np.argsort(col_pts[:, 1])
-            sorted_vals = col_vals[order_y]
-            limit = min(rows, sorted_vals.shape[0])
-            if limit:
-                mat[:limit, col_idx] = sorted_vals[:limit]
+            if abs(float(pt[1] - row_centers[row_idx])) > max_dy:
+                continue
+            mat[row_idx, col_idx] = max(mat[row_idx, col_idx], float(vals[idx]))
         return mat
 
     def _decode_true_false(self, mat: np.ndarray, zone: Zone, grid, result: OMRResult) -> None:
