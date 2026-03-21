@@ -263,6 +263,39 @@ class OMRPipelineTests(unittest.TestCase):
         spacings = np.diff([float(guided[i][1]) for i in range(4)])
         self.assertLess(float(np.max(spacings) - np.min(spacings)), 1.0)
 
+    def test_digit_zone_combines_corner_and_digit_anchors_for_tilted_sheet(self):
+        grid = BubbleGrid(rows=4, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(100 + c * 20, 30 + r * 18) for r in range(4) for c in range(2)])
+        zone = Zone(id="sid_tilt_combo", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0.35, y=0.1, width=0.25, height=0.55, grid=grid, metadata={"bubble_radius": 5})
+        template = Template(
+            name="tilt_combo",
+            image_path="",
+            width=240,
+            height=160,
+            anchors=[
+                AnchorPoint(0.05, 0.05, "A1"),
+                AnchorPoint(0.95, 0.05, "A2"),
+                AnchorPoint(0.95, 0.95, "A3"),
+                AnchorPoint(0.05, 0.95, "A4"),
+                AnchorPoint(0.84, 0.08, "DIGIT_ANCHOR_01"),
+                AnchorPoint(0.84, 0.18, "DIGIT_ANCHOR_02"),
+                AnchorPoint(0.84, 0.30, "DIGIT_ANCHOR_03"),
+                AnchorPoint(0.84, 0.42, "DIGIT_ANCHOR_04"),
+                AnchorPoint(0.84, 0.54, "DIGIT_ANCHOR_05"),
+            ],
+            zones=[zone],
+        )
+        expected = np.array(grid.bubble_positions, dtype=np.float32)
+        binary = np.zeros((160, 240), dtype=np.uint8)
+        detected_corners = [(16.0, 10.0), (225.0, 18.0), (231.0, 150.0), (12.0, 145.0)]
+        detected_digit = [(202.0, 16.0), (204.0, 34.0), (206.0, 54.0), (208.0, 74.0), (210.0, 94.0)]
+
+        with patch.object(self.processor, "detect_anchors", return_value=detected_corners), \
+            patch.object(self.processor, "_detect_digit_anchor_ruler", return_value=detected_digit):
+            guided = self.processor._apply_anchor_ruler_to_digit_zone(binary, expected, zone, template)
+
+        self.assertGreater(float(guided[0][0]), float(expected[0][0]))
+        self.assertGreater(float(guided[0][1]), float(expected[0][1]))
+
     def test_detect_bubbles_ratio(self):
         binary = np.zeros((120, 120), dtype=np.uint8)
         cv2.circle(binary, (40, 60), 10, 255, -1)

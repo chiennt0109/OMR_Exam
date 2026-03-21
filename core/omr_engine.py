@@ -971,6 +971,18 @@ class OMRProcessor:
             return expected
 
         guided = expected.copy()
+        template_guides = self._get_manual_digit_anchor_points(template)
+        template_corners, detected_corners = self._get_detected_corner_anchor_pairs(binary, template)
+        if len(template_guides) == len(guide_pts) and len(template_corners) == len(detected_corners):
+            src = np.vstack([template_corners, template_guides]).astype(np.float32) if len(template_corners) else template_guides.astype(np.float32)
+            dst = np.vstack([detected_corners, guide_pts]).astype(np.float32) if len(detected_corners) else guide_pts.astype(np.float32)
+            if len(src) >= 3 and len(dst) >= 3:
+                matrix, _ = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=3.0)
+                if matrix is not None:
+                    transformed = cv2.transform(expected.reshape(1, -1, 2), matrix).reshape(-1, 2)
+                    if transformed.shape == guided.shape:
+                        guided = transformed.astype(np.float32)
+
         row_tops = guide_pts[1 : rows + 1]
         if len(row_tops) == rows:
             row_steps = np.diff(row_tops[:, 1]) if rows > 1 else np.array([], dtype=np.float32)
@@ -1020,6 +1032,34 @@ class OMRProcessor:
             dtype=np.float32,
         )
         return pts[np.argsort(pts[:, 1])]
+
+    def _get_detected_corner_anchor_pairs(self, binary: np.ndarray, template: Template) -> tuple[np.ndarray, np.ndarray]:
+        template_pts = []
+        for a in (template.anchors or []):
+            if str(getattr(a, "name", "") or "").startswith("DIGIT_ANCHOR_"):
+                continue
+            template_pts.append([
+                a.x * template.width if a.x <= 1.0 else a.x,
+                a.y * template.height if a.y <= 1.0 else a.y,
+            ])
+        if len(template_pts) < 4:
+            return np.empty((0, 2), dtype=np.float32), np.empty((0, 2), dtype=np.float32)
+        template_pts_arr = np.array(template_pts, dtype=np.float32)
+        detected_all = np.array(self.detect_anchors(binary, max_points=120), dtype=np.float32)
+        if len(detected_all) < 4:
+            return np.empty((0, 2), dtype=np.float32), np.empty((0, 2), dtype=np.float32)
+
+        def _corner_set(pts: np.ndarray, width: float, height: float) -> np.ndarray:
+            corners = np.array([[0.0, 0.0], [width, 0.0], [width, height], [0.0, height]], dtype=np.float32)
+            picks = []
+            for corner in corners:
+                d2 = np.sum((pts - corner) ** 2, axis=1)
+                picks.append(pts[int(np.argmin(d2))])
+            return np.array(picks, dtype=np.float32)
+
+        template_corner_pts = _corner_set(template_pts_arr, float(template.width), float(template.height))
+        detected_corner_pts = _corner_set(detected_all, float(template.width), float(template.height))
+        return template_corner_pts, detected_corner_pts
 
     def _find_digit_anchor_from_manual_point(self, binary: np.ndarray, expected_pt: np.ndarray) -> np.ndarray | None:
         h, w = binary.shape[:2]
