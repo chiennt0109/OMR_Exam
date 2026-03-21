@@ -382,6 +382,18 @@ class TemplateCanvas(QWidget):
                 xx = float(x) * self.zoom
                 painter.drawLine(QPointF(xx, top), QPointF(xx, bottom))
 
+        painter.setPen(QPen(QColor(0, 200, 200), 1.2, Qt.DashLine))
+        painter.setBrush(Qt.NoBrush)
+        for x, y, w, h in debug.get("guide_regions", []) or []:
+            painter.drawRect(QRectF(float(x) * self.zoom, float(y) * self.zoom, float(w) * self.zoom, float(h) * self.zoom))
+
+        painter.setPen(QPen(QColor(0, 220, 220), 2))
+        for x, y in debug.get("guide_points", []) or []:
+            px = float(x) * self.zoom
+            py = float(y) * self.zoom
+            painter.drawLine(QPointF(px - 6, py - 6), QPointF(px + 6, py + 6))
+            painter.drawLine(QPointF(px - 6, py + 6), QPointF(px + 6, py - 6))
+
 
 class TemplateEditorWindow(QMainWindow):
     def __init__(self, parent=None, on_template_saved=None):
@@ -971,9 +983,7 @@ class TemplateEditorWindow(QMainWindow):
 
         # Show detected anchors and recognized options overlay (green X = selected/seen).
         self.canvas.recognition_overlay.clear()
-        combined_detected_anchors = list(getattr(res, "detected_anchors", []))
-        combined_detected_anchors.extend(list(getattr(res, "detected_digit_anchors", [])))
-        self.canvas.detected_anchor_points = combined_detected_anchors
+        self.canvas.detected_anchor_points = list(getattr(res, "detected_anchors", []))
         self.canvas.digit_zone_debug = dict(getattr(res, "digit_zone_debug", {}) or {})
         self.canvas.recognition_overlay.update(getattr(res, "bubble_states_by_zone", {}) or self.omr.extract_bubble_states(aligned_binary, self.template))
 
