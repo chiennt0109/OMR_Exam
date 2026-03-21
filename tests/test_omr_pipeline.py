@@ -293,7 +293,7 @@ class OMRPipelineTests(unittest.TestCase):
         spacings = np.diff([float(guided[i][1]) for i in range(4)])
         self.assertLess(float(np.max(spacings) - np.min(spacings)), 1.0)
 
-    def test_digit_zone_combines_corner_and_digit_anchors_for_tilted_sheet(self):
+    def test_digit_zone_guidance_no_longer_affine_warps_digit_grid(self):
         grid = BubbleGrid(rows=4, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(100 + c * 20, 30 + r * 18) for r in range(4) for c in range(2)])
         zone = Zone(id="sid_tilt_combo", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0.35, y=0.1, width=0.25, height=0.55, grid=grid, metadata={"bubble_radius": 5})
         template = Template(
@@ -323,8 +323,7 @@ class OMRPipelineTests(unittest.TestCase):
             patch.object(self.processor, "_detect_digit_anchor_ruler", return_value=detected_digit):
             guided = self.processor._apply_anchor_ruler_to_digit_zone(binary, expected, zone, template)
 
-        self.assertGreater(float(guided[0][0]), float(expected[0][0]))
-        self.assertGreater(float(guided[0][1]), float(expected[0][1]))
+        self.assertTrue(np.array_equal(guided, expected))
 
     def test_digit_columns_are_regularized_to_even_spacing_with_tilt(self):
         grid = BubbleGrid(rows=4, cols=4, question_start=1, question_count=4, options=[], bubble_positions=[(90 + c * 22, 30 + r * 20) for r in range(4) for c in range(4)])
@@ -444,6 +443,99 @@ class OMRPipelineTests(unittest.TestCase):
             patch.object(self.processor, "_detect_digit_zone_multi_probe_marks", return_value=np.array([0.88, 0.22, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05], dtype=np.float32)):
             self.processor.recognize_block(np.zeros((140, 120), dtype=np.uint8), template.zones[0], template, result_stub)
         self.assertEqual(result_stub.exam_code, "0")
+
+    def test_digit_zone_guidance_keeps_template_positions(self):
+        expected = np.array([[10.0, 20.0], [30.0, 40.0]], dtype=np.float32)
+        zone = Zone(
+            id="sid_guidance_passthrough",
+            name="sid",
+            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=2, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        template = Template(name="t", image_path="", width=100, height=100, anchors=[], zones=[zone])
+        guided, debug = self.processor._digit_zone_guidance(np.zeros((100, 100), dtype=np.uint8), expected, zone, template)
+        self.assertTrue(np.array_equal(guided, expected))
+        self.assertEqual(debug, {})
+
+    def test_warp_digit_block_uses_homography_and_returns_template_space_binary(self):
+        zone = Zone(
+            id="sid_warp",
+            name="sid",
+            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        template = Template(name="t", image_path="", width=120, height=120, anchors=[], zones=[zone])
+        aligned_img = np.zeros((120, 120, 3), dtype=np.uint8)
+        aligned_bin = np.zeros((120, 120), dtype=np.uint8)
+        detected = np.array([[12.0, 18.0], [42.0, 22.0], [18.0, 98.0], [48.0, 102.0]], dtype=np.float32)
+        template_pts = np.array([[20.0, 20.0], [50.0, 20.0], [20.0, 100.0], [50.0, 100.0]], dtype=np.float32)
+
+        with patch.object(self.processor, "_detect_digit_anchor_ruler", return_value=detected.tolist()), \
+            patch.object(self.processor, "_get_manual_digit_anchor_points", return_value=template_pts):
+            warped_img, warped_bin, debug = self.processor._warp_digit_block(aligned_img, aligned_bin, zone, template)
+
+        self.assertIsNotNone(warped_img)
+        self.assertEqual(warped_bin.shape, (120, 120))
+        self.assertTrue(debug.get("warp_applied"))
+
+    def test_recognize_block_uses_digit_warp_for_student_id_only(self):
+        template = Template(
+            name="sid_warp_block",
+            image_path="sheet.png",
+            width=100,
+            height=100,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="sid_warp_block",
+                    name="sid",
+                    zone_type=ZoneType.STUDENT_ID_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(50, 10 + r * 8) for r in range(10)]),
+                    metadata={"bubble_radius": 5},
+                )
+            ],
+        )
+        result_stub = type(
+            "R",
+            (),
+            {
+                "mcq_answers": {},
+                "recognition_errors": [],
+                "confidence_scores": {},
+                "true_false_answers": {},
+                "numeric_answers": {},
+                "student_id": "",
+                "exam_code": "",
+                "image_path": "sheet.png",
+                "aligned_image": np.zeros((100, 100, 3), dtype=np.uint8),
+            },
+        )()
+        warped_bin = np.zeros((100, 100), dtype=np.uint8)
+        with patch.object(self.processor, "_warp_digit_block", return_value=(result_stub.aligned_image, warped_bin, {"warp_applied": True})), \
+            patch.object(self.processor, "_resolve_column_digit_centers", return_value=np.array([[50, 10 + r * 8] for r in range(10)], dtype=np.float32)), \
+            patch.object(self.processor, "detect_bubbles", return_value=np.array([0.80, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10], dtype=np.float32)) as detect_bubbles_mock, \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=np.array([0.90, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_square_mark_density", return_value=np.array([0.80, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_eroded_mark_density", return_value=np.array([0.70, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_zone_multi_probe_marks", return_value=np.array([0.85, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05], dtype=np.float32)):
+            self.processor.recognize_block(np.zeros((100, 100), dtype=np.uint8), template.zones[0], template, result_stub)
+
+        self.assertEqual(result_stub.student_id, "0")
+        self.assertIs(detect_bubbles_mock.call_args.args[0], warped_bin)
 
     def test_template_dict_persists_template_coordinate_space(self):
         tpl = Template(name="t", image_path="x.png", width=1234, height=1754)
