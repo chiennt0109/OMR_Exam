@@ -551,6 +551,69 @@ class OMRPipelineTests(unittest.TestCase):
         centers = self.processor._resolve_column_digit_centers(binary, expected, grid, 5.0)
         self.assertEqual(centers.shape, expected.shape)
 
+    def test_cluster_digit_columns_groups_by_x_before_sorting_y(self):
+        centers = np.array(
+            [
+                [82.0, 48.0],
+                [24.0, 30.0],
+                [54.0, 20.0],
+                [84.0, 18.0],
+                [22.0, 10.0],
+                [52.0, 40.0],
+            ],
+            dtype=np.float32,
+        )
+        values = np.array([0.82, 0.21, 0.63, 0.91, 0.71, 0.73], dtype=np.float32)
+        mat = self.processor._cluster_digit_columns(centers, values, rows=2, cols=3, fill_value=0.0)
+        expected = np.array(
+            [
+                [0.71, 0.63, 0.91],
+                [0.21, 0.73, 0.82],
+            ],
+            dtype=np.float32,
+        )
+        self.assertTrue(np.allclose(mat, expected))
+
+    def test_recognize_block_clusters_digit_columns_under_skewed_x_positions(self):
+        template = Template(
+            name="exam_clustered",
+            image_path="",
+            width=120,
+            height=120,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="exam_clustered",
+                    name="exam",
+                    zone_type=ZoneType.EXAM_CODE_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=10, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(20 + c * 30, 10 + r * 8) for r in range(10) for c in range(2)]),
+                    metadata={"bubble_radius": 5},
+                )
+            ],
+        )
+        skewed_centers = np.array(
+            [[18.0, 10.0], [47.0, 11.0], [19.0, 18.0], [48.0, 19.0], [20.0, 26.0], [49.0, 27.0], [21.0, 34.0], [50.0, 35.0], [22.0, 42.0], [51.0, 43.0],
+             [23.0, 50.0], [52.0, 51.0], [24.0, 58.0], [53.0, 59.0], [25.0, 66.0], [54.0, 67.0], [26.0, 74.0], [55.0, 75.0], [27.0, 82.0], [56.0, 83.0]],
+            dtype=np.float32,
+        )
+        ratios = np.array(
+            [0.12, 0.11, 0.13, 0.12, 0.88, 0.10, 0.11, 0.84, 0.10, 0.12, 0.09, 0.11, 0.08, 0.10, 0.07, 0.09, 0.06, 0.08, 0.05, 0.07],
+            dtype=np.float32,
+        )
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
+        with patch.object(self.processor, "_resolve_column_digit_centers", return_value=skewed_centers), \
+            patch.object(self.processor, "detect_bubbles", return_value=ratios), \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=ratios), \
+            patch.object(self.processor, "_detect_digit_zone_multi_probe_marks", return_value=ratios), \
+            patch.object(self.processor, "_estimate_local_fill_threshold", return_value=0.45):
+            self.processor.recognize_block(np.zeros((120, 120), dtype=np.uint8), template.zones[0], template, result_stub)
+
+        self.assertEqual(result_stub.exam_code, "23")
+
     def test_recognize_block_keeps_template_x_and_uses_digit_guidance_y(self):
         template = Template(
             name="sid_guided_block",

@@ -1410,8 +1410,12 @@ class OMRProcessor:
         if len(ratios) < need:
             ratios = np.pad(ratios, (0, need - len(ratios)), constant_values=0.0)
             dynamic_thresholds = np.pad(dynamic_thresholds, (0, need - len(dynamic_thresholds)), constant_values=self.fill_threshold)
-        mat = ratios[:need].reshape(rows, cols)
-        local_fill = dynamic_thresholds[:need].reshape(rows, cols)
+        if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+            mat = self._cluster_digit_columns(centers, ratios, rows, cols, 0.0)
+            local_fill = self._cluster_digit_columns(centers, dynamic_thresholds, rows, cols, self.fill_threshold)
+        else:
+            mat = ratios[:need].reshape(rows, cols)
+            local_fill = dynamic_thresholds[:need].reshape(rows, cols)
 
         orig_fill = self.fill_threshold
         self.fill_threshold = float(np.clip(np.median(local_fill), orig_fill - 0.08, orig_fill + 0.08))
@@ -1510,6 +1514,65 @@ class OMRProcessor:
                 digits.append(str(mapped))
             confs.append(confidence)
         return "".join(digits), confs
+
+    def _cluster_digit_columns(
+        self,
+        centers: np.ndarray,
+        values: np.ndarray,
+        rows: int,
+        cols: int,
+        fill_value: float,
+    ) -> np.ndarray:
+        count = rows * cols
+        if count <= 0:
+            return np.zeros((max(1, rows), max(1, cols)), dtype=np.float32)
+        pts = np.asarray(centers[:count], dtype=np.float32)
+        vals = np.asarray(values[:count], dtype=np.float32)
+        if pts.shape[0] < count:
+            pts = np.pad(pts, ((0, count - pts.shape[0]), (0, 0)), constant_values=0.0)
+            vals = np.pad(vals, (0, count - vals.shape[0]), constant_values=fill_value)
+
+        xs = pts[:, 0].astype(np.float32)
+        order_x = np.argsort(xs)
+        sorted_xs = xs[order_x]
+        if cols <= 1:
+            labels = np.zeros(len(xs), dtype=np.int32)
+        else:
+            split_xs = np.array(
+                [np.median(chunk) for chunk in np.array_split(sorted_xs, cols)],
+                dtype=np.float32,
+            )
+            if split_xs.shape[0] < cols:
+                split_xs = np.pad(split_xs, (0, cols - split_xs.shape[0]), mode="edge")
+            for _ in range(16):
+                dists = np.abs(xs[:, None] - split_xs[None, :])
+                labels = np.argmin(dists, axis=1).astype(np.int32)
+                new_centers = split_xs.copy()
+                for idx in range(cols):
+                    members = xs[labels == idx]
+                    if members.size:
+                        new_centers[idx] = float(np.mean(members))
+                if np.allclose(new_centers, split_xs, atol=1e-3):
+                    split_xs = new_centers
+                    break
+                split_xs = new_centers
+            sort_idx = np.argsort(split_xs)
+            remap = {int(old): int(new) for new, old in enumerate(sort_idx.tolist())}
+            labels = np.array([remap[int(label)] for label in labels], dtype=np.int32)
+
+        mat = np.full((rows, cols), float(fill_value), dtype=np.float32)
+        for col_idx in range(cols):
+            member_idx = np.where(labels == col_idx)[0]
+            if member_idx.size == 0:
+                continue
+            col_pts = pts[member_idx]
+            col_vals = vals[member_idx]
+            order_y = np.argsort(col_pts[:, 1])
+            sorted_vals = col_vals[order_y]
+            limit = min(rows, sorted_vals.shape[0])
+            if limit:
+                mat[:limit, col_idx] = sorted_vals[:limit]
+        return mat
 
     def _decode_true_false(self, mat: np.ndarray, zone: Zone, grid, result: OMRResult) -> None:
         qpb = int(zone.metadata.get("questions_per_block", 2))
