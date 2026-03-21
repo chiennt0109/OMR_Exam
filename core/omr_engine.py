@@ -51,12 +51,14 @@ class RecognitionContext:
     bubble_states_by_zone: dict[str, list[bool]] = field(default_factory=dict)
     semantic_grids: dict[str, object] = field(default_factory=dict)
     recognized_answers: dict[str, dict] = field(default_factory=dict)
+    digit_zone_debug: dict[str, dict[str, object]] = field(default_factory=dict)
 
     def reset(self) -> None:
         self.detected_anchors = []
         self.detected_digit_anchors = []
         self.bubble_states_by_zone = {}
         self.semantic_grids = {}
+        self.digit_zone_debug = {}
         self.recognized_answers = {
             "student_id": "",
             "exam_code": "",
@@ -154,6 +156,8 @@ class OMRProcessor:
 
             context.bubble_states_by_zone = self.extract_bubble_states(aligned_binary, template)
             setattr(result, "bubble_states_by_zone", context.bubble_states_by_zone)
+            context.digit_zone_debug = dict(getattr(result, "digit_zone_debug", {}) or {})
+            setattr(result, "digit_zone_debug", context.digit_zone_debug)
 
             context.recognized_answers = {
                 "student_id": result.student_id,
@@ -926,7 +930,7 @@ class OMRProcessor:
         h, w = binary.shape[:2]
         expected = np.array([(x * w, y * h) if x <= 1.0 and y <= 1.0 else (x, y) for x, y in grid.bubble_positions], dtype=np.float32)
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
-            expected = self._apply_anchor_ruler_to_digit_zone(binary, expected, zone, template)
+            expected, _ = self._digit_zone_guidance(binary, expected, zone, template)
             return self._resolve_column_digit_centers(binary, expected, grid, float(zone.metadata.get("bubble_radius", 9)))
         bubble_radius = float(zone.metadata.get("bubble_radius", 9))
         min_area = max(6.0, 0.25 * np.pi * (bubble_radius ** 2))
@@ -961,14 +965,18 @@ class OMRProcessor:
         return np.array(refined, dtype=np.float32)
 
     def _apply_anchor_ruler_to_digit_zone(self, binary: np.ndarray, expected: np.ndarray, zone: Zone, template: Template) -> np.ndarray:
+        guided, _ = self._digit_zone_guidance(binary, expected, zone, template)
+        return guided
+
+    def _digit_zone_guidance(self, binary: np.ndarray, expected: np.ndarray, zone: Zone, template: Template) -> tuple[np.ndarray, dict[str, object]]:
         if len(expected) == 0 or not zone.grid:
-            return expected
+            return expected, {}
         detected_guides = np.array(self._detect_digit_anchor_ruler(binary, template), dtype=np.float32)
         guide_pts = detected_guides if len(detected_guides) else self._get_manual_digit_anchor_points(template)
         rows = max(1, int(zone.grid.rows))
         cols = max(1, int(zone.grid.cols))
         if len(guide_pts) < rows + 1 or len(expected) != rows * cols:
-            return expected
+            return expected, {}
 
         guided = expected.copy()
         template_guides = self._get_manual_digit_anchor_points(template)
@@ -984,6 +992,13 @@ class OMRProcessor:
                         guided = transformed.astype(np.float32)
 
         row_tops = guide_pts[1 : rows + 1]
+        debug: dict[str, object] = {
+            "guide_points": [(float(x), float(y)) for x, y in guide_pts],
+            "row_lines": [],
+            "col_lines": [],
+            "rows": rows,
+            "cols": cols,
+        }
         if len(row_tops) == rows:
             row_steps = np.diff(row_tops[:, 1]) if rows > 1 else np.array([], dtype=np.float32)
             default_step = float(np.median(row_steps)) if len(row_steps) else float(zone.height * template.height) / max(1, rows)
@@ -992,19 +1007,25 @@ class OMRProcessor:
             for r in range(rows):
                 top_y = base_top + (r * default_step)
                 center_y = top_y + (default_step * 0.5)
+                debug["row_lines"].append(float(top_y))
                 for c in range(cols):
                     idx = (r * cols) + c
                     guided[idx][1] = center_y
-            return guided.astype(np.float32)
+            debug["row_lines"].append(float(base_top + (rows * default_step)))
+            debug["col_lines"] = [float(np.median(guided[c::cols, 0])) for c in range(cols)]
+            return guided.astype(np.float32), debug
 
         for r in range(rows):
             top_y = float(guide_pts[r][1])
             bottom_y = float(guide_pts[r + 1][1])
             center_y = (top_y + bottom_y) * 0.5
+            debug["row_lines"].append(top_y)
             for c in range(cols):
                 idx = (r * cols) + c
                 guided[idx][1] = center_y
-        return guided.astype(np.float32)
+        debug["row_lines"].append(float(guide_pts[rows][1]))
+        debug["col_lines"] = [float(np.median(guided[c::cols, 0])) for c in range(cols)]
+        return guided.astype(np.float32), debug
 
     def _detect_digit_anchor_ruler(self, binary: np.ndarray, template: Template) -> list[tuple[float, float]]:
         manual_pts = self._get_manual_digit_anchor_points(template)
@@ -1204,7 +1225,18 @@ class OMRProcessor:
         if not grid or not grid.bubble_positions:
             return
 
-        centers = self._resolve_zone_centers(binary, zone, template)
+        if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+            expected = np.array(
+                [(x * binary.shape[1], y * binary.shape[0]) if x <= 1.0 and y <= 1.0 else (x, y) for x, y in grid.bubble_positions],
+                dtype=np.float32,
+            )
+            guided, digit_debug = self._digit_zone_guidance(binary, expected, zone, template)
+            centers = self._resolve_column_digit_centers(binary, guided, grid, float(zone.metadata.get("bubble_radius", 9)))
+            zone_debug = dict(getattr(result, "digit_zone_debug", {}) or {})
+            zone_debug[zone.id] = digit_debug | {"centers": [(float(x), float(y)) for x, y in centers]}
+            setattr(result, "digit_zone_debug", zone_debug)
+        else:
+            centers = self._resolve_zone_centers(binary, zone, template)
         radius = int(zone.metadata.get("bubble_radius", 9))
         ratios = self.detect_bubbles(binary, centers, radius)
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):

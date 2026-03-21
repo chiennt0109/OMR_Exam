@@ -60,6 +60,7 @@ class TemplateCanvas(QWidget):
 
         self.recognition_overlay: dict[str, list[bool]] = {}
         self.detected_anchor_points: list[tuple[float, float]] = []
+        self.digit_zone_debug: dict[str, dict[str, object]] = {}
         self.setFocusPolicy(Qt.StrongFocus)
 
     def set_template(self, template: Template, pixmap: QPixmap):
@@ -71,6 +72,7 @@ class TemplateCanvas(QWidget):
         self.preview_mode = False
         self.recognition_overlay.clear()
         self.detected_anchor_points = []
+        self.digit_zone_debug = {}
         self.resize(int(pixmap.width() * self.zoom), int(pixmap.height() * self.zoom))
         self.selection_changed.emit(-1)
         self.update()
@@ -283,6 +285,8 @@ class TemplateCanvas(QWidget):
 
             if self.preview_mode and z.grid:
                 self._draw_grid_preview(p, z)
+            if z.id in self.digit_zone_debug and z.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+                self._draw_digit_zone_debug(p, z, self.digit_zone_debug[z.id])
             if z.id in self.recognition_overlay and z.grid:
                 self._draw_recognition_overlay(p, z)
 
@@ -349,6 +353,26 @@ class TemplateCanvas(QWidget):
             else:
                 painter.setPen(QPen(QColor(230, 60, 60), 1)); painter.setBrush(Qt.NoBrush)
                 painter.drawEllipse(QPointF(x, y), 3.5, 3.5)
+
+    def _draw_digit_zone_debug(self, painter: QPainter, zone: Zone, debug: dict[str, object]) -> None:
+        if not self.template:
+            return
+        zr = self._zone_rect_abs(zone)
+        left = zr.x() * self.zoom
+        right = (zr.x() + zr.width()) * self.zoom
+        top = zr.y() * self.zoom
+        bottom = (zr.y() + zr.height()) * self.zoom
+
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(QColor(220, 50, 50), 1.5))
+        for y in debug.get("row_lines", []) or []:
+            yy = float(y) * self.zoom
+            painter.drawLine(QPointF(left, yy), QPointF(right, yy))
+
+        painter.setPen(QPen(QColor(150, 60, 220), 1.2))
+        for x in debug.get("col_lines", []) or []:
+            xx = float(x) * self.zoom
+            painter.drawLine(QPointF(xx, top), QPointF(xx, bottom))
 
 
 class TemplateEditorWindow(QMainWindow):
@@ -942,6 +966,7 @@ class TemplateEditorWindow(QMainWindow):
         combined_detected_anchors = list(getattr(res, "detected_anchors", []))
         combined_detected_anchors.extend(list(getattr(res, "detected_digit_anchors", [])))
         self.canvas.detected_anchor_points = combined_detected_anchors
+        self.canvas.digit_zone_debug = dict(getattr(res, "digit_zone_debug", {}) or {})
         self.canvas.recognition_overlay.update(getattr(res, "bubble_states_by_zone", {}) or self.omr.extract_bubble_states(aligned_binary, self.template))
 
         self.result_box.append(f"\nDetected anchors: {len(self.canvas.detected_anchor_points)}")
