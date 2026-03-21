@@ -148,32 +148,12 @@ class TemplateEngine:
         )
 
     def rebuild_digit_zone_anchors(self, template: Template) -> list[AnchorPoint]:
-        digit_zones = [z for z in template.zones if z.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK)]
-        if not digit_zones:
-            return list(template.anchors or [])
+        """Legacy no-op.
 
-        kept = [a for a in (template.anchors or []) if not str(getattr(a, "name", "") or "").startswith("DIGIT_ANCHOR_")]
-        left = min(z.x for z in digit_zones)
-        top = min(z.y for z in digit_zones)
-        right = max(z.x + z.width for z in digit_zones)
-        bottom = max(z.y + z.height for z in digit_zones)
-
-        rows = max(int(z.metadata.get("rows", 10)) for z in digit_zones)
-        marker_count = rows + 1
-        x = min(0.995, right + max(0.012, min(0.035, (right - left) * 0.12)))
-        y_start = max(0.001, top)
-        y_end = min(0.999, bottom)
-        if marker_count <= 1:
-            ys = [float((y_start + y_end) * 0.5)]
-        else:
-            ys = np.linspace(y_start, y_end, marker_count).tolist()
-
-        anchors = kept + [AnchorPoint(float(x), float(y), f"DIGIT_ANCHOR_{idx + 1:02d}") for idx, y in enumerate(ys)]
-        template.anchors = anchors
-        template.metadata["digit_anchor_count"] = marker_count
-        template.metadata["digit_anchor_x"] = float(x)
-        template.metadata["alignment_profile"] = "one_side"
-        return anchors
+        Digit anchors are no longer auto-generated. They must come from manually
+        defined template anchors or real detections at recognition time.
+        """
+        return list(template.anchors or [])
 
     def validate_template(self, template: Template) -> list[str]:
         errors = template.validate()
