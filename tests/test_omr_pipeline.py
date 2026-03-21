@@ -537,6 +537,91 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(digits, "3456")
         self.assertIn("EXAM_CODE_BLOCK column 4: fallback accepted", result_stub.recognition_errors)
 
+    def test_sample_digit_grid_scores_filled_cell_above_background(self):
+        centers = np.array([(20 + c * 20, 20 + r * 18) for r in range(10) for c in range(1)], dtype=np.float32)
+        binary = np.zeros((220, 80), dtype=np.uint8)
+        cv2.circle(binary, (20, 20 + 7 * 18), 6, 255, -1)
+        mat = self.processor._sample_digit_grid(binary, centers, rows=10, cols=1, bubble_radius=6.0)
+        self.assertEqual(int(np.argmax(mat[:, 0])), 7)
+        self.assertGreater(float(mat[7, 0]), float(np.max(np.delete(mat[:, 0], 7))))
+
+    def test_decode_sampled_digit_grid_accepts_single_filled_row(self):
+        zone = Zone(
+            id="sid_sampled",
+            name="sid",
+            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        mat = np.zeros((10, 2), dtype=np.float32)
+        mat[3, 0] = 0.62
+        mat[7, 1] = 0.66
+        result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
+        digits, confs = self.processor._decode_sampled_digit_grid(mat, zone, zone.grid, result_stub)
+        self.assertEqual(digits, "37")
+        self.assertEqual(confs, [1.0, 1.0])
+
+    def test_recognize_block_reads_student_id_from_template_grid_sampling(self):
+        template = Template(
+            name="sid_grid_sample",
+            image_path="",
+            width=140,
+            height=220,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="sid_grid_sample",
+                    name="sid",
+                    zone_type=ZoneType.STUDENT_ID_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=10, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(20 + c * 30, 20 + r * 18) for r in range(10) for c in range(2)]),
+                    metadata={"bubble_radius": 6},
+                )
+            ],
+        )
+        binary = np.zeros((220, 140), dtype=np.uint8)
+        cv2.circle(binary, (20, 20 + 2 * 18), 6, 255, -1)
+        cv2.circle(binary, (50, 20 + 8 * 18), 6, 255, -1)
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
+        self.processor.recognize_block(binary, template.zones[0], template, result_stub)
+        self.assertEqual(result_stub.student_id, "28")
+
+    def test_recognize_block_rejects_exam_code_when_column_has_multiple_sampled_marks(self):
+        template = Template(
+            name="exam_grid_sample",
+            image_path="",
+            width=120,
+            height=220,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="exam_grid_sample",
+                    name="exam",
+                    zone_type=ZoneType.EXAM_CODE_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(40, 20 + r * 18) for r in range(10)]),
+                    metadata={"bubble_radius": 6},
+                )
+            ],
+        )
+        binary = np.zeros((220, 120), dtype=np.uint8)
+        cv2.circle(binary, (40, 20 + 1 * 18), 6, 255, -1)
+        cv2.circle(binary, (40, 20 + 2 * 18), 6, 255, -1)
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
+        self.processor.recognize_block(binary, template.zones[0], template, result_stub)
+        self.assertEqual(result_stub.exam_code, "")
+        self.assertIn("EXAM_CODE_BLOCK: LOW_CONFIDENCE", result_stub.recognition_errors)
+
     def test_resolve_column_digit_centers_returns_refined_array_without_name_error(self):
         grid = BubbleGrid(
             rows=4,

@@ -1375,6 +1375,78 @@ class OMRProcessor:
                 detected[idx] = center + best_offset
         return detected.astype(np.float32)
 
+    def _sample_digit_grid(
+        self,
+        binary: np.ndarray,
+        centers: np.ndarray,
+        rows: int,
+        cols: int,
+        bubble_radius: float,
+    ) -> np.ndarray:
+        if rows <= 0 or cols <= 0:
+            return np.zeros((max(1, rows), max(1, cols)), dtype=np.float32)
+        blurred = cv2.GaussianBlur(binary, (5, 5), 0)
+        sample_r = max(3, int(round(bubble_radius * 0.9)))
+        bg_r = max(sample_r + 2, int(round(bubble_radius * 1.6)))
+        yy, xx = np.ogrid[-bg_r : bg_r + 1, -bg_r : bg_r + 1]
+        inner_mask = (xx * xx + yy * yy) <= (sample_r * sample_r)
+        ring_mask = ((xx * xx + yy * yy) <= (bg_r * bg_r)) & (~inner_mask)
+        h, w = blurred.shape[:2]
+        mat = np.zeros((rows, cols), dtype=np.float32)
+        for idx, (cx, cy) in enumerate(np.asarray(centers[: rows * cols], dtype=np.float32)):
+            x0 = max(0, int(round(cx)) - bg_r)
+            y0 = max(0, int(round(cy)) - bg_r)
+            x1 = min(w, int(round(cx)) + bg_r + 1)
+            y1 = min(h, int(round(cy)) + bg_r + 1)
+            roi = blurred[y0:y1, x0:x1]
+            if roi.size == 0:
+                continue
+            mask_y0 = bg_r - (int(round(cy)) - y0)
+            mask_x0 = bg_r - (int(round(cx)) - x0)
+            mask_y1 = mask_y0 + roi.shape[0]
+            mask_x1 = mask_x0 + roi.shape[1]
+            inner = inner_mask[mask_y0:mask_y1, mask_x0:mask_x1]
+            ring = ring_mask[mask_y0:mask_y1, mask_x0:mask_x1]
+            inner_mean = float(np.mean(roi[inner])) / 255.0 if np.any(inner) else 0.0
+            ring_mean = float(np.mean(roi[ring])) / 255.0 if np.any(ring) else 0.0
+            score = float(np.clip(inner_mean - (0.5 * ring_mean), 0.0, 1.0))
+            r = idx // cols
+            c = idx % cols
+            if r < rows and c < cols:
+                mat[r, c] = score
+        return mat
+
+    def _decode_sampled_digit_grid(self, mat: np.ndarray, zone: Zone, grid, result: OMRResult) -> tuple[str, list[float]]:
+        rows, cols = mat.shape
+        default_digit_map = list(range(10)) if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK) else list(range(rows))
+        digit_map = zone.metadata.get("digit_map", default_digit_map)
+        digits: list[str] = []
+        confs: list[float] = []
+        for c in range(cols):
+            col_scores = np.asarray(mat[:, c], dtype=np.float32)
+            col_threshold = max(0.18, float(np.mean(col_scores) + (0.5 * np.std(col_scores))))
+            filled_rows = [idx for idx, score in enumerate(col_scores.tolist()) if float(score) > col_threshold]
+            order = np.argsort(col_scores)[::-1]
+            top_i = int(order[0]) if len(order) else 0
+            second_i = int(order[1]) if len(order) > 1 else top_i
+            top = float(col_scores[top_i]) if len(order) else 0.0
+            second = float(col_scores[second_i]) if len(order) > 1 else 0.0
+            confs.append(1.0 if len(filled_rows) == 1 else 0.0)
+            if len(filled_rows) == 1:
+                mapped = digit_map[filled_rows[0]] if filled_rows[0] < len(digit_map) else filled_rows[0]
+                digits.append(str(mapped))
+            elif len(filled_rows) >= 2:
+                if second > 0.0 and top > (1.4 * second):
+                    mapped = digit_map[top_i] if top_i < len(digit_map) else top_i
+                    digits.append(str(mapped))
+                else:
+                    digits.append("?")
+                    result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: multiple marks")
+            else:
+                digits.append("?")
+                result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: blank")
+        return "".join(digits), confs
+
     def recognize_block(self, binary: np.ndarray, zone: Zone, template: Template, result: OMRResult, debug_overlay: np.ndarray | None = None) -> None:
         grid = zone.grid
         if not grid or not grid.bubble_positions:
@@ -1412,6 +1484,35 @@ class OMRProcessor:
                 out_dir.mkdir(parents=True, exist_ok=True)
                 out_path = out_dir / f"{Path(result.image_path).stem}_{zone.id}_digit_debug.png"
                 cv2.imwrite(str(out_path), digit_overlay)
+            rows, cols = max(1, grid.rows), max(1, grid.cols)
+            radius = float(zone.metadata.get("bubble_radius", 9))
+            mat = self._sample_digit_grid(working_binary, centers, rows, cols, radius)
+            value, confs = self._decode_sampled_digit_grid(mat, zone, grid, result)
+            key = "student_id" if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else "exam_code"
+            expected_len = max(1, cols)
+            missing_digits = value.count("?")
+            global_score = float(expected_len - missing_digits) / float(expected_len or 1)
+            if len(value) != expected_len or missing_digits > 0 or global_score < 0.85:
+                result.recognition_errors.append(f"{zone.zone_type.value}: LOW_CONFIDENCE")
+                value = ""
+            if key == "student_id" and value:
+                longest_run = 1
+                current_run = 1
+                for idx in range(1, len(value)):
+                    if value[idx] == value[idx - 1]:
+                        current_run += 1
+                        longest_run = max(longest_run, current_run)
+                    else:
+                        current_run = 1
+                if len(set(value)) == 1 or (len(value) >= 6 and longest_run >= 4):
+                    result.recognition_errors.append(f"{zone.zone_type.value}: invalid repeated-digit pattern")
+                    value = ""
+            if key == "student_id":
+                result.student_id = value
+            else:
+                result.exam_code = value
+            result.confidence_scores[f"{key}:{zone.id}"] = float(np.mean(confs)) if confs else 0.0
+            return
         else:
             centers = self._resolve_zone_centers(working_binary, zone, template)
         radius = int(zone.metadata.get("bubble_radius", 9))
