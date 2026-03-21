@@ -995,7 +995,73 @@ class OMRProcessor:
         return guided
 
     def _digit_zone_guidance(self, binary: np.ndarray, expected: np.ndarray, zone: Zone, template: Template) -> tuple[np.ndarray, dict[str, object]]:
-        return expected, {}
+        if len(expected) == 0 or not zone.grid:
+            return expected, {}
+        detected = np.array(self._detect_digit_anchor_ruler(binary, template, zone), dtype=np.float32)
+        template_pts = np.array(self._get_manual_digit_anchor_points(template, zone), dtype=np.float32)
+        if len(detected) < 2 or len(template_pts) < 2:
+            return expected, {}
+
+        n = min(len(detected), len(template_pts))
+        if n < 2:
+            return expected, {}
+        if len(detected) != n:
+            det_idx = np.linspace(0, len(detected) - 1, n).astype(int)
+            detected = detected[det_idx]
+        if len(template_pts) != n:
+            tpl_idx = np.linspace(0, len(template_pts) - 1, n).astype(int)
+            template_pts = template_pts[tpl_idx]
+
+        order_tpl = np.argsort(template_pts[:, 1])
+        order_det = np.argsort(detected[:, 1])
+        template_pts = template_pts[order_tpl]
+        detected = detected[order_det]
+
+        try:
+            a, b = np.polyfit(template_pts[:, 1], detected[:, 1], deg=1)
+        except Exception:
+            return expected, {}
+        if not np.isfinite(a) or not np.isfinite(b):
+            return expected, {}
+
+        guided = expected.copy()
+        guided[:, 1] = (a * expected[:, 1]) + b
+
+        rows = max(1, int(zone.grid.rows))
+        cols = max(1, int(zone.grid.cols))
+        row_lines: list[float] = []
+        if len(guided) == rows * cols:
+            row_centers = [float(np.median(guided[r * cols:(r + 1) * cols, 1])) for r in range(rows)]
+            smoothed = row_centers[:]
+            for r in range(1, rows - 1):
+                smoothed[r] = float(np.median([row_centers[r - 1], row_centers[r], row_centers[r + 1]]))
+            for r in range(rows):
+                row_slice = slice(r * cols, (r + 1) * cols)
+                guided[row_slice, 1] = smoothed[r]
+            if len(smoothed) >= 2:
+                mid_steps = np.diff(np.array(smoothed, dtype=np.float32))
+                step = float(np.median(mid_steps)) if len(mid_steps) else 0.0
+                row_lines = [float(smoothed[0] - (step * 0.5))]
+                for center_y in smoothed:
+                    row_lines.append(float(center_y + (step * 0.5)))
+
+        fitted_line = []
+        if len(template_pts):
+            y0 = float(np.min(template_pts[:, 1]))
+            y1 = float(np.max(template_pts[:, 1]))
+            x_line = float(np.median(template_pts[:, 0]))
+            fitted_line = [(x_line, float((a * y0) + b)), (x_line, float((a * y1) + b))]
+
+        debug: dict[str, object] = {
+            "guide_points": [(float(x), float(y)) for x, y in detected],
+            "template_guide_points": [(float(x), float(y)) for x, y in template_pts],
+            "fitted_line": fitted_line,
+            "row_lines": row_lines,
+            "rows": rows,
+            "cols": cols,
+            "fit_coefficients": {"a": float(a), "b": float(b)},
+        }
+        return guided.astype(np.float32), debug
 
     def _warp_digit_block(
         self,
@@ -1217,48 +1283,34 @@ class OMRProcessor:
         rows, cols = max(1, int(grid.rows)), max(1, int(grid.cols))
         if len(expected) != rows * cols:
             return expected
-        h, w = binary.shape[:2]
         min_area = max(6.0, 0.25 * np.pi * (bubble_radius ** 2))
         max_area = max(min_area * 3.5, 4.0 * np.pi * (bubble_radius ** 2))
         search_pad = max(10, int(round(bubble_radius * 2.4)))
         max_dist = max(6.0, bubble_radius * 1.75)
         refined = expected.copy()
+        max_x_shift = 3.0
 
         for c in range(cols):
             col_pts = expected[c::cols]
-            col_search_pad = search_pad
-            col_max_dist = max_dist
-            if c == 0 or c == (cols - 1):
-                col_search_pad = max(col_search_pad, int(round(search_pad * 1.25)))
-                col_max_dist = max(col_max_dist, bubble_radius * 2.10)
-            offsets: list[np.ndarray] = []
+            offsets_x: list[float] = []
             for exp_x, exp_y in col_pts:
                 best_offset = self._find_local_component_offset(
                     binary,
                     np.array([exp_x, exp_y], dtype=np.float32),
-                    col_search_pad,
+                    search_pad,
                     min_area,
                     max_area,
-                    col_max_dist,
+                    max_dist,
                 )
                 if best_offset is not None:
-                    offsets.append(best_offset)
-
-            if not offsets:
+                    offsets_x.append(float(best_offset[0]))
+            if not offsets_x:
                 continue
-            median_offset = np.median(np.array(offsets, dtype=np.float32), axis=0)
+            median_shift_x = float(np.median(np.array(offsets_x, dtype=np.float32)))
+            median_shift_x = float(np.clip(median_shift_x, -max_x_shift, max_x_shift))
             for r in range(rows):
                 idx = (r * cols) + c
-                shifted = expected[idx] + median_offset
-                local_offset = self._find_local_component_offset(
-                    binary,
-                    shifted.astype(np.float32),
-                    max(8, int(round(col_search_pad * 0.75))),
-                    min_area,
-                    max_area,
-                    max(6.0, bubble_radius * (1.45 if c == 0 or c == (cols - 1) else 1.30)),
-                )
-                refined[idx] = shifted if local_offset is None else shifted + local_offset
+                refined[idx, 0] = expected[idx, 0] + median_shift_x
 
         regularized = refined.copy()
         if cols > 1:
@@ -1335,7 +1387,6 @@ class OMRProcessor:
         working_binary = binary
         working_image = getattr(result, "aligned_image", None)
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
-            working_image, working_binary, warp_debug = self._warp_digit_block(working_image, binary, zone, template)
             expected = np.array(
                 [(x * working_binary.shape[1], y * working_binary.shape[0]) if x <= 1.0 and y <= 1.0 else (x, y) for x, y in grid.bubble_positions],
                 dtype=np.float32,
@@ -1344,7 +1395,7 @@ class OMRProcessor:
             centers = self._resolve_column_digit_centers(working_binary, guided, grid, float(zone.metadata.get("bubble_radius", 9)))
             zone_debug = dict(getattr(result, "digit_zone_debug", {}) or {})
             final_col_lines = [float(np.median(centers[c::grid.cols, 0])) for c in range(grid.cols)] if grid.cols > 0 else []
-            zone_debug[zone.id] = digit_debug | warp_debug | {
+            zone_debug[zone.id] = digit_debug | {
                 "centers": [(float(x), float(y)) for x, y in centers],
                 "col_lines": final_col_lines,
                 "col_segments": [],
@@ -1352,8 +1403,13 @@ class OMRProcessor:
             setattr(result, "digit_zone_debug", zone_debug)
             if self.debug_mode and working_image is not None:
                 digit_overlay = working_image.copy()
-                for x, y in warp_debug.get("detected_digit_anchors", []):
+                for x, y in digit_debug.get("guide_points", []):
                     cv2.circle(digit_overlay, (int(round(x)), int(round(y))), 6, (0, 255, 255), 2)
+                fitted_line = digit_debug.get("fitted_line", [])
+                if len(fitted_line) == 2:
+                    pt0 = tuple(int(round(v)) for v in fitted_line[0])
+                    pt1 = tuple(int(round(v)) for v in fitted_line[1])
+                    cv2.line(digit_overlay, pt0, pt1, (255, 255, 0), 2)
                 for x, y in centers:
                     cv2.circle(digit_overlay, (int(round(x)), int(round(y))), 5, (0, 0, 255), 1)
                 out_dir = self.debug_dir or Path(result.image_path).parent
@@ -1452,12 +1508,15 @@ class OMRProcessor:
                 col_threshold = max(col_threshold, float(np.mean(col_scores) + (0.25 * np.std(col_scores))))
                 certainty_margin = self.certainty_margin * 0.40
                 if c == 0 or c == (cols - 1):
-                    col_threshold *= 0.95
-                    certainty_margin *= 0.75
+                    col_threshold *= 0.92
+                    certainty_margin *= 0.70
             elif is_exam_code:
                 col_threshold = max(self.empty_threshold + 0.10, float((self.fill_threshold * 0.95)))
                 col_threshold = max(col_threshold, float(np.mean(col_scores) + (0.30 * np.std(col_scores))))
                 certainty_margin = self.certainty_margin * 0.75
+                if c == 0 or c == (cols - 1):
+                    col_threshold *= 0.92
+                    certainty_margin *= 0.70
             else:
                 col_threshold = max(self.fill_threshold, float(np.mean(col_scores) + (0.35 * np.std(col_scores))))
                 certainty_margin = self.certainty_margin
@@ -1479,6 +1538,8 @@ class OMRProcessor:
                     mapped = digit_map[top_i] if top_i < len(digit_map) else top_i
                     fallback_score = top - max(col_threshold * 0.85, second)
                     fallback_candidates.append((c, float(fallback_score), int(mapped)))
+                elif is_exam_code and top > (col_threshold * 0.9):
+                    digits[-1] = str(digit_map[top_i] if top_i < len(digit_map) else top_i)
             else:
                 mapped = digit_map[top_i] if top_i < len(digit_map) else top_i
                 digits.append(str(mapped))
@@ -1491,6 +1552,9 @@ class OMRProcessor:
                     pick = best_map.get(col)
                     if pick is not None:
                         digits[col] = str(pick[1])
+                    elif float(mat[:, col].max()) > (max(self.empty_threshold + 0.10, float(self.fill_threshold * 0.90)) * 0.9):
+                        top_idx = int(np.argmax(mat[:, col]))
+                        digits[col] = str(digit_map[top_idx] if top_idx < len(digit_map) else top_idx)
         return "".join(digits), confs
 
     def _decode_true_false(self, mat: np.ndarray, zone: Zone, grid, result: OMRResult) -> None:

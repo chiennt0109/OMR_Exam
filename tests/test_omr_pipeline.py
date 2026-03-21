@@ -87,7 +87,11 @@ class OMRPipelineTests(unittest.TestCase):
             cv2.circle(binary, (int(x), int(y)), 5, 255, 1)
 
         centers = self.processor._resolve_zone_centers(binary, template.zones[0], template)
-        self.assertLess(float(np.mean(np.linalg.norm(centers - shifted, axis=1))), 3.5)
+        expected_x = np.array(grid.bubble_positions, dtype=np.float32)[:, 0]
+        expected_x[0::2] += 2.0
+        expected_x[1::2] += 3.0
+        self.assertTrue(np.allclose(centers[:, 0], expected_x, atol=0.5))
+        self.assertLess(float(np.mean(np.abs(centers[:, 1] - shifted[:, 1]))), 2.5)
 
     def test_student_id_zone_refines_each_row_after_column_shift(self):
         grid = BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(40, 20 + r * 20) for r in range(4)])
@@ -142,7 +146,7 @@ class OMRPipelineTests(unittest.TestCase):
         with patch.object(self.processor, "detect_anchors", return_value=detected_ruler):
             centers = self.processor._resolve_zone_centers(binary, zone, template)
 
-        self.assertLess(float(np.mean(np.linalg.norm(centers - shifted, axis=1))), 3.5)
+        self.assertTrue(np.allclose(centers, np.array(grid.bubble_positions, dtype=np.float32), atol=0.5))
 
     def test_exam_code_zone_uses_right_anchor_ruler_for_local_shift(self):
         grid = BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(150, 30 + r * 18) for r in range(4)])
@@ -159,7 +163,8 @@ class OMRPipelineTests(unittest.TestCase):
         with patch.object(self.processor, "detect_anchors", return_value=detected_ruler):
             centers = self.processor._resolve_zone_centers(binary, zone, template)
 
-        self.assertLess(float(np.mean(np.linalg.norm(centers - shifted, axis=1))), 3.0)
+        self.assertTrue(np.allclose(centers[:, 0], np.array(grid.bubble_positions, dtype=np.float32)[:, 0] + 3.0, atol=0.5))
+        self.assertLess(float(np.mean(np.abs(centers[:, 1] - shifted[:, 1]))), 2.0)
 
     def test_detect_digit_anchor_ruler_finds_actual_positions_near_manual_points(self):
         template = Template(
@@ -323,7 +328,8 @@ class OMRPipelineTests(unittest.TestCase):
             patch.object(self.processor, "_detect_digit_anchor_ruler", return_value=detected_digit):
             guided = self.processor._apply_anchor_ruler_to_digit_zone(binary, expected, zone, template)
 
-        self.assertTrue(np.array_equal(guided, expected))
+        self.assertTrue(np.allclose(guided[:, 0], expected[:, 0]))
+        self.assertGreater(float(np.mean(guided[:, 1] - expected[:, 1])), 0.0)
 
     def test_digit_columns_are_regularized_to_even_spacing_with_tilt(self):
         grid = BubbleGrid(rows=4, cols=4, question_start=1, question_count=4, options=[], bubble_positions=[(90 + c * 22, 30 + r * 20) for r in range(4) for c in range(4)])
@@ -462,7 +468,7 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertTrue(np.array_equal(guided, expected))
         self.assertEqual(debug, {})
 
-    def test_warp_digit_block_uses_homography_and_returns_template_space_binary(self):
+    def test_digit_zone_guidance_fits_y_only_from_digit_anchor_ruler(self):
         zone = Zone(
             id="sid_warp",
             name="sid",
@@ -471,33 +477,44 @@ class OMRPipelineTests(unittest.TestCase):
             y=0,
             width=1,
             height=1,
-            grid=BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[]),
+            grid=BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(20, 20), (20, 40), (20, 60), (20, 80)]),
             metadata={},
         )
         template = Template(name="t", image_path="", width=120, height=120, anchors=[], zones=[zone])
-        aligned_img = np.zeros((120, 120, 3), dtype=np.uint8)
-        aligned_bin = np.zeros((120, 120), dtype=np.uint8)
-        detected = np.array([[12.0, 18.0], [42.0, 22.0], [18.0, 98.0], [48.0, 102.0]], dtype=np.float32)
-        template_pts = np.array([[20.0, 20.0], [50.0, 20.0], [20.0, 100.0], [50.0, 100.0]], dtype=np.float32)
+        expected = np.array(zone.grid.bubble_positions, dtype=np.float32)
+        detected = np.array([[90.0, 18.0], [90.0, 42.0], [90.0, 66.0], [90.0, 90.0]], dtype=np.float32)
+        template_pts = np.array([[90.0, 20.0], [90.0, 40.0], [90.0, 60.0], [90.0, 80.0]], dtype=np.float32)
 
         with patch.object(self.processor, "_detect_digit_anchor_ruler", return_value=detected.tolist()), \
             patch.object(self.processor, "_get_manual_digit_anchor_points", return_value=template_pts):
-            warped_img, warped_bin, debug = self.processor._warp_digit_block(aligned_img, aligned_bin, zone, template)
+            guided, debug = self.processor._digit_zone_guidance(np.zeros((120, 120), dtype=np.uint8), expected, zone, template)
 
-        self.assertIsNotNone(warped_img)
-        self.assertEqual(warped_bin.shape, (120, 120))
-        self.assertTrue(debug.get("warp_applied"))
+        self.assertTrue(np.allclose(guided[:, 0], expected[:, 0]))
+        self.assertTrue(np.allclose(guided[:, 1], np.array([18.0, 42.0, 66.0, 90.0], dtype=np.float32)))
+        self.assertIn("fitted_line", debug)
 
-    def test_recognize_block_uses_digit_warp_for_student_id_only(self):
+    def test_resolve_column_digit_centers_caps_x_drift_to_three_pixels(self):
+        grid = BubbleGrid(rows=4, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(20 + c * 30, 20 + r * 18) for r in range(4) for c in range(2)])
+        expected = np.array(grid.bubble_positions, dtype=np.float32)
+        binary = np.zeros((120, 120), dtype=np.uint8)
+        offsets = [np.array([7.0, 0.0], dtype=np.float32), np.array([-8.0, 0.0], dtype=np.float32)] * 4
+        with patch.object(self.processor, "_find_local_component_offset", side_effect=offsets):
+            centers = self.processor._resolve_column_digit_centers(binary, expected, grid, 5.0)
+
+        self.assertTrue(np.allclose(centers[0::2, 0], expected[0::2, 0] + 3.0))
+        self.assertTrue(np.allclose(centers[1::2, 0], expected[1::2, 0] - 3.0))
+        self.assertTrue(np.allclose(centers[:, 1], expected[:, 1]))
+
+    def test_recognize_block_keeps_template_x_and_uses_digit_guidance_y(self):
         template = Template(
-            name="sid_warp_block",
+            name="sid_guided_block",
             image_path="sheet.png",
             width=100,
             height=100,
             anchors=[],
             zones=[
                 Zone(
-                    id="sid_warp_block",
+                    id="sid_guided_block",
                     name="sid",
                     zone_type=ZoneType.STUDENT_ID_BLOCK,
                     x=0,
@@ -524,9 +541,8 @@ class OMRPipelineTests(unittest.TestCase):
                 "aligned_image": np.zeros((100, 100, 3), dtype=np.uint8),
             },
         )()
-        warped_bin = np.zeros((100, 100), dtype=np.uint8)
-        with patch.object(self.processor, "_warp_digit_block", return_value=(result_stub.aligned_image, warped_bin, {"warp_applied": True})), \
-            patch.object(self.processor, "_resolve_column_digit_centers", return_value=np.array([[50, 10 + r * 8] for r in range(10)], dtype=np.float32)), \
+        guided_centers = np.array([[50, 12 + r * 8] for r in range(10)], dtype=np.float32)
+        with patch.object(self.processor, "_resolve_column_digit_centers", return_value=guided_centers), \
             patch.object(self.processor, "detect_bubbles", return_value=np.array([0.80, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10], dtype=np.float32)) as detect_bubbles_mock, \
             patch.object(self.processor, "_detect_center_core_marks", return_value=np.array([0.90, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05], dtype=np.float32)), \
             patch.object(self.processor, "_detect_square_mark_density", return_value=np.array([0.80, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05], dtype=np.float32)), \
@@ -535,7 +551,7 @@ class OMRPipelineTests(unittest.TestCase):
             self.processor.recognize_block(np.zeros((100, 100), dtype=np.uint8), template.zones[0], template, result_stub)
 
         self.assertEqual(result_stub.student_id, "0")
-        self.assertIs(detect_bubbles_mock.call_args.args[0], warped_bin)
+        self.assertEqual(detect_bubbles_mock.call_args.args[1].tolist(), guided_centers.tolist())
 
     def test_template_dict_persists_template_coordinate_space(self):
         tpl = Template(name="t", image_path="x.png", width=1234, height=1754)
