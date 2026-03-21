@@ -1349,6 +1349,84 @@ class OMRProcessor:
                 best_offset = offset
         return best_offset
 
+    def _refit_digit_grid_from_clear_points(
+        self,
+        binary: np.ndarray,
+        centers: np.ndarray,
+        grid,
+        bubble_radius: float,
+    ) -> tuple[np.ndarray, dict[str, object]]:
+        rows, cols = max(1, int(getattr(grid, "rows", 1) or 1)), max(1, int(getattr(grid, "cols", 1) or 1))
+        expected = np.asarray(centers, dtype=np.float32)
+        if expected.shape != (rows * cols, 2):
+            return expected, {}
+        multi_scores = self._detect_digit_zone_multi_probe_marks(binary, expected, int(round(bubble_radius)))
+        core_scores = self._detect_center_core_marks(binary, expected, int(round(bubble_radius)))
+        combined_scores = np.maximum(multi_scores, core_scores)
+        strong_threshold = max(0.52, float(np.mean(combined_scores) + (0.55 * np.std(combined_scores))))
+        min_area = max(5.0, 0.15 * np.pi * (bubble_radius ** 2))
+        max_area = max(min_area * 6.0, 6.0 * np.pi * (bubble_radius ** 2))
+        search_pad = max(10, int(round(bubble_radius * 2.8)))
+        max_dist = max(8.0, bubble_radius * 2.4)
+        observations: list[tuple[int, int, float, float, float]] = []
+        for idx, score in enumerate(combined_scores.tolist()):
+            if float(score) < strong_threshold:
+                continue
+            offset = self._find_local_component_offset(binary, expected[idx], search_pad, min_area, max_area, max_dist)
+            if offset is None:
+                continue
+            row = idx // cols
+            col = idx % cols
+            observed = expected[idx] + offset
+            observations.append((row, col, float(observed[0]), float(observed[1]), float(score)))
+        if not observations:
+            return expected, {"grid_fit_observations": [], "grid_fit_applied": False}
+
+        default_x = np.median(expected.reshape(rows, cols, 2)[:, :, 0], axis=0)
+        default_y = np.median(expected.reshape(rows, cols, 2)[:, :, 1], axis=1)
+        default_x_step = float(np.median(np.diff(default_x))) if cols > 1 else 0.0
+        default_y_step = float(np.median(np.diff(default_y))) if rows > 1 else 0.0
+
+        def _fit_axis(indices: list[int], values: list[float], default_step: float) -> tuple[float, float]:
+            uniq = sorted(set(indices))
+            if len(uniq) >= 2 and len(set(indices)) >= 2:
+                step, base = np.polyfit(np.asarray(indices, dtype=np.float32), np.asarray(values, dtype=np.float32), deg=1)
+                if not np.isfinite(step) or not np.isfinite(base):
+                    step = default_step
+                    base = float(np.median(np.asarray(values, dtype=np.float32) - (np.asarray(indices, dtype=np.float32) * default_step)))
+            else:
+                step = default_step
+                base = float(values[0] - (indices[0] * default_step))
+            return float(base), float(step)
+
+        row_idx = [row for row, _, _, _, _ in observations]
+        col_idx = [col for _, col, _, _, _ in observations]
+        obs_x = [x for _, _, x, _, _ in observations]
+        obs_y = [y for _, _, _, y, _ in observations]
+        fit_x0, fit_x_step = _fit_axis(col_idx, obs_x, default_x_step)
+        fit_y0, fit_y_step = _fit_axis(row_idx, obs_y, default_y_step)
+        if cols > 1 and default_x_step > 0.0 and abs(fit_x_step - default_x_step) > (0.35 * abs(default_x_step)):
+            fit_x_step = default_x_step
+            fit_x0 = float(np.median(np.asarray(obs_x, dtype=np.float32) - (np.asarray(col_idx, dtype=np.float32) * fit_x_step)))
+        if rows > 1 and default_y_step > 0.0 and abs(fit_y_step - default_y_step) > (0.35 * abs(default_y_step)):
+            fit_y_step = default_y_step
+            fit_y0 = float(np.median(np.asarray(obs_y, dtype=np.float32) - (np.asarray(row_idx, dtype=np.float32) * fit_y_step)))
+
+        rebuilt = expected.copy()
+        for row in range(rows):
+            for col in range(cols):
+                idx = (row * cols) + col
+                rebuilt[idx, 0] = fit_x0 + (col * fit_x_step)
+                rebuilt[idx, 1] = fit_y0 + (row * fit_y_step)
+        debug = {
+            "grid_fit_applied": True,
+            "grid_fit_observations": [(int(r), int(c), float(x), float(y), float(s)) for r, c, x, y, s in observations],
+            "grid_fit_threshold": float(strong_threshold),
+            "grid_fit_x": {"x0": float(fit_x0), "step": float(fit_x_step)},
+            "grid_fit_y": {"y0": float(fit_y0), "step": float(fit_y_step)},
+        }
+        return rebuilt.astype(np.float32), debug
+
     def _detect_digit_bubble_centers(
         self,
         binary: np.ndarray,
@@ -1573,10 +1651,15 @@ class OMRProcessor:
                 dtype=np.float32,
             )
             guided, digit_debug = self._digit_zone_guidance(working_binary, expected, zone, template)
-            centers = guided.astype(np.float32)
+            centers, grid_fit_debug = self._refit_digit_grid_from_clear_points(
+                working_binary,
+                guided.astype(np.float32),
+                grid,
+                float(zone.metadata.get("bubble_radius", 9)),
+            )
             zone_debug = dict(getattr(result, "digit_zone_debug", {}) or {})
             final_col_lines = [float(np.median(centers[c::grid.cols, 0])) for c in range(grid.cols)] if grid.cols > 0 else []
-            zone_debug[zone.id] = digit_debug | {
+            zone_debug[zone.id] = digit_debug | grid_fit_debug | {
                 "centers": [(float(x), float(y)) for x, y in centers],
                 "col_lines": final_col_lines,
                 "col_segments": [],

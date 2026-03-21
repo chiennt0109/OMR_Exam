@@ -545,6 +545,21 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(int(np.argmax(mat[:, 0])), 7)
         self.assertGreater(float(mat[7, 0]), float(np.max(np.delete(mat[:, 0], 7))))
 
+    def test_refit_digit_grid_from_single_clear_point_shifts_equal_grid(self):
+        guided = np.array([(20 + c * 30, 20 + r * 18) for r in range(10) for c in range(2)], dtype=np.float32)
+        binary = np.zeros((240, 180), dtype=np.uint8)
+        cv2.circle(binary, (24, 20 + 2 * 18), 6, 255, -1)
+        refined, debug = self.processor._refit_digit_grid_from_clear_points(
+            binary,
+            guided,
+            BubbleGrid(rows=10, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[]),
+            bubble_radius=6.0,
+        )
+        self.assertTrue(debug.get("grid_fit_applied"))
+        self.assertAlmostEqual(float(refined[2 * 2 + 0, 0]), 24.0, delta=1.5)
+        self.assertAlmostEqual(float(refined[2 * 2 + 1, 0] - refined[2 * 2 + 0, 0]), 30.0, delta=1.0)
+        self.assertAlmostEqual(float(refined[(3 * 2) + 0, 1] - refined[(2 * 2) + 0, 1]), 18.0, delta=1.0)
+
     def test_read_digit_grid_sampling_prefers_guided_centers_over_bbox_grid(self):
         zone = Zone(
             id="sid_guided_sampling",
