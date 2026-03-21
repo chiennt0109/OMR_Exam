@@ -574,6 +574,20 @@ class OMRPipelineTests(unittest.TestCase):
         )
         self.assertTrue(np.allclose(mat, expected))
 
+    def test_detect_digit_bubble_centers_uses_local_components_per_bubble(self):
+        centers = np.array([[20.0, 20.0], [50.0, 20.0], [20.0, 40.0], [50.0, 40.0]], dtype=np.float32)
+        offsets = [
+            np.array([1.5, -0.5], dtype=np.float32),
+            None,
+            np.array([2.0, 1.0], dtype=np.float32),
+            np.array([-1.0, 0.5], dtype=np.float32),
+        ]
+        with patch.object(self.processor, "_find_local_component_offset", side_effect=offsets):
+            detected = self.processor._detect_digit_bubble_centers(np.zeros((80, 80), dtype=np.uint8), centers, 5.0)
+
+        expected = np.array([[21.5, 19.5], [50.0, 20.0], [22.0, 41.0], [49.0, 40.5]], dtype=np.float32)
+        self.assertTrue(np.allclose(detected, expected))
+
     def test_recognize_block_clusters_digit_columns_under_skewed_x_positions(self):
         template = Template(
             name="exam_clustered",
@@ -613,6 +627,44 @@ class OMRPipelineTests(unittest.TestCase):
             self.processor.recognize_block(np.zeros((120, 120), dtype=np.uint8), template.zones[0], template, result_stub)
 
         self.assertEqual(result_stub.exam_code, "23")
+
+    def test_recognize_block_uses_detected_digit_bubble_centers_before_grouping(self):
+        template = Template(
+            name="sid_detected_centers",
+            image_path="",
+            width=120,
+            height=120,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="sid_detected_centers",
+                    name="sid",
+                    zone_type=ZoneType.STUDENT_ID_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(40, 12 + r * 8) for r in range(10)]),
+                    metadata={"bubble_radius": 5},
+                )
+            ],
+        )
+        original_centers = np.array(template.zones[0].grid.bubble_positions, dtype=np.float32)
+        shifted_centers = original_centers.copy()
+        shifted_centers[:, 0] += 2.0
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
+        with patch.object(self.processor, "_resolve_column_digit_centers", return_value=original_centers), \
+            patch.object(self.processor, "_detect_digit_bubble_centers", return_value=shifted_centers) as detect_centers, \
+            patch.object(self.processor, "detect_bubbles", return_value=np.array([0.11, 0.12, 0.82, 0.10, 0.09, 0.08, 0.07, 0.06, 0.05, 0.04], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=np.array([0.10, 0.11, 0.88, 0.09, 0.08, 0.07, 0.06, 0.05, 0.04, 0.03], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_square_mark_density", return_value=np.array([0.09, 0.10, 0.86, 0.08, 0.07, 0.06, 0.05, 0.04, 0.03, 0.02], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_eroded_mark_density", return_value=np.array([0.08, 0.09, 0.84, 0.07, 0.06, 0.05, 0.04, 0.03, 0.02, 0.01], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_zone_multi_probe_marks", return_value=np.array([0.12, 0.13, 0.90, 0.11, 0.10, 0.09, 0.08, 0.07, 0.06, 0.05], dtype=np.float32)), \
+            patch.object(self.processor, "_estimate_local_fill_threshold", return_value=0.45):
+            self.processor.recognize_block(np.zeros((120, 120), dtype=np.uint8), template.zones[0], template, result_stub)
+
+        detect_centers.assert_called_once()
+        self.assertEqual(result_stub.student_id, "2")
 
     def test_recognize_block_keeps_template_x_and_uses_digit_guidance_y(self):
         template = Template(

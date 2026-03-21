@@ -1349,6 +1349,32 @@ class OMRProcessor:
                 best_offset = offset
         return best_offset
 
+    def _detect_digit_bubble_centers(
+        self,
+        binary: np.ndarray,
+        centers: np.ndarray,
+        bubble_radius: float,
+    ) -> np.ndarray:
+        detected = np.asarray(centers, dtype=np.float32).copy()
+        if detected.size == 0:
+            return detected
+        min_area = max(6.0, 0.25 * np.pi * (bubble_radius ** 2))
+        max_area = max(min_area * 3.5, 4.0 * np.pi * (bubble_radius ** 2))
+        search_pad = max(10, int(round(bubble_radius * 2.4)))
+        max_dist = max(6.0, bubble_radius * 1.75)
+        for idx, center in enumerate(detected):
+            best_offset = self._find_local_component_offset(
+                binary,
+                center,
+                search_pad,
+                min_area,
+                max_area,
+                max_dist,
+            )
+            if best_offset is not None:
+                detected[idx] = center + best_offset
+        return detected.astype(np.float32)
+
     def recognize_block(self, binary: np.ndarray, zone: Zone, template: Template, result: OMRResult, debug_overlay: np.ndarray | None = None) -> None:
         grid = zone.grid
         if not grid or not grid.bubble_positions:
@@ -1389,6 +1415,8 @@ class OMRProcessor:
         else:
             centers = self._resolve_zone_centers(working_binary, zone, template)
         radius = int(zone.metadata.get("bubble_radius", 9))
+        if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+            centers = self._detect_digit_bubble_centers(working_binary, centers, float(radius))
         ratios = self.detect_bubbles(working_binary, centers, radius)
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
             core_ratios = self._detect_center_core_marks(working_binary, centers, radius)
