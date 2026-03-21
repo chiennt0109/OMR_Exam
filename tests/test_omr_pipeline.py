@@ -313,6 +313,23 @@ class OMRPipelineTests(unittest.TestCase):
             diffs = np.diff(row)
             self.assertLess(float(np.max(diffs) - np.min(diffs)), 1.0)
 
+    def test_digit_columns_keep_template_spacing_while_applying_row_shift(self):
+        grid = BubbleGrid(rows=3, cols=4, question_start=1, question_count=4, options=[], bubble_positions=[(80 + c * 24, 30 + r * 24) for r in range(3) for c in range(4)])
+        expected = np.array(grid.bubble_positions, dtype=np.float32)
+        binary = np.zeros((160, 220), dtype=np.uint8)
+        for r in range(3):
+            x_shift = 6 + r
+            for c in range(4):
+                x = int(expected[r * 4 + c][0] + x_shift)
+                y = int(expected[r * 4 + c][1])
+                cv2.circle(binary, (x, y), 5, 255, 1)
+
+        centers = self.processor._resolve_column_digit_centers(binary, expected, grid, 5.0)
+
+        for r in range(3):
+            row_slice = slice(r * 4, (r + 1) * 4)
+            self.assertTrue(np.allclose(np.diff(centers[row_slice, 0]), np.diff(expected[row_slice, 0]), atol=1.0))
+
     def test_detect_bubbles_ratio(self):
         binary = np.zeros((120, 120), dtype=np.uint8)
         cv2.circle(binary, (40, 60), 10, 255, -1)

@@ -1178,52 +1178,38 @@ class OMRProcessor:
                     max(8, int(round(col_search_pad * 0.75))),
                     min_area,
                     max_area,
-                    max(5.0, bubble_radius * (1.25 if c == 0 or c == (cols - 1) else 1.15)),
+                    max(6.0, bubble_radius * (1.45 if c == 0 or c == (cols - 1) else 1.30)),
                 )
                 refined[idx] = shifted if local_offset is None else shifted + local_offset
 
         regularized = refined.copy()
         if cols > 1:
-            indices = np.arange(cols, dtype=np.float32)
-            col_step_samples: list[float] = []
-            row_intercepts: list[float] = []
             row_centers_y: list[float] = []
+            row_shift_x: list[float] = []
             for r in range(rows):
                 row_slice = slice(r * cols, (r + 1) * cols)
-                row_pts = refined[row_slice]
-                row_x = row_pts[:, 0]
-                row_y = row_pts[:, 1]
-                if len(row_x) > 1:
-                    col_step_samples.append(float(np.median(np.diff(row_x))))
-                step_guess = float(np.median(np.diff(row_x))) if len(row_x) > 1 else 0.0
-                row_intercepts.append(float(np.median(row_x - (indices * step_guess))))
-                row_centers_y.append(float(np.median(row_y)))
-
-            global_step = (
-                float(np.median(col_step_samples))
-                if col_step_samples
-                else float(np.median(np.diff(expected[:cols, 0])))
-            )
+                row_centers_y.append(float(np.median(refined[row_slice, 1])))
+                row_shift_x.append(float(np.median(refined[row_slice, 0] - expected[row_slice, 0])))
 
             if len(row_centers_y) >= 2:
                 y_arr = np.array(row_centers_y, dtype=np.float32)
-                intercept_arr = np.array(row_intercepts, dtype=np.float32)
+                shift_arr = np.array(row_shift_x, dtype=np.float32)
                 y_mean = float(np.mean(y_arr))
                 denom = float(np.sum((y_arr - y_mean) ** 2))
                 if denom > 1e-6:
-                    shear = float(np.sum((y_arr - y_mean) * (intercept_arr - float(np.mean(intercept_arr)))) / denom)
+                    shear = float(np.sum((y_arr - y_mean) * (shift_arr - float(np.mean(shift_arr)))) / denom)
                 else:
                     shear = 0.0
-                intercept0 = float(np.mean(intercept_arr) - (shear * y_mean))
+                shift0 = float(np.mean(shift_arr) - (shear * y_mean))
             else:
                 shear = 0.0
-                intercept0 = row_intercepts[0] if row_intercepts else float(expected[0, 0])
+                shift0 = row_shift_x[0] if row_shift_x else 0.0
 
             for r in range(rows):
                 row_slice = slice(r * cols, (r + 1) * cols)
                 row_y = float(np.median(refined[row_slice, 1]))
-                intercept = intercept0 + (shear * row_y)
-                regularized[row_slice, 0] = intercept + (indices * global_step)
+                smoothed_shift = shift0 + (shear * row_y)
+                regularized[row_slice, 0] = expected[row_slice, 0] + smoothed_shift
 
         return regularized.astype(np.float32)
 
