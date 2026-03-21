@@ -827,49 +827,66 @@ class TemplateEditorWindow(QMainWindow):
         rows = max(1, int(zone.metadata.get('rows', 10)))
         cols = max(1, int(zone.metadata.get('columns', 8 if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else 4)))
         model = self._digit_model()
-        a0 = np.array(anchors[0], dtype=np.float32)
-        a1 = np.array(anchors[-1], dtype=np.float32)
-        col_vec = a1 - a0
-        norm = float(np.linalg.norm(col_vec))
+        top_points = np.array(anchors, dtype=np.float32)
+        if len(top_points) > rows:
+            top_points = top_points[:rows]
+        elif len(top_points) < rows and len(top_points) >= 2:
+            interp = []
+            for idx in range(rows):
+                alpha = 0.0 if rows == 1 else float(idx / max(1, rows - 1))
+                interp.append(((1.0 - alpha) * top_points[0]) + (alpha * top_points[-1]))
+            top_points = np.array(interp, dtype=np.float32)
+        anchor_vec = top_points[-1] - top_points[0]
+        norm = float(np.linalg.norm(anchor_vec))
         if norm < 1e-6:
             return None
-        col_unit = col_vec / norm
+        row_unit = anchor_vec / norm
         ang = np.deg2rad(float(model.get('rotation_deg', 0.0) or 0.0))
         rot = np.array([[np.cos(ang), -np.sin(ang)], [np.sin(ang), np.cos(ang)]], dtype=np.float32)
-        col_unit = rot @ col_unit
-        row_unit = np.array([-col_unit[1], col_unit[0]], dtype=np.float32)
-        zx = float(zone.x * self.template.width if zone.x <= 1.0 else zone.x)
-        zy = float(zone.y * self.template.height if zone.y <= 1.0 else zone.y)
+        row_unit = rot @ row_unit
+        col_unit = np.array([-row_unit[1], row_unit[0]], dtype=np.float32)
         zw = float(zone.width * self.template.width if zone.width <= 1.0 else zone.width)
         zh = float(zone.height * self.template.height if zone.height <= 1.0 else zone.height)
         base_col_spacing = (zw / max(1, cols - 1)) if cols > 1 else max(1.0, zw)
-        base_row_spacing = (zh / max(1, rows - 1)) if rows > 1 else max(1.0, zh)
+        base_row_spacing = (zh / max(1, rows)) if rows > 0 else max(1.0, zh)
         col_spacing = base_col_spacing * float(model.get('col_spacing_scale', 1.0) or 1.0)
         row_spacing = base_row_spacing * float(model.get('row_spacing_scale', 1.0) or 1.0)
         off_key = 'offset_sid' if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else 'offset_exam'
         off = model.get(off_key, [0.0, 0.0]) or [0.0, 0.0]
-        origin = a0 + (float(off[0]) * col_unit) + (float(off[1]) * row_unit)
+        row_tops = [np.array(pt, dtype=np.float32) for pt in top_points]
+        median_gap = row_spacing
+        if len(row_tops) >= 2:
+            gaps = [float(np.dot(row_tops[i+1] - row_tops[i], row_unit)) for i in range(len(row_tops) - 1)]
+            valid = [g for g in gaps if g > 1e-3]
+            if valid:
+                median_gap = float(np.median(valid))
+        row_centers = []
+        row_segments = []
+        for r in range(rows):
+            top_pt = row_tops[r]
+            gap = float(np.dot(row_tops[r + 1] - top_pt, row_unit)) if r + 1 < len(row_tops) else median_gap
+            center_base = top_pt + (0.5 * gap * row_unit)
+            center = center_base + (float(off[0]) * col_unit) + (float(off[1]) * row_unit)
+            row_centers.append(center)
+            row_start = top_pt + (float(off[0]) * col_unit) + (float(off[1]) * row_unit)
+            row_end = row_start + ((cols - 1) * col_spacing * col_unit)
+            row_segments.append((tuple(row_start.tolist()), tuple(row_end.tolist())))
         points=[]
         for r in range(rows):
             for c in range(cols):
-                pt = origin + (c * col_spacing * col_unit) + (r * row_spacing * row_unit)
+                pt = row_centers[r] + (c * col_spacing * col_unit)
                 points.append((float(pt[0]) / self.template.width, float(pt[1]) / self.template.height))
         col_lines=[]
         for c in range(cols):
-            start = origin + (c * col_spacing * col_unit)
-            end = start + ((rows - 1) * row_spacing * row_unit)
+            start = row_centers[0] + (c * col_spacing * col_unit)
+            end = row_centers[-1] + (c * col_spacing * col_unit)
             col_lines.append((tuple(start.tolist()), tuple(end.tolist())))
-        row_lines=[]
-        for r in range(rows):
-            start = origin + (r * row_spacing * row_unit)
-            end = start + ((cols - 1) * col_spacing * col_unit)
-            row_lines.append((tuple(start.tolist()), tuple(end.tolist())))
         return {
             'bubble_positions': points,
             'anchor_points': anchors,
-            'anchor_line': [anchors[0], anchors[-1]],
+            'anchor_line': [tuple(top_points[0].tolist()), tuple(top_points[-1].tolist())],
             'col_lines': col_lines,
-            'row_segments': row_lines,
+            'row_segments': row_segments,
             'bubble_centers': [(p[0]*self.template.width, p[1]*self.template.height) for p in points],
         }
 
