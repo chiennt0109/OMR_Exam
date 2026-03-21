@@ -163,7 +163,7 @@ class OMRPipelineTests(unittest.TestCase):
         with patch.object(self.processor, "detect_anchors", return_value=detected_ruler):
             centers = self.processor._resolve_zone_centers(binary, zone, template)
 
-        self.assertTrue(np.allclose(centers[:, 0], np.array(grid.bubble_positions, dtype=np.float32)[:, 0] + 4.0, atol=0.5))
+        self.assertTrue(np.allclose(centers[:, 0], np.array(grid.bubble_positions, dtype=np.float32)[:, 0] + 3.0, atol=0.5))
         self.assertLess(float(np.mean(np.abs(centers[:, 1] - shifted[:, 1]))), 2.0)
 
     def test_detect_digit_anchor_ruler_finds_actual_positions_near_manual_points(self):
@@ -497,12 +497,12 @@ class OMRPipelineTests(unittest.TestCase):
         grid = BubbleGrid(rows=4, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(20 + c * 30, 20 + r * 18) for r in range(4) for c in range(2)])
         expected = np.array(grid.bubble_positions, dtype=np.float32)
         binary = np.zeros((120, 120), dtype=np.uint8)
-        offsets = [np.array([7.0, 0.0], dtype=np.float32), np.array([-8.0, 0.0], dtype=np.float32)] * 4
+        offsets = [np.array([7.0, 0.0], dtype=np.float32)] * 4 + [np.array([-8.0, 0.0], dtype=np.float32)] * 4
         with patch.object(self.processor, "_find_local_component_offset", side_effect=offsets):
             centers = self.processor._resolve_column_digit_centers(binary, expected, grid, 5.0)
 
-        self.assertTrue(np.allclose(centers[0::2, 0], expected[0::2, 0] + 4.0))
-        self.assertTrue(np.allclose(centers[1::2, 0], expected[1::2, 0] - 4.0))
+        self.assertTrue(np.allclose(centers[0::2, 0], expected[0::2, 0] + 3.0))
+        self.assertTrue(np.allclose(centers[1::2, 0], expected[1::2, 0] - 3.0))
         self.assertTrue(np.allclose(centers[:, 1], expected[:, 1]))
 
     def test_exam_code_decode_accepts_soft_edge_fallback_for_last_column(self):

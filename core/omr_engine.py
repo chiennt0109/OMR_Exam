@@ -1291,7 +1291,6 @@ class OMRProcessor:
         for c in range(cols):
             col_pts = expected[c::cols]
             offsets_x: list[float] = []
-            col_max_x_shift = 4.0 if c == 0 or c == (cols - 1) else 3.0
             for exp_x, exp_y in col_pts:
                 best_offset = self._find_local_component_offset(
                     binary,
@@ -1306,7 +1305,7 @@ class OMRProcessor:
             if not offsets_x:
                 continue
             median_shift_x = float(np.median(np.array(offsets_x, dtype=np.float32)))
-            median_shift_x = float(np.clip(median_shift_x, -col_max_x_shift, col_max_x_shift))
+            median_shift_x = float(np.clip(median_shift_x, -3.0, 3.0))
             for r in range(rows):
                 idx = (r * cols) + c
                 refined[idx, 0] = expected[idx, 0] + median_shift_x
