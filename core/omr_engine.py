@@ -1422,6 +1422,11 @@ class OMRProcessor:
             if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
                 value, confs = self._decode_column_digits(mat, zone, grid, result)
                 key = "student_id" if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else "exam_code"
+                expected_len = max(1, cols)
+                is_valid = len(value) == expected_len and "?" not in value
+                if not is_valid:
+                    result.recognition_errors.append(f"{zone.zone_type.value}: invalid length or ambiguous digit sequence")
+                    value = ""
                 if key == "student_id":
                     result.student_id = value
                 else:
@@ -1468,69 +1473,42 @@ class OMRProcessor:
         digit_map = zone.metadata.get("digit_map", default_digit_map)
         digits: list[str] = []
         confs: list[float] = []
-        is_student_id = zone.zone_type == ZoneType.STUDENT_ID_BLOCK
-        is_exam_code = zone.zone_type == ZoneType.EXAM_CODE_BLOCK
-        fallback_candidates: list[tuple[int, float, int]] = []
         for c in range(cols):
-            col_scores = mat[:, c]
-            is_edge_col = c == 0 or c == (cols - 1)
-            if is_student_id:
-                col_threshold = max(self.empty_threshold + 0.10, float((self.fill_threshold * 0.90)))
-                col_threshold = max(col_threshold, float(np.mean(col_scores) + (0.25 * np.std(col_scores))))
-                certainty_margin = self.certainty_margin * 0.40
-                if is_edge_col:
-                    col_threshold *= 0.92
-                    certainty_margin *= 0.70
-            elif is_exam_code:
-                col_threshold = max(self.empty_threshold + 0.10, float((self.fill_threshold * 0.95)))
-                col_threshold = max(col_threshold, float(np.mean(col_scores) + (0.30 * np.std(col_scores))))
-                certainty_margin = self.certainty_margin * 0.75
-                if is_edge_col:
-                    col_threshold *= 0.92
-                    certainty_margin *= 0.70
+            col_scores = np.asarray(mat[:, c], dtype=np.float32)
+            raw_max = float(np.max(col_scores)) if col_scores.size else 0.0
+            col_threshold = max(
+                self.empty_threshold + 0.10,
+                min(
+                    self.fill_threshold,
+                    float(np.mean(col_scores) + (0.5 * np.std(col_scores))),
+                ),
+            )
+            activated_scores = np.clip(col_scores - col_threshold, 0.0, None)
+            activated_max = float(np.max(activated_scores)) if activated_scores.size else 0.0
+            if activated_max > 1e-6:
+                norm_scores = activated_scores / activated_max
             else:
-                col_threshold = max(self.fill_threshold, float(np.mean(col_scores) + (0.35 * np.std(col_scores))))
-                certainty_margin = self.certainty_margin
-            order = np.argsort(col_scores)[::-1]
+                norm_scores = np.zeros_like(activated_scores)
+            col_sum = float(np.sum(activated_scores))
+            order = np.argsort(norm_scores)[::-1]
             top_i, second_i = int(order[0]), int(order[1]) if len(order) > 1 else int(order[0])
-            top, second = float(col_scores[top_i]), float(col_scores[second_i]) if len(order) > 1 else 0.0
-            filled = np.where(col_scores > col_threshold)[0]
-            if len(filled) > 1:
-                ordered_filled = sorted((float(col_scores[idx]), int(idx)) for idx in filled)[::-1]
-                if len(ordered_filled) >= 2 and abs(ordered_filled[0][0] - ordered_filled[1][0]) < 0.10:
-                    result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: double mark")
-            student_ratio = 1.05 if is_student_id and (c == 0 or c == (cols - 1)) else 1.08
-            ratio_gate = second <= 0.0 or top >= (second * (student_ratio if is_student_id else 1.10 if is_exam_code else 1.18))
-            confidence = top - second
-            edge_fallback_ok = is_edge_col and top > (col_threshold * 0.85) and (confidence >= 0.02 or top >= (second * 1.03))
-            if top <= col_threshold or (confidence < 0.04) or (confidence <= certainty_margin and not ratio_gate):
+            top = float(norm_scores[top_i])
+            second = float(norm_scores[second_i]) if len(order) > 1 else 0.0
+            raw_second = float(col_scores[second_i]) if len(order) > 1 else 0.0
+            confidence = (float(activated_scores[top_i]) / col_sum) if col_sum > 1e-6 else 0.0
+            if raw_max < col_threshold:
                 digits.append("?")
-                result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: uncertain")
-                if is_student_id:
-                    mapped = digit_map[top_i] if top_i < len(digit_map) else top_i
-                    fallback_score = top - max(col_threshold * 0.85, second)
-                    fallback_candidates.append((c, float(fallback_score), int(mapped)))
-                    if edge_fallback_ok:
-                        digits[-1] = str(mapped)
-                elif is_exam_code and top > (col_threshold * 0.9):
-                    digits[-1] = str(digit_map[top_i] if top_i < len(digit_map) else top_i)
-                elif is_exam_code and edge_fallback_ok:
-                    digits[-1] = str(digit_map[top_i] if top_i < len(digit_map) else top_i)
+                result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: below threshold")
+            elif (raw_max - raw_second) < 0.08:
+                digits.append("?")
+                result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: ambiguous")
+            elif confidence < 0.5:
+                digits.append("?")
+                result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: low confidence")
             else:
                 mapped = digit_map[top_i] if top_i < len(digit_map) else top_i
                 digits.append(str(mapped))
             confs.append(confidence)
-        if is_student_id:
-            uncertain_cols = [idx for idx, value in enumerate(digits) if value == "?"]
-            if uncertain_cols and len(uncertain_cols) <= 2:
-                best_map = {col: (score, mapped) for col, score, mapped in fallback_candidates if score > 0.0}
-                for col in uncertain_cols:
-                    pick = best_map.get(col)
-                    if pick is not None:
-                        digits[col] = str(pick[1])
-                    elif float(mat[:, col].max()) > (max(self.empty_threshold + 0.10, float(self.fill_threshold * 0.90)) * 0.9):
-                        top_idx = int(np.argmax(mat[:, col]))
-                        digits[col] = str(digit_map[top_idx] if top_idx < len(digit_map) else top_idx)
         return "".join(digits), confs
 
     def _decode_true_false(self, mat: np.ndarray, zone: Zone, grid, result: OMRResult) -> None:

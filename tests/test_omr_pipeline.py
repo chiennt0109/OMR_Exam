@@ -505,7 +505,7 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertTrue(np.allclose(centers[1::2, 0], expected[1::2, 0] - 3.0))
         self.assertTrue(np.allclose(centers[:, 1], expected[:, 1]))
 
-    def test_exam_code_decode_accepts_soft_edge_fallback_for_last_column(self):
+    def test_exam_code_decode_rejects_ambiguous_last_column(self):
         zone = Zone(
             id="exam_edge_fallback",
             name="exam",
@@ -534,7 +534,8 @@ class OMRPipelineTests(unittest.TestCase):
         )
         result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
         digits, _ = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
-        self.assertEqual(digits, "3456")
+        self.assertEqual(digits, "345?")
+        self.assertIn("EXAM_CODE_BLOCK column 4: ambiguous", result_stub.recognition_errors)
 
     def test_resolve_column_digit_centers_returns_refined_array_without_name_error(self):
         grid = BubbleGrid(
@@ -999,7 +1000,7 @@ class OMRPipelineTests(unittest.TestCase):
         self.processor.recognize_block(binary, template.zones[0], template, result_stub)
         self.assertEqual(result_stub.student_id, "7")
 
-    def test_student_id_decode_uses_softer_column_margin(self):
+    def test_student_id_decode_selects_single_max_digit(self):
         zone = Zone(
             id="sid_margin",
             name="sid",
@@ -1016,7 +1017,7 @@ class OMRPipelineTests(unittest.TestCase):
         digits, _ = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
         self.assertEqual(digits, "0")
 
-    def test_student_id_decode_accepts_small_but_consistent_lead(self):
+    def test_student_id_decode_rejects_small_top_second_gap(self):
         zone = Zone(
             id="sid_small_gap",
             name="sid",
@@ -1031,9 +1032,10 @@ class OMRPipelineTests(unittest.TestCase):
         mat = np.array([[0.57], [0.18], [0.52], [0.17], [0.16], [0.15], [0.14], [0.13], [0.12], [0.11]], dtype=np.float32)
         result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
         digits, _ = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
-        self.assertEqual(digits, "0")
+        self.assertEqual(digits, "?")
+        self.assertIn("STUDENT_ID_BLOCK column 1: ambiguous", result_stub.recognition_errors)
 
-    def test_student_id_decode_promotes_near_threshold_single_unknown(self):
+    def test_student_id_decode_rejects_ambiguous_column_without_guessing(self):
         zone = Zone(
             id="sid_promote",
             name="sid",
@@ -1062,9 +1064,10 @@ class OMRPipelineTests(unittest.TestCase):
         )
         result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
         digits, _ = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
-        self.assertEqual(digits, "05")
+        self.assertEqual(digits, "?5")
+        self.assertIn("STUDENT_ID_BLOCK column 1: ambiguous", result_stub.recognition_errors)
 
-    def test_student_id_edge_columns_use_softer_gate(self):
+    def test_student_id_decode_rejects_ambiguous_column_before_confidence(self):
         zone = Zone(
             id="sid_edge",
             name="sid",
@@ -1093,7 +1096,74 @@ class OMRPipelineTests(unittest.TestCase):
         )
         result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
         digits, _ = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
-        self.assertEqual(digits, "09")
+        self.assertEqual(digits, "?9")
+        self.assertIn("STUDENT_ID_BLOCK column 1: ambiguous", result_stub.recognition_errors)
+
+    def test_digit_decode_uses_column_normalization_to_overcome_global_bias(self):
+        zone = Zone(
+            id="sid_norm",
+            name="sid",
+            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        mat = np.array(
+            [
+                [0.82, 0.42],
+                [0.20, 0.18],
+                [0.19, 0.17],
+                [0.18, 0.16],
+                [0.17, 0.15],
+                [0.16, 0.14],
+                [0.15, 0.13],
+                [0.14, 0.12],
+                [0.13, 0.11],
+                [0.12, 0.10],
+            ],
+            dtype=np.float32,
+        )
+        result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
+        digits, confs = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
+        self.assertEqual(digits, "00")
+        self.assertGreaterEqual(min(confs), 0.5)
+
+    def test_recognize_block_invalidates_student_id_when_any_digit_is_ambiguous(self):
+        template = Template(
+            name="sid_invalid",
+            image_path="",
+            width=100,
+            height=100,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="sid_invalid",
+                    name="sid",
+                    zone_type=ZoneType.STUDENT_ID_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=10, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(20 + c * 20, 15 + r * 8) for r in range(10) for c in range(2)]),
+                    metadata={"bubble_radius": 5},
+                )
+            ],
+        )
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
+        with patch.object(self.processor, "_resolve_column_digit_centers", return_value=np.array(template.zones[0].grid.bubble_positions, dtype=np.float32)), \
+            patch.object(self.processor, "detect_bubbles", return_value=np.array([0.20] * 20, dtype=np.float32)), \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=np.array([0.20] * 20, dtype=np.float32)), \
+            patch.object(self.processor, "_detect_square_mark_density", return_value=np.array([0.20] * 20, dtype=np.float32)), \
+            patch.object(self.processor, "_detect_eroded_mark_density", return_value=np.array([0.20] * 20, dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_zone_multi_probe_marks", return_value=np.array([0.20] * 20, dtype=np.float32)), \
+            patch.object(self.processor, "_estimate_local_fill_threshold", return_value=0.45):
+            self.processor.recognize_block(np.zeros((120, 80), dtype=np.uint8), template.zones[0], template, result_stub)
+
+        self.assertEqual(result_stub.student_id, "")
+        self.assertIn("STUDENT_ID_BLOCK: invalid length or ambiguous digit sequence", result_stub.recognition_errors)
 
     def test_student_id_recognize_block_weights_center_core_more_than_outline_ratio(self):
         template = Template(
