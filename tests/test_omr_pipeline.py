@@ -407,6 +407,44 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertGreater(scores[0], 0.15)
         self.assertLess(scores[1], 0.12)
 
+    def test_digit_zone_multi_probe_marks_catch_shifted_filled_bubble_better_than_outline(self):
+        binary = np.zeros((140, 140), dtype=np.uint8)
+        cv2.circle(binary, (47, 60), 9, 255, -1)
+        cv2.circle(binary, (100, 60), 9, 255, 1)
+        centers = np.array([[40, 60], [100, 60]], dtype=np.float32)
+        scores = self.processor._detect_digit_zone_multi_probe_marks(binary, centers, 10)
+        self.assertGreater(scores[0], 0.40)
+        self.assertLess(scores[1], 0.20)
+
+    def test_exam_code_recognize_block_uses_multi_probe_digit_signal_for_shifted_mark(self):
+        template = Template(
+            name="exam_multi_probe",
+            image_path="",
+            width=120,
+            height=140,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="exam_multi_probe",
+                    name="exam",
+                    zone_type=ZoneType.EXAM_CODE_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(60, 20 + r * 10) for r in range(10)]),
+                    metadata={"bubble_radius": 6},
+                )
+            ],
+        )
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
+        with patch.object(self.processor, "_resolve_column_digit_centers", return_value=np.array([[60, 20 + r * 10] for r in range(10)], dtype=np.float32)), \
+            patch.object(self.processor, "detect_bubbles", return_value=np.array([0.30, 0.24, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=np.array([0.35, 0.28, 0.06, 0.06, 0.06, 0.06, 0.06, 0.06, 0.06, 0.06], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_zone_multi_probe_marks", return_value=np.array([0.88, 0.22, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05], dtype=np.float32)):
+            self.processor.recognize_block(np.zeros((140, 120), dtype=np.uint8), template.zones[0], template, result_stub)
+        self.assertEqual(result_stub.exam_code, "0")
+
     def test_template_dict_persists_template_coordinate_space(self):
         tpl = Template(name="t", image_path="x.png", width=1234, height=1754)
         payload = tpl.to_dict()
