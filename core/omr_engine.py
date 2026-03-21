@@ -1527,24 +1527,35 @@ class OMRProcessor:
         y1 = min(zone_bbox[1] + zone_bbox[3], int(round(max(ys) + y_pad)))
         return x0, y0, max(1, x1 - x0), max(1, y1 - y0)
 
-    def _sample_digit_cell(self, img: np.ndarray, cx: int, cy: int, radius: int) -> float:
+    def _sample_digit_cell(self, img: np.ndarray, cx: int, cy: int, cell_w: float, cell_h: float) -> float:
+        cy = int(cy + (cell_h * 0.15))
+        radius = max(1, int(min(cell_w, cell_h) * 0.22))
+
         h, w = img.shape[:2]
-        x1 = max(0, cx - radius)
-        x2 = min(w, cx + radius)
-        y1 = max(0, cy - radius)
-        y2 = min(h, cy + radius)
+        x1 = max(cx - radius, 0)
+        x2 = min(cx + radius, w)
+        y1 = max(cy - radius, 0)
+        y2 = min(cy + radius, h)
+
         patch = img[y1:y2, x1:x2]
         if patch.size == 0:
             return 0.0
-        ph, pw = patch.shape[:2]
-        mask = np.zeros((ph, pw), dtype=np.uint8)
-        cv2.circle(mask, (pw // 2, ph // 2), max(1, min(radius, pw // 2, ph // 2)), 255, -1)
-        threshold_mode = cv2.THRESH_BINARY_INV if float(np.mean(img)) >= 127.0 else cv2.THRESH_BINARY
-        _, th = cv2.threshold(patch, 0, 255, threshold_mode + cv2.THRESH_OTSU)
-        den = float(np.count_nonzero(mask == 255))
-        if den <= 0.0:
+
+        mask = np.zeros_like(patch, dtype=np.uint8)
+        cv2.circle(mask, (patch.shape[1] // 2, patch.shape[0] // 2), radius, 255, -1)
+
+        _, th = cv2.threshold(
+            patch,
+            0,
+            255,
+            cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU,
+        )
+
+        dark = float(np.sum((th > 0) & (mask == 255)))
+        total = float(np.sum(mask == 255))
+        if total <= 0.0:
             return 0.0
-        return float(np.count_nonzero((th > 0) & (mask == 255)) / den)
+        return float(dark / total)
 
     def _read_digit_grid_sampling(
         self,
@@ -1558,7 +1569,6 @@ class OMRProcessor:
         x0, y0, bw, bh = bbox
         cell_w = bw / float(max(1, num_cols))
         cell_h = bh / float(max(1, num_rows))
-        radius = max(2, int(round(cell_h * 0.3)))
         mat = np.zeros((num_rows, num_cols), dtype=np.float32)
         debug_centers: list[tuple[float, float]] = []
         center_array = None
@@ -1566,10 +1576,6 @@ class OMRProcessor:
             arr = np.asarray(centers, dtype=np.float32)
             if arr.shape == (num_rows * num_cols, 2):
                 center_array = arr.reshape(num_rows, num_cols, 2)
-                if num_rows > 1:
-                    row_step = float(np.median(np.abs(np.diff(center_array[:, :, 1], axis=0))))
-                    if row_step > 1.0:
-                        radius = max(radius, int(round(row_step * 0.28)))
         for col in range(num_cols):
             for row in range(num_rows):
                 if center_array is not None:
@@ -1579,18 +1585,26 @@ class OMRProcessor:
                     cx = int(round(x0 + (col * cell_w) + (cell_w * 0.5)))
                     cy = int(round(y0 + (row * cell_h) + (cell_h * 0.5)))
                 debug_centers.append((float(cx), float(cy)))
-                mat[row, col] = self._sample_digit_cell(img, cx, cy, radius)
+                mat[row, col] = self._sample_digit_cell(img, cx, cy, cell_w, cell_h)
         results: list[int | None | str] = []
         for col in range(num_cols):
-            col_scores = mat[:, col]
-            thr = max(threshold, float(np.mean(col_scores) + (0.2 * np.std(col_scores))))
-            filled_rows = [row for row, score in enumerate(col_scores.tolist()) if float(score) > thr]
+            column_values = [(row, float(mat[row, col]), None) for row in range(num_rows)]
+            scores = [score for _, score, _ in column_values]
+            max_score = max(scores) if scores else 0.0
+            mean_score = float(np.mean(scores)) if scores else 0.0
+
+            filled_rows: list[int] = []
+            for row, score, _ in column_values:
+                if score > (max_score * 0.7) and score > (mean_score + 0.1):
+                    filled_rows.append(row)
+
             if len(filled_rows) == 1:
                 results.append(int(filled_rows[0]))
             elif len(filled_rows) == 0:
                 results.append(None)
             else:
-                results.append("INVALID")
+                best = max(column_values, key=lambda x: x[1])[0]
+                results.append(int(best))
         debug = {
             "bbox": bbox,
             "centers": debug_centers,
