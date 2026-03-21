@@ -125,6 +125,192 @@ class OMRPipelineTests(unittest.TestCase):
         centers = self.processor._resolve_zone_centers(binary, template.zones[0], template)
         self.assertLess(float(np.mean(np.linalg.norm(centers - shifted, axis=1))), 4.0)
 
+    def test_student_id_zone_uses_right_anchor_ruler_before_component_refine(self):
+        grid = BubbleGrid(rows=4, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(130 + c * 24, 30 + r * 20) for r in range(4) for c in range(2)])
+        anchors = [AnchorPoint(176 / 220, y / 140, f"R{i}") for i, y in enumerate((24, 44, 64, 84, 104, 124), start=1)]
+        zone = Zone(id="sid_ruler", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=120 / 220, y=20 / 140, width=48 / 220, height=90 / 140, grid=grid, metadata={"bubble_radius": 5})
+        template = Template(name="sid_ruler", image_path="", width=220, height=140, anchors=anchors, zones=[zone])
+
+        binary = np.zeros((140, 220), dtype=np.uint8)
+        shifted = np.array(grid.bubble_positions, dtype=np.float32) + np.array([10.0, 2.0], dtype=np.float32)
+        for x, y in shifted.astype(np.int32):
+            cv2.circle(binary, (int(x), int(y)), 5, 255, 1)
+
+        detected_ruler = [(186.0, 26.0), (186.0, 46.0), (186.0, 66.0), (186.0, 86.0), (186.0, 106.0), (186.0, 126.0)]
+        with patch.object(self.processor, "detect_anchors", return_value=detected_ruler):
+            centers = self.processor._resolve_zone_centers(binary, zone, template)
+
+        self.assertLess(float(np.mean(np.linalg.norm(centers - shifted, axis=1))), 3.5)
+
+    def test_exam_code_zone_uses_right_anchor_ruler_for_local_shift(self):
+        grid = BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(150, 30 + r * 18) for r in range(4)])
+        anchors = [AnchorPoint(188 / 240, y / 120, f"DIGIT_ANCHOR_{i:02d}") for i, y in enumerate((20, 38, 56, 74, 92, 110), start=1)]
+        zone = Zone(id="exam_ruler", name="exam", zone_type=ZoneType.EXAM_CODE_BLOCK, x=142 / 240, y=18 / 120, width=28 / 240, height=76 / 120, grid=grid, metadata={"bubble_radius": 5})
+        template = Template(name="exam_ruler", image_path="", width=240, height=120, anchors=anchors, zones=[zone])
+
+        binary = np.zeros((120, 240), dtype=np.uint8)
+        shifted = np.array(grid.bubble_positions, dtype=np.float32) + np.array([8.0, 1.5], dtype=np.float32)
+        for x, y in shifted.astype(np.int32):
+            cv2.circle(binary, (int(x), int(y)), 5, 255, 1)
+
+        detected_ruler = [(196.0, 21.5), (196.0, 39.5), (196.0, 57.5), (196.0, 75.5), (196.0, 93.5), (196.0, 111.5)]
+        with patch.object(self.processor, "detect_anchors", return_value=detected_ruler):
+            centers = self.processor._resolve_zone_centers(binary, zone, template)
+
+        self.assertLess(float(np.mean(np.linalg.norm(centers - shifted, axis=1))), 3.0)
+
+    def test_detect_digit_anchor_ruler_finds_actual_positions_near_manual_points(self):
+        template = Template(
+            name="digit_template",
+            image_path="",
+            width=240,
+            height=140,
+            anchors=[
+                AnchorPoint(0.80, 0.18, "DIGIT_ANCHOR_01"),
+                AnchorPoint(0.80, 0.42, "DIGIT_ANCHOR_02"),
+                AnchorPoint(0.80, 0.66, "DIGIT_ANCHOR_03"),
+                AnchorPoint(0.80, 0.90, "DIGIT_ANCHOR_04"),
+            ],
+            zones=[],
+        )
+        binary = np.zeros((140, 240), dtype=np.uint8)
+        for x, y in [(196, 30), (197, 63), (196, 95), (197, 127)]:
+            cv2.rectangle(binary, (x - 5, y - 4), (x + 5, y + 4), 255, -1)
+
+        detected = self.processor._detect_digit_anchor_ruler(binary, template)
+
+        self.assertEqual(len(detected), 4)
+        self.assertLess(float(np.mean([abs(x - 196.5) for x, _ in detected])), 4.0)
+        self.assertLess(float(np.mean([abs(y - tgt) for (_, y), tgt in zip(detected, [30.0, 63.0, 95.0, 127.0])])), 4.0)
+
+    def test_manual_digit_anchor_guides_define_row_centers(self):
+        grid = BubbleGrid(rows=4, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(100 + c * 20, 20 + r * 20) for r in range(4) for c in range(2)])
+        zone = Zone(id="sid_guides", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0.4, y=0.1, width=0.2, height=0.6, grid=grid, metadata={"bubble_radius": 5})
+        template = Template(
+            name="digit_guides",
+            image_path="",
+            width=240,
+            height=160,
+            anchors=[
+                AnchorPoint(0.84, 0.10, "DIGIT_ANCHOR_01"),
+                AnchorPoint(0.84, 0.22, "DIGIT_ANCHOR_02"),
+                AnchorPoint(0.84, 0.34, "DIGIT_ANCHOR_03"),
+                AnchorPoint(0.84, 0.46, "DIGIT_ANCHOR_04"),
+                AnchorPoint(0.84, 0.58, "DIGIT_ANCHOR_05"),
+            ],
+            zones=[zone],
+        )
+        expected = np.array(grid.bubble_positions, dtype=np.float32)
+
+        binary = np.zeros((160, 240), dtype=np.uint8)
+        for x, y in [(202, 18), (203, 38), (202, 58), (203, 78), (202, 98)]:
+            cv2.rectangle(binary, (x - 4, y - 4), (x + 4, y + 4), 255, -1)
+
+        guided = self.processor._apply_anchor_ruler_to_digit_zone(binary, expected, zone, template)
+
+        target_centers = [48.0, 68.0, 88.0, 108.0]
+        for row_idx, center_y in enumerate(target_centers):
+            self.assertAlmostEqual(float(guided[row_idx * 2][1]), float(center_y), places=3)
+
+    def test_manual_digit_anchor_guides_use_positions_2_to_11_as_row_tops(self):
+        grid = BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(120, 20 + r * 20) for r in range(4)])
+        zone = Zone(id="sid_row_tops", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0.4, y=0.1, width=0.2, height=0.6, grid=grid, metadata={"bubble_radius": 5})
+        template = Template(
+            name="digit_row_tops",
+            image_path="",
+            width=240,
+            height=160,
+            anchors=[
+                AnchorPoint(0.84, 0.08, "DIGIT_ANCHOR_01"),
+                AnchorPoint(0.84, 0.16, "DIGIT_ANCHOR_02"),
+                AnchorPoint(0.84, 0.28, "DIGIT_ANCHOR_03"),
+                AnchorPoint(0.84, 0.40, "DIGIT_ANCHOR_04"),
+                AnchorPoint(0.84, 0.52, "DIGIT_ANCHOR_05"),
+            ],
+            zones=[zone],
+        )
+        expected = np.array(grid.bubble_positions, dtype=np.float32)
+
+        guided = self.processor._apply_anchor_ruler_to_digit_zone(np.zeros((160, 240), dtype=np.uint8), expected, zone, template)
+
+        expected_centers = [(0.16 + 0.06) * 160, (0.28 + 0.06) * 160, (0.40 + 0.06) * 160, (0.52 + 0.06) * 160]
+        for row_idx, center_y in enumerate(expected_centers):
+            self.assertAlmostEqual(float(guided[row_idx][1]), float(center_y), places=3)
+
+    def test_manual_digit_anchor_row_tops_are_regularized_to_even_spacing(self):
+        grid = BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(120, 20 + r * 20) for r in range(4)])
+        zone = Zone(id="sid_regularized", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0.4, y=0.1, width=0.2, height=0.6, grid=grid, metadata={"bubble_radius": 5})
+        template = Template(
+            name="digit_regularized",
+            image_path="",
+            width=240,
+            height=160,
+            anchors=[
+                AnchorPoint(0.84, 0.08, "DIGIT_ANCHOR_01"),
+                AnchorPoint(0.84, 0.16, "DIGIT_ANCHOR_02"),
+                AnchorPoint(0.84, 0.29, "DIGIT_ANCHOR_03"),
+                AnchorPoint(0.84, 0.39, "DIGIT_ANCHOR_04"),
+                AnchorPoint(0.84, 0.53, "DIGIT_ANCHOR_05"),
+            ],
+            zones=[zone],
+        )
+        expected = np.array(grid.bubble_positions, dtype=np.float32)
+
+        guided = self.processor._apply_anchor_ruler_to_digit_zone(np.zeros((160, 240), dtype=np.uint8), expected, zone, template)
+
+        spacings = np.diff([float(guided[i][1]) for i in range(4)])
+        self.assertLess(float(np.max(spacings) - np.min(spacings)), 1.0)
+
+    def test_digit_zone_combines_corner_and_digit_anchors_for_tilted_sheet(self):
+        grid = BubbleGrid(rows=4, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(100 + c * 20, 30 + r * 18) for r in range(4) for c in range(2)])
+        zone = Zone(id="sid_tilt_combo", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0.35, y=0.1, width=0.25, height=0.55, grid=grid, metadata={"bubble_radius": 5})
+        template = Template(
+            name="tilt_combo",
+            image_path="",
+            width=240,
+            height=160,
+            anchors=[
+                AnchorPoint(0.05, 0.05, "A1"),
+                AnchorPoint(0.95, 0.05, "A2"),
+                AnchorPoint(0.95, 0.95, "A3"),
+                AnchorPoint(0.05, 0.95, "A4"),
+                AnchorPoint(0.84, 0.08, "DIGIT_ANCHOR_01"),
+                AnchorPoint(0.84, 0.18, "DIGIT_ANCHOR_02"),
+                AnchorPoint(0.84, 0.30, "DIGIT_ANCHOR_03"),
+                AnchorPoint(0.84, 0.42, "DIGIT_ANCHOR_04"),
+                AnchorPoint(0.84, 0.54, "DIGIT_ANCHOR_05"),
+            ],
+            zones=[zone],
+        )
+        expected = np.array(grid.bubble_positions, dtype=np.float32)
+        binary = np.zeros((160, 240), dtype=np.uint8)
+        detected_corners = [(16.0, 10.0), (225.0, 18.0), (231.0, 150.0), (12.0, 145.0)]
+        detected_digit = [(202.0, 16.0), (204.0, 34.0), (206.0, 54.0), (208.0, 74.0), (210.0, 94.0)]
+
+        with patch.object(self.processor, "detect_anchors", return_value=detected_corners), \
+            patch.object(self.processor, "_detect_digit_anchor_ruler", return_value=detected_digit):
+            guided = self.processor._apply_anchor_ruler_to_digit_zone(binary, expected, zone, template)
+
+        self.assertGreater(float(guided[0][0]), float(expected[0][0]))
+        self.assertGreater(float(guided[0][1]), float(expected[0][1]))
+
+    def test_digit_columns_are_regularized_to_even_spacing_with_tilt(self):
+        grid = BubbleGrid(rows=4, cols=4, question_start=1, question_count=4, options=[], bubble_positions=[(90 + c * 22, 30 + r * 20) for r in range(4) for c in range(4)])
+        expected = np.array(grid.bubble_positions, dtype=np.float32)
+        binary = np.zeros((180, 240), dtype=np.uint8)
+        for r in range(4):
+            for c in range(4):
+                x = 92 + (c * 23) + r
+                y = 30 + (r * 20)
+                cv2.circle(binary, (x, y), 5, 255, 1)
+
+        centers = self.processor._resolve_column_digit_centers(binary, expected, grid, 5.0)
+
+        for r in range(4):
+            row = centers[r * 4:(r + 1) * 4, 0]
+            diffs = np.diff(row)
+            self.assertLess(float(np.max(diffs) - np.min(diffs)), 1.0)
+
     def test_detect_bubbles_ratio(self):
         binary = np.zeros((120, 120), dtype=np.uint8)
         cv2.circle(binary, (40, 60), 10, 255, -1)
