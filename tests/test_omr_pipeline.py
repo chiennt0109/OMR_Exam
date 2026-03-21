@@ -85,7 +85,11 @@ class OMRPipelineTests(unittest.TestCase):
             cv2.circle(binary, (int(x), int(y)), 5, 255, 1)
 
         centers = self.processor._resolve_zone_centers(binary, template.zones[0], template)
-        self.assertLess(float(np.mean(np.linalg.norm(centers - shifted, axis=1))), 3.5)
+        expected_x = np.array(grid.bubble_positions, dtype=np.float32)[:, 0]
+        expected_x[0::2] += 2.0
+        expected_x[1::2] += 4.0
+        self.assertTrue(np.allclose(centers[:, 0], expected_x, atol=0.5))
+        self.assertLess(float(np.mean(np.abs(centers[:, 1] - shifted[:, 1]))), 2.5)
 
     def test_student_id_zone_refines_each_row_after_column_shift(self):
         grid = BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(40, 20 + r * 20) for r in range(4)])
@@ -124,6 +128,240 @@ class OMRPipelineTests(unittest.TestCase):
 
         centers = self.processor._resolve_zone_centers(binary, template.zones[0], template)
         self.assertLess(float(np.mean(np.linalg.norm(centers - shifted, axis=1))), 4.0)
+
+    def test_student_id_zone_uses_right_anchor_ruler_before_component_refine(self):
+        grid = BubbleGrid(rows=4, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(130 + c * 24, 30 + r * 20) for r in range(4) for c in range(2)])
+        anchors = [AnchorPoint(176 / 220, y / 140, f"R{i}") for i, y in enumerate((24, 44, 64, 84, 104, 124), start=1)]
+        zone = Zone(id="sid_ruler", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=120 / 220, y=20 / 140, width=48 / 220, height=90 / 140, grid=grid, metadata={"bubble_radius": 5})
+        template = Template(name="sid_ruler", image_path="", width=220, height=140, anchors=anchors, zones=[zone])
+
+        binary = np.zeros((140, 220), dtype=np.uint8)
+        shifted = np.array(grid.bubble_positions, dtype=np.float32) + np.array([10.0, 2.0], dtype=np.float32)
+        for x, y in shifted.astype(np.int32):
+            cv2.circle(binary, (int(x), int(y)), 5, 255, 1)
+
+        detected_ruler = [(186.0, 26.0), (186.0, 46.0), (186.0, 66.0), (186.0, 86.0), (186.0, 106.0), (186.0, 126.0)]
+        with patch.object(self.processor, "detect_anchors", return_value=detected_ruler):
+            centers = self.processor._resolve_zone_centers(binary, zone, template)
+
+        self.assertTrue(np.allclose(centers, np.array(grid.bubble_positions, dtype=np.float32), atol=0.5))
+
+    def test_exam_code_zone_uses_right_anchor_ruler_for_local_shift(self):
+        grid = BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(150, 30 + r * 18) for r in range(4)])
+        anchors = [AnchorPoint(188 / 240, y / 120, f"DIGIT_ANCHOR_{i:02d}") for i, y in enumerate((20, 38, 56, 74, 92, 110), start=1)]
+        zone = Zone(id="exam_ruler", name="exam", zone_type=ZoneType.EXAM_CODE_BLOCK, x=142 / 240, y=18 / 120, width=28 / 240, height=76 / 120, grid=grid, metadata={"bubble_radius": 5})
+        template = Template(name="exam_ruler", image_path="", width=240, height=120, anchors=anchors, zones=[zone])
+
+        binary = np.zeros((120, 240), dtype=np.uint8)
+        shifted = np.array(grid.bubble_positions, dtype=np.float32) + np.array([8.0, 1.5], dtype=np.float32)
+        for x, y in shifted.astype(np.int32):
+            cv2.circle(binary, (int(x), int(y)), 5, 255, 1)
+
+        detected_ruler = [(196.0, 21.5), (196.0, 39.5), (196.0, 57.5), (196.0, 75.5), (196.0, 93.5), (196.0, 111.5)]
+        with patch.object(self.processor, "detect_anchors", return_value=detected_ruler):
+            centers = self.processor._resolve_zone_centers(binary, zone, template)
+
+        self.assertTrue(np.allclose(centers[:, 0], np.array(grid.bubble_positions, dtype=np.float32)[:, 0] + 3.0, atol=0.5))
+        self.assertLess(float(np.mean(np.abs(centers[:, 1] - shifted[:, 1]))), 2.0)
+
+    def test_detect_digit_anchor_ruler_finds_actual_positions_near_manual_points(self):
+        template = Template(
+            name="digit_template",
+            image_path="",
+            width=240,
+            height=140,
+            anchors=[
+                AnchorPoint(0.80, 0.18, "DIGIT_ANCHOR_01"),
+                AnchorPoint(0.80, 0.42, "DIGIT_ANCHOR_02"),
+                AnchorPoint(0.80, 0.66, "DIGIT_ANCHOR_03"),
+                AnchorPoint(0.80, 0.90, "DIGIT_ANCHOR_04"),
+            ],
+            zones=[],
+        )
+        binary = np.zeros((140, 240), dtype=np.uint8)
+        for x, y in [(196, 30), (197, 63), (196, 95), (197, 127)]:
+            cv2.rectangle(binary, (x - 5, y - 4), (x + 5, y + 4), 255, -1)
+
+        detected = self.processor._detect_digit_anchor_ruler(binary, template)
+
+        self.assertEqual(len(detected), 4)
+        self.assertLess(float(np.mean([abs(x - 196.5) for x, _ in detected])), 4.0)
+        self.assertLess(float(np.mean([abs(y - tgt) for (_, y), tgt in zip(detected, [30.0, 63.0, 95.0, 127.0])])), 4.0)
+
+
+    def test_digit_zone_uses_nearest_manual_anchor_cluster_per_zone(self):
+        processor = self.processor
+        sid_grid = BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(50, 20 + r * 20) for r in range(4)])
+        exam_grid = BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(170, 20 + r * 20) for r in range(4)])
+        sid_zone = Zone(id="sid_cluster", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=40 / 240, y=10 / 140, width=24 / 240, height=90 / 140, grid=sid_grid, metadata={"bubble_radius": 5})
+        exam_zone = Zone(id="exam_cluster", name="exam", zone_type=ZoneType.EXAM_CODE_BLOCK, x=160 / 240, y=10 / 140, width=24 / 240, height=90 / 140, grid=exam_grid, metadata={"bubble_radius": 5})
+        template = Template(
+            name="dual_digit_clusters",
+            image_path="",
+            width=240,
+            height=140,
+            anchors=[],
+            zones=[sid_zone, exam_zone],
+        )
+        template.anchors = [
+            AnchorPoint(72 / 240, y / 140, f"DIGIT_ANCHOR_{i:02d}")
+            for i, y in enumerate((12, 32, 52, 72, 92), start=1)
+        ] + [
+            AnchorPoint(196 / 240, y / 140, f"DIGIT_ANCHOR_{i:02d}")
+            for i, y in enumerate((18, 38, 58, 78, 98), start=6)
+        ]
+
+        sid_guides = processor._get_manual_digit_anchor_points(template, sid_zone)
+        exam_guides = processor._get_manual_digit_anchor_points(template, exam_zone)
+
+        self.assertEqual(len(sid_guides), 5)
+        self.assertEqual(len(exam_guides), 5)
+        self.assertTrue(np.all(sid_guides[:, 0] < 120))
+        self.assertTrue(np.all(exam_guides[:, 0] > 120))
+    def test_manual_digit_anchor_guides_define_row_centers(self):
+        grid = BubbleGrid(rows=4, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(100 + c * 20, 20 + r * 20) for r in range(4) for c in range(2)])
+        zone = Zone(id="sid_guides", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0.4, y=0.1, width=0.2, height=0.6, grid=grid, metadata={"bubble_radius": 5})
+        template = Template(
+            name="digit_guides",
+            image_path="",
+            width=240,
+            height=160,
+            anchors=[
+                AnchorPoint(0.84, 0.10, "DIGIT_ANCHOR_01"),
+                AnchorPoint(0.84, 0.22, "DIGIT_ANCHOR_02"),
+                AnchorPoint(0.84, 0.34, "DIGIT_ANCHOR_03"),
+                AnchorPoint(0.84, 0.46, "DIGIT_ANCHOR_04"),
+                AnchorPoint(0.84, 0.58, "DIGIT_ANCHOR_05"),
+            ],
+            zones=[zone],
+        )
+        expected = np.array(grid.bubble_positions, dtype=np.float32)
+
+        binary = np.zeros((160, 240), dtype=np.uint8)
+        for x, y in [(202, 18), (203, 38), (202, 58), (203, 78), (202, 98)]:
+            cv2.rectangle(binary, (x - 4, y - 4), (x + 4, y + 4), 255, -1)
+
+        guided = self.processor._apply_anchor_ruler_to_digit_zone(binary, expected, zone, template)
+
+        target_centers = [48.0, 68.0, 88.0, 108.0]
+        for row_idx, center_y in enumerate(target_centers):
+            self.assertAlmostEqual(float(guided[row_idx * 2][1]), float(center_y), places=3)
+
+    def test_manual_digit_anchor_guides_use_positions_2_to_11_as_row_tops(self):
+        grid = BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(120, 20 + r * 20) for r in range(4)])
+        zone = Zone(id="sid_row_tops", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0.4, y=0.1, width=0.2, height=0.6, grid=grid, metadata={"bubble_radius": 5})
+        template = Template(
+            name="digit_row_tops",
+            image_path="",
+            width=240,
+            height=160,
+            anchors=[
+                AnchorPoint(0.84, 0.08, "DIGIT_ANCHOR_01"),
+                AnchorPoint(0.84, 0.16, "DIGIT_ANCHOR_02"),
+                AnchorPoint(0.84, 0.28, "DIGIT_ANCHOR_03"),
+                AnchorPoint(0.84, 0.40, "DIGIT_ANCHOR_04"),
+                AnchorPoint(0.84, 0.52, "DIGIT_ANCHOR_05"),
+            ],
+            zones=[zone],
+        )
+        expected = np.array(grid.bubble_positions, dtype=np.float32)
+
+        guided = self.processor._apply_anchor_ruler_to_digit_zone(np.zeros((160, 240), dtype=np.uint8), expected, zone, template)
+
+        expected_centers = [(0.16 + 0.06) * 160, (0.28 + 0.06) * 160, (0.40 + 0.06) * 160, (0.52 + 0.06) * 160]
+        for row_idx, center_y in enumerate(expected_centers):
+            self.assertAlmostEqual(float(guided[row_idx][1]), float(center_y), places=3)
+
+    def test_manual_digit_anchor_row_tops_are_regularized_to_even_spacing(self):
+        grid = BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(120, 20 + r * 20) for r in range(4)])
+        zone = Zone(id="sid_regularized", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0.4, y=0.1, width=0.2, height=0.6, grid=grid, metadata={"bubble_radius": 5})
+        template = Template(
+            name="digit_regularized",
+            image_path="",
+            width=240,
+            height=160,
+            anchors=[
+                AnchorPoint(0.84, 0.08, "DIGIT_ANCHOR_01"),
+                AnchorPoint(0.84, 0.16, "DIGIT_ANCHOR_02"),
+                AnchorPoint(0.84, 0.29, "DIGIT_ANCHOR_03"),
+                AnchorPoint(0.84, 0.39, "DIGIT_ANCHOR_04"),
+                AnchorPoint(0.84, 0.53, "DIGIT_ANCHOR_05"),
+            ],
+            zones=[zone],
+        )
+        expected = np.array(grid.bubble_positions, dtype=np.float32)
+
+        guided = self.processor._apply_anchor_ruler_to_digit_zone(np.zeros((160, 240), dtype=np.uint8), expected, zone, template)
+
+        spacings = np.diff([float(guided[i][1]) for i in range(4)])
+        self.assertLess(float(np.max(spacings) - np.min(spacings)), 1.0)
+
+    def test_digit_zone_guidance_no_longer_affine_warps_digit_grid(self):
+        grid = BubbleGrid(rows=4, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(100 + c * 20, 30 + r * 18) for r in range(4) for c in range(2)])
+        zone = Zone(id="sid_tilt_combo", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0.35, y=0.1, width=0.25, height=0.55, grid=grid, metadata={"bubble_radius": 5})
+        template = Template(
+            name="tilt_combo",
+            image_path="",
+            width=240,
+            height=160,
+            anchors=[
+                AnchorPoint(0.05, 0.05, "A1"),
+                AnchorPoint(0.95, 0.05, "A2"),
+                AnchorPoint(0.95, 0.95, "A3"),
+                AnchorPoint(0.05, 0.95, "A4"),
+                AnchorPoint(0.84, 0.08, "DIGIT_ANCHOR_01"),
+                AnchorPoint(0.84, 0.18, "DIGIT_ANCHOR_02"),
+                AnchorPoint(0.84, 0.30, "DIGIT_ANCHOR_03"),
+                AnchorPoint(0.84, 0.42, "DIGIT_ANCHOR_04"),
+                AnchorPoint(0.84, 0.54, "DIGIT_ANCHOR_05"),
+            ],
+            zones=[zone],
+        )
+        expected = np.array(grid.bubble_positions, dtype=np.float32)
+        binary = np.zeros((160, 240), dtype=np.uint8)
+        detected_corners = [(16.0, 10.0), (225.0, 18.0), (231.0, 150.0), (12.0, 145.0)]
+        detected_digit = [(202.0, 16.0), (204.0, 34.0), (206.0, 54.0), (208.0, 74.0), (210.0, 94.0)]
+
+        with patch.object(self.processor, "detect_anchors", return_value=detected_corners), \
+            patch.object(self.processor, "_detect_digit_anchor_ruler", return_value=detected_digit):
+            guided = self.processor._apply_anchor_ruler_to_digit_zone(binary, expected, zone, template)
+
+        self.assertTrue(np.allclose(guided[:, 0], expected[:, 0]))
+        self.assertGreater(float(np.mean(guided[:, 1] - expected[:, 1])), 0.0)
+
+    def test_digit_columns_are_regularized_to_even_spacing_with_tilt(self):
+        grid = BubbleGrid(rows=4, cols=4, question_start=1, question_count=4, options=[], bubble_positions=[(90 + c * 22, 30 + r * 20) for r in range(4) for c in range(4)])
+        expected = np.array(grid.bubble_positions, dtype=np.float32)
+        binary = np.zeros((180, 240), dtype=np.uint8)
+        for r in range(4):
+            for c in range(4):
+                x = 92 + (c * 23) + r
+                y = 30 + (r * 20)
+                cv2.circle(binary, (x, y), 5, 255, 1)
+
+        centers = self.processor._resolve_column_digit_centers(binary, expected, grid, 5.0)
+
+        for r in range(4):
+            row = centers[r * 4:(r + 1) * 4, 0]
+            diffs = np.diff(row)
+            self.assertLess(float(np.max(diffs) - np.min(diffs)), 1.0)
+
+    def test_digit_columns_keep_template_spacing_while_applying_row_shift(self):
+        grid = BubbleGrid(rows=3, cols=4, question_start=1, question_count=4, options=[], bubble_positions=[(80 + c * 24, 30 + r * 24) for r in range(3) for c in range(4)])
+        expected = np.array(grid.bubble_positions, dtype=np.float32)
+        binary = np.zeros((160, 220), dtype=np.uint8)
+        for r in range(3):
+            x_shift = 6 + r
+            for c in range(4):
+                x = int(expected[r * 4 + c][0] + x_shift)
+                y = int(expected[r * 4 + c][1])
+                cv2.circle(binary, (x, y), 5, 255, 1)
+
+        centers = self.processor._resolve_column_digit_centers(binary, expected, grid, 5.0)
+
+        for r in range(3):
+            row_slice = slice(r * 4, (r + 1) * 4)
+            self.assertTrue(np.allclose(np.diff(centers[row_slice, 0]), np.diff(expected[row_slice, 0]), atol=1.0))
 
     def test_detect_bubbles_ratio(self):
         binary = np.zeros((120, 120), dtype=np.uint8)
@@ -171,6 +409,328 @@ class OMRPipelineTests(unittest.TestCase):
         scores = self.processor._detect_square_mark_density(binary, centers, 10)
         self.assertGreater(scores[0], 0.15)
         self.assertLess(scores[1], 0.12)
+
+    def test_digit_zone_multi_probe_marks_catch_shifted_filled_bubble_better_than_outline(self):
+        binary = np.zeros((140, 140), dtype=np.uint8)
+        cv2.circle(binary, (47, 60), 9, 255, -1)
+        cv2.circle(binary, (100, 60), 9, 255, 1)
+        centers = np.array([[40, 60], [100, 60]], dtype=np.float32)
+        scores = self.processor._detect_digit_zone_multi_probe_marks(binary, centers, 10)
+        self.assertGreater(scores[0], 0.40)
+        self.assertLess(scores[1], 0.20)
+
+    def test_exam_code_recognize_block_uses_multi_probe_digit_signal_for_shifted_mark(self):
+        template = Template(
+            name="exam_multi_probe",
+            image_path="",
+            width=120,
+            height=140,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="exam_multi_probe",
+                    name="exam",
+                    zone_type=ZoneType.EXAM_CODE_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(60, 20 + r * 10) for r in range(10)]),
+                    metadata={"bubble_radius": 6},
+                )
+            ],
+        )
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
+        with patch.object(self.processor, "_resolve_column_digit_centers", return_value=np.array([[60, 20 + r * 10] for r in range(10)], dtype=np.float32)), \
+            patch.object(self.processor, "detect_bubbles", return_value=np.array([0.30, 0.24, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=np.array([0.35, 0.28, 0.06, 0.06, 0.06, 0.06, 0.06, 0.06, 0.06, 0.06], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_zone_multi_probe_marks", return_value=np.array([0.88, 0.22, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05], dtype=np.float32)):
+            self.processor.recognize_block(np.zeros((140, 120), dtype=np.uint8), template.zones[0], template, result_stub)
+        self.assertEqual(result_stub.exam_code, "0")
+
+    def test_digit_zone_guidance_keeps_template_positions(self):
+        expected = np.array([[10.0, 20.0], [30.0, 40.0]], dtype=np.float32)
+        zone = Zone(
+            id="sid_guidance_passthrough",
+            name="sid",
+            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=2, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        template = Template(name="t", image_path="", width=100, height=100, anchors=[], zones=[zone])
+        guided, debug = self.processor._digit_zone_guidance(np.zeros((100, 100), dtype=np.uint8), expected, zone, template)
+        self.assertTrue(np.array_equal(guided, expected))
+        self.assertEqual(debug, {})
+
+    def test_digit_zone_guidance_fits_y_only_from_digit_anchor_ruler(self):
+        zone = Zone(
+            id="sid_warp",
+            name="sid",
+            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(20, 20), (20, 40), (20, 60), (20, 80)]),
+            metadata={},
+        )
+        template = Template(name="t", image_path="", width=120, height=120, anchors=[], zones=[zone])
+        expected = np.array(zone.grid.bubble_positions, dtype=np.float32)
+        detected = np.array([[90.0, 18.0], [90.0, 42.0], [90.0, 66.0], [90.0, 90.0]], dtype=np.float32)
+        template_pts = np.array([[90.0, 20.0], [90.0, 40.0], [90.0, 60.0], [90.0, 80.0]], dtype=np.float32)
+
+        with patch.object(self.processor, "_detect_digit_anchor_ruler", return_value=detected.tolist()), \
+            patch.object(self.processor, "_get_manual_digit_anchor_points", return_value=template_pts):
+            guided, debug = self.processor._digit_zone_guidance(np.zeros((120, 120), dtype=np.uint8), expected, zone, template)
+
+        self.assertTrue(np.allclose(guided[:, 0], expected[:, 0]))
+        self.assertTrue(np.allclose(guided[:, 1], np.array([18.0, 42.0, 66.0, 90.0], dtype=np.float32)))
+        self.assertIn("fitted_line", debug)
+
+    def test_resolve_column_digit_centers_caps_x_drift_to_three_pixels(self):
+        grid = BubbleGrid(rows=4, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(20 + c * 30, 20 + r * 18) for r in range(4) for c in range(2)])
+        expected = np.array(grid.bubble_positions, dtype=np.float32)
+        binary = np.zeros((120, 120), dtype=np.uint8)
+        offsets = [np.array([7.0, 0.0], dtype=np.float32)] * 4 + [np.array([-8.0, 0.0], dtype=np.float32)] * 4
+        with patch.object(self.processor, "_find_local_component_offset", side_effect=offsets):
+            centers = self.processor._resolve_column_digit_centers(binary, expected, grid, 5.0)
+
+        self.assertTrue(np.allclose(centers[0::2, 0], expected[0::2, 0] + 3.0))
+        self.assertTrue(np.allclose(centers[1::2, 0], expected[1::2, 0] - 3.0))
+        self.assertTrue(np.allclose(centers[:, 1], expected[:, 1]))
+
+    def test_exam_code_decode_rejects_ambiguous_last_column(self):
+        zone = Zone(
+            id="exam_edge_fallback",
+            name="exam",
+            zone_type=ZoneType.EXAM_CODE_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=4, question_start=1, question_count=4, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        mat = np.array(
+            [
+                [0.10, 0.12, 0.11, 0.18],
+                [0.11, 0.13, 0.12, 0.17],
+                [0.12, 0.14, 0.13, 0.16],
+                [0.70, 0.15, 0.14, 0.15],
+                [0.13, 0.73, 0.15, 0.14],
+                [0.12, 0.14, 0.75, 0.13],
+                [0.11, 0.13, 0.12, 0.48],
+                [0.10, 0.12, 0.11, 0.45],
+                [0.09, 0.11, 0.10, 0.12],
+                [0.08, 0.10, 0.09, 0.11],
+            ],
+            dtype=np.float32,
+        )
+        result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
+        digits, _ = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
+        self.assertEqual(digits, "3456")
+        self.assertIn("EXAM_CODE_BLOCK column 4: fallback accepted", result_stub.recognition_errors)
+
+    def test_resolve_column_digit_centers_returns_refined_array_without_name_error(self):
+        grid = BubbleGrid(
+            rows=4,
+            cols=2,
+            question_start=1,
+            question_count=2,
+            options=[],
+            bubble_positions=[(40 + c * 30, 20 + r * 18) for r in range(4) for c in range(2)],
+        )
+        expected = np.array(grid.bubble_positions, dtype=np.float32)
+        binary = np.zeros((120, 120), dtype=np.uint8)
+        centers = self.processor._resolve_column_digit_centers(binary, expected, grid, 5.0)
+        self.assertEqual(centers.shape, expected.shape)
+
+    def test_cluster_digit_columns_groups_by_x_before_sorting_y(self):
+        centers = np.array(
+            [
+                [82.0, 48.0],
+                [24.0, 30.0],
+                [54.0, 20.0],
+                [84.0, 18.0],
+                [22.0, 10.0],
+                [52.0, 40.0],
+            ],
+            dtype=np.float32,
+        )
+        values = np.array([0.82, 0.21, 0.63, 0.91, 0.71, 0.73], dtype=np.float32)
+        mat = self.processor._cluster_digit_columns(centers, values, rows=2, cols=3, fill_value=0.0)
+        expected = np.array(
+            [
+                [0.71, 0.63, 0.91],
+                [0.21, 0.73, 0.82],
+            ],
+            dtype=np.float32,
+        )
+        self.assertTrue(np.allclose(mat, expected))
+
+    def test_cluster_digit_columns_reassigns_points_to_stabilized_centers(self):
+        centers = np.array(
+            [
+                [20.0, 10.0],
+                [21.5, 20.0],
+                [22.0, 30.0],
+                [48.0, 10.0],
+                [49.0, 20.0],
+                [78.0, 10.0],
+                [79.0, 20.0],
+                [80.0, 30.0],
+            ],
+            dtype=np.float32,
+        )
+        values = np.array([0.91, 0.81, 0.71, 0.62, 0.52, 0.93, 0.83, 0.73], dtype=np.float32)
+        mat = self.processor._cluster_digit_columns(centers, values, rows=3, cols=3, fill_value=0.0)
+        self.assertTrue(np.allclose(mat[:, 0], np.array([0.91, 0.81, 0.71], dtype=np.float32)))
+        self.assertGreater(mat[0, 1], 0.0)
+        self.assertTrue(np.allclose(mat[:, 2], np.array([0.93, 0.83, 0.73], dtype=np.float32)))
+
+    def test_detect_digit_bubble_centers_uses_local_components_per_bubble(self):
+        centers = np.array([[20.0, 20.0], [50.0, 20.0], [20.0, 40.0], [50.0, 40.0]], dtype=np.float32)
+        offsets = [
+            np.array([1.5, -0.5], dtype=np.float32),
+            None,
+            np.array([2.0, 1.0], dtype=np.float32),
+            np.array([-1.0, 0.5], dtype=np.float32),
+        ]
+        with patch.object(self.processor, "_find_local_component_offset", side_effect=offsets):
+            detected = self.processor._detect_digit_bubble_centers(np.zeros((80, 80), dtype=np.uint8), centers, 5.0)
+
+        expected = np.array([[21.5, 19.5], [50.0, 20.0], [22.0, 41.0], [49.0, 40.5]], dtype=np.float32)
+        self.assertTrue(np.allclose(detected, expected))
+
+    def test_recognize_block_clusters_digit_columns_under_skewed_x_positions(self):
+        template = Template(
+            name="exam_clustered",
+            image_path="",
+            width=120,
+            height=120,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="exam_clustered",
+                    name="exam",
+                    zone_type=ZoneType.EXAM_CODE_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=10, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(20 + c * 30, 10 + r * 8) for r in range(10) for c in range(2)]),
+                    metadata={"bubble_radius": 5},
+                )
+            ],
+        )
+        skewed_centers = np.array(
+            [[18.0, 10.0], [47.0, 11.0], [19.0, 18.0], [48.0, 19.0], [20.0, 26.0], [49.0, 27.0], [21.0, 34.0], [50.0, 35.0], [22.0, 42.0], [51.0, 43.0],
+             [23.0, 50.0], [52.0, 51.0], [24.0, 58.0], [53.0, 59.0], [25.0, 66.0], [54.0, 67.0], [26.0, 74.0], [55.0, 75.0], [27.0, 82.0], [56.0, 83.0]],
+            dtype=np.float32,
+        )
+        ratios = np.array(
+            [0.12, 0.11, 0.13, 0.12, 0.88, 0.10, 0.11, 0.84, 0.10, 0.12, 0.09, 0.11, 0.08, 0.10, 0.07, 0.09, 0.06, 0.08, 0.05, 0.07],
+            dtype=np.float32,
+        )
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
+        with patch.object(self.processor, "_resolve_column_digit_centers", return_value=skewed_centers), \
+            patch.object(self.processor, "detect_bubbles", return_value=ratios), \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=ratios), \
+            patch.object(self.processor, "_detect_digit_zone_multi_probe_marks", return_value=ratios), \
+            patch.object(self.processor, "_estimate_local_fill_threshold", return_value=0.45):
+            self.processor.recognize_block(np.zeros((120, 120), dtype=np.uint8), template.zones[0], template, result_stub)
+
+        self.assertEqual(result_stub.exam_code, "23")
+
+    def test_recognize_block_uses_detected_digit_bubble_centers_before_grouping(self):
+        template = Template(
+            name="sid_detected_centers",
+            image_path="",
+            width=120,
+            height=120,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="sid_detected_centers",
+                    name="sid",
+                    zone_type=ZoneType.STUDENT_ID_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(40, 12 + r * 8) for r in range(10)]),
+                    metadata={"bubble_radius": 5},
+                )
+            ],
+        )
+        original_centers = np.array(template.zones[0].grid.bubble_positions, dtype=np.float32)
+        shifted_centers = original_centers.copy()
+        shifted_centers[:, 0] += 2.0
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
+        with patch.object(self.processor, "_resolve_column_digit_centers", return_value=original_centers), \
+            patch.object(self.processor, "_detect_digit_bubble_centers", return_value=shifted_centers) as detect_centers, \
+            patch.object(self.processor, "detect_bubbles", return_value=np.array([0.11, 0.12, 0.82, 0.10, 0.09, 0.08, 0.07, 0.06, 0.05, 0.04], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=np.array([0.10, 0.11, 0.88, 0.09, 0.08, 0.07, 0.06, 0.05, 0.04, 0.03], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_square_mark_density", return_value=np.array([0.09, 0.10, 0.86, 0.08, 0.07, 0.06, 0.05, 0.04, 0.03, 0.02], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_eroded_mark_density", return_value=np.array([0.08, 0.09, 0.84, 0.07, 0.06, 0.05, 0.04, 0.03, 0.02, 0.01], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_zone_multi_probe_marks", return_value=np.array([0.12, 0.13, 0.90, 0.11, 0.10, 0.09, 0.08, 0.07, 0.06, 0.05], dtype=np.float32)), \
+            patch.object(self.processor, "_estimate_local_fill_threshold", return_value=0.45):
+            self.processor.recognize_block(np.zeros((120, 120), dtype=np.uint8), template.zones[0], template, result_stub)
+
+        detect_centers.assert_called_once()
+        self.assertEqual(result_stub.student_id, "2")
+
+    def test_recognize_block_keeps_template_x_and_uses_digit_guidance_y(self):
+        template = Template(
+            name="sid_guided_block",
+            image_path="sheet.png",
+            width=100,
+            height=100,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="sid_guided_block",
+                    name="sid",
+                    zone_type=ZoneType.STUDENT_ID_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(50, 10 + r * 8) for r in range(10)]),
+                    metadata={"bubble_radius": 5},
+                )
+            ],
+        )
+        result_stub = type(
+            "R",
+            (),
+            {
+                "mcq_answers": {},
+                "recognition_errors": [],
+                "confidence_scores": {},
+                "true_false_answers": {},
+                "numeric_answers": {},
+                "student_id": "",
+                "exam_code": "",
+                "image_path": "sheet.png",
+                "aligned_image": np.zeros((100, 100, 3), dtype=np.uint8),
+            },
+        )()
+        guided_centers = np.array([[50, 12 + r * 8] for r in range(10)], dtype=np.float32)
+        with patch.object(self.processor, "_resolve_column_digit_centers", return_value=guided_centers), \
+            patch.object(self.processor, "detect_bubbles", return_value=np.array([0.80, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10], dtype=np.float32)) as detect_bubbles_mock, \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=np.array([0.90, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_square_mark_density", return_value=np.array([0.80, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_eroded_mark_density", return_value=np.array([0.70, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_zone_multi_probe_marks", return_value=np.array([0.85, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05], dtype=np.float32)):
+            self.processor.recognize_block(np.zeros((100, 100), dtype=np.uint8), template.zones[0], template, result_stub)
+
+        self.assertEqual(result_stub.student_id, "0")
+        self.assertEqual(detect_bubbles_mock.call_args.args[1].tolist(), guided_centers.tolist())
 
     def test_template_dict_persists_template_coordinate_space(self):
         tpl = Template(name="t", image_path="x.png", width=1234, height=1754)
@@ -573,7 +1133,7 @@ class OMRPipelineTests(unittest.TestCase):
         self.processor.recognize_block(binary, template.zones[0], template, result_stub)
         self.assertEqual(result_stub.student_id, "7")
 
-    def test_student_id_decode_uses_softer_column_margin(self):
+    def test_student_id_decode_selects_single_max_digit(self):
         zone = Zone(
             id="sid_margin",
             name="sid",
@@ -590,7 +1150,7 @@ class OMRPipelineTests(unittest.TestCase):
         digits, _ = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
         self.assertEqual(digits, "0")
 
-    def test_student_id_decode_accepts_small_but_consistent_lead(self):
+    def test_student_id_decode_rejects_small_top_second_gap(self):
         zone = Zone(
             id="sid_small_gap",
             name="sid",
@@ -606,8 +1166,9 @@ class OMRPipelineTests(unittest.TestCase):
         result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
         digits, _ = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
         self.assertEqual(digits, "0")
+        self.assertIn("STUDENT_ID_BLOCK column 1: fallback accepted", result_stub.recognition_errors)
 
-    def test_student_id_decode_promotes_near_threshold_single_unknown(self):
+    def test_student_id_decode_rejects_ambiguous_column_without_guessing(self):
         zone = Zone(
             id="sid_promote",
             name="sid",
@@ -637,8 +1198,9 @@ class OMRPipelineTests(unittest.TestCase):
         result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
         digits, _ = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
         self.assertEqual(digits, "05")
+        self.assertIn("STUDENT_ID_BLOCK column 1: fallback accepted", result_stub.recognition_errors)
 
-    def test_student_id_edge_columns_use_softer_gate(self):
+    def test_student_id_decode_rejects_ambiguous_column_before_confidence(self):
         zone = Zone(
             id="sid_edge",
             name="sid",
@@ -668,6 +1230,108 @@ class OMRPipelineTests(unittest.TestCase):
         result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
         digits, _ = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
         self.assertEqual(digits, "09")
+        self.assertIn("STUDENT_ID_BLOCK column 1: fallback accepted", result_stub.recognition_errors)
+
+    def test_digit_decode_uses_column_normalization_to_overcome_global_bias(self):
+        zone = Zone(
+            id="sid_norm",
+            name="sid",
+            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        mat = np.array(
+            [
+                [0.82, 0.42],
+                [0.20, 0.18],
+                [0.19, 0.17],
+                [0.18, 0.16],
+                [0.17, 0.15],
+                [0.16, 0.14],
+                [0.15, 0.13],
+                [0.14, 0.12],
+                [0.13, 0.11],
+                [0.12, 0.10],
+            ],
+            dtype=np.float32,
+        )
+        result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
+        digits, confs = self.processor._decode_column_digits(mat, zone, zone.grid, result_stub)
+        self.assertEqual(digits, "00")
+        self.assertGreaterEqual(min(confs), 0.5)
+
+    def test_recognize_block_invalidates_student_id_when_any_digit_is_ambiguous(self):
+        template = Template(
+            name="sid_invalid",
+            image_path="",
+            width=100,
+            height=100,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="sid_invalid",
+                    name="sid",
+                    zone_type=ZoneType.STUDENT_ID_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=10, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(20 + c * 20, 15 + r * 8) for r in range(10) for c in range(2)]),
+                    metadata={"bubble_radius": 5},
+                )
+            ],
+        )
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
+        with patch.object(self.processor, "_resolve_column_digit_centers", return_value=np.array(template.zones[0].grid.bubble_positions, dtype=np.float32)), \
+            patch.object(self.processor, "detect_bubbles", return_value=np.array([0.20] * 20, dtype=np.float32)), \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=np.array([0.20] * 20, dtype=np.float32)), \
+            patch.object(self.processor, "_detect_square_mark_density", return_value=np.array([0.20] * 20, dtype=np.float32)), \
+            patch.object(self.processor, "_detect_eroded_mark_density", return_value=np.array([0.20] * 20, dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_zone_multi_probe_marks", return_value=np.array([0.20] * 20, dtype=np.float32)), \
+            patch.object(self.processor, "_estimate_local_fill_threshold", return_value=0.45):
+            self.processor.recognize_block(np.zeros((120, 80), dtype=np.uint8), template.zones[0], template, result_stub)
+
+        self.assertEqual(result_stub.student_id, "")
+        self.assertIn("STUDENT_ID_BLOCK: invalid length or ambiguous digit sequence", result_stub.recognition_errors)
+
+    def test_recognize_block_keeps_single_missing_digit_in_low_confidence_mode(self):
+        template = Template(
+            name="sid_soft_mode",
+            image_path="",
+            width=100,
+            height=100,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="sid_soft_mode",
+                    name="sid",
+                    zone_type=ZoneType.STUDENT_ID_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=10, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(20 + c * 20, 15 + r * 8) for r in range(10) for c in range(2)]),
+                    metadata={"bubble_radius": 5},
+                )
+            ],
+        )
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
+        ratios = np.array([0.20, 0.82, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20], dtype=np.float32)
+        with patch.object(self.processor, "_resolve_column_digit_centers", return_value=np.array(template.zones[0].grid.bubble_positions, dtype=np.float32)), \
+            patch.object(self.processor, "detect_bubbles", return_value=ratios), \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=ratios), \
+            patch.object(self.processor, "_detect_square_mark_density", return_value=ratios), \
+            patch.object(self.processor, "_detect_eroded_mark_density", return_value=ratios), \
+            patch.object(self.processor, "_detect_digit_zone_multi_probe_marks", return_value=ratios), \
+            patch.object(self.processor, "_estimate_local_fill_threshold", return_value=0.45):
+            self.processor.recognize_block(np.zeros((120, 80), dtype=np.uint8), template.zones[0], template, result_stub)
+
+        self.assertEqual(len(result_stub.student_id), 2)
+        self.assertIn("STUDENT_ID_BLOCK: LOW_CONFIDENCE", result_stub.recognition_errors)
 
     def test_student_id_recognize_block_weights_center_core_more_than_outline_ratio(self):
         template = Template(
