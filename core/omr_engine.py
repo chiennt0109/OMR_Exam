@@ -1312,7 +1312,36 @@ class OMRProcessor:
                 idx = (r * cols) + c
                 refined[idx, 0] = expected[idx, 0] + median_shift_x
 
-        return refined.astype(np.float32)
+        regularized = refined.copy()
+        if cols > 1:
+            row_centers_y: list[float] = []
+            row_shift_x: list[float] = []
+            for r in range(rows):
+                row_slice = slice(r * cols, (r + 1) * cols)
+                row_centers_y.append(float(np.median(refined[row_slice, 1])))
+                row_shift_x.append(float(np.median(refined[row_slice, 0] - expected[row_slice, 0])))
+
+            if len(row_centers_y) >= 2:
+                y_arr = np.array(row_centers_y, dtype=np.float32)
+                shift_arr = np.array(row_shift_x, dtype=np.float32)
+                y_mean = float(np.mean(y_arr))
+                denom = float(np.sum((y_arr - y_mean) ** 2))
+                if denom > 1e-6:
+                    shear = float(np.sum((y_arr - y_mean) * (shift_arr - float(np.mean(shift_arr)))) / denom)
+                else:
+                    shear = 0.0
+                shift0 = float(np.mean(shift_arr) - (shear * y_mean))
+            else:
+                shear = 0.0
+                shift0 = row_shift_x[0] if row_shift_x else 0.0
+
+            for r in range(rows):
+                row_slice = slice(r * cols, (r + 1) * cols)
+                row_y = float(np.median(refined[row_slice, 1]))
+                smoothed_shift = shift0 + (shear * row_y)
+                regularized[row_slice, 0] = expected[row_slice, 0] + smoothed_shift
+
+        return regularized.astype(np.float32)
 
     def _find_local_component_offset(
         self,
