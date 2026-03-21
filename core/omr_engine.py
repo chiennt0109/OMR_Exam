@@ -1441,6 +1441,7 @@ class OMRProcessor:
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
             mat = self._cluster_digit_columns(centers, ratios, rows, cols, 0.0)
             local_fill = self._cluster_digit_columns(centers, dynamic_thresholds, rows, cols, self.fill_threshold)
+            mat = np.clip(mat - (0.5 * np.clip(local_fill - self.empty_threshold, 0.0, 1.0)), 0.0, 1.0)
         else:
             mat = ratios[:need].reshape(rows, cols)
             local_fill = dynamic_thresholds[:need].reshape(rows, cols)
@@ -1456,15 +1457,13 @@ class OMRProcessor:
                 key = "student_id" if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else "exam_code"
                 expected_len = max(1, cols)
                 missing_digits = value.count("?")
-                is_valid = len(value) == expected_len and missing_digits < 2
+                is_valid = len(value) == expected_len and missing_digits == 0
                 global_score = float(sum(1 for conf in confs if conf >= 1.2)) / float(expected_len or 1)
-                if not is_valid:
-                    result.recognition_errors.append(f"{zone.zone_type.value}: invalid length or ambiguous digit sequence")
+                if not is_valid or global_score < 0.85:
+                    result.recognition_errors.append(f"{zone.zone_type.value}: LOW_CONFIDENCE")
+                    if not is_valid:
+                        result.recognition_errors.append(f"{zone.zone_type.value}: invalid length or ambiguous digit sequence")
                     value = ""
-                elif missing_digits > 0:
-                    result.recognition_errors.append(f"{zone.zone_type.value}: LOW_CONFIDENCE")
-                elif global_score < 0.8:
-                    result.recognition_errors.append(f"{zone.zone_type.value}: LOW_CONFIDENCE")
                 if key == "student_id" and value:
                     longest_run = 1
                     current_run = 1
@@ -1474,9 +1473,11 @@ class OMRProcessor:
                             longest_run = max(longest_run, current_run)
                         else:
                             current_run = 1
-                    if len(value) >= 6 and longest_run >= 4:
+                    if len(set(value)) == 1 or (len(value) >= 6 and longest_run >= 4):
                         result.recognition_errors.append(f"{zone.zone_type.value}: invalid repeated-digit pattern")
                         value = ""
+                elif global_score < 0.85:
+                    result.recognition_errors.append(f"{zone.zone_type.value}: LOW_CONFIDENCE")
                 if key == "student_id":
                     result.student_id = value
                 else:
@@ -1555,7 +1556,7 @@ class OMRProcessor:
                 else:
                     digits.append("?")
                     result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: below threshold")
-            elif raw_max <= (1.3 * raw_second):
+            elif raw_max <= (1.4 * raw_second):
                 if fallback_ok:
                     digits.append(str(mapped))
                     result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: fallback accepted")
@@ -1573,13 +1574,6 @@ class OMRProcessor:
                 digits.append(str(mapped))
             soft_fallbacks.append((c, int(mapped), raw_max))
             confs.append(confidence)
-        missing_cols = [idx for idx, digit in enumerate(digits) if digit == "?"]
-        if len(missing_cols) <= 1:
-            for idx in missing_cols:
-                _, mapped, _ = soft_fallbacks[idx]
-                digits[idx] = str(mapped)
-            if missing_cols:
-                result.recognition_errors.append(f"{zone.zone_type.value}: LOW_CONFIDENCE")
         return "".join(digits), confs
 
     def _cluster_digit_columns(

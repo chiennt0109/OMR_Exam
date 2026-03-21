@@ -684,7 +684,8 @@ class OMRPipelineTests(unittest.TestCase):
             self.processor.recognize_block(np.zeros((120, 120), dtype=np.uint8), template.zones[0], template, result_stub)
 
         detect_centers.assert_called_once()
-        self.assertEqual(result_stub.student_id, "2")
+        self.assertEqual(result_stub.student_id, "")
+        self.assertIn("STUDENT_ID_BLOCK: invalid repeated-digit pattern", result_stub.recognition_errors)
 
     def test_recognize_block_keeps_template_x_and_uses_digit_guidance_y(self):
         template = Template(
@@ -1300,7 +1301,7 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(result_stub.student_id, "")
         self.assertIn("STUDENT_ID_BLOCK: invalid length or ambiguous digit sequence", result_stub.recognition_errors)
 
-    def test_recognize_block_keeps_single_missing_digit_in_low_confidence_mode(self):
+    def test_recognize_block_rejects_single_missing_digit_in_low_confidence_mode(self):
         template = Template(
             name="sid_soft_mode",
             image_path="",
@@ -1332,10 +1333,10 @@ class OMRPipelineTests(unittest.TestCase):
             patch.object(self.processor, "_estimate_local_fill_threshold", return_value=0.45):
             self.processor.recognize_block(np.zeros((120, 80), dtype=np.uint8), template.zones[0], template, result_stub)
 
-        self.assertEqual(len(result_stub.student_id), 2)
+        self.assertEqual(result_stub.student_id, "")
         self.assertIn("STUDENT_ID_BLOCK: LOW_CONFIDENCE", result_stub.recognition_errors)
 
-    def test_student_id_recognize_block_weights_center_core_more_than_outline_ratio(self):
+    def test_student_id_recognize_block_rejects_when_global_confidence_is_too_low(self):
         template = Template(
             name="sid_weight",
             image_path="",
@@ -1361,7 +1362,8 @@ class OMRPipelineTests(unittest.TestCase):
             patch.object(self.processor, "detect_bubbles", return_value=np.array([0.42, 0.35, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20], dtype=np.float32)), \
             patch.object(self.processor, "_detect_center_core_marks", return_value=np.array([0.86, 0.30, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05], dtype=np.float32)):
             self.processor.recognize_block(np.zeros((100, 100), dtype=np.uint8), template.zones[0], template, result_stub)
-        self.assertEqual(result_stub.student_id, "0")
+        self.assertEqual(result_stub.student_id, "")
+        self.assertIn("STUDENT_ID_BLOCK: LOW_CONFIDENCE", result_stub.recognition_errors)
 
     def test_numeric_block_removes_only_trailing_placeholders_without_decimal(self):
         rows, cols = 12, 4
