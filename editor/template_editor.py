@@ -46,6 +46,7 @@ class TemplateCanvas(QWidget):
         self.zoom = 1.0
         self.preview_mode = False
         self.add_anchor_mode = False
+        self.add_digit_anchor_mode = False
         self.current_zone_type = ZoneType.MCQ_BLOCK
         self.selected_zone = -1
         self.selected_anchor = -1
@@ -59,6 +60,7 @@ class TemplateCanvas(QWidget):
 
         self.recognition_overlay: dict[str, list[bool]] = {}
         self.detected_anchor_points: list[tuple[float, float]] = []
+        self.digit_zone_debug: dict[str, dict[str, object]] = {}
         self.setFocusPolicy(Qt.StrongFocus)
 
     def set_template(self, template: Template, pixmap: QPixmap):
@@ -70,6 +72,7 @@ class TemplateCanvas(QWidget):
         self.preview_mode = False
         self.recognition_overlay.clear()
         self.detected_anchor_points = []
+        self.digit_zone_debug = {}
         self.resize(int(pixmap.width() * self.zoom), int(pixmap.height() * self.zoom))
         self.selection_changed.emit(-1)
         self.update()
@@ -103,6 +106,10 @@ class TemplateCanvas(QWidget):
 
         if self.add_anchor_mode:
             self.template.anchors.append(AnchorPoint(p.x() / self.template.width, p.y() / self.template.height, f"A{len(self.template.anchors)+1}"))
+            self.zones_changed.emit(); self.update(); return
+        if self.add_digit_anchor_mode:
+            digit_count = len([a for a in self.template.anchors if str(getattr(a, "name", "") or "").startswith("DIGIT_ANCHOR_")])
+            self.template.anchors.append(AnchorPoint(p.x() / self.template.width, p.y() / self.template.height, f"DIGIT_ANCHOR_{digit_count+1:02d}"))
             self.zones_changed.emit(); self.update(); return
 
         a_idx = self._hit_anchor(p)
@@ -278,6 +285,8 @@ class TemplateCanvas(QWidget):
 
             if self.preview_mode and z.grid:
                 self._draw_grid_preview(p, z)
+            if z.id in self.digit_zone_debug and z.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+                self._draw_digit_zone_debug(p, z, self.digit_zone_debug[z.id])
             if z.id in self.recognition_overlay and z.grid:
                 self._draw_recognition_overlay(p, z)
 
@@ -344,6 +353,26 @@ class TemplateCanvas(QWidget):
             else:
                 painter.setPen(QPen(QColor(230, 60, 60), 1)); painter.setBrush(Qt.NoBrush)
                 painter.drawEllipse(QPointF(x, y), 3.5, 3.5)
+
+    def _draw_digit_zone_debug(self, painter: QPainter, zone: Zone, debug: dict[str, object]) -> None:
+        if not self.template:
+            return
+        zr = self._zone_rect_abs(zone)
+        left = zr.x() * self.zoom
+        right = (zr.x() + zr.width()) * self.zoom
+        top = zr.y() * self.zoom
+        bottom = (zr.y() + zr.height()) * self.zoom
+
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(QColor(220, 50, 50), 1.5))
+        for y in debug.get("row_lines", []) or []:
+            yy = float(y) * self.zoom
+            painter.drawLine(QPointF(left, yy), QPointF(right, yy))
+
+        painter.setPen(QPen(QColor(150, 60, 220), 1.2))
+        for x in debug.get("col_lines", []) or []:
+            xx = float(x) * self.zoom
+            painter.drawLine(QPointF(xx, top), QPointF(xx, bottom))
 
 
 class TemplateEditorWindow(QMainWindow):
@@ -417,8 +446,11 @@ class TemplateEditorWindow(QMainWindow):
             self.template_toolbar.addAction(act)
 
         self.anchor_btn = QPushButton("Add Anchor"); self.anchor_btn.setCheckable(True)
-        self.anchor_btn.toggled.connect(lambda c: setattr(self.canvas, "add_anchor_mode", c))
+        self.anchor_btn.toggled.connect(self._toggle_add_anchor_mode)
         self.template_toolbar.addWidget(self.anchor_btn)
+        self.digit_anchor_btn = QPushButton("Add Digit Anchor"); self.digit_anchor_btn.setCheckable(True)
+        self.digit_anchor_btn.toggled.connect(self._toggle_add_digit_anchor_mode)
+        self.template_toolbar.addWidget(self.digit_anchor_btn)
 
         self.template_toolbar.addWidget(QLabel(" Zone Type: "))
         self.zone_type = QComboBox(); self.zone_type.addItems([z.value for z in [ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK, ZoneType.MCQ_BLOCK, ZoneType.TRUE_FALSE_BLOCK, ZoneType.NUMERIC_BLOCK]])
@@ -769,6 +801,41 @@ class TemplateEditorWindow(QMainWindow):
         self._mark_dirty()
         self.canvas.update()
 
+    def _toggle_add_anchor_mode(self, checked: bool) -> None:
+        self.canvas.add_anchor_mode = checked
+        if checked and hasattr(self, "digit_anchor_btn"):
+            self.digit_anchor_btn.blockSignals(True)
+            self.digit_anchor_btn.setChecked(False)
+            self.digit_anchor_btn.blockSignals(False)
+            self.canvas.add_digit_anchor_mode = False
+
+    def _toggle_add_digit_anchor_mode(self, checked: bool) -> None:
+        self.canvas.add_digit_anchor_mode = checked
+        if checked:
+            self.anchor_btn.blockSignals(True)
+            self.anchor_btn.setChecked(False)
+            self.anchor_btn.blockSignals(False)
+            self.canvas.add_anchor_mode = False
+            self.result_box.setPlainText(
+                "Chế độ Add Digit Anchor đang bật.\n"
+                "- Hãy click vào các marker hình chữ nhật bên phải vùng Student ID / Exam Code.\n"
+                "- Mỗi điểm sẽ được lưu dưới tên DIGIT_ANCHOR_XX.\n"
+                "- Khi test recognition, các điểm detect được sẽ được đánh dấu X giống anchor góc giấy."
+            )
+
+    def generate_digit_zone_anchors(self) -> None:
+        """Backward-compatible hook for older QAction wiring.
+
+        Previous revisions exposed a "Generate Digit Anchors" action that called this
+        method directly. The current workflow is manual ("Add Digit Anchor"), so this
+        compatibility shim simply enables that mode instead of crashing when older UI
+        code still calls/ connects `generate_digit_zone_anchors`.
+        """
+        if hasattr(self, "digit_anchor_btn"):
+            self.digit_anchor_btn.setChecked(True)
+            return
+        self._toggle_add_digit_anchor_mode(True)
+
     def copy_block(self):
         z = self._selected_zone()
         if z and z.zone_type in BLOCK_TYPES:
@@ -890,7 +957,10 @@ class TemplateEditorWindow(QMainWindow):
 
         # Show detected anchors and recognized options overlay (green X = selected/seen).
         self.canvas.recognition_overlay.clear()
-        self.canvas.detected_anchor_points = list(getattr(res, "detected_anchors", []))
+        combined_detected_anchors = list(getattr(res, "detected_anchors", []))
+        combined_detected_anchors.extend(list(getattr(res, "detected_digit_anchors", [])))
+        self.canvas.detected_anchor_points = combined_detected_anchors
+        self.canvas.digit_zone_debug = dict(getattr(res, "digit_zone_debug", {}) or {})
         self.canvas.recognition_overlay.update(getattr(res, "bubble_states_by_zone", {}) or self.omr.extract_bubble_states(aligned_binary, self.template))
 
         self.result_box.append(f"\nDetected anchors: {len(self.canvas.detected_anchor_points)}")
