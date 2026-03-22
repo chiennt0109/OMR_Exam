@@ -249,6 +249,37 @@ class OMRPipelineTests(unittest.TestCase):
         for row_idx, center_y in enumerate(target_centers):
             self.assertAlmostEqual(float(guided[row_idx * 2][1]), float(center_y), places=3)
 
+    def test_manual_digit_anchor_blocker_is_ignored_when_building_row_centers(self):
+        grid = BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(120, 20 + r * 12) for r in range(10)])
+        zone = Zone(id="sid_blocker", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0.4, y=0.1, width=0.2, height=0.7, grid=grid, metadata={"bubble_radius": 5})
+        template = Template(
+            name="digit_blocker",
+            image_path="",
+            width=240,
+            height=220,
+            anchors=[
+                AnchorPoint(0.84, 0.05, "DIGIT_ANCHOR_00"),
+                AnchorPoint(0.84, 0.10, "DIGIT_ANCHOR_01"),
+                AnchorPoint(0.84, 0.16, "DIGIT_ANCHOR_02"),
+                AnchorPoint(0.84, 0.22, "DIGIT_ANCHOR_03"),
+                AnchorPoint(0.84, 0.28, "DIGIT_ANCHOR_04"),
+                AnchorPoint(0.84, 0.34, "DIGIT_ANCHOR_05"),
+                AnchorPoint(0.84, 0.40, "DIGIT_ANCHOR_06"),
+                AnchorPoint(0.84, 0.46, "DIGIT_ANCHOR_07"),
+                AnchorPoint(0.84, 0.52, "DIGIT_ANCHOR_08"),
+                AnchorPoint(0.84, 0.58, "DIGIT_ANCHOR_09"),
+                AnchorPoint(0.84, 0.64, "DIGIT_ANCHOR_10"),
+            ],
+            zones=[zone],
+        )
+        expected = np.array(grid.bubble_positions, dtype=np.float32)
+
+        guided, debug = self.processor._digit_zone_guidance(np.zeros((220, 240), dtype=np.uint8), expected, zone, template)
+
+        first_center = float(guided[0][1])
+        self.assertAlmostEqual(first_center, ((0.10 + 0.13) * 220), places=3)
+        self.assertEqual(debug.get("anchor_layout"), "blocker_plus_row_tops")
+
     def test_manual_digit_anchor_guides_use_positions_2_to_11_as_row_tops(self):
         grid = BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(120, 20 + r * 20) for r in range(4)])
         zone = Zone(id="sid_row_tops", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0.4, y=0.1, width=0.2, height=0.6, grid=grid, metadata={"bubble_radius": 5})
@@ -609,6 +640,41 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(digits, "37")
         self.assertEqual(confs, [1.0, 1.0])
 
+    def test_recognize_block_prefers_direct_identifier_decode_before_sampling(self):
+        template = Template(
+            name="sid_direct_first",
+            image_path="",
+            width=120,
+            height=220,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="sid_direct_first",
+                    name="sid",
+                    zone_type=ZoneType.STUDENT_ID_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(40, 20 + r * 18) for r in range(10)]),
+                    metadata={"bubble_radius": 6},
+                )
+            ],
+        )
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": "", "digit_zone_debug": {}})()
+        with patch.object(
+            self.processor,
+            "_decode_identifier_zone_from_centers",
+            return_value=("7", [1.4], np.array([[40, 20 + r * 18] for r in range(10)], dtype=np.float32), np.zeros((10, 1), dtype=np.float32), {"direct_scores": [[0.0]]}),
+        ), patch.object(
+            self.processor,
+            "_read_digit_zone_with_offset_fallback",
+            side_effect=AssertionError("sampling should not run when direct decode is valid"),
+        ):
+            self.processor.recognize_block(np.zeros((220, 120), dtype=np.uint8), template.zones[0], template, result_stub)
+        self.assertEqual(result_stub.student_id, "7")
+        self.assertEqual(result_stub.digit_zone_debug["sid_direct_first"].get("recognition_path"), "direct")
+
     def test_recognize_block_reads_student_id_from_template_grid_sampling(self):
         template = Template(
             name="sid_grid_sample",
@@ -923,6 +989,88 @@ class OMRPipelineTests(unittest.TestCase):
 
         self.processor.recognize_block(binary, template.zones[0], template, result_stub)
         self.assertEqual(result_stub.mcq_answers.get(1), "C")
+
+    def test_mcq_recognize_block_uses_core_boost_for_x_mark_answer(self):
+        template = Template(
+            name="mcq_core_boost",
+            image_path="",
+            width=200,
+            height=120,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="mcq_core_boost",
+                    name="mcq",
+                    zone_type=ZoneType.MCQ_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=1, cols=4, question_start=1, question_count=1, options=["A", "B", "C", "D"], bubble_positions=[(40, 60), (80, 60), (120, 60), (160, 60)]),
+                    metadata={"bubble_radius": 10},
+                )
+            ],
+        )
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
+        with patch.object(
+            self.processor,
+            "_resolve_zone_centers",
+            return_value=np.array([(40, 60), (80, 60), (120, 60), (160, 60)], dtype=np.float32),
+        ), patch.object(
+            self.processor,
+            "detect_bubbles",
+            return_value=np.array([0.22, 0.26, 0.41, 0.20], dtype=np.float32),
+        ), patch.object(
+            self.processor,
+            "_detect_center_core_marks",
+            return_value=np.array([0.14, 0.18, 0.92, 0.12], dtype=np.float32),
+        ), patch.object(
+            self.processor,
+            "_detect_eroded_mark_density",
+            return_value=np.array([0.08, 0.09, 0.74, 0.07], dtype=np.float32),
+        ), patch.object(
+            self.processor,
+            "_estimate_local_fill_threshold",
+            side_effect=[0.62, 0.62, 0.62, 0.62],
+        ):
+            self.processor.recognize_block(np.zeros((120, 200), dtype=np.uint8), template.zones[0], template, result_stub)
+        self.assertEqual(result_stub.mcq_answers.get(1), "C")
+
+    def test_mcq_best_fallback_keeps_strongest_row_answer_below_strict_threshold(self):
+        zone = Zone(
+            id="mcq_best_fallback",
+            name="mcq",
+            zone_type=ZoneType.MCQ_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=1, cols=4, question_start=1, question_count=1, options=["A", "B", "C", "D"], bubble_positions=[]),
+            metadata={},
+        )
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}})()
+        best_idx, confidence, reason = self.processor._pick_best_mcq_option(np.array([0.29, 0.31, 0.56, 0.28], dtype=np.float32), 0.62)
+        self.assertEqual(best_idx, 2)
+        self.assertGreater(confidence, 0.20)
+        self.assertEqual(reason, "best_fallback")
+
+    def test_mcq_dominant_fallback_accepts_single_best_answer_even_when_two_choices_cross_threshold(self):
+        best_idx, confidence, reason = self.processor._pick_best_mcq_option(np.array([0.14, 0.71, 0.92, 0.15], dtype=np.float32), 0.62)
+        self.assertEqual(best_idx, 2)
+        self.assertGreater(confidence, 0.18)
+        self.assertEqual(reason, "dominant_fallback")
+
+    def test_mcq_dominant_fallback_accepts_much_darker_choice_when_second_is_borderline(self):
+        best_idx, confidence, reason = self.processor._pick_best_mcq_option(np.array([0.18, 0.63, 0.92, 0.14], dtype=np.float32), 0.62)
+        self.assertEqual(best_idx, 2)
+        self.assertGreater(confidence, 0.20)
+        self.assertEqual(reason, "dominant_fallback")
+
+    def test_mcq_best_fallback_rejects_multiple_filled_choices(self):
+        best_idx, confidence, reason = self.processor._pick_best_mcq_option(np.array([0.64, 0.66, 0.18, 0.17], dtype=np.float32), 0.62)
+        self.assertIsNone(best_idx)
+        self.assertEqual(confidence, 0.0)
+        self.assertEqual(reason, "multiple")
 
     def test_legacy_template_absolute_coordinates_are_converted(self):
         raw = {
