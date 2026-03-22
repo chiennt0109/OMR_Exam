@@ -995,12 +995,21 @@ class OMRProcessor:
         return guided
 
     def _build_digit_row_lines(self, anchor_ys: np.ndarray, rows: int) -> list[float]:
-        ys = np.asarray(anchor_ys, dtype=np.float32)
+        ys = np.sort(np.asarray(anchor_ys, dtype=np.float32))
         if rows <= 0 or ys.size < 2:
             return []
-        ys = np.sort(ys)
-        if ys.size >= rows + 1:
-            return [float(v) for v in ys[: rows + 1]]
+        if ys.size == rows + 1:
+            step = float((ys[-1] - ys[0]) / max(1, rows - 1)) if rows > 1 else 0.0
+            row_tops = ys.astype(np.float32)
+            bottom = float(row_tops[-1] + step)
+            return [float(v) for v in row_tops.tolist()] + [bottom]
+        if ys.size >= rows + 2:
+            row_tops = ys[1 : rows + 1]
+            step = float(np.median(np.diff(row_tops))) if row_tops.size >= 2 else 0.0
+            if step <= 0.0:
+                step = float((row_tops[-1] - row_tops[0]) / max(1, rows - 1)) if rows > 1 else 0.0
+            bottom = float(row_tops[-1] + step)
+            return [float(v) for v in row_tops.tolist()] + [bottom]
         return np.linspace(float(ys[0]), float(ys[-1]), rows + 1, dtype=np.float32).astype(float).tolist()
 
     def _digit_zone_guidance(self, binary: np.ndarray, expected: np.ndarray, zone: Zone, template: Template) -> tuple[np.ndarray, dict[str, object]]:
@@ -1053,6 +1062,11 @@ class OMRProcessor:
         rows = max(1, int(zone.grid.rows))
         cols = max(1, int(zone.grid.cols))
         row_lines = self._build_digit_row_lines(detected[:, 1] if len(detected) else np.array([], dtype=np.float32), rows)
+        anchor_layout = "interpolated"
+        if len(detected) == rows + 1:
+            anchor_layout = "row_tops"
+        elif len(detected) >= rows + 2:
+            anchor_layout = "blocker_plus_row_tops"
         if len(guided) == rows * cols:
             if len(row_lines) == rows + 1:
                 row_centers = [float((row_lines[r] + row_lines[r + 1]) * 0.5) for r in range(rows)]
@@ -1083,6 +1097,7 @@ class OMRProcessor:
             "row_lines": row_lines,
             "rows": rows,
             "cols": cols,
+            "anchor_layout": anchor_layout,
             "fit_coefficients": {"a": float(a), "b": float(b)},
         }
         return guided.astype(np.float32), debug
@@ -1816,6 +1831,132 @@ class OMRProcessor:
             last_debug["applied_center_offset"] = {"dx": 0.0, "dy": 0.0}
         return last_digits, last_mat, (last_debug | fallback_debug)
 
+    def _decode_identifier_zone_from_centers(
+        self,
+        binary: np.ndarray,
+        zone: Zone,
+        result: OMRResult,
+        centers: np.ndarray,
+        radius: int,
+    ) -> tuple[str, list[float], np.ndarray, np.ndarray, dict[str, object]]:
+        rows = 10
+        cols = max(1, int(zone.grid.cols))
+        need = rows * cols
+        refined_centers = self._detect_digit_bubble_centers(binary, centers, float(radius))
+        ratios = self.detect_bubbles(binary, refined_centers, radius)
+        core_ratios = self._detect_center_core_marks(binary, refined_centers, radius)
+        multi_probe_ratios = self._detect_digit_zone_multi_probe_marks(binary, refined_centers, radius)
+        if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
+            square_ratios = self._detect_square_mark_density(binary, refined_centers, radius)
+            eroded_ratios = self._detect_eroded_mark_density(binary, refined_centers, radius)
+            legacy_ratios = np.clip((0.15 * ratios) + (0.30 * core_ratios) + (0.30 * square_ratios) + (0.25 * eroded_ratios), 0.0, 1.0)
+            widened_ratios = np.clip((0.10 * ratios) + (0.22 * core_ratios) + (0.22 * square_ratios) + (0.18 * eroded_ratios) + (0.28 * multi_probe_ratios), 0.0, 1.0)
+            ratios = np.maximum(legacy_ratios, widened_ratios)
+        else:
+            legacy_ratios = np.clip((0.55 * ratios) + (0.45 * core_ratios), 0.0, 1.0)
+            widened_ratios = np.clip((0.30 * ratios) + (0.28 * core_ratios) + (0.42 * multi_probe_ratios), 0.0, 1.0)
+            ratios = np.maximum(legacy_ratios, widened_ratios)
+        dynamic_thresholds = np.array([
+            self._estimate_local_fill_threshold(binary, center, radius, self.fill_threshold)
+            for center in refined_centers
+        ], dtype=np.float32)
+        if len(ratios) < need:
+            ratios = np.pad(ratios, (0, need - len(ratios)), constant_values=0.0)
+            dynamic_thresholds = np.pad(dynamic_thresholds, (0, need - len(dynamic_thresholds)), constant_values=self.fill_threshold)
+        mat = self._cluster_digit_columns(refined_centers, ratios, rows, cols, 0.0)
+        local_fill = self._cluster_digit_columns(refined_centers, dynamic_thresholds, rows, cols, self.fill_threshold)
+        mat = np.clip(mat - (0.5 * np.clip(local_fill - self.empty_threshold, 0.0, 1.0)), 0.0, 1.0)
+
+        orig_fill = self.fill_threshold
+        try:
+            self.fill_threshold = float(np.clip(np.median(local_fill), orig_fill - 0.08, orig_fill + 0.08))
+            value, confs = self._decode_column_digits(mat, zone, zone.grid, result)
+        finally:
+            self.fill_threshold = orig_fill
+        debug = {
+            "centers": [(float(x), float(y)) for x, y in refined_centers],
+            "direct_scores": mat.tolist(),
+            "direct_local_fill": local_fill.tolist(),
+            "direct_radius": int(radius),
+        }
+        return value, confs, refined_centers, mat, debug
+
+    def _finalize_identifier_value(
+        self,
+        zone: Zone,
+        key: str,
+        raw_digits: list[int | None | str] | None = None,
+        value: str | None = None,
+        confs: list[float] | None = None,
+        result: OMRResult | None = None,
+    ) -> tuple[str, list[float]]:
+        rows = 10
+        if raw_digits is not None:
+            digit_map = zone.metadata.get("digit_map", list(range(rows)))
+            mapped_digits: list[int | None | str] = []
+            for d in raw_digits:
+                if isinstance(d, int):
+                    mapped_digits.append(digit_map[d] if 0 <= d < len(digit_map) else d)
+                else:
+                    mapped_digits.append(d)
+            conf_list = [1.0 if isinstance(d, int) else 0.0 for d in mapped_digits]
+            complete_digits = len(mapped_digits) == max(1, int(zone.grid.cols)) and all(isinstance(d, int) for d in mapped_digits)
+            final_value = "".join(str(d) for d in mapped_digits) if complete_digits and self._validate_sampled_digits(mapped_digits) else "-"
+            if final_value == "-" and result is not None:
+                result.recognition_errors.append(f"{zone.zone_type.value}: LOW_CONFIDENCE")
+        else:
+            final_value = value or ""
+            conf_list = list(confs or [])
+            expected_len = max(1, int(zone.grid.cols))
+            missing_digits = final_value.count("?")
+            is_valid = len(final_value) == expected_len and missing_digits == 0
+            global_score = float(expected_len - missing_digits) / float(expected_len or 1)
+            if (not is_valid or global_score < 0.85) and result is not None:
+                result.recognition_errors.append(f"{zone.zone_type.value}: LOW_CONFIDENCE")
+                if not is_valid:
+                    result.recognition_errors.append(f"{zone.zone_type.value}: invalid length or ambiguous digit sequence")
+                final_value = ""
+        if key == "student_id" and final_value and final_value != "-":
+            longest_run = 1
+            current_run = 1
+            for idx in range(1, len(final_value)):
+                if final_value[idx] == final_value[idx - 1]:
+                    current_run += 1
+                    longest_run = max(longest_run, current_run)
+                else:
+                    current_run = 1
+            if len(set(final_value)) == 1 or (len(final_value) >= 6 and longest_run >= 4):
+                if result is not None:
+                    result.recognition_errors.append(f"{zone.zone_type.value}: invalid repeated-digit pattern")
+                final_value = "-" if raw_digits is not None else ""
+        return final_value, conf_list
+
+    def _pick_best_mcq_option(
+        self,
+        row_scores: np.ndarray,
+        row_threshold: float,
+    ) -> tuple[int | None, float, str | None]:
+        scores = np.asarray(row_scores, dtype=np.float32)
+        if scores.size == 0:
+            return None, 0.0, "uncertain"
+        order = np.argsort(scores)[::-1]
+        top_i = int(order[0])
+        second_i = int(order[1]) if len(order) > 1 else top_i
+        top = float(scores[top_i])
+        second = float(scores[second_i]) if len(order) > 1 else 0.0
+        filled = np.where(scores > row_threshold)[0]
+        if len(filled) > 1:
+            return None, 0.0, "multiple"
+        margin = top - second
+        if top > row_threshold and margin > self.certainty_margin:
+            return top_i, margin, None
+        relaxed_threshold = max(self.empty_threshold + 0.10, row_threshold - 0.10)
+        strong_margin = max(self.certainty_margin * 0.75, 0.05)
+        strong_ratio = second <= 1e-6 or top >= (1.20 * second)
+        if len(filled) <= 1 and top >= relaxed_threshold and margin >= strong_margin and strong_ratio:
+            return top_i, margin, "best_fallback"
+        return None, 0.0, "uncertain"
+
     def recognize_block(self, binary: np.ndarray, zone: Zone, template: Template, result: OMRResult, debug_overlay: np.ndarray | None = None) -> None:
         grid = zone.grid
         if not grid or not grid.bubble_positions:
@@ -1828,20 +1969,69 @@ class OMRProcessor:
                 [(x * working_binary.shape[1], y * working_binary.shape[0]) if x <= 1.0 and y <= 1.0 else (x, y) for x, y in grid.bubble_positions],
                 dtype=np.float32,
             )
+            bubble_radius = float(zone.metadata.get("bubble_radius", 9))
             guided, digit_debug = self._digit_zone_guidance(working_binary, expected, zone, template)
+            column_guided = self._resolve_column_digit_centers(working_binary, guided.astype(np.float32), grid, bubble_radius)
             centers, grid_fit_debug = self._refit_digit_grid_from_clear_points(
                 working_binary,
-                guided.astype(np.float32),
+                column_guided.astype(np.float32),
                 grid,
-                float(zone.metadata.get("bubble_radius", 9)),
+                bubble_radius,
             )
+            key = "student_id" if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else "exam_code"
+            error_mark = len(result.recognition_errors)
+            direct_value, direct_confs, direct_centers, direct_mat, direct_debug = self._decode_identifier_zone_from_centers(
+                working_binary,
+                zone,
+                result,
+                centers,
+                int(round(bubble_radius)),
+            )
+            final_value, final_confs = self._finalize_identifier_value(
+                zone,
+                key,
+                value=direct_value,
+                confs=direct_confs,
+                result=result,
+            )
+            used_sampling = False
             zone_debug = dict(getattr(result, "digit_zone_debug", {}) or {})
-            final_col_lines = [float(np.median(centers[c::grid.cols, 0])) for c in range(grid.cols)] if grid.cols > 0 else []
-            zone_debug[zone.id] = digit_debug | grid_fit_debug | {
-                "centers": [(float(x), float(y)) for x, y in centers],
+            final_col_lines = [float(np.median(direct_centers[c::grid.cols, 0])) for c in range(grid.cols)] if grid.cols > 0 else []
+            zone_debug[zone.id] = digit_debug | grid_fit_debug | direct_debug | {
                 "col_lines": final_col_lines,
                 "col_segments": [],
+                "recognition_path": "direct",
             }
+            if not final_value:
+                rows, cols = 10, max(1, grid.cols)
+                source_img = self._preprocess_digit_sampling(working_image if working_image is not None else working_binary)
+                bbox = self._digit_zone_bbox(zone, source_img.shape[:2])
+                digits, mat, sampling_debug = self._read_digit_zone_with_offset_fallback(
+                    source_img,
+                    bbox,
+                    cols,
+                    rows,
+                    threshold=0.25,
+                    centers=direct_centers,
+                )
+                sampled_error_mark = len(result.recognition_errors)
+                sampled_value, sampled_confs = self._finalize_identifier_value(
+                    zone,
+                    key,
+                    raw_digits=digits,
+                    result=result,
+                )
+                zone_debug[zone.id] = dict(zone_debug.get(zone.id, {})) | sampling_debug | {
+                    "sampling_scores": mat.tolist(),
+                    "recognition_path": "sampling_fallback",
+                }
+                if sampled_value not in ("", "-"):
+                    del result.recognition_errors[error_mark:]
+                    del result.recognition_errors[sampled_error_mark:]
+                    final_value, final_confs = sampled_value, sampled_confs
+                    used_sampling = True
+                elif final_value == "":
+                    final_value = "-"
             setattr(result, "digit_zone_debug", zone_debug)
             if self.debug_mode and working_image is not None:
                 digit_overlay = working_image.copy()
@@ -1852,68 +2042,20 @@ class OMRProcessor:
                     pt0 = tuple(int(round(v)) for v in fitted_line[0])
                     pt1 = tuple(int(round(v)) for v in fitted_line[1])
                     cv2.line(digit_overlay, pt0, pt1, (255, 255, 0), 2)
-                for x, y in centers:
+                for x, y in direct_centers:
                     cv2.circle(digit_overlay, (int(round(x)), int(round(y))), 5, (0, 0, 255), 1)
+                if used_sampling:
+                    for x, y in zone_debug.get(zone.id, {}).get("sample_points", []):
+                        cv2.circle(digit_overlay, (int(round(x)), int(round(y))), 3, (0, 255, 0), -1)
                 out_dir = self.debug_dir or Path(result.image_path).parent
                 out_dir.mkdir(parents=True, exist_ok=True)
                 out_path = out_dir / f"{Path(result.image_path).stem}_{zone.id}_digit_debug.png"
                 cv2.imwrite(str(out_path), digit_overlay)
-            rows, cols = 10, max(1, grid.cols)
-            source_img = self._preprocess_digit_sampling(working_image if working_image is not None else working_binary)
-            bbox = self._digit_zone_bbox(zone, source_img.shape[:2])
-            digits, mat, sampling_debug = self._read_digit_zone_with_offset_fallback(
-                source_img,
-                bbox,
-                cols,
-                rows,
-                threshold=0.25,
-                centers=centers,
-            )
-            zone_debug = dict(getattr(result, "digit_zone_debug", {}) or {})
-            zone_debug[zone.id] = dict(zone_debug.get(zone.id, {})) | sampling_debug
-            setattr(result, "digit_zone_debug", zone_debug)
-            if self.debug_mode and working_image is not None:
-                digit_overlay = working_image.copy()
-                for x, y in centers:
-                    cv2.circle(digit_overlay, (int(round(x)), int(round(y))), 5, (0, 0, 255), 1)
-                for x, y in sampling_debug.get("sample_points", []):
-                    cv2.circle(digit_overlay, (int(round(x)), int(round(y))), 3, (0, 255, 0), -1)
-                out_dir = self.debug_dir or Path(result.image_path).parent
-                out_dir.mkdir(parents=True, exist_ok=True)
-                out_path = out_dir / f"{Path(result.image_path).stem}_{zone.id}_digit_debug.png"
-                cv2.imwrite(str(out_path), digit_overlay)
-            key = "student_id" if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else "exam_code"
-            digit_map = zone.metadata.get("digit_map", list(range(rows)))
-            mapped_digits: list[int | None | str] = []
-            for d in digits:
-                if isinstance(d, int):
-                    mapped_digits.append(digit_map[d] if 0 <= d < len(digit_map) else d)
-                else:
-                    mapped_digits.append(d)
-            confs = [1.0 if isinstance(d, int) else 0.0 for d in mapped_digits]
-            complete_digits = len(mapped_digits) == cols and all(isinstance(d, int) for d in mapped_digits)
-            if not self._validate_sampled_digits(mapped_digits) or not complete_digits:
-                result.recognition_errors.append(f"{zone.zone_type.value}: LOW_CONFIDENCE")
-                value = "-"
-            else:
-                value = "".join(str(d) for d in mapped_digits)
-            if key == "student_id" and value:
-                longest_run = 1
-                current_run = 1
-                for idx in range(1, len(value)):
-                    if value[idx] == value[idx - 1]:
-                        current_run += 1
-                        longest_run = max(longest_run, current_run)
-                    else:
-                        current_run = 1
-                if len(set(value)) == 1 or (len(value) >= 6 and longest_run >= 4):
-                    result.recognition_errors.append(f"{zone.zone_type.value}: invalid repeated-digit pattern")
-                    value = "-"
             if key == "student_id":
-                result.student_id = value
+                result.student_id = final_value
             else:
-                result.exam_code = value
-            result.confidence_scores[f"{key}:{zone.id}"] = float(np.mean(confs)) if confs else 0.0
+                result.exam_code = final_value
+            result.confidence_scores[f"{key}:{zone.id}"] = float(np.mean(final_confs)) if final_confs else 0.0
             return
         else:
             centers = self._resolve_zone_centers(working_binary, zone, template)
@@ -1921,7 +2063,13 @@ class OMRProcessor:
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
             centers = self._detect_digit_bubble_centers(working_binary, centers, float(radius))
         ratios = self.detect_bubbles(working_binary, centers, radius)
-        if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+        if zone.zone_type == ZoneType.MCQ_BLOCK:
+            core_ratios = self._detect_center_core_marks(working_binary, centers, radius)
+            eroded_ratios = self._detect_eroded_mark_density(working_binary, centers, radius)
+            core_boosted = np.clip((0.62 * ratios) + (0.38 * core_ratios), 0.0, 1.0)
+            xmark_boosted = np.clip((0.50 * ratios) + (0.30 * core_ratios) + (0.20 * eroded_ratios), 0.0, 1.0)
+            ratios = np.maximum(ratios, np.maximum(core_boosted, xmark_boosted))
+        elif zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
             core_ratios = self._detect_center_core_marks(working_binary, centers, radius)
             multi_probe_ratios = self._detect_digit_zone_multi_probe_marks(working_binary, centers, radius)
             if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
@@ -1996,18 +2144,15 @@ class OMRProcessor:
                     qno = grid.question_start + r
                     row_scores = mat[r, :]
                     row_threshold = float(np.median(local_fill[r, :])) if local_fill.shape[1] else self.fill_threshold
-                    order = np.argsort(row_scores)[::-1]
-                    top_i, second_i = int(order[0]), int(order[1]) if len(order) > 1 else int(order[0])
-                    top, second = float(row_scores[top_i]), float(row_scores[second_i]) if len(order) > 1 else 0.0
-                    filled = np.where(row_scores > row_threshold)[0]
-                    if len(filled) > 1:
-                        result.recognition_errors.append(f"MCQ Q{qno}: multiple answer")
+                    best_idx, confidence, reason = self._pick_best_mcq_option(row_scores, row_threshold)
+                    if best_idx is None:
+                        if reason == "multiple":
+                            result.recognition_errors.append(f"MCQ Q{qno}: multiple answer")
+                        else:
+                            result.recognition_errors.append(f"MCQ Q{qno}: uncertain")
                         continue
-                    if top <= row_threshold or (top - second) <= self.certainty_margin:
-                        result.recognition_errors.append(f"MCQ Q{qno}: uncertain")
-                        continue
-                    result.mcq_answers[qno] = labels[top_i]
-                    confs.append(top - second)
+                    result.mcq_answers[qno] = labels[best_idx]
+                    confs.append(confidence)
                 result.confidence_scores[f"mcq:{zone.id}"] = float(np.mean(confs)) if confs else 0.0
                 return
 
