@@ -931,8 +931,9 @@ class TemplateEditorWindow(QMainWindow):
             center_base = (top_pt + bottom_pt) * 0.5
             center = center_base + (float(off[0]) * col_unit) + (float(off[1]) * row_unit)
             row_centers.append(center)
-            row_start = center + (-0.5 * col_spacing * 0.0 * col_unit)
-            row_end = row_start + ((cols - 1) * col_spacing * col_unit)
+            # Start each orange row line from the actual recognition midpoint on the right-side digit-anchor ruler.
+            row_start = center.copy()
+            row_end = row_start - ((cols - 1) * col_spacing * col_unit)
             row_segments.append((tuple(row_start.tolist()), tuple(row_end.tolist())))
         points=[]
         for r in range(rows):
