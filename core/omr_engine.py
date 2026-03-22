@@ -1002,6 +1002,43 @@ class OMRProcessor:
             scores[i] = float(np.clip((0.65 * best) + (0.35 * top2), 0.0, 1.0))
         return scores
 
+    def _detect_digit_zone_peak_window_marks(self, binary: np.ndarray, centers: np.ndarray, radius: int) -> np.ndarray:
+        peak_r = max(2, int(round(radius * 0.52)))
+        search_r = max(1, int(round(radius * 0.45)))
+        h, w = binary.shape[:2]
+        scores = np.zeros((len(centers),), dtype=np.float32)
+        centers_int = centers.astype(np.int32)
+        for i, (x, y) in enumerate(centers_int):
+            best_density = 0.0
+            ring_density = 0.0
+            for dy in range(-search_r, search_r + 1, max(1, peak_r // 2)):
+                for dx in range(-search_r, search_r + 1, max(1, peak_r // 2)):
+                    cx = int(x + dx)
+                    cy = int(y + dy)
+                    x0, y0 = max(0, cx - peak_r), max(0, cy - peak_r)
+                    x1, y1 = min(w, cx + peak_r + 1), min(h, cy + peak_r + 1)
+                    roi = binary[y0:y1, x0:x1]
+                    if roi.size == 0:
+                        continue
+                    density = float(np.count_nonzero(roi)) / float(roi.size)
+                    if density > best_density:
+                        best_density = density
+            ring_r = max(peak_r + 1, int(round(radius * 0.95)))
+            x0, y0 = max(0, x - ring_r), max(0, y - ring_r)
+            x1, y1 = min(w, x + ring_r + 1), min(h, y + ring_r + 1)
+            outer = binary[y0:y1, x0:x1]
+            if outer.size:
+                yy, xx = np.indices(outer.shape)
+                cx0 = int(x - x0)
+                cy0 = int(y - y0)
+                dist2 = (xx - cx0) ** 2 + (yy - cy0) ** 2
+                core_mask = dist2 <= (peak_r ** 2)
+                ring_mask = (dist2 > (peak_r ** 2)) & (dist2 <= (ring_r ** 2))
+                if np.any(ring_mask):
+                    ring_density = float(np.count_nonzero(outer[ring_mask])) / float(np.count_nonzero(ring_mask))
+            scores[i] = float(np.clip((0.85 * best_density) - (0.25 * ring_density), 0.0, 1.0))
+        return scores
+
     def classify_bubble(self, ratio: float) -> str:
         if ratio > self.fill_threshold:
             return "filled"
@@ -1685,7 +1722,18 @@ class OMRProcessor:
         if np.any(ring_mask):
             ring_density = float(np.count_nonzero(th[ring_mask])) / float(np.count_nonzero(ring_mask))
         patch_density = float(np.count_nonzero(th)) / float(th.size)
-        score = (0.80 * core_density) + (0.20 * patch_density) - (0.45 * ring_density)
+        search_step = max(1, inner_r // 2)
+        peak_density = core_density
+        for dy in range(-search_step, search_step + 1, search_step):
+            for dx in range(-search_step, search_step + 1, search_step):
+                shifted_dist2 = (xx - (local_cx + dx)) ** 2 + (yy - (local_cy + dy)) ** 2
+                shifted_core = shifted_dist2 <= float(inner_r ** 2)
+                if np.any(shifted_core):
+                    peak_density = max(
+                        peak_density,
+                        float(np.count_nonzero(th[shifted_core])) / float(np.count_nonzero(shifted_core)),
+                    )
+        score = (0.60 * core_density) + (0.25 * peak_density) + (0.15 * patch_density) - (0.45 * ring_density)
         return float(np.clip(score, 0.0, 1.0))
 
     def _evaluate_digit_grid_offset(
@@ -1906,15 +1954,16 @@ class OMRProcessor:
         ratios = self.detect_bubbles(binary, refined_centers, radius)
         core_ratios = self._detect_center_core_marks(binary, refined_centers, radius)
         multi_probe_ratios = self._detect_digit_zone_multi_probe_marks(binary, refined_centers, radius)
+        peak_window_ratios = self._detect_digit_zone_peak_window_marks(binary, refined_centers, radius)
         if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
             square_ratios = self._detect_square_mark_density(binary, refined_centers, radius)
             eroded_ratios = self._detect_eroded_mark_density(binary, refined_centers, radius)
             legacy_ratios = np.clip((0.15 * ratios) + (0.30 * core_ratios) + (0.30 * square_ratios) + (0.25 * eroded_ratios), 0.0, 1.0)
-            widened_ratios = np.clip((0.10 * ratios) + (0.22 * core_ratios) + (0.22 * square_ratios) + (0.18 * eroded_ratios) + (0.28 * multi_probe_ratios), 0.0, 1.0)
+            widened_ratios = np.clip((0.08 * ratios) + (0.18 * core_ratios) + (0.20 * square_ratios) + (0.16 * eroded_ratios) + (0.20 * multi_probe_ratios) + (0.18 * peak_window_ratios), 0.0, 1.0)
             ratios = np.maximum(legacy_ratios, widened_ratios)
         else:
             legacy_ratios = np.clip((0.55 * ratios) + (0.45 * core_ratios), 0.0, 1.0)
-            widened_ratios = np.clip((0.30 * ratios) + (0.28 * core_ratios) + (0.42 * multi_probe_ratios), 0.0, 1.0)
+            widened_ratios = np.clip((0.24 * ratios) + (0.22 * core_ratios) + (0.30 * multi_probe_ratios) + (0.24 * peak_window_ratios), 0.0, 1.0)
             ratios = np.maximum(legacy_ratios, widened_ratios)
         dynamic_thresholds = np.array([
             self._estimate_local_fill_threshold(binary, center, radius, self.fill_threshold)
@@ -1938,6 +1987,7 @@ class OMRProcessor:
             "direct_scores": mat.tolist(),
             "direct_local_fill": local_fill.tolist(),
             "direct_radius": int(radius),
+            "peak_window_scores": peak_window_ratios.tolist(),
         }
         return value, confs, refined_centers, mat, debug
 
