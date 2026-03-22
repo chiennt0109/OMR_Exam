@@ -1701,7 +1701,12 @@ class OMRProcessor:
                 print(f"Column {col} -> {column_scores}")
             best_row = int(np.argmax([score for _, score in column_scores])) if column_scores else None
             scores = [score for _, score in column_scores]
-            if best_row is None or not scores or scores[best_row] < float(threshold):
+            sorted_scores = sorted(scores, reverse=True) if scores else []
+            top_score = float(sorted_scores[0]) if sorted_scores else 0.0
+            second_score = float(sorted_scores[1]) if len(sorted_scores) > 1 else 0.0
+            margin_ok = top_score >= (second_score + 0.08)
+            ratio_ok = second_score <= 1e-6 or top_score >= (1.18 * second_score)
+            if best_row is None or not scores or top_score < float(threshold) or not margin_ok or not ratio_ok:
                 results.append(None)
             else:
                 results.append(best_row)
