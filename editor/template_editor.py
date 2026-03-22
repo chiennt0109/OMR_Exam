@@ -10,6 +10,7 @@ from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QImage, QMouseEvent, QKeyEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
+    QCheckBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSplitter,
     QSpinBox,
     QTextEdit,
     QToolBar,
@@ -262,7 +264,11 @@ class TemplateCanvas(QWidget):
                 p.setPen(QPen(QColor(255, 180, 0), 2)); p.setBrush(QColor(255, 180, 0))
             else:
                 p.setPen(QPen(Qt.black, 2)); p.setBrush(Qt.black)
-            p.drawRect(QRectF(a.x * self.template.width * self.zoom - 4, a.y * self.template.height * self.zoom - 4, 8, 8))
+            ax = a.x * self.template.width * self.zoom
+            ay = a.y * self.template.height * self.zoom
+            p.drawRect(QRectF(ax - 4, ay - 4, 8, 8))
+            p.setPen(QPen(QColor(20, 20, 20), 1))
+            p.drawText(QPointF(ax + 6, ay - 6), str(getattr(a, "name", "") or f"A{i+1}"))
 
         # Detected anchors from test-recognition pass.
         if self.detected_anchor_points:
@@ -363,31 +369,66 @@ class TemplateCanvas(QWidget):
         top = zr.y() * self.zoom
         bottom = (zr.y() + zr.height()) * self.zoom
 
-        painter.setBrush(Qt.NoBrush)
-        painter.setPen(QPen(QColor(220, 50, 50), 1.5))
-        for y in debug.get("row_lines", []) or []:
-            yy = float(y) * self.zoom
-            painter.drawLine(QPointF(left, yy), QPointF(right, yy))
+        model = (self.template.metadata or {}).get("digit_model", {}) if self.template else {}
+        show_grid = bool(model.get("show_grid", True))
+        show_anchors = bool(model.get("show_anchors", True))
+        show_points = bool(model.get("show_points", True))
 
-        painter.setPen(QPen(QColor(150, 60, 220), 1.2))
-        segments = debug.get("col_segments", []) or []
-        if segments:
-            for start, end in segments:
-                painter.drawLine(
-                    QPointF(float(start[0]) * self.zoom, float(start[1]) * self.zoom),
-                    QPointF(float(end[0]) * self.zoom, float(end[1]) * self.zoom),
-                )
-        else:
-            for x in debug.get("col_lines", []) or []:
-                xx = float(x) * self.zoom
-                painter.drawLine(QPointF(xx, top), QPointF(xx, bottom))
+        painter.setBrush(Qt.NoBrush)
+        if show_grid:
+            painter.setPen(QPen(QColor(255, 140, 0), 1.5))
+            for seg in debug.get("row_segments", []) or []:
+                start, end = seg
+                painter.drawLine(QPointF(float(start[0]) * self.zoom, float(start[1]) * self.zoom), QPointF(float(end[0]) * self.zoom, float(end[1]) * self.zoom))
+            for y in debug.get("row_lines", []) or []:
+                yy = float(y) * self.zoom
+                painter.drawLine(QPointF(left, yy), QPointF(right, yy))
+
+            painter.setPen(QPen(QColor(0, 180, 0), 1.2))
+            segments = debug.get("col_segments", []) or []
+            if segments:
+                for start, end in segments:
+                    painter.drawLine(
+                        QPointF(float(start[0]) * self.zoom, float(start[1]) * self.zoom),
+                        QPointF(float(end[0]) * self.zoom, float(end[1]) * self.zoom),
+                    )
+            else:
+                for x in debug.get("col_lines", []) or []:
+                    xx = float(x) * self.zoom
+                    painter.drawLine(QPointF(xx, top), QPointF(xx, bottom))
+
+        if show_anchors:
+            painter.setPen(QPen(QColor(40, 120, 255), 2))
+            for x, y in debug.get("anchor_points", []) or []:
+                painter.drawEllipse(QPointF(float(x) * self.zoom, float(y) * self.zoom), 4, 4)
+            anchor_line = debug.get("anchor_line", []) or []
+            if len(anchor_line) == 2:
+                painter.drawLine(QPointF(float(anchor_line[0][0]) * self.zoom, float(anchor_line[0][1]) * self.zoom), QPointF(float(anchor_line[1][0]) * self.zoom, float(anchor_line[1][1]) * self.zoom))
+
+        painter.setPen(QPen(QColor(0, 200, 200), 1.2, Qt.DashLine))
+        painter.setBrush(Qt.NoBrush)
+        for x, y, w, h in debug.get("guide_regions", []) or []:
+            painter.drawRect(QRectF(float(x) * self.zoom, float(y) * self.zoom, float(w) * self.zoom, float(h) * self.zoom))
+
+        if show_points:
+            painter.setPen(QPen(QColor(220, 40, 40), 2))
+            for x, y in debug.get("bubble_centers", []) or []:
+                painter.drawEllipse(QPointF(float(x) * self.zoom, float(y) * self.zoom), 2.5, 2.5)
+            painter.setPen(QPen(QColor(0, 220, 220), 2))
+            for x, y in debug.get("guide_points", []) or []:
+                px = float(x) * self.zoom
+                py = float(y) * self.zoom
+                painter.drawLine(QPointF(px - 6, py - 6), QPointF(px + 6, py + 6))
+                painter.drawLine(QPointF(px - 6, py + 6), QPointF(px + 6, py - 6))
 
 
 class TemplateEditorWindow(QMainWindow):
     def __init__(self, parent=None, on_template_saved=None):
         super().__init__(parent)
         self.setWindowTitle("Template Editor")
-        self.resize(1620, 940)
+        screen = self.screen().availableGeometry() if self.screen() is not None else QRect(0, 0, 1620, 940)
+        self.setGeometry(screen)
+        self.setMinimumSize(max(1200, int(screen.width() * 0.8)), max(800, int(screen.height() * 0.8)))
         self.setWindowState(self.windowState() | Qt.WindowMaximized)
 
         self.template_engine = TemplateEngine()
@@ -490,12 +531,18 @@ class TemplateEditorWindow(QMainWindow):
         self.template_toolbar.addAction(self.act_zoom_in)
         self.template_toolbar.addAction(self.act_zoom_out)
 
-        self.result_box = QTextEdit(); self.result_box.setReadOnly(True); self.result_box.setMaximumHeight(160)
+        self.result_box = QTextEdit(); self.result_box.setReadOnly(True); self.result_box.setMinimumHeight(140)
         self.prop_panel = self._build_prop_panel()
 
+        image_results_splitter = QSplitter(Qt.Vertical)
+        image_results_splitter.addWidget(scroll)
+        image_results_splitter.addWidget(self.result_box)
+        image_results_splitter.setStretchFactor(0, 5)
+        image_results_splitter.setStretchFactor(1, 1)
+        image_results_splitter.setSizes([760, 180])
+
         center = QWidget(); layout = QHBoxLayout(center)
-        left = QVBoxLayout(); left.addWidget(scroll); left.addWidget(self.result_box)
-        layout.addLayout(left, 1); layout.addWidget(self.prop_panel)
+        layout.addWidget(image_results_splitter, 1); layout.addWidget(self.prop_panel)
         self.setCentralWidget(center)
 
     def _assign_action_icons(self) -> None:
@@ -571,6 +618,17 @@ class TemplateEditorWindow(QMainWindow):
         self.p_decimal_columns = QLineEdit(); self.p_decimal_columns.setText("2,3")
         self.p_sign_symbol = QLineEdit(); self.p_sign_symbol.setText("-")
         self.p_decimal_symbol = QLineEdit(); self.p_decimal_symbol.setText(".")
+        self.p_digit_col_scale = QDoubleSpinBox(); self.p_digit_col_scale.setRange(0.2, 3.0); self.p_digit_col_scale.setSingleStep(0.05); self.p_digit_col_scale.setValue(1.0)
+        self.p_digit_row_scale = QDoubleSpinBox(); self.p_digit_row_scale.setRange(0.2, 3.0); self.p_digit_row_scale.setSingleStep(0.05); self.p_digit_row_scale.setValue(1.0)
+        self.p_digit_rotation = QDoubleSpinBox(); self.p_digit_rotation.setRange(-45.0, 45.0); self.p_digit_rotation.setSingleStep(0.5); self.p_digit_rotation.setValue(0.0)
+        self.p_sid_offset_x = QDoubleSpinBox(); self.p_sid_offset_x.setRange(-2000.0, 2000.0); self.p_sid_offset_x.setSingleStep(1.0)
+        self.p_sid_offset_y = QDoubleSpinBox(); self.p_sid_offset_y.setRange(-2000.0, 2000.0); self.p_sid_offset_y.setSingleStep(1.0)
+        self.p_exam_offset_x = QDoubleSpinBox(); self.p_exam_offset_x.setRange(-2000.0, 2000.0); self.p_exam_offset_x.setSingleStep(1.0)
+        self.p_exam_offset_y = QDoubleSpinBox(); self.p_exam_offset_y.setRange(-2000.0, 2000.0); self.p_exam_offset_y.setSingleStep(1.0)
+        self.p_digit_center_ratio = QDoubleSpinBox(); self.p_digit_center_ratio.setRange(0.10, 0.90); self.p_digit_center_ratio.setSingleStep(0.01); self.p_digit_center_ratio.setValue(0.35)
+        self.show_digit_grid_chk = QCheckBox("Show Grid"); self.show_digit_grid_chk.setChecked(True)
+        self.show_digit_anchors_chk = QCheckBox("Show Anchors"); self.show_digit_anchors_chk.setChecked(True)
+        self.show_digit_points_chk = QCheckBox("Show Sampling Points"); self.show_digit_points_chk.setChecked(True)
 
         self._prop_controls = [
             ("question_start", self.p_qstart), ("total_questions", self.p_total), ("choices_per_question", self.p_choices),
@@ -579,6 +637,9 @@ class TemplateEditorWindow(QMainWindow):
             ("statements_per_question", self.p_spq), ("choices_per_statement", self.p_cps), ("digits_per_answer", self.p_digits), ("rows", self.p_rows), ("columns", self.p_columns), ("digit_map", self.p_digit_map),
             ("sign_row", self.p_sign_row), ("decimal_row", self.p_decimal_row), ("digit_start_row", self.p_digit_start_row),
             ("sign_columns", self.p_sign_columns), ("decimal_columns", self.p_decimal_columns), ("sign_symbol", self.p_sign_symbol), ("decimal_symbol", self.p_decimal_symbol),
+            ("digit_col_spacing_scale", self.p_digit_col_scale), ("digit_row_spacing_scale", self.p_digit_row_scale), ("digit_rotation_deg", self.p_digit_rotation),
+            ("sid_offset_x", self.p_sid_offset_x), ("sid_offset_y", self.p_sid_offset_y), ("exam_offset_x", self.p_exam_offset_x), ("exam_offset_y", self.p_exam_offset_y), ("digit_center_ratio", self.p_digit_center_ratio),
+            ("show_digit_grid", self.show_digit_grid_chk), ("show_digit_anchors", self.show_digit_anchors_chk), ("show_digit_points", self.show_digit_points_chk),
         ]
         self._prop_rows = {}
         for name, widget in self._prop_controls:
@@ -587,6 +648,8 @@ class TemplateEditorWindow(QMainWindow):
             self._prop_rows[name] = (lbl, widget)
             if hasattr(widget, "valueChanged"):
                 widget.valueChanged.connect(self._prop_changed)
+            elif hasattr(widget, "toggled"):
+                widget.toggled.connect(self._prop_changed)
             else:
                 widget.textChanged.connect(self._prop_changed)
         l.addLayout(f)
@@ -602,7 +665,17 @@ class TemplateEditorWindow(QMainWindow):
             "offset_x": True,
             "offset_y": True,
         }
-        if zone_type == ZoneType.MCQ_BLOCK:
+        if zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+            visible.update({
+                "rows": True, "columns": True, "digit_map": True,
+                "digit_col_spacing_scale": True, "digit_row_spacing_scale": True, "digit_rotation_deg": True,
+                "sid_offset_x": True, "sid_offset_y": True, "exam_offset_x": True, "exam_offset_y": True,
+                "show_digit_grid": True, "show_digit_anchors": True, "show_digit_points": True,
+            })
+            visible["grid_scale"] = False
+            visible["offset_x"] = False
+            visible["offset_y"] = False
+        elif zone_type == ZoneType.MCQ_BLOCK:
             visible.update({"questions_per_block": True, "choices_per_question": True})
         elif zone_type == ZoneType.TRUE_FALSE_BLOCK:
             visible.update({"questions_per_block": True, "statements_per_question": True, "choices_per_statement": True})
@@ -699,11 +772,217 @@ class TemplateEditorWindow(QMainWindow):
         self.p_decimal_columns.setText(",".join(str(x) for x in md.get("decimal_columns", [2, 3])))
         self.p_sign_symbol.setText(str(md.get("sign_symbol", "-")))
         self.p_decimal_symbol.setText(str(md.get("decimal_symbol", ".")))
+        dmodel = self._digit_model()
+        if z.zone_type == ZoneType.STUDENT_ID_BLOCK:
+            self.p_digit_col_scale.setValue(float(dmodel.get("sid_col_spacing_scale", 1.0) or 1.0))
+            self.p_digit_row_scale.setValue(float(dmodel.get("sid_row_spacing_scale", 1.0) or 1.0))
+        else:
+            self.p_digit_col_scale.setValue(float(dmodel.get("exam_col_spacing_scale", 1.0) or 1.0))
+            self.p_digit_row_scale.setValue(float(dmodel.get("exam_row_spacing_scale", 1.0) or 1.0))
+        self.p_digit_rotation.setValue(float(dmodel.get("rotation_deg", 0.0) or 0.0))
+        sid_off = dmodel.get("offset_sid", [0.0, 0.0]) or [0.0, 0.0]
+        exam_off = dmodel.get("offset_exam", [0.0, 0.0]) or [0.0, 0.0]
+        self.p_sid_offset_x.setValue(float(sid_off[0] if len(sid_off) > 0 else 0.0))
+        self.p_sid_offset_y.setValue(float(sid_off[1] if len(sid_off) > 1 else 0.0))
+        self.p_exam_offset_x.setValue(float(exam_off[0] if len(exam_off) > 0 else 0.0))
+        self.p_exam_offset_y.setValue(float(exam_off[1] if len(exam_off) > 1 else 0.0))
+        self.show_digit_grid_chk.setChecked(bool(dmodel.get("show_grid", True)))
+        self.show_digit_anchors_chk.setChecked(bool(dmodel.get("show_anchors", True)))
+        self.show_digit_points_chk.setChecked(bool(dmodel.get("show_points", True)))
+        if z.zone_type == ZoneType.STUDENT_ID_BLOCK:
+            self.p_digit_center_ratio.setValue(float(dmodel.get("sid_center_ratio", 0.35) or 0.35))
+        else:
+            self.p_digit_center_ratio.setValue(float(dmodel.get("exam_center_ratio", 0.35) or 0.35))
         self._sync = False
 
     def _prop_changed(self, *_args):
-        if not self._sync:
-            self.regenerate_selected_grid(auto=True)
+        if self._sync:
+            return
+        if self.template:
+            model = self._digit_model()
+            model["rotation_deg"] = float(self.p_digit_rotation.value())
+            model["offset_sid"] = [float(self.p_sid_offset_x.value()), float(self.p_sid_offset_y.value())]
+            model["offset_exam"] = [float(self.p_exam_offset_x.value()), float(self.p_exam_offset_y.value())]
+            model["show_grid"] = bool(self.show_digit_grid_chk.isChecked())
+            model["show_anchors"] = bool(self.show_digit_anchors_chk.isChecked())
+            model["show_points"] = bool(self.show_digit_points_chk.isChecked())
+            z = self._selected_zone()
+            if z and z.zone_type == ZoneType.STUDENT_ID_BLOCK:
+                model["sid_col_spacing_scale"] = float(self.p_digit_col_scale.value())
+                model["sid_row_spacing_scale"] = float(self.p_digit_row_scale.value())
+                model["sid_center_ratio"] = float(self.p_digit_center_ratio.value())
+            elif z and z.zone_type == ZoneType.EXAM_CODE_BLOCK:
+                model["exam_col_spacing_scale"] = float(self.p_digit_col_scale.value())
+                model["exam_row_spacing_scale"] = float(self.p_digit_row_scale.value())
+                model["exam_center_ratio"] = float(self.p_digit_center_ratio.value())
+            self.template.metadata["digit_model"] = model
+        self.regenerate_selected_grid(auto=True)
+        self._refresh_digit_model_overlay()
+
+    def _digit_model(self) -> dict:
+        if not self.template:
+            return {}
+        model = dict((self.template.metadata or {}).get("digit_model", {}) or {})
+        model.setdefault("sid_col_spacing_scale", 1.0)
+        model.setdefault("sid_row_spacing_scale", 1.0)
+        model.setdefault("exam_col_spacing_scale", 1.0)
+        model.setdefault("exam_row_spacing_scale", 1.0)
+        model.setdefault("rotation_deg", 0.0)
+        model.setdefault("offset_sid", [0.0, 0.0])
+        model.setdefault("offset_exam", [0.0, 0.0])
+        model.setdefault("show_grid", True)
+        model.setdefault("show_anchors", True)
+        model.setdefault("show_points", True)
+        model.setdefault("sid_center_ratio", 0.35)
+        model.setdefault("exam_center_ratio", 0.35)
+        return model
+
+    def _manual_digit_anchor_points(self) -> list[tuple[float, float]]:
+        if not self.template:
+            return []
+        indexed: list[tuple[int, tuple[float, float]]] = []
+        for a in (self.template.anchors or []):
+            name = str(getattr(a, 'name', '') or '')
+            if not name.startswith('DIGIT_ANCHOR_'):
+                continue
+            try:
+                idx = int(name.rsplit('_', 1)[-1])
+            except Exception:
+                idx = len(indexed) + 1
+            indexed.append((idx, (float(a.x * self.template.width if a.x <= 1.0 else a.x), float(a.y * self.template.height if a.y <= 1.0 else a.y))))
+        return [pt for _, pt in sorted(indexed, key=lambda item: item[0])]
+
+    def _generate_digit_block_from_model(self, zone: Zone) -> dict[str, object] | None:
+        if not self.template or zone.zone_type not in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+            return None
+        anchors = self._manual_digit_anchor_points()
+        if len(anchors) < 2:
+            return None
+        rows = max(1, int(zone.metadata.get('rows', 10)))
+        cols = max(1, int(zone.metadata.get('columns', 8 if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else 4)))
+        model = self._digit_model()
+        ref_anchor = np.array(anchors[0], dtype=np.float32)
+        top_points = np.array(anchors[1:] if len(anchors) > 2 else anchors, dtype=np.float32)
+        if len(top_points) == 0:
+            return None
+        # Need 11 digit anchors total for 10 rows: anchor #1 handwritten separator, anchors #2..#11 ruler marks.
+        required_anchor_count = rows + 1
+        if len(top_points) > required_anchor_count:
+            top_points = top_points[:required_anchor_count]
+        elif len(top_points) < required_anchor_count and len(top_points) >= 2:
+            interp = []
+            for idx in range(required_anchor_count):
+                alpha = 0.0 if required_anchor_count <= 1 else float(idx / max(1, required_anchor_count - 1))
+                interp.append(((1.0 - alpha) * top_points[0]) + (alpha * top_points[-1]))
+            top_points = np.array(interp, dtype=np.float32)
+        # A2/A3 define the real ruler edge direction; digit anchors should follow this tilt.
+        edge_pts = []
+        for a in (self.template.anchors or []):
+            name = str(getattr(a, 'name', '') or '')
+            if name in {'A2', 'A3'}:
+                edge_pts.append(np.array([float(a.x * self.template.width if a.x <= 1.0 else a.x), float(a.y * self.template.height if a.y <= 1.0 else a.y)], dtype=np.float32))
+        if len(edge_pts) >= 2:
+            edge_pts = sorted(edge_pts, key=lambda pt: float(pt[1]))
+            anchor_vec = edge_pts[-1] - edge_pts[0]
+        else:
+            anchor_vec = top_points[-1] - top_points[0]
+        norm = float(np.linalg.norm(anchor_vec))
+        if norm < 1e-6:
+            return None
+        row_unit = anchor_vec / norm
+        ang = np.deg2rad(float(model.get('rotation_deg', 0.0) or 0.0))
+        rot = np.array([[np.cos(ang), -np.sin(ang)], [np.sin(ang), np.cos(ang)]], dtype=np.float32)
+        row_unit = rot @ row_unit
+        col_unit = np.array([-row_unit[1], row_unit[0]], dtype=np.float32)
+        zw = float(zone.width * self.template.width if zone.width <= 1.0 else zone.width)
+        zh = float(zone.height * self.template.height if zone.height <= 1.0 else zone.height)
+        base_col_spacing = (zw / max(1, cols - 1)) if cols > 1 else max(1.0, zw)
+        base_row_spacing = (zh / max(1, rows)) if rows > 0 else max(1.0, zh)
+        if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
+            col_spacing = base_col_spacing * float(model.get('sid_col_spacing_scale', 1.0) or 1.0)
+            row_spacing = base_row_spacing * float(model.get('sid_row_spacing_scale', 1.0) or 1.0)
+        else:
+            col_spacing = base_col_spacing * float(model.get('exam_col_spacing_scale', 1.0) or 1.0)
+            row_spacing = base_row_spacing * float(model.get('exam_row_spacing_scale', 1.0) or 1.0)
+        off_key = 'offset_sid' if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else 'offset_exam'
+        off = model.get(off_key, [0.0, 0.0]) or [0.0, 0.0]
+        ruler_anchors = [np.array(pt, dtype=np.float32) for pt in top_points]
+        median_gap = row_spacing
+        if len(ruler_anchors) >= 2:
+            gaps = [float(np.dot(ruler_anchors[i + 1] - ruler_anchors[i], row_unit)) for i in range(len(ruler_anchors) - 1)]
+            valid = [g for g in gaps if g > 1e-3]
+            if valid:
+                median_gap = float(np.median(valid))
+        row_centers = []
+        row_segments = []
+        # Normalized digit ruler:
+        # - anchor #1 is only the handwritten top separator and is not used for row sampling
+        # - anchors #2..#11 define 10 independent row midpoints from consecutive pairs
+        usable_anchors = ruler_anchors[:required_anchor_count]
+        if len(usable_anchors) >= 2:
+            pair_anchors = usable_anchors[1:]
+        else:
+            pair_anchors = usable_anchors
+        for r in range(rows):
+            if len(pair_anchors) >= 2 and r < len(pair_anchors) - 1:
+                a = pair_anchors[r]
+                b = pair_anchors[r + 1]
+                center_base = (a + b) * 0.5
+            elif len(pair_anchors) == 1:
+                center_base = pair_anchors[0] + (0.5 * median_gap * row_unit)
+            elif pair_anchors:
+                last_anchor = pair_anchors[-1]
+                prev_anchor = pair_anchors[-2]
+                center_base = last_anchor + (0.5 * (last_anchor - prev_anchor))
+            else:
+                center_base = ref_anchor + ((r + 0.5) * median_gap * row_unit)
+            center = center_base + (float(off[0]) * col_unit) + (float(off[1]) * row_unit)
+            row_centers.append(center)
+            row_start = center.copy()
+            row_end = row_start - ((cols - 1) * col_spacing * col_unit)
+            row_segments.append((tuple(row_start.tolist()), tuple(row_end.tolist())))
+        points=[]
+        for r in range(rows):
+            for c in range(cols):
+                pt = row_centers[r] + (c * col_spacing * col_unit)
+                points.append((float(pt[0]) / self.template.width, float(pt[1]) / self.template.height))
+        col_lines=[]
+        for c in range(cols):
+            start = row_centers[0] + (c * col_spacing * col_unit)
+            end = row_centers[-1] + (c * col_spacing * col_unit)
+            col_lines.append((tuple(start.tolist()), tuple(end.tolist())))
+        return {
+            'bubble_positions': points,
+            'anchor_points': anchors,
+            'anchor_line': [tuple(ref_anchor.tolist()), tuple((ref_anchor + (row_unit * max(median_gap * rows, 1.0))).tolist())],
+            'col_lines': col_lines,
+            'row_segments': row_segments,
+            'bubble_centers': [(p[0]*self.template.width, p[1]*self.template.height) for p in points],
+        }
+
+    def _refresh_digit_model_overlay(self) -> None:
+        if not self.template:
+            return
+        dbg = dict(getattr(self.canvas, 'digit_zone_debug', {}) or {})
+        for z in (self.template.zones or []):
+            if z.zone_type not in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+                continue
+            data = self._generate_digit_block_from_model(z)
+            if not data:
+                continue
+            if z.grid:
+                z.grid.bubble_positions = list(data['bubble_positions'])
+            zone_dbg = dict(dbg.get(z.id, {}))
+            zone_dbg.update({
+                'anchor_points': data['anchor_points'],
+                'anchor_line': data['anchor_line'],
+                'col_segments': data['col_lines'],
+                'row_segments': data['row_segments'],
+                'bubble_centers': data['bubble_centers'],
+            })
+            dbg[z.id] = zone_dbg
+        self.canvas.digit_zone_debug = dbg
+        self.canvas.update()
 
     def load_image(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open Blank Paper", "", "Images (*.png *.jpg *.jpeg *.tif *.tiff)")
@@ -726,6 +1005,7 @@ class TemplateEditorWindow(QMainWindow):
         self.test_ok = False
         self.template_dirty = False
         self._sync_recognition_settings_from_template()
+        self._refresh_digit_model_overlay()
         self.result_box.setPlainText("Đã nạp ảnh mẫu. Hãy tạo vùng nhận dạng, preview, test recognition và lưu.")
         return True
 
@@ -773,6 +1053,7 @@ class TemplateEditorWindow(QMainWindow):
         self.preview_ok = False
         self.test_ok = False
         self.template_dirty = False
+        self._refresh_digit_model_overlay()
         self.result_box.setPlainText("Template loaded. You can preview, adjust and save again.")
         return True
 
@@ -810,8 +1091,7 @@ class TemplateEditorWindow(QMainWindow):
             "decimal_symbol": self.p_decimal_symbol.text() or ".",
         })
         z.grid = self.template_engine.generate_semantic_grid(z)
-        if self.template and z.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
-            self.template_engine.rebuild_digit_zone_anchors(self.template)
+        self._refresh_digit_model_overlay()
         self._mark_dirty()
         self.canvas.update()
 
@@ -971,9 +1251,7 @@ class TemplateEditorWindow(QMainWindow):
 
         # Show detected anchors and recognized options overlay (green X = selected/seen).
         self.canvas.recognition_overlay.clear()
-        combined_detected_anchors = list(getattr(res, "detected_anchors", []))
-        combined_detected_anchors.extend(list(getattr(res, "detected_digit_anchors", [])))
-        self.canvas.detected_anchor_points = combined_detected_anchors
+        self.canvas.detected_anchor_points = list(getattr(res, "detected_anchors", []))
         self.canvas.digit_zone_debug = dict(getattr(res, "digit_zone_debug", {}) or {})
         self.canvas.recognition_overlay.update(getattr(res, "bubble_states_by_zone", {}) or self.omr.extract_bubble_states(aligned_binary, self.template))
 
