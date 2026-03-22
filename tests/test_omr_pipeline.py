@@ -520,6 +520,28 @@ class OMRPipelineTests(unittest.TestCase):
             self.processor.recognize_block(np.zeros((140, 120), dtype=np.uint8), template.zones[0], template, result_stub)
         self.assertEqual(result_stub.exam_code, "0")
 
+    def test_exam_code_decode_caps_digit_threshold_when_ui_fill_threshold_is_high(self):
+        processor = OMRProcessor(fill_threshold=0.62, debug_mode=False)
+        zone = Zone(
+            id="exam_threshold_cap",
+            name="exam",
+            zone_type=ZoneType.EXAM_CODE_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
+        mat = np.zeros((10, 1), dtype=np.float32)
+        mat[2, 0] = 0.53
+
+        digits, confs = processor._decode_column_digits(mat, zone, zone.grid, result_stub)
+
+        self.assertEqual(digits, "2")
+        self.assertTrue(confs and confs[0] > 1.0)
+
     def test_digit_zone_guidance_keeps_template_positions(self):
         expected = np.array([[10.0, 20.0], [30.0, 40.0]], dtype=np.float32)
         zone = Zone(

@@ -1954,7 +1954,7 @@ class OMRProcessor:
         ratios = self.detect_bubbles(binary, refined_centers, radius)
         core_ratios = self._detect_center_core_marks(binary, refined_centers, radius)
         multi_probe_ratios = self._detect_digit_zone_multi_probe_marks(binary, refined_centers, radius)
-        peak_window_ratios = self._detect_digit_zone_peak_window_marks(binary, refined_centers, radius)
+        peak_window_ratios = np.zeros_like(ratios)
         if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
             square_ratios = self._detect_square_mark_density(binary, refined_centers, radius)
             eroded_ratios = self._detect_eroded_mark_density(binary, refined_centers, radius)
@@ -1965,6 +1965,11 @@ class OMRProcessor:
             legacy_ratios = np.clip((0.55 * ratios) + (0.45 * core_ratios), 0.0, 1.0)
             widened_ratios = np.clip((0.24 * ratios) + (0.22 * core_ratios) + (0.30 * multi_probe_ratios) + (0.24 * peak_window_ratios), 0.0, 1.0)
             ratios = np.maximum(legacy_ratios, widened_ratios)
+        weak_mask = ratios < max(self.empty_threshold + 0.16, min(self.fill_threshold * 0.82, 0.44))
+        if np.any(weak_mask):
+            peak_window_ratios = self._detect_digit_zone_peak_window_marks(binary, refined_centers, radius)
+            rescue_scores = np.clip((0.55 * ratios) + (0.45 * peak_window_ratios), 0.0, 1.0)
+            ratios = np.where(weak_mask, np.maximum(ratios, rescue_scores), ratios)
         dynamic_thresholds = np.array([
             self._estimate_local_fill_threshold(binary, center, radius, self.fill_threshold)
             for center in refined_centers
@@ -2290,10 +2295,13 @@ class OMRProcessor:
         for c in range(cols):
             col_scores = np.asarray(mat[:, c], dtype=np.float32)
             raw_max = float(np.max(col_scores)) if col_scores.size else 0.0
+            fill_cap = self.fill_threshold
+            if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+                fill_cap = min(fill_cap, 0.52)
             col_threshold = max(
                 self.empty_threshold + 0.10,
                 min(
-                    self.fill_threshold,
+                    fill_cap,
                     float(np.mean(col_scores) + (0.5 * np.std(col_scores))),
                 ),
             )
