@@ -1577,8 +1577,6 @@ class OMRProcessor:
         return x0, y0, max(1, x1 - x0), max(1, y1 - y0)
 
     def _sample_digit_cell(self, img: np.ndarray, cx: float, cy: float, cell_w: float, cell_h: float) -> float:
-        cx = cx + (cell_w * 0.08)
-        cy = cy + (cell_h * 0.22)
         radius = max(1, int(min(cell_w, cell_h) * 0.20))
 
         h, w = img.shape[:2]
@@ -1677,7 +1675,7 @@ class OMRProcessor:
                 cx = float(base_points[row, col, 0] + (offset_x * cell_w))
                 cy = float(base_points[row, col, 1] + (offset_y * cell_h))
                 debug_centers.append((float(base_points[row, col, 0]), float(base_points[row, col, 1])))
-                sampled_points.append((cx + (cell_w * 0.08), cy + (cell_h * 0.22)))
+                sampled_points.append((cx, cy))
                 mat[row, col] = self._sample_digit_cell(img, cx, cy, cell_w, cell_h)
         results: list[int | None | str] = []
         for col in range(num_cols):
