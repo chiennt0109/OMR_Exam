@@ -947,20 +947,9 @@ class TemplateEditorWindow(QMainWindow):
                 pt = row_centers[r] + (c * col_spacing * col_unit)
                 points.append((float(pt[0]) / self.template.width, float(pt[1]) / self.template.height))
         col_lines=[]
-        top_extent = row_segments[0][0] if row_segments else tuple((row_centers[0]).tolist())
-        bottom_extent = row_segments[-1][0] if row_segments else tuple((row_centers[-1]).tolist())
-        top_pt = np.array(top_extent, dtype=np.float32)
-        bottom_pt = np.array(bottom_extent, dtype=np.float32)
-        if len(pair_anchors) >= 1:
-            top_pt = np.array(pair_anchors[0], dtype=np.float32) + (float(off[0]) * col_unit) + (float(off[1]) * row_unit)
-            if len(pair_anchors) >= 2:
-                last_gap = pair_anchors[-1] - pair_anchors[-2]
-            else:
-                last_gap = median_gap * row_unit
-            bottom_pt = np.array(pair_anchors[-1], dtype=np.float32) + last_gap + (float(off[0]) * col_unit) + (float(off[1]) * row_unit)
         for c in range(cols):
-            start = top_pt - (c * col_spacing * col_unit)
-            end = bottom_pt - (c * col_spacing * col_unit)
+            start = row_centers[0] + (c * col_spacing * col_unit)
+            end = row_centers[-1] + (c * col_spacing * col_unit)
             col_lines.append((tuple(start.tolist()), tuple(end.tolist())))
         return {
             'bubble_positions': points,
