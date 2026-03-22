@@ -865,12 +865,14 @@ class TemplateEditorWindow(QMainWindow):
         top_points = np.array(anchors[1:] if len(anchors) > 2 else anchors, dtype=np.float32)
         if len(top_points) == 0:
             return None
-        if len(top_points) > rows + 1:
-            top_points = top_points[: rows + 1]
-        elif len(top_points) < rows + 1 and len(top_points) >= 2:
+        # Need 11 digit anchors total for 10 rows: anchor #1 handwritten separator, anchors #2..#11 ruler marks.
+        required_anchor_count = rows + 1
+        if len(top_points) > required_anchor_count:
+            top_points = top_points[:required_anchor_count]
+        elif len(top_points) < required_anchor_count and len(top_points) >= 2:
             interp = []
-            for idx in range(rows + 1):
-                alpha = 0.0 if rows == 0 else float(idx / max(1, rows))
+            for idx in range(required_anchor_count):
+                alpha = 0.0 if required_anchor_count <= 1 else float(idx / max(1, required_anchor_count - 1))
                 interp.append(((1.0 - alpha) * top_points[0]) + (alpha * top_points[-1]))
             top_points = np.array(interp, dtype=np.float32)
         # A2/A3 define the real ruler edge direction; digit anchors should follow this tilt.
@@ -915,17 +917,22 @@ class TemplateEditorWindow(QMainWindow):
         row_segments = []
         # Normalized digit ruler:
         # - anchor #1 is only the handwritten top separator and is not used for row sampling
-        # - anchors #2..#11 define 9 midpoint rows
-        # - row #10 is extrapolated from the last anchor gap
-        usable_anchors = ruler_anchors[:]
-        if len(usable_anchors) >= 10:
-            usable_anchors = usable_anchors[:10]
+        # - anchors #2..#11 define 10 independent row midpoints from consecutive pairs
+        usable_anchors = ruler_anchors[:required_anchor_count]
+        if len(usable_anchors) >= 2:
+            pair_anchors = usable_anchors[1:]
+        else:
+            pair_anchors = usable_anchors
         for r in range(rows):
-            if len(usable_anchors) >= 2 and r < len(usable_anchors) - 1:
-                center_base = (usable_anchors[r] + usable_anchors[r + 1]) * 0.5
-            elif usable_anchors:
-                last_anchor = usable_anchors[-1]
-                prev_anchor = usable_anchors[-2] if len(usable_anchors) >= 2 else (last_anchor - (median_gap * row_unit))
+            if len(pair_anchors) >= 2 and r < len(pair_anchors) - 1:
+                a = pair_anchors[r]
+                b = pair_anchors[r + 1]
+                center_base = (a + b) * 0.5
+            elif len(pair_anchors) == 1:
+                center_base = pair_anchors[0] + (0.5 * median_gap * row_unit)
+            elif pair_anchors:
+                last_anchor = pair_anchors[-1]
+                prev_anchor = pair_anchors[-2]
                 center_base = last_anchor + (0.5 * (last_anchor - prev_anchor))
             else:
                 center_base = ref_anchor + ((r + 0.5) * median_gap * row_unit)
@@ -940,9 +947,20 @@ class TemplateEditorWindow(QMainWindow):
                 pt = row_centers[r] + (c * col_spacing * col_unit)
                 points.append((float(pt[0]) / self.template.width, float(pt[1]) / self.template.height))
         col_lines=[]
+        top_extent = row_segments[0][0] if row_segments else tuple((row_centers[0]).tolist())
+        bottom_extent = row_segments[-1][0] if row_segments else tuple((row_centers[-1]).tolist())
+        top_pt = np.array(top_extent, dtype=np.float32)
+        bottom_pt = np.array(bottom_extent, dtype=np.float32)
+        if len(pair_anchors) >= 1:
+            top_pt = np.array(pair_anchors[0], dtype=np.float32) + (float(off[0]) * col_unit) + (float(off[1]) * row_unit)
+            if len(pair_anchors) >= 2:
+                last_gap = pair_anchors[-1] - pair_anchors[-2]
+            else:
+                last_gap = median_gap * row_unit
+            bottom_pt = np.array(pair_anchors[-1], dtype=np.float32) + last_gap + (float(off[0]) * col_unit) + (float(off[1]) * row_unit)
         for c in range(cols):
-            start = row_centers[0] + (c * col_spacing * col_unit)
-            end = row_centers[-1] + (c * col_spacing * col_unit)
+            start = top_pt - (c * col_spacing * col_unit)
+            end = bottom_pt - (c * col_spacing * col_unit)
             col_lines.append((tuple(start.tolist()), tuple(end.tolist())))
         return {
             'bubble_positions': points,
