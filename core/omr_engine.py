@@ -1959,11 +1959,11 @@ class OMRProcessor:
             square_ratios = self._detect_square_mark_density(binary, refined_centers, radius)
             eroded_ratios = self._detect_eroded_mark_density(binary, refined_centers, radius)
             legacy_ratios = np.clip((0.15 * ratios) + (0.30 * core_ratios) + (0.30 * square_ratios) + (0.25 * eroded_ratios), 0.0, 1.0)
-            widened_ratios = np.clip((0.10 * ratios) + (0.22 * core_ratios) + (0.22 * square_ratios) + (0.18 * eroded_ratios) + (0.28 * multi_probe_ratios), 0.0, 1.0)
+            widened_ratios = np.clip((0.08 * ratios) + (0.18 * core_ratios) + (0.20 * square_ratios) + (0.16 * eroded_ratios) + (0.20 * multi_probe_ratios) + (0.18 * peak_window_ratios), 0.0, 1.0)
             ratios = np.maximum(legacy_ratios, widened_ratios)
         else:
             legacy_ratios = np.clip((0.55 * ratios) + (0.45 * core_ratios), 0.0, 1.0)
-            widened_ratios = np.clip((0.30 * ratios) + (0.28 * core_ratios) + (0.42 * multi_probe_ratios), 0.0, 1.0)
+            widened_ratios = np.clip((0.24 * ratios) + (0.22 * core_ratios) + (0.30 * multi_probe_ratios) + (0.24 * peak_window_ratios), 0.0, 1.0)
             ratios = np.maximum(legacy_ratios, widened_ratios)
         weak_mask = ratios < max(self.empty_threshold + 0.16, min(self.fill_threshold * 0.82, 0.44))
         if np.any(weak_mask):
