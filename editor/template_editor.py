@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSplitter,
     QSpinBox,
     QTextEdit,
     QToolBar,
@@ -528,12 +529,18 @@ class TemplateEditorWindow(QMainWindow):
         self.template_toolbar.addAction(self.act_zoom_in)
         self.template_toolbar.addAction(self.act_zoom_out)
 
-        self.result_box = QTextEdit(); self.result_box.setReadOnly(True); self.result_box.setMinimumHeight(140); self.result_box.setMaximumHeight(200)
+        self.result_box = QTextEdit(); self.result_box.setReadOnly(True); self.result_box.setMinimumHeight(140)
         self.prop_panel = self._build_prop_panel()
 
+        image_results_splitter = QSplitter(Qt.Vertical)
+        image_results_splitter.addWidget(scroll)
+        image_results_splitter.addWidget(self.result_box)
+        image_results_splitter.setStretchFactor(0, 5)
+        image_results_splitter.setStretchFactor(1, 1)
+        image_results_splitter.setSizes([760, 180])
+
         center = QWidget(); layout = QHBoxLayout(center)
-        left = QVBoxLayout(); left.addWidget(scroll); left.addWidget(self.result_box)
-        layout.addLayout(left, 1); layout.addWidget(self.prop_panel)
+        layout.addWidget(image_results_splitter, 1); layout.addWidget(self.prop_panel)
         self.setCentralWidget(center)
 
     def _assign_action_icons(self) -> None:
