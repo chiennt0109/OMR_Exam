@@ -1808,12 +1808,19 @@ class OMRProcessor:
                 out_path = out_dir / f"{Path(result.image_path).stem}_{zone.id}_digit_debug.png"
                 cv2.imwrite(str(out_path), digit_overlay)
             key = "student_id" if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else "exam_code"
-            confs = [1.0 if isinstance(d, int) else 0.0 for d in digits]
-            if not self._validate_sampled_digits(digits):
+            digit_map = zone.metadata.get("digit_map", list(range(rows)))
+            mapped_digits: list[int | None | str] = []
+            for d in digits:
+                if isinstance(d, int):
+                    mapped_digits.append(digit_map[d] if 0 <= d < len(digit_map) else d)
+                else:
+                    mapped_digits.append(d)
+            confs = [1.0 if isinstance(d, int) else 0.0 for d in mapped_digits]
+            if not self._validate_sampled_digits(mapped_digits):
                 result.recognition_errors.append(f"{zone.zone_type.value}: LOW_CONFIDENCE")
                 value = ""
             else:
-                value = "".join("_" if d is None else str(d) for d in digits)
+                value = "".join("_" if d is None else str(d) for d in mapped_digits)
             if key == "student_id" and value:
                 longest_run = 1
                 current_run = 1
