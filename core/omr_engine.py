@@ -559,8 +559,9 @@ class OMRProcessor:
                 refined_img, refined_bin = self._refine_alignment_with_one_side_anchors(coarse_img, coarse_bin, template)
                 oriented_img, oriented_bin = self._auto_orient(refined_img, refined_bin, template)
                 shifted_img, shifted_bin = self._refine_corner_translation(oriented_img, oriented_bin, template)
+                affine_img, affine_bin = self._refine_alignment_with_affine_anchors(shifted_img, shifted_bin, template)
                 self._last_alignment_debug["alignment_mode"] = "one_side"
-                return shifted_img, shifted_bin
+                return affine_img, affine_bin
 
             attempt = self._try_anchor_alignment(base_image, base_binary, template, candidate)
             if attempt is None:
@@ -569,16 +570,18 @@ class OMRProcessor:
             refined_img, refined_bin = (coarse_img, coarse_bin) if candidate == "legacy" else self._refine_alignment_with_template_anchors(coarse_img, coarse_bin, template)
             oriented_img, oriented_bin = self._auto_orient(refined_img, refined_bin, template)
             shifted_img, shifted_bin = self._refine_corner_translation(oriented_img, oriented_bin, template)
+            affine_img, affine_bin = self._refine_alignment_with_affine_anchors(shifted_img, shifted_bin, template)
             self._last_alignment_debug["alignment_mode"] = candidate
-            return shifted_img, shifted_bin
+            return affine_img, affine_bin
 
         result.issues.append(OMRIssue("MISSING_ANCHORS", "Anchor detection failed; using page contour fallback"))
         aligned, aligned_binary = self._fallback_align_page_contour(image, template)
         refined_img, refined_bin = self._refine_alignment_with_template_anchors(aligned, aligned_binary, template)
         oriented_img, oriented_bin = self._auto_orient(refined_img, refined_bin, template)
         shifted_img, shifted_bin = self._refine_corner_translation(oriented_img, oriented_bin, template)
+        affine_img, affine_bin = self._refine_alignment_with_affine_anchors(shifted_img, shifted_bin, template)
         self._last_alignment_debug.setdefault("alignment_mode", "page_contour")
-        return shifted_img, shifted_bin
+        return affine_img, affine_bin
 
     def _auto_orient(self, aligned: np.ndarray, aligned_binary: np.ndarray, template: Template) -> tuple[np.ndarray, np.ndarray]:
         candidates = []
@@ -662,6 +665,63 @@ class OMRProcessor:
         shifted_bin = cv2.warpAffine(aligned_binary, shift, (template.width, template.height), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_REPLICATE)
         self._last_alignment_debug["fine_offset"] = {"dx": dx, "dy": dy}
         return shifted, shifted_bin
+
+    def _refine_alignment_with_affine_anchors(self, aligned: np.ndarray, aligned_binary: np.ndarray, template: Template) -> tuple[np.ndarray, np.ndarray]:
+        if len(template.anchors) < 4:
+            return aligned, aligned_binary
+        template_pts = np.array([(a.x * template.width, a.y * template.height) if a.x <= 1.0 and a.y <= 1.0 else (a.x, a.y) for a in template.anchors], dtype=np.float32)
+        detected = np.array(self.detect_anchors(aligned_binary, use_border_padding=True, relaxed_polygon=True, max_points=120), dtype=np.float32)
+        if len(detected) < 4:
+            return aligned, aligned_binary
+
+        max_dist = max(10.0, 0.03 * float(np.hypot(template.width, template.height)))
+        src_matches: list[np.ndarray] = []
+        dst_matches: list[np.ndarray] = []
+        used: set[int] = set()
+        for t in template_pts:
+            d2 = np.sum((detected - t) ** 2, axis=1)
+            idx = int(np.argmin(d2))
+            if idx in used:
+                continue
+            dist = float(np.sqrt(float(d2[idx])))
+            if dist <= max_dist:
+                used.add(idx)
+                src_matches.append(detected[idx])
+                dst_matches.append(t)
+        if len(src_matches) < 4:
+            return aligned, aligned_binary
+
+        src = np.array(src_matches, dtype=np.float32)
+        dst = np.array(dst_matches, dtype=np.float32)
+        affine, inliers = cv2.estimateAffine2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=3.5)
+        if affine is None:
+            return aligned, aligned_binary
+        if inliers is not None and int(inliers.sum()) < 4:
+            return aligned, aligned_binary
+
+        linear = affine[:, :2].astype(np.float64)
+        det = float(np.linalg.det(linear))
+        if not np.isfinite(det) or det <= 0.0:
+            return aligned, aligned_binary
+        if det < 0.90 or det > 1.10:
+            return aligned, aligned_binary
+        if float(np.max(np.abs(linear - np.eye(2)))) > 0.18:
+            return aligned, aligned_binary
+
+        proj = cv2.transform(src.reshape(1, -1, 2), affine.astype(np.float32)).reshape(-1, 2)
+        base_err = float(np.mean(np.min(np.sqrt(np.sum((detected[:, None, :] - template_pts[None, :, :]) ** 2, axis=2)), axis=0)))
+        new_err = float(np.sqrt(np.mean(np.sum((proj - dst) ** 2, axis=1))))
+        if not np.isfinite(new_err) or new_err > max(2.5, base_err - 0.3):
+            return aligned, aligned_binary
+
+        refined = cv2.warpAffine(aligned, affine.astype(np.float32), (template.width, template.height), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        refined_bin = cv2.warpAffine(aligned_binary, affine.astype(np.float32), (template.width, template.height), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_REPLICATE)
+        self._last_alignment_debug["affine_refine"] = {
+            "matrix": affine.astype(float).tolist(),
+            "rmse": new_err,
+            "match_count": len(src_matches),
+        }
+        return refined, refined_bin
 
     def _refine_alignment_with_template_anchors(self, aligned: np.ndarray, aligned_binary: np.ndarray, template: Template) -> tuple[np.ndarray, np.ndarray]:
         if len(template.anchors) < 4:
@@ -940,6 +1000,43 @@ class OMRProcessor:
             best = probe_scores[0]
             top2 = float(np.mean(probe_scores[: min(2, len(probe_scores))]))
             scores[i] = float(np.clip((0.65 * best) + (0.35 * top2), 0.0, 1.0))
+        return scores
+
+    def _detect_digit_zone_peak_window_marks(self, binary: np.ndarray, centers: np.ndarray, radius: int) -> np.ndarray:
+        peak_r = max(2, int(round(radius * 0.52)))
+        search_r = max(1, int(round(radius * 0.45)))
+        h, w = binary.shape[:2]
+        scores = np.zeros((len(centers),), dtype=np.float32)
+        centers_int = centers.astype(np.int32)
+        for i, (x, y) in enumerate(centers_int):
+            best_density = 0.0
+            ring_density = 0.0
+            for dy in range(-search_r, search_r + 1, max(1, peak_r // 2)):
+                for dx in range(-search_r, search_r + 1, max(1, peak_r // 2)):
+                    cx = int(x + dx)
+                    cy = int(y + dy)
+                    x0, y0 = max(0, cx - peak_r), max(0, cy - peak_r)
+                    x1, y1 = min(w, cx + peak_r + 1), min(h, cy + peak_r + 1)
+                    roi = binary[y0:y1, x0:x1]
+                    if roi.size == 0:
+                        continue
+                    density = float(np.count_nonzero(roi)) / float(roi.size)
+                    if density > best_density:
+                        best_density = density
+            ring_r = max(peak_r + 1, int(round(radius * 0.95)))
+            x0, y0 = max(0, x - ring_r), max(0, y - ring_r)
+            x1, y1 = min(w, x + ring_r + 1), min(h, y + ring_r + 1)
+            outer = binary[y0:y1, x0:x1]
+            if outer.size:
+                yy, xx = np.indices(outer.shape)
+                cx0 = int(x - x0)
+                cy0 = int(y - y0)
+                dist2 = (xx - cx0) ** 2 + (yy - cy0) ** 2
+                core_mask = dist2 <= (peak_r ** 2)
+                ring_mask = (dist2 > (peak_r ** 2)) & (dist2 <= (ring_r ** 2))
+                if np.any(ring_mask):
+                    ring_density = float(np.count_nonzero(outer[ring_mask])) / float(np.count_nonzero(ring_mask))
+            scores[i] = float(np.clip((0.85 * best_density) - (0.25 * ring_density), 0.0, 1.0))
         return scores
 
     def classify_bubble(self, ratio: float) -> str:
@@ -1625,7 +1722,18 @@ class OMRProcessor:
         if np.any(ring_mask):
             ring_density = float(np.count_nonzero(th[ring_mask])) / float(np.count_nonzero(ring_mask))
         patch_density = float(np.count_nonzero(th)) / float(th.size)
-        score = (0.80 * core_density) + (0.20 * patch_density) - (0.45 * ring_density)
+        search_step = max(1, inner_r // 2)
+        peak_density = core_density
+        for dy in range(-search_step, search_step + 1, search_step):
+            for dx in range(-search_step, search_step + 1, search_step):
+                shifted_dist2 = (xx - (local_cx + dx)) ** 2 + (yy - (local_cy + dy)) ** 2
+                shifted_core = shifted_dist2 <= float(inner_r ** 2)
+                if np.any(shifted_core):
+                    peak_density = max(
+                        peak_density,
+                        float(np.count_nonzero(th[shifted_core])) / float(np.count_nonzero(shifted_core)),
+                    )
+        score = (0.60 * core_density) + (0.25 * peak_density) + (0.15 * patch_density) - (0.45 * ring_density)
         return float(np.clip(score, 0.0, 1.0))
 
     def _evaluate_digit_grid_offset(
@@ -1846,6 +1954,7 @@ class OMRProcessor:
         ratios = self.detect_bubbles(binary, refined_centers, radius)
         core_ratios = self._detect_center_core_marks(binary, refined_centers, radius)
         multi_probe_ratios = self._detect_digit_zone_multi_probe_marks(binary, refined_centers, radius)
+        peak_window_ratios = np.zeros_like(ratios)
         if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
             square_ratios = self._detect_square_mark_density(binary, refined_centers, radius)
             eroded_ratios = self._detect_eroded_mark_density(binary, refined_centers, radius)
@@ -1856,6 +1965,11 @@ class OMRProcessor:
             legacy_ratios = np.clip((0.55 * ratios) + (0.45 * core_ratios), 0.0, 1.0)
             widened_ratios = np.clip((0.30 * ratios) + (0.28 * core_ratios) + (0.42 * multi_probe_ratios), 0.0, 1.0)
             ratios = np.maximum(legacy_ratios, widened_ratios)
+        weak_mask = ratios < max(self.empty_threshold + 0.16, min(self.fill_threshold * 0.82, 0.44))
+        if np.any(weak_mask):
+            peak_window_ratios = self._detect_digit_zone_peak_window_marks(binary, refined_centers, radius)
+            rescue_scores = np.clip((0.55 * ratios) + (0.45 * peak_window_ratios), 0.0, 1.0)
+            ratios = np.where(weak_mask, np.maximum(ratios, rescue_scores), ratios)
         dynamic_thresholds = np.array([
             self._estimate_local_fill_threshold(binary, center, radius, self.fill_threshold)
             for center in refined_centers
@@ -1878,6 +1992,7 @@ class OMRProcessor:
             "direct_scores": mat.tolist(),
             "direct_local_fill": local_fill.tolist(),
             "direct_radius": int(radius),
+            "peak_window_scores": peak_window_ratios.tolist(),
         }
         return value, confs, refined_centers, mat, debug
 
@@ -2180,10 +2295,13 @@ class OMRProcessor:
         for c in range(cols):
             col_scores = np.asarray(mat[:, c], dtype=np.float32)
             raw_max = float(np.max(col_scores)) if col_scores.size else 0.0
+            fill_cap = self.fill_threshold
+            if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+                fill_cap = min(fill_cap, 0.52)
             col_threshold = max(
                 self.empty_threshold + 0.10,
                 min(
-                    self.fill_threshold,
+                    fill_cap,
                     float(np.mean(col_scores) + (0.5 * np.std(col_scores))),
                 ),
             )
