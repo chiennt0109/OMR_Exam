@@ -840,12 +840,17 @@ class TemplateEditorWindow(QMainWindow):
     def _manual_digit_anchor_points(self) -> list[tuple[float, float]]:
         if not self.template:
             return []
-        pts=[]
+        indexed: list[tuple[int, tuple[float, float]]] = []
         for a in (self.template.anchors or []):
-            name=str(getattr(a,'name','') or '')
-            if name.startswith('DIGIT_ANCHOR_'):
-                pts.append((float(a.x * self.template.width if a.x <= 1.0 else a.x), float(a.y * self.template.height if a.y <= 1.0 else a.y)))
-        return sorted(pts, key=lambda p: p[1])
+            name = str(getattr(a, 'name', '') or '')
+            if not name.startswith('DIGIT_ANCHOR_'):
+                continue
+            try:
+                idx = int(name.rsplit('_', 1)[-1])
+            except Exception:
+                idx = len(indexed) + 1
+            indexed.append((idx, (float(a.x * self.template.width if a.x <= 1.0 else a.x), float(a.y * self.template.height if a.y <= 1.0 else a.y))))
+        return [pt for _, pt in sorted(indexed, key=lambda item: item[0])]
 
     def _generate_digit_block_from_model(self, zone: Zone) -> dict[str, object] | None:
         if not self.template or zone.zone_type not in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
@@ -858,15 +863,27 @@ class TemplateEditorWindow(QMainWindow):
         model = self._digit_model()
         ref_anchor = np.array(anchors[0], dtype=np.float32)
         top_points = np.array(anchors[1:] if len(anchors) > 2 else anchors, dtype=np.float32)
-        if len(top_points) > rows:
-            top_points = top_points[:rows]
-        elif len(top_points) < rows and len(top_points) >= 2:
+        if len(top_points) == 0:
+            return None
+        if len(top_points) > rows + 1:
+            top_points = top_points[: rows + 1]
+        elif len(top_points) < rows + 1 and len(top_points) >= 2:
             interp = []
-            for idx in range(rows):
-                alpha = 0.0 if rows == 1 else float(idx / max(1, rows - 1))
+            for idx in range(rows + 1):
+                alpha = 0.0 if rows == 0 else float(idx / max(1, rows))
                 interp.append(((1.0 - alpha) * top_points[0]) + (alpha * top_points[-1]))
             top_points = np.array(interp, dtype=np.float32)
-        anchor_vec = top_points[-1] - top_points[0]
+        # A2/A3 define the real ruler edge direction; digit anchors should follow this tilt.
+        edge_pts = []
+        for a in (self.template.anchors or []):
+            name = str(getattr(a, 'name', '') or '')
+            if name in {'A2', 'A3'}:
+                edge_pts.append(np.array([float(a.x * self.template.width if a.x <= 1.0 else a.x), float(a.y * self.template.height if a.y <= 1.0 else a.y)], dtype=np.float32))
+        if len(edge_pts) >= 2:
+            edge_pts = sorted(edge_pts, key=lambda pt: float(pt[1]))
+            anchor_vec = edge_pts[-1] - edge_pts[0]
+        else:
+            anchor_vec = top_points[-1] - top_points[0]
         norm = float(np.linalg.norm(anchor_vec))
         if norm < 1e-6:
             return None
@@ -898,9 +915,9 @@ class TemplateEditorWindow(QMainWindow):
         row_segments = []
         for r in range(rows):
             top_pt = row_tops[r]
-            gap = float(np.dot(row_tops[r + 1] - top_pt, row_unit)) if r + 1 < len(row_tops) else median_gap
+            bottom_pt = row_tops[r + 1] if r + 1 < len(row_tops) else (top_pt + (median_gap * row_unit))
             center_ratio = float(model.get('sid_center_ratio', 0.35) if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else model.get('exam_center_ratio', 0.35))
-            center_base = top_pt + (center_ratio * gap * row_unit)
+            center_base = top_pt + (center_ratio * (bottom_pt - top_pt))
             center = center_base + (float(off[0]) * col_unit) + (float(off[1]) * row_unit)
             row_centers.append(center)
             row_start = top_pt + (float(off[0]) * col_unit) + (float(off[1]) * row_unit)
