@@ -1577,13 +1577,14 @@ class OMRProcessor:
         return x0, y0, max(1, x1 - x0), max(1, y1 - y0)
 
     def _sample_digit_cell(self, img: np.ndarray, cx: float, cy: float, cell_w: float, cell_h: float) -> float:
-        radius = max(1, int(min(cell_w, cell_h) * 0.20))
+        outer_r = max(2, int(min(cell_w, cell_h) * 0.26))
+        inner_r = max(1, int(round(outer_r * 0.55)))
 
         h, w = img.shape[:2]
-        x1 = max(int(cx - radius), 0)
-        x2 = min(int(cx + radius), w)
-        y1 = max(int(cy - radius), 0)
-        y2 = min(int(cy + radius), h)
+        x1 = max(int(cx - outer_r), 0)
+        x2 = min(int(cx + outer_r + 1), w)
+        y1 = max(int(cy - outer_r), 0)
+        y2 = min(int(cy + outer_r + 1), h)
 
         patch = img[y1:y2, x1:x2]
         if patch.size == 0:
@@ -1595,7 +1596,22 @@ class OMRProcessor:
             255,
             cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU,
         )
-        return float(np.sum(th > 0) / th.size)
+        yy, xx = np.indices(th.shape)
+        local_cx = float(cx - x1)
+        local_cy = float(cy - y1)
+        dist2 = (xx - local_cx) ** 2 + (yy - local_cy) ** 2
+        core_mask = dist2 <= float(inner_r ** 2)
+        ring_mask = (dist2 > float(inner_r ** 2)) & (dist2 <= float(outer_r ** 2))
+
+        if not np.any(core_mask):
+            return 0.0
+        core_density = float(np.count_nonzero(th[core_mask])) / float(np.count_nonzero(core_mask))
+        ring_density = 0.0
+        if np.any(ring_mask):
+            ring_density = float(np.count_nonzero(th[ring_mask])) / float(np.count_nonzero(ring_mask))
+        patch_density = float(np.count_nonzero(th)) / float(th.size)
+        score = (0.80 * core_density) + (0.20 * patch_density) - (0.45 * ring_density)
+        return float(np.clip(score, 0.0, 1.0))
 
     def _evaluate_digit_grid_offset(
         self,
