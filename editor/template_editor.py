@@ -528,7 +528,7 @@ class TemplateEditorWindow(QMainWindow):
         self.template_toolbar.addAction(self.act_zoom_in)
         self.template_toolbar.addAction(self.act_zoom_out)
 
-        self.result_box = QTextEdit(); self.result_box.setReadOnly(True); self.result_box.setMaximumHeight(160)
+        self.result_box = QTextEdit(); self.result_box.setReadOnly(True); self.result_box.setMinimumHeight(140); self.result_box.setMaximumHeight(200)
         self.prop_panel = self._build_prop_panel()
 
         center = QWidget(); layout = QHBoxLayout(center)
@@ -616,6 +616,7 @@ class TemplateEditorWindow(QMainWindow):
         self.p_sid_offset_y = QDoubleSpinBox(); self.p_sid_offset_y.setRange(-2000.0, 2000.0); self.p_sid_offset_y.setSingleStep(1.0)
         self.p_exam_offset_x = QDoubleSpinBox(); self.p_exam_offset_x.setRange(-2000.0, 2000.0); self.p_exam_offset_x.setSingleStep(1.0)
         self.p_exam_offset_y = QDoubleSpinBox(); self.p_exam_offset_y.setRange(-2000.0, 2000.0); self.p_exam_offset_y.setSingleStep(1.0)
+        self.p_digit_center_ratio = QDoubleSpinBox(); self.p_digit_center_ratio.setRange(0.10, 0.90); self.p_digit_center_ratio.setSingleStep(0.01); self.p_digit_center_ratio.setValue(0.35)
         self.show_digit_grid_chk = QCheckBox("Show Grid"); self.show_digit_grid_chk.setChecked(True)
         self.show_digit_anchors_chk = QCheckBox("Show Anchors"); self.show_digit_anchors_chk.setChecked(True)
         self.show_digit_points_chk = QCheckBox("Show Sampling Points"); self.show_digit_points_chk.setChecked(True)
@@ -628,7 +629,7 @@ class TemplateEditorWindow(QMainWindow):
             ("sign_row", self.p_sign_row), ("decimal_row", self.p_decimal_row), ("digit_start_row", self.p_digit_start_row),
             ("sign_columns", self.p_sign_columns), ("decimal_columns", self.p_decimal_columns), ("sign_symbol", self.p_sign_symbol), ("decimal_symbol", self.p_decimal_symbol),
             ("digit_col_spacing_scale", self.p_digit_col_scale), ("digit_row_spacing_scale", self.p_digit_row_scale), ("digit_rotation_deg", self.p_digit_rotation),
-            ("sid_offset_x", self.p_sid_offset_x), ("sid_offset_y", self.p_sid_offset_y), ("exam_offset_x", self.p_exam_offset_x), ("exam_offset_y", self.p_exam_offset_y),
+            ("sid_offset_x", self.p_sid_offset_x), ("sid_offset_y", self.p_sid_offset_y), ("exam_offset_x", self.p_exam_offset_x), ("exam_offset_y", self.p_exam_offset_y), ("digit_center_ratio", self.p_digit_center_ratio),
             ("show_digit_grid", self.show_digit_grid_chk), ("show_digit_anchors", self.show_digit_anchors_chk), ("show_digit_points", self.show_digit_points_chk),
         ]
         self._prop_rows = {}
@@ -779,6 +780,10 @@ class TemplateEditorWindow(QMainWindow):
         self.show_digit_grid_chk.setChecked(bool(dmodel.get("show_grid", True)))
         self.show_digit_anchors_chk.setChecked(bool(dmodel.get("show_anchors", True)))
         self.show_digit_points_chk.setChecked(bool(dmodel.get("show_points", True)))
+        if z.zone_type == ZoneType.STUDENT_ID_BLOCK:
+            self.p_digit_center_ratio.setValue(float(dmodel.get("sid_center_ratio", 0.35) or 0.35))
+        else:
+            self.p_digit_center_ratio.setValue(float(dmodel.get("exam_center_ratio", 0.35) or 0.35))
         self._sync = False
 
     def _prop_changed(self, *_args):
@@ -796,9 +801,11 @@ class TemplateEditorWindow(QMainWindow):
             if z and z.zone_type == ZoneType.STUDENT_ID_BLOCK:
                 model["sid_col_spacing_scale"] = float(self.p_digit_col_scale.value())
                 model["sid_row_spacing_scale"] = float(self.p_digit_row_scale.value())
+                model["sid_center_ratio"] = float(self.p_digit_center_ratio.value())
             elif z and z.zone_type == ZoneType.EXAM_CODE_BLOCK:
                 model["exam_col_spacing_scale"] = float(self.p_digit_col_scale.value())
                 model["exam_row_spacing_scale"] = float(self.p_digit_row_scale.value())
+                model["exam_center_ratio"] = float(self.p_digit_center_ratio.value())
             self.template.metadata["digit_model"] = model
         self.regenerate_selected_grid(auto=True)
         self._refresh_digit_model_overlay()
@@ -817,6 +824,8 @@ class TemplateEditorWindow(QMainWindow):
         model.setdefault("show_grid", True)
         model.setdefault("show_anchors", True)
         model.setdefault("show_points", True)
+        model.setdefault("sid_center_ratio", 0.35)
+        model.setdefault("exam_center_ratio", 0.35)
         return model
 
     def _manual_digit_anchor_points(self) -> list[tuple[float, float]]:
@@ -881,7 +890,8 @@ class TemplateEditorWindow(QMainWindow):
         for r in range(rows):
             top_pt = row_tops[r]
             gap = float(np.dot(row_tops[r + 1] - top_pt, row_unit)) if r + 1 < len(row_tops) else median_gap
-            center_base = top_pt + (0.35 * gap * row_unit)
+            center_ratio = float(model.get('sid_center_ratio', 0.35) if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else model.get('exam_center_ratio', 0.35))
+            center_base = top_pt + (center_ratio * gap * row_unit)
             center = center_base + (float(off[0]) * col_unit) + (float(off[1]) * row_unit)
             row_centers.append(center)
             row_start = top_pt + (float(off[0]) * col_unit) + (float(off[1]) * row_unit)
