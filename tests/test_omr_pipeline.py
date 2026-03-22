@@ -1054,6 +1054,12 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertGreater(confidence, 0.20)
         self.assertEqual(reason, "best_fallback")
 
+    def test_mcq_dominant_fallback_accepts_single_best_answer_even_when_two_choices_cross_threshold(self):
+        best_idx, confidence, reason = self.processor._pick_best_mcq_option(np.array([0.14, 0.71, 0.92, 0.15], dtype=np.float32), 0.62)
+        self.assertEqual(best_idx, 2)
+        self.assertGreater(confidence, 0.18)
+        self.assertEqual(reason, "dominant_fallback")
+
     def test_mcq_dominant_fallback_accepts_much_darker_choice_when_second_is_borderline(self):
         best_idx, confidence, reason = self.processor._pick_best_mcq_option(np.array([0.18, 0.63, 0.92, 0.14], dtype=np.float32), 0.62)
         self.assertEqual(best_idx, 2)

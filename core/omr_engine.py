@@ -1947,10 +1947,9 @@ class OMRProcessor:
         filled = np.where(scores > row_threshold)[0]
         margin = top - second
         if len(filled) > 1:
-            dominant_margin = max(self.certainty_margin * 1.25, 0.12)
-            dominant_ratio = second <= 1e-6 or top >= (1.35 * second)
-            second_is_borderline = second <= (row_threshold + 0.10)
-            if top >= row_threshold and margin >= dominant_margin and dominant_ratio and second_is_borderline:
+            dominant_margin = max(self.certainty_margin * 1.10, 0.10)
+            dominant_ratio = second <= 1e-6 or top >= (1.25 * second)
+            if top >= row_threshold and margin >= dominant_margin and dominant_ratio:
                 return top_i, margin, "dominant_fallback"
             return None, 0.0, "multiple"
         if top > row_threshold and margin > self.certainty_margin:
