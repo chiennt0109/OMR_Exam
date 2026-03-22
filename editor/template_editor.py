@@ -918,16 +918,17 @@ class TemplateEditorWindow(QMainWindow):
         row_centers = []
         row_segments = []
         # Normalized digit ruler:
-        # - anchor #1 is only the handwritten top separator and is not used for row sampling
-        # - anchors #2..#11 define row midpoints from consecutive real anchor pairs
+        # - anchor index 0 is the handwritten top separator / top clamp and is not used for row sampling
+        # - anchors 1..N provide the real ruler marks used to derive row midpoints from consecutive pairs
         usable_anchors = ruler_anchors[:required_anchor_count]
-        pair_anchors = usable_anchors[1:] if len(usable_anchors) >= 2 else usable_anchors
+        pair_anchors = usable_anchors
 
         base_row_midpoints: list[np.ndarray] = []
         if len(pair_anchors) >= 2:
             base_row_midpoints = [((pair_anchors[i] + pair_anchors[i + 1]) * 0.5) for i in range(len(pair_anchors) - 1)]
-            last_gap_vec = pair_anchors[-1] - pair_anchors[-2]
-            base_row_midpoints.append(pair_anchors[-1] + (0.5 * last_gap_vec))
+            if len(base_row_midpoints) < rows:
+                last_gap_vec = pair_anchors[-1] - pair_anchors[-2]
+                base_row_midpoints.append(pair_anchors[-1] + (0.5 * last_gap_vec))
         elif len(pair_anchors) == 1:
             base_row_midpoints = [pair_anchors[0] + (0.5 * median_gap * row_unit)]
         row_origin = base_row_midpoints[0] if base_row_midpoints else ref_anchor
