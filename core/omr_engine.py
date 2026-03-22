@@ -1000,10 +1000,6 @@ class OMRProcessor:
             return []
         ys = np.sort(ys)
         if ys.size >= rows + 1:
-            ys = ys[: rows + 1]
-            if rows >= 2:
-                tail = np.linspace(float(ys[1]), float(ys[-1]), rows, dtype=np.float32)
-                return [float(ys[0])] + [float(v) for v in tail]
             return [float(v) for v in ys[: rows + 1]]
         return np.linspace(float(ys[0]), float(ys[-1]), rows + 1, dtype=np.float32).astype(float).tolist()
 
