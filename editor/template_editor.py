@@ -913,14 +913,25 @@ class TemplateEditorWindow(QMainWindow):
                 median_gap = float(np.median(valid))
         row_centers = []
         row_segments = []
+        # Horizontal recognition lines must lie midway between consecutive real digit anchors,
+        # using the ruler from the 2nd anchor downward.
+        usable_tops = row_tops[1:] if len(row_tops) >= 2 else row_tops
+        if len(usable_tops) < 2:
+            usable_tops = row_tops
         for r in range(rows):
-            top_pt = row_tops[r]
-            bottom_pt = row_tops[r + 1] if r + 1 < len(row_tops) else (top_pt + (median_gap * row_unit))
-            center_ratio = float(model.get('sid_center_ratio', 0.35) if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else model.get('exam_center_ratio', 0.35))
-            center_base = top_pt + (center_ratio * (bottom_pt - top_pt))
+            if r < len(usable_tops) - 1:
+                top_pt = usable_tops[r]
+                bottom_pt = usable_tops[r + 1]
+            elif usable_tops:
+                top_pt = usable_tops[-1]
+                bottom_pt = top_pt + (median_gap * row_unit)
+            else:
+                top_pt = row_tops[min(r, len(row_tops) - 1)]
+                bottom_pt = top_pt + (median_gap * row_unit)
+            center_base = (top_pt + bottom_pt) * 0.5
             center = center_base + (float(off[0]) * col_unit) + (float(off[1]) * row_unit)
             row_centers.append(center)
-            row_start = top_pt + (float(off[0]) * col_unit) + (float(off[1]) * row_unit)
+            row_start = center + (-0.5 * col_spacing * 0.0 * col_unit)
             row_end = row_start + ((cols - 1) * col_spacing * col_unit)
             row_segments.append((tuple(row_start.tolist()), tuple(row_end.tolist())))
         points=[]
