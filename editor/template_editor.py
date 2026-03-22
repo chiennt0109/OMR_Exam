@@ -420,6 +420,12 @@ class TemplateCanvas(QWidget):
                 py = float(y) * self.zoom
                 painter.drawLine(QPointF(px - 6, py - 6), QPointF(px + 6, py + 6))
                 painter.drawLine(QPointF(px - 6, py + 6), QPointF(px + 6, py - 6))
+            painter.setPen(QPen(QColor(0, 200, 0), 2))
+            for x, y in debug.get("recognized_points", []) or []:
+                px = float(x) * self.zoom
+                py = float(y) * self.zoom
+                painter.drawLine(QPointF(px - 5, py - 5), QPointF(px + 5, py + 5))
+                painter.drawLine(QPointF(px - 5, py + 5), QPointF(px + 5, py - 5))
 
 
 class TemplateEditorWindow(QMainWindow):

@@ -1678,6 +1678,7 @@ class OMRProcessor:
                 sampled_points.append((cx, cy))
                 mat[row, col] = self._sample_digit_cell(img, cx, cy, cell_w, cell_h)
         results: list[int | None | str] = []
+        recognized_points: list[tuple[float, float]] = []
         for col in range(num_cols):
             column_scores = [(row, float(mat[row, col])) for row in range(num_rows)]
             if self.debug_mode:
@@ -1688,6 +1689,10 @@ class OMRProcessor:
                 results.append(None)
             else:
                 results.append(best_row)
+                recognized_points.append((
+                    float(base_points[best_row, col, 0] + (offset_x * cell_w)),
+                    float(base_points[best_row, col, 1] + (offset_y * cell_h)),
+                ))
         debug = {
             "bbox": bbox,
             "centers": debug_centers,
@@ -1698,6 +1703,7 @@ class OMRProcessor:
             "row_lines": [float(y0 + (row * cell_h) + (cell_h * 0.5)) for row in range(num_rows)],
             "col_lines": [float(x0 + (col * cell_w) + (cell_w * 0.5)) for col in range(num_cols)],
             "scores": mat.tolist(),
+            "recognized_points": recognized_points,
         }
         return results, mat, debug
 
@@ -1734,6 +1740,60 @@ class OMRProcessor:
                 digits.append("?")
                 result.recognition_errors.append(f"{zone.zone_type.value} column {c+1}: blank")
         return "".join(digits), confs
+
+
+    def _digit_offset_candidates(self) -> list[tuple[float, float]]:
+        return [
+            (0.0, 0.0),
+            (2.0, 0.0), (-2.0, 0.0), (0.0, 2.0), (0.0, -2.0),
+            (2.0, 2.0), (2.0, -2.0), (-2.0, 2.0), (-2.0, -2.0),
+        ]
+
+    def _shift_digit_centers(self, centers: np.ndarray, dx: float, dy: float) -> np.ndarray:
+        shifted = np.asarray(centers, dtype=np.float32).copy()
+        if shifted.size == 0:
+            return shifted
+        shifted[:, 0] += float(dx)
+        shifted[:, 1] += float(dy)
+        return shifted
+
+    def _read_digit_zone_with_offset_fallback(
+        self,
+        img: np.ndarray,
+        bbox: tuple[int, int, int, int],
+        cols: int,
+        rows: int,
+        threshold: float,
+        centers: np.ndarray,
+    ) -> tuple[list[int | None | str], np.ndarray, dict[str, object]]:
+        fallback_debug: dict[str, object] = {"offset_trials": []}
+        last_digits: list[int | None | str] = []
+        last_mat = np.zeros((rows, cols), dtype=np.float32)
+        last_debug: dict[str, object] = {}
+        for dx, dy in self._digit_offset_candidates():
+            shifted_centers = self._shift_digit_centers(centers, dx, dy)
+            digits, mat, sampling_debug = self._read_digit_grid_sampling(
+                img,
+                bbox,
+                cols,
+                rows,
+                threshold=threshold,
+                centers=shifted_centers,
+            )
+            trial_complete = len(digits) == cols and all(isinstance(d, int) for d in digits)
+            fallback_debug["offset_trials"].append({
+                "dx": float(dx),
+                "dy": float(dy),
+                "complete": bool(trial_complete),
+                "digits": [None if d is None else int(d) if isinstance(d, int) else str(d) for d in digits],
+            })
+            last_digits, last_mat, last_debug = digits, mat, sampling_debug
+            if trial_complete:
+                sampling_debug["applied_center_offset"] = {"dx": float(dx), "dy": float(dy)}
+                return digits, mat, sampling_debug | fallback_debug
+        if last_debug is not None:
+            last_debug["applied_center_offset"] = {"dx": 0.0, "dy": 0.0}
+        return last_digits, last_mat, (last_debug | fallback_debug)
 
     def recognize_block(self, binary: np.ndarray, zone: Zone, template: Template, result: OMRResult, debug_overlay: np.ndarray | None = None) -> None:
         grid = zone.grid
@@ -1780,7 +1840,7 @@ class OMRProcessor:
             rows, cols = 10, max(1, grid.cols)
             source_img = self._preprocess_digit_sampling(working_image if working_image is not None else working_binary)
             bbox = self._digit_zone_bbox(zone, source_img.shape[:2])
-            digits, mat, sampling_debug = self._read_digit_grid_sampling(
+            digits, mat, sampling_debug = self._read_digit_zone_with_offset_fallback(
                 source_img,
                 bbox,
                 cols,
@@ -1810,11 +1870,12 @@ class OMRProcessor:
                 else:
                     mapped_digits.append(d)
             confs = [1.0 if isinstance(d, int) else 0.0 for d in mapped_digits]
-            if not self._validate_sampled_digits(mapped_digits):
+            complete_digits = len(mapped_digits) == cols and all(isinstance(d, int) for d in mapped_digits)
+            if not self._validate_sampled_digits(mapped_digits) or not complete_digits:
                 result.recognition_errors.append(f"{zone.zone_type.value}: LOW_CONFIDENCE")
-                value = ""
+                value = "-"
             else:
-                value = "".join("_" if d is None else str(d) for d in mapped_digits)
+                value = "".join(str(d) for d in mapped_digits)
             if key == "student_id" and value:
                 longest_run = 1
                 current_run = 1
@@ -1826,7 +1887,7 @@ class OMRProcessor:
                         current_run = 1
                 if len(set(value)) == 1 or (len(value) >= 6 and longest_run >= 4):
                     result.recognition_errors.append(f"{zone.zone_type.value}: invalid repeated-digit pattern")
-                    value = ""
+                    value = "-"
             if key == "student_id":
                 result.student_id = value
             else:
