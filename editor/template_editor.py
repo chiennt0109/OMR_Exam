@@ -904,34 +904,33 @@ class TemplateEditorWindow(QMainWindow):
             row_spacing = base_row_spacing * float(model.get('exam_row_spacing_scale', 1.0) or 1.0)
         off_key = 'offset_sid' if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else 'offset_exam'
         off = model.get(off_key, [0.0, 0.0]) or [0.0, 0.0]
-        row_tops = [np.array(pt, dtype=np.float32) for pt in top_points]
+        ruler_anchors = [np.array(pt, dtype=np.float32) for pt in top_points]
         median_gap = row_spacing
-        if len(row_tops) >= 2:
-            gaps = [float(np.dot(row_tops[i+1] - row_tops[i], row_unit)) for i in range(len(row_tops) - 1)]
+        if len(ruler_anchors) >= 2:
+            gaps = [float(np.dot(ruler_anchors[i + 1] - ruler_anchors[i], row_unit)) for i in range(len(ruler_anchors) - 1)]
             valid = [g for g in gaps if g > 1e-3]
             if valid:
                 median_gap = float(np.median(valid))
         row_centers = []
         row_segments = []
-        # Horizontal recognition lines must lie midway between consecutive real digit anchors,
-        # using the ruler from the 2nd anchor downward.
-        usable_tops = row_tops[1:] if len(row_tops) >= 2 else row_tops
-        if len(usable_tops) < 2:
-            usable_tops = row_tops
+        # Normalized digit ruler:
+        # - anchor #1 is only the handwritten top separator and is not used for row sampling
+        # - anchors #2..#11 define 9 midpoint rows
+        # - row #10 is extrapolated from the last anchor gap
+        usable_anchors = ruler_anchors[:]
+        if len(usable_anchors) >= 10:
+            usable_anchors = usable_anchors[:10]
         for r in range(rows):
-            if r < len(usable_tops) - 1:
-                top_pt = usable_tops[r]
-                bottom_pt = usable_tops[r + 1]
-            elif usable_tops:
-                top_pt = usable_tops[-1]
-                bottom_pt = top_pt + (median_gap * row_unit)
+            if len(usable_anchors) >= 2 and r < len(usable_anchors) - 1:
+                center_base = (usable_anchors[r] + usable_anchors[r + 1]) * 0.5
+            elif usable_anchors:
+                last_anchor = usable_anchors[-1]
+                prev_anchor = usable_anchors[-2] if len(usable_anchors) >= 2 else (last_anchor - (median_gap * row_unit))
+                center_base = last_anchor + (0.5 * (last_anchor - prev_anchor))
             else:
-                top_pt = row_tops[min(r, len(row_tops) - 1)]
-                bottom_pt = top_pt + (median_gap * row_unit)
-            center_base = (top_pt + bottom_pt) * 0.5
+                center_base = ref_anchor + ((r + 0.5) * median_gap * row_unit)
             center = center_base + (float(off[0]) * col_unit) + (float(off[1]) * row_unit)
             row_centers.append(center)
-            # Start each orange row line from the actual recognition midpoint on the right-side digit-anchor ruler.
             row_start = center.copy()
             row_end = row_start - ((cols - 1) * col_spacing * col_unit)
             row_segments.append((tuple(row_start.tolist()), tuple(row_end.tolist())))
