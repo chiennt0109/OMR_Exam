@@ -3077,6 +3077,27 @@ class MainWindow(QMainWindow):
         result.sync_legacy_aliases()
         return result
 
+    @staticmethod
+    def _strip_transient_scan_artifacts(result: OMRResult) -> OMRResult:
+        for attr_name in [
+            "aligned_image",
+            "aligned_binary",
+            "alignment_debug",
+            "detected_anchors",
+            "detected_digit_anchors",
+            "bubble_states_by_zone",
+            "digit_zone_debug",
+        ]:
+            if hasattr(result, attr_name):
+                try:
+                    delattr(result, attr_name)
+                except Exception:
+                    setattr(result, attr_name, None)
+        return result
+
+    def _lightweight_result_copy(self, result: OMRResult) -> OMRResult:
+        return self._deserialize_omr_result(self._serialize_omr_result(result))
+
     def _collect_current_subject_results_for_save(self, subject_key: str) -> list[OMRResult]:
         key = str(subject_key or "").strip()
         base_results = list(self.scan_results_by_subject.get(key) or self.scan_results or [])
@@ -3098,7 +3119,7 @@ class MainWindow(QMainWindow):
             sid_text = str(sid_item.text() if sid_item else "-")
             base = by_image.get(image_path) if image_path else None
             if base is not None:
-                res = copy.deepcopy(base)
+                res = self._lightweight_result_copy(base)
             else:
                 res = OMRResult(image_path=image_path)
             res.student_id = "" if sid_text == "-" else sid_text
@@ -10890,7 +10911,7 @@ class MainWindow(QMainWindow):
             self._refresh_student_profile_for_result(result)
             result.answer_string = self._build_answer_string_for_result(result, subject_key_for_results)
             self.database.upsert_scan_result(subject_key_for_results, self._serialize_omr_result(result))
-            self.scan_results.append(result)
+            self.scan_results.append(self._strip_transient_scan_artifacts(result))
             sid_for_dup = (result.student_id or "").strip()
             if sid_for_dup:
                 duplicate_ids[sid_for_dup] = duplicate_ids.get(sid_for_dup, 0) + 1
@@ -13013,7 +13034,7 @@ class MainWindow(QMainWindow):
         out: list[OMRResult] = []
         for idx in range(row_count):
             if idx < len(base):
-                result = copy.deepcopy(base[idx])
+                result = self._lightweight_result_copy(base[idx])
             else:
                 fallback = self._build_result_from_saved_table_row(idx)
                 result = fallback if fallback is not None else OMRResult(image_path="")

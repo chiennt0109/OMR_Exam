@@ -28,6 +28,13 @@ class GuiRegressionTests(unittest.TestCase):
         return 2''', source)
         self.assertIn('self._student_sort_token(str(item["sid"]))', source)
 
+    def test_scoring_uses_lightweight_scan_copies_and_batch_results_drop_large_arrays(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('def _strip_transient_scan_artifacts(result: OMRResult) -> OMRResult:', source)
+        self.assertIn('def _lightweight_result_copy(self, result: OMRResult) -> OMRResult:', source)
+        self.assertIn('self.scan_results.append(self._strip_transient_scan_artifacts(result))', source)
+        self.assertIn('result = self._lightweight_result_copy(base[idx])', source)
+
 
 if __name__ == '__main__':
     unittest.main()
