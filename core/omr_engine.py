@@ -1708,11 +1708,7 @@ class OMRProcessor:
         return results, mat, debug
 
     def _validate_sampled_digits(self, digits: list[int | None | str]) -> bool:
-        if any(d == "INVALID" for d in digits):
-            return False
-        if digits.count(None) > 1:
-            return False
-        return True
+        return not any(d == "INVALID" for d in digits)
 
     def _decode_sampled_digit_grid(self, mat: np.ndarray, zone: Zone, grid, result: OMRResult) -> tuple[str, list[float]]:
         rows, cols = mat.shape

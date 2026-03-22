@@ -426,7 +426,9 @@ class TemplateEditorWindow(QMainWindow):
     def __init__(self, parent=None, on_template_saved=None):
         super().__init__(parent)
         self.setWindowTitle("Template Editor")
-        self.resize(1620, 940)
+        screen = self.screen().availableGeometry() if self.screen() is not None else QRect(0, 0, 1620, 940)
+        self.setGeometry(screen)
+        self.setMinimumSize(max(1200, int(screen.width() * 0.8)), max(800, int(screen.height() * 0.8)))
         self.setWindowState(self.windowState() | Qt.WindowMaximized)
 
         self.template_engine = TemplateEngine()
