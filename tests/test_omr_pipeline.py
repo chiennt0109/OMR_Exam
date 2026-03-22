@@ -990,6 +990,30 @@ class OMRPipelineTests(unittest.TestCase):
         self.processor.recognize_block(binary, template.zones[0], template, result_stub)
         self.assertEqual(result_stub.mcq_answers.get(1), "C")
 
+    def test_mcq_best_fallback_keeps_strongest_row_answer_below_strict_threshold(self):
+        zone = Zone(
+            id="mcq_best_fallback",
+            name="mcq",
+            zone_type=ZoneType.MCQ_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=1, cols=4, question_start=1, question_count=1, options=["A", "B", "C", "D"], bubble_positions=[]),
+            metadata={},
+        )
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}})()
+        best_idx, confidence, reason = self.processor._pick_best_mcq_option(np.array([0.29, 0.31, 0.56, 0.28], dtype=np.float32), 0.62)
+        self.assertEqual(best_idx, 2)
+        self.assertGreater(confidence, 0.20)
+        self.assertEqual(reason, "best_fallback")
+
+    def test_mcq_best_fallback_rejects_multiple_filled_choices(self):
+        best_idx, confidence, reason = self.processor._pick_best_mcq_option(np.array([0.64, 0.66, 0.18, 0.17], dtype=np.float32), 0.62)
+        self.assertIsNone(best_idx)
+        self.assertEqual(confidence, 0.0)
+        self.assertEqual(reason, "multiple")
+
     def test_legacy_template_absolute_coordinates_are_converted(self):
         raw = {
             "name": "legacy",

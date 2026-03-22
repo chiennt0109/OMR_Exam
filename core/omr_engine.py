@@ -1931,6 +1931,32 @@ class OMRProcessor:
                 final_value = "-" if raw_digits is not None else ""
         return final_value, conf_list
 
+    def _pick_best_mcq_option(
+        self,
+        row_scores: np.ndarray,
+        row_threshold: float,
+    ) -> tuple[int | None, float, str | None]:
+        scores = np.asarray(row_scores, dtype=np.float32)
+        if scores.size == 0:
+            return None, 0.0, "uncertain"
+        order = np.argsort(scores)[::-1]
+        top_i = int(order[0])
+        second_i = int(order[1]) if len(order) > 1 else top_i
+        top = float(scores[top_i])
+        second = float(scores[second_i]) if len(order) > 1 else 0.0
+        filled = np.where(scores > row_threshold)[0]
+        if len(filled) > 1:
+            return None, 0.0, "multiple"
+        margin = top - second
+        if top > row_threshold and margin > self.certainty_margin:
+            return top_i, margin, None
+        relaxed_threshold = max(self.empty_threshold + 0.10, row_threshold - 0.10)
+        strong_margin = max(self.certainty_margin * 0.75, 0.05)
+        strong_ratio = second <= 1e-6 or top >= (1.20 * second)
+        if len(filled) <= 1 and top >= relaxed_threshold and margin >= strong_margin and strong_ratio:
+            return top_i, margin, "best_fallback"
+        return None, 0.0, "uncertain"
+
     def recognize_block(self, binary: np.ndarray, zone: Zone, template: Template, result: OMRResult, debug_overlay: np.ndarray | None = None) -> None:
         grid = zone.grid
         if not grid or not grid.bubble_positions:
@@ -2112,18 +2138,15 @@ class OMRProcessor:
                     qno = grid.question_start + r
                     row_scores = mat[r, :]
                     row_threshold = float(np.median(local_fill[r, :])) if local_fill.shape[1] else self.fill_threshold
-                    order = np.argsort(row_scores)[::-1]
-                    top_i, second_i = int(order[0]), int(order[1]) if len(order) > 1 else int(order[0])
-                    top, second = float(row_scores[top_i]), float(row_scores[second_i]) if len(order) > 1 else 0.0
-                    filled = np.where(row_scores > row_threshold)[0]
-                    if len(filled) > 1:
-                        result.recognition_errors.append(f"MCQ Q{qno}: multiple answer")
+                    best_idx, confidence, reason = self._pick_best_mcq_option(row_scores, row_threshold)
+                    if best_idx is None:
+                        if reason == "multiple":
+                            result.recognition_errors.append(f"MCQ Q{qno}: multiple answer")
+                        else:
+                            result.recognition_errors.append(f"MCQ Q{qno}: uncertain")
                         continue
-                    if top <= row_threshold or (top - second) <= self.certainty_margin:
-                        result.recognition_errors.append(f"MCQ Q{qno}: uncertain")
-                        continue
-                    result.mcq_answers[qno] = labels[top_i]
-                    confs.append(top - second)
+                    result.mcq_answers[qno] = labels[best_idx]
+                    confs.append(confidence)
                 result.confidence_scores[f"mcq:{zone.id}"] = float(np.mean(confs)) if confs else 0.0
                 return
 
