@@ -1789,9 +1789,9 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(2, 0, 2, 0)
         lay.setSpacing(2)
         btn_edit = self._make_row_icon_button(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Sửa bài thi", lambda _=False, r=row: self._edit_scan_row_by_index(r))
-        btn_save = self._make_row_icon_button(style.standardIcon(QStyle.SP_DialogSaveButton), "Lưu bài thi", lambda _=False, r=row: self._save_scan_row_by_index(r))
+        btn_delete = self._make_row_icon_button(style.standardIcon(QStyle.SP_TrashIcon), "Xoá bài thi", lambda _=False, r=row: self._delete_scan_row_by_index(r))
         lay.addWidget(btn_edit)
-        lay.addWidget(btn_save)
+        lay.addWidget(btn_delete)
         self.scan_list.setCellWidget(row, 6, holder)
 
     def _edit_scan_row_by_index(self, row: int) -> None:
@@ -1801,21 +1801,48 @@ class MainWindow(QMainWindow):
         self._on_scan_selected()
         self._open_edit_selected_scan()
 
-    def _save_scan_row_by_index(self, row: int) -> None:
+    def _delete_scan_row_by_index(self, row: int) -> None:
         self._ensure_correction_state()
         if row < 0 or row >= self.scan_list.rowCount():
             return
         self.scan_list.selectRow(row)
-        self._on_scan_selected()
         if self.correction_save_timer.isActive():
             self.correction_save_timer.stop()
             self._flush_pending_correction_updates()
+
         idx = self.scan_list.currentRow()
-        if 0 <= idx < len(self.scan_results):
-            res = self.scan_results[idx]
-            self._persist_single_scan_result_to_db(res, note="row_action_save")
-            self._refresh_all_statuses()
-            self._update_scan_preview(idx)
+        result = self.scan_results[idx] if 0 <= idx < len(self.scan_results) else self._build_result_from_saved_table_row(idx)
+        if result is None:
+            return
+        image_path = str(getattr(result, "image_path", "") or "").strip()
+        if not image_path:
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Xoá bài thi",
+            f"Bạn có chắc muốn xoá bản ghi này?\n\nẢnh: {Path(image_path).name}",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        subject_key = self._current_batch_subject_key()
+        self.database.delete_scan_result(subject_key, image_path)
+        self.scan_results = [x for x in self._refresh_scan_results_from_db(subject_key) if str(getattr(x, "image_path", "") or "") != ""]
+        self._populate_scan_grid_from_results(self.scan_results)
+        self._rebuild_error_list()
+        self._refresh_all_statuses()
+        if self.scan_list.rowCount() > 0:
+            target_row = min(row, self.scan_list.rowCount() - 1)
+            self.scan_list.selectRow(target_row)
+            self._on_scan_selected()
+        else:
+            self.scan_result_preview.setRowCount(0)
+            self.result_preview.clear()
+            self.manual_edit.clear()
+            self.scan_image_preview.setText("Chọn bài thi ở danh sách bên trái")
+            self.scan_image_preview.clear_markers()
 
     def _refresh_exam_list(self) -> None:
         self.exam_list_table.setRowCount(len(self.session_registry))
@@ -10009,7 +10036,7 @@ class MainWindow(QMainWindow):
         self._refresh_student_profile_for_result(result, idx)
         scoped = self._scoped_result_copy(result)
         self.scan_blank_summary[idx] = self._compute_blank_questions(scoped)
-        self.scan_list.setItem(idx, 3, QTableWidgetItem(self._build_recognition_content_text(result, self.scan_blank_summary[idx])))
+        self.scan_list.setItem(idx, 4, QTableWidgetItem(self._build_recognition_content_text(result, self.scan_blank_summary[idx])))
         sid_item = self.scan_list.item(idx, 0)
         if sid_item:
             sid_item.setText((result.student_id or "").strip() or "-")
@@ -10339,8 +10366,8 @@ class MainWindow(QMainWindow):
         setattr(result, "class_name", str(profile.get("class_name", "") or ""))
         setattr(result, "exam_room", str(profile.get("exam_room", "") or ""))
         if row_idx is not None and 0 <= row_idx < self.scan_list.rowCount():
-            self.scan_list.setItem(row_idx, 1, QTableWidgetItem(str(getattr(result, "full_name", "") or "-")))
-            self.scan_list.setItem(row_idx, 2, QTableWidgetItem(str(getattr(result, "birth_date", "") or "-")))
+            self.scan_list.setItem(row_idx, 2, QTableWidgetItem(str(getattr(result, "full_name", "") or "-")))
+            self.scan_list.setItem(row_idx, 3, QTableWidgetItem(str(getattr(result, "birth_date", "") or "-")))
 
     @staticmethod
     def _normalized_student_id_for_match(student_id: str) -> str:
@@ -13378,7 +13405,7 @@ class MainWindow(QMainWindow):
         self._refresh_all_statuses()
         self._rebuild_error_list()
         self._update_scan_preview(idx)
-        self._load_selected_result_for_correction()
+        self._sync_correction_detail_panel(res, rebuild_editor=False)
         self.btn_save_batch_subject.setEnabled(True)
 
         if decision == QMessageBox.Yes:
@@ -14415,17 +14442,16 @@ class MainWindow(QMainWindow):
             sid_item.setData(Qt.UserRole + 1, result.exam_code or "")
             sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(result))
             self.scan_list.setItem(idx_local, 0, sid_item)
-            self.scan_list.setItem(idx_local, 1, QTableWidgetItem(result.exam_code or "-"))
-            self._refresh_student_profile_for_result(result, idx_local)
+            self._refresh_student_profile_for_result(result)
             scoped = self._scoped_result_copy(result)
             self.scan_blank_summary[idx_local] = self._compute_blank_questions(scoped)
-            self.scan_list.setItem(idx_local, 3, QTableWidgetItem(self._build_recognition_content_text(result, self.scan_blank_summary[idx_local])))
+            self._update_scan_row_from_result(idx_local, result)
             self._record_adjustment(idx_local, changes, "dialog_edit")
             self._persist_single_scan_result_to_db(result, note="dialog_edit")
             self._refresh_all_statuses()
             self.scan_list.setCurrentCell(idx_local, 0)
             self._update_scan_preview(idx_local)
-            self._load_selected_result_for_correction()
+            self._sync_correction_detail_panel(result, rebuild_editor=False)
             self.btn_save_batch_subject.setEnabled(True)
             invalidated = self._invalidate_scoring_for_student_ids([old_sid_for_score, str(result.student_id or "").strip()], reason="dialog_edit")
             loaded_snapshots[idx_local] = _snapshot_from_result(result)
@@ -14582,10 +14608,10 @@ class MainWindow(QMainWindow):
         sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(res))
         self.scan_list.setItem(idx, 0, sid_item)
         if changes:
-            self._refresh_student_profile_for_result(res, idx)
+            self._refresh_student_profile_for_result(res)
             scoped = self._scoped_result_copy(res)
             self.scan_blank_summary[idx] = self._compute_blank_questions(scoped)
-            self.scan_list.setItem(idx, 3, QTableWidgetItem(self._build_recognition_content_text(res, self.scan_blank_summary[idx])))
+            self._update_scan_row_from_result(idx, res)
             self._record_adjustment(idx, changes, "manual_json")
             self._persist_single_scan_result_to_db(res, note="manual_json")
             self.btn_save_batch_subject.setEnabled(False)

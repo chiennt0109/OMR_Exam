@@ -67,3 +67,14 @@ def test_update_scan_result_payload_replaces_row_by_subject_and_image(tmp_path: 
     assert rows[0]["mcq_answers"] == {1: "D"}
     assert rows[0]["numeric_answers"] == {2: "99"}
     assert rows[0]["full_name"] == "Updated"
+
+
+def test_delete_scan_result_removes_only_target_row(tmp_path: Path) -> None:
+    db = OMRDatabase.default(tmp_path / "omr.db")
+    db.upsert_scan_result("Math", {"image_path": "a.png", "student_id": "S1", "exam_code": "A1", "mcq_answers": {}, "true_false_answers": {}, "numeric_answers": {}, "answer_string": ""})
+    db.upsert_scan_result("Math", {"image_path": "b.png", "student_id": "S2", "exam_code": "A2", "mcq_answers": {}, "true_false_answers": {}, "numeric_answers": {}, "answer_string": ""})
+
+    db.delete_scan_result("Math", "a.png")
+    rows = db.fetch_scan_results_for_subject("Math")
+
+    assert [row["image_path"] for row in rows] == ["b.png"]

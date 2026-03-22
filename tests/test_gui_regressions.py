@@ -36,5 +36,12 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('result = self._lightweight_result_copy(base[idx])', source)
 
 
+    def test_batch_scan_action_column_uses_delete_button(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('SP_TrashIcon', source)
+        self.assertIn('def _delete_scan_row_by_index(self, row: int) -> None:', source)
+        self.assertIn('delete_scan_result(subject_key, image_path)', source)
+
+
 if __name__ == '__main__':
     unittest.main()

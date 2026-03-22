@@ -454,6 +454,15 @@ class OMRDatabase:
         if old_payload != payload:
             self.log_change("scan_results", image_key, "payload_json", old_payload, payload, note or "scan_result_update")
 
+    def delete_scan_result(self, subject_key: str, image_path: str) -> None:
+        subject = str(subject_key or "")
+        image_key = str(image_path or "")
+        old_payload = next((row for row in self.fetch_scan_results_for_subject(subject) if str(row.get("image_path", "") or "") == image_key), {})
+        self.conn.execute("DELETE FROM scan_results WHERE subject_key = ? AND image_path = ?", (subject, image_key))
+        self.conn.commit()
+        if old_payload:
+            self.log_change("scan_results", image_key, "payload_json", old_payload, {}, "scan_result_delete")
+
     def upsert_score_row(self, subject_key: str, student_code: str, exam_code: str, payload: dict[str, Any]) -> None:
         self.conn.execute(
             """
