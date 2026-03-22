@@ -249,6 +249,37 @@ class OMRPipelineTests(unittest.TestCase):
         for row_idx, center_y in enumerate(target_centers):
             self.assertAlmostEqual(float(guided[row_idx * 2][1]), float(center_y), places=3)
 
+    def test_manual_digit_anchor_blocker_is_ignored_when_building_row_centers(self):
+        grid = BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(120, 20 + r * 12) for r in range(10)])
+        zone = Zone(id="sid_blocker", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0.4, y=0.1, width=0.2, height=0.7, grid=grid, metadata={"bubble_radius": 5})
+        template = Template(
+            name="digit_blocker",
+            image_path="",
+            width=240,
+            height=220,
+            anchors=[
+                AnchorPoint(0.84, 0.05, "DIGIT_ANCHOR_00"),
+                AnchorPoint(0.84, 0.10, "DIGIT_ANCHOR_01"),
+                AnchorPoint(0.84, 0.16, "DIGIT_ANCHOR_02"),
+                AnchorPoint(0.84, 0.22, "DIGIT_ANCHOR_03"),
+                AnchorPoint(0.84, 0.28, "DIGIT_ANCHOR_04"),
+                AnchorPoint(0.84, 0.34, "DIGIT_ANCHOR_05"),
+                AnchorPoint(0.84, 0.40, "DIGIT_ANCHOR_06"),
+                AnchorPoint(0.84, 0.46, "DIGIT_ANCHOR_07"),
+                AnchorPoint(0.84, 0.52, "DIGIT_ANCHOR_08"),
+                AnchorPoint(0.84, 0.58, "DIGIT_ANCHOR_09"),
+                AnchorPoint(0.84, 0.64, "DIGIT_ANCHOR_10"),
+            ],
+            zones=[zone],
+        )
+        expected = np.array(grid.bubble_positions, dtype=np.float32)
+
+        guided, debug = self.processor._digit_zone_guidance(np.zeros((220, 240), dtype=np.uint8), expected, zone, template)
+
+        first_center = float(guided[0][1])
+        self.assertAlmostEqual(first_center, ((0.10 + 0.13) * 220), places=3)
+        self.assertEqual(debug.get("anchor_layout"), "blocker_plus_row_tops")
+
     def test_manual_digit_anchor_guides_use_positions_2_to_11_as_row_tops(self):
         grid = BubbleGrid(rows=4, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(120, 20 + r * 20) for r in range(4)])
         zone = Zone(id="sid_row_tops", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0.4, y=0.1, width=0.2, height=0.6, grid=grid, metadata={"bubble_radius": 5})

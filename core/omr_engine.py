@@ -995,12 +995,21 @@ class OMRProcessor:
         return guided
 
     def _build_digit_row_lines(self, anchor_ys: np.ndarray, rows: int) -> list[float]:
-        ys = np.asarray(anchor_ys, dtype=np.float32)
+        ys = np.sort(np.asarray(anchor_ys, dtype=np.float32))
         if rows <= 0 or ys.size < 2:
             return []
-        ys = np.sort(ys)
-        if ys.size >= rows + 1:
-            return [float(v) for v in ys[: rows + 1]]
+        if ys.size == rows + 1:
+            step = float((ys[-1] - ys[0]) / max(1, rows - 1)) if rows > 1 else 0.0
+            row_tops = ys.astype(np.float32)
+            bottom = float(row_tops[-1] + step)
+            return [float(v) for v in row_tops.tolist()] + [bottom]
+        if ys.size >= rows + 2:
+            row_tops = ys[1 : rows + 1]
+            step = float(np.median(np.diff(row_tops))) if row_tops.size >= 2 else 0.0
+            if step <= 0.0:
+                step = float((row_tops[-1] - row_tops[0]) / max(1, rows - 1)) if rows > 1 else 0.0
+            bottom = float(row_tops[-1] + step)
+            return [float(v) for v in row_tops.tolist()] + [bottom]
         return np.linspace(float(ys[0]), float(ys[-1]), rows + 1, dtype=np.float32).astype(float).tolist()
 
     def _digit_zone_guidance(self, binary: np.ndarray, expected: np.ndarray, zone: Zone, template: Template) -> tuple[np.ndarray, dict[str, object]]:
@@ -1053,6 +1062,11 @@ class OMRProcessor:
         rows = max(1, int(zone.grid.rows))
         cols = max(1, int(zone.grid.cols))
         row_lines = self._build_digit_row_lines(detected[:, 1] if len(detected) else np.array([], dtype=np.float32), rows)
+        anchor_layout = "interpolated"
+        if len(detected) == rows + 1:
+            anchor_layout = "row_tops"
+        elif len(detected) >= rows + 2:
+            anchor_layout = "blocker_plus_row_tops"
         if len(guided) == rows * cols:
             if len(row_lines) == rows + 1:
                 row_centers = [float((row_lines[r] + row_lines[r + 1]) * 0.5) for r in range(rows)]
@@ -1083,6 +1097,7 @@ class OMRProcessor:
             "row_lines": row_lines,
             "rows": rows,
             "cols": cols,
+            "anchor_layout": anchor_layout,
             "fit_coefficients": {"a": float(a), "b": float(b)},
         }
         return guided.astype(np.float32), debug
