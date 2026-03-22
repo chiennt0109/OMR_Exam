@@ -452,6 +452,15 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertGreater(scores[0], 0.40)
         self.assertLess(scores[1], 0.20)
 
+    def test_digit_zone_peak_window_marks_catch_off_center_blob_better_than_outline(self):
+        binary = np.zeros((140, 140), dtype=np.uint8)
+        cv2.circle(binary, (48, 58), 7, 255, -1)
+        cv2.circle(binary, (100, 60), 9, 255, 1)
+        centers = np.array([[40, 60], [100, 60]], dtype=np.float32)
+        scores = self.processor._detect_digit_zone_peak_window_marks(binary, centers, 10)
+        self.assertGreater(scores[0], 0.45)
+        self.assertLess(scores[1], 0.20)
+
     def test_exam_code_recognize_block_uses_multi_probe_digit_signal_for_shifted_mark(self):
         template = Template(
             name="exam_multi_probe",
@@ -478,6 +487,36 @@ class OMRPipelineTests(unittest.TestCase):
             patch.object(self.processor, "detect_bubbles", return_value=np.array([0.30, 0.24, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08], dtype=np.float32)), \
             patch.object(self.processor, "_detect_center_core_marks", return_value=np.array([0.35, 0.28, 0.06, 0.06, 0.06, 0.06, 0.06, 0.06, 0.06, 0.06], dtype=np.float32)), \
             patch.object(self.processor, "_detect_digit_zone_multi_probe_marks", return_value=np.array([0.88, 0.22, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05], dtype=np.float32)):
+            self.processor.recognize_block(np.zeros((140, 120), dtype=np.uint8), template.zones[0], template, result_stub)
+        self.assertEqual(result_stub.exam_code, "0")
+
+    def test_exam_code_recognize_block_uses_peak_window_signal_for_off_center_mark(self):
+        template = Template(
+            name="exam_peak_window",
+            image_path="",
+            width=120,
+            height=140,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="exam_peak_window",
+                    name="exam",
+                    zone_type=ZoneType.EXAM_CODE_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(60, 20 + r * 10) for r in range(10)]),
+                    metadata={"bubble_radius": 6},
+                )
+            ],
+        )
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
+        with patch.object(self.processor, "_resolve_column_digit_centers", return_value=np.array([[60, 20 + r * 10] for r in range(10)], dtype=np.float32)), \
+            patch.object(self.processor, "detect_bubbles", return_value=np.array([0.20, 0.19, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=np.array([0.21, 0.20, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_zone_multi_probe_marks", return_value=np.array([0.26, 0.22, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_zone_peak_window_marks", return_value=np.array([0.92, 0.18, 0.04, 0.04, 0.04, 0.04, 0.04, 0.04, 0.04, 0.04], dtype=np.float32)):
             self.processor.recognize_block(np.zeros((140, 120), dtype=np.uint8), template.zones[0], template, result_stub)
         self.assertEqual(result_stub.exam_code, "0")
 
@@ -1803,6 +1842,33 @@ class OMRPipelineTests(unittest.TestCase):
         template = Template(name="sheet", image_path="", width=400, height=600, anchors=[], zones=[])
         inner = np.array([[80, 120], [320, 120], [320, 480], [80, 480]], dtype=np.float32)
         self.assertFalse(self.processor._is_reasonable_page_warp(inner, (600, 400), template))
+
+    def test_affine_anchor_refine_improves_mild_sheet_skew(self):
+        template = Template(
+            name="sheet_affine",
+            image_path="",
+            width=400,
+            height=600,
+            anchors=[AnchorPoint(0.08, 0.08), AnchorPoint(0.92, 0.08), AnchorPoint(0.92, 0.92), AnchorPoint(0.08, 0.92)],
+            zones=[],
+        )
+        aligned = np.full((600, 400, 3), 255, dtype=np.uint8)
+        aligned_binary = np.zeros((600, 400), dtype=np.uint8)
+        expected = np.array([[32, 48], [368, 48], [368, 552], [32, 552]], dtype=np.float32)
+        skewed = np.array([[18, 54], [356, 40], [381, 548], [44, 560]], dtype=np.float32)
+        for x, y in skewed.astype(np.int32):
+            cv2.rectangle(aligned_binary, (x - 13, y - 13), (x + 13, y + 13), 255, -1)
+            cv2.rectangle(aligned, (x - 13, y - 13), (x + 13, y + 13), (0, 0, 0), -1)
+
+        refined_img, refined_bin = self.processor._refine_alignment_with_affine_anchors(aligned, aligned_binary, template)
+        refined_anchors = np.array(self.processor.detect_anchors(refined_bin, max_points=20), dtype=np.float32)
+        distances = []
+        for pt in expected:
+            d2 = np.sum((refined_anchors - pt) ** 2, axis=1)
+            distances.append(np.sqrt(np.min(d2)))
+
+        self.assertLess(float(np.mean(distances)), 12.0)
+        self.assertIn("affine_refine", self.processor._last_alignment_debug)
 
     def test_correct_perspective_fallback_path_does_not_use_uninitialized_alignment(self):
         template = Template(name="sheet", image_path="", width=400, height=600, anchors=[], zones=[])
