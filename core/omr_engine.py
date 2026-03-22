@@ -559,8 +559,9 @@ class OMRProcessor:
                 refined_img, refined_bin = self._refine_alignment_with_one_side_anchors(coarse_img, coarse_bin, template)
                 oriented_img, oriented_bin = self._auto_orient(refined_img, refined_bin, template)
                 shifted_img, shifted_bin = self._refine_corner_translation(oriented_img, oriented_bin, template)
+                affine_img, affine_bin = self._refine_alignment_with_affine_anchors(shifted_img, shifted_bin, template)
                 self._last_alignment_debug["alignment_mode"] = "one_side"
-                return shifted_img, shifted_bin
+                return affine_img, affine_bin
 
             attempt = self._try_anchor_alignment(base_image, base_binary, template, candidate)
             if attempt is None:
@@ -569,16 +570,18 @@ class OMRProcessor:
             refined_img, refined_bin = (coarse_img, coarse_bin) if candidate == "legacy" else self._refine_alignment_with_template_anchors(coarse_img, coarse_bin, template)
             oriented_img, oriented_bin = self._auto_orient(refined_img, refined_bin, template)
             shifted_img, shifted_bin = self._refine_corner_translation(oriented_img, oriented_bin, template)
+            affine_img, affine_bin = self._refine_alignment_with_affine_anchors(shifted_img, shifted_bin, template)
             self._last_alignment_debug["alignment_mode"] = candidate
-            return shifted_img, shifted_bin
+            return affine_img, affine_bin
 
         result.issues.append(OMRIssue("MISSING_ANCHORS", "Anchor detection failed; using page contour fallback"))
         aligned, aligned_binary = self._fallback_align_page_contour(image, template)
         refined_img, refined_bin = self._refine_alignment_with_template_anchors(aligned, aligned_binary, template)
         oriented_img, oriented_bin = self._auto_orient(refined_img, refined_bin, template)
         shifted_img, shifted_bin = self._refine_corner_translation(oriented_img, oriented_bin, template)
+        affine_img, affine_bin = self._refine_alignment_with_affine_anchors(shifted_img, shifted_bin, template)
         self._last_alignment_debug.setdefault("alignment_mode", "page_contour")
-        return shifted_img, shifted_bin
+        return affine_img, affine_bin
 
     def _auto_orient(self, aligned: np.ndarray, aligned_binary: np.ndarray, template: Template) -> tuple[np.ndarray, np.ndarray]:
         candidates = []
@@ -662,6 +665,63 @@ class OMRProcessor:
         shifted_bin = cv2.warpAffine(aligned_binary, shift, (template.width, template.height), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_REPLICATE)
         self._last_alignment_debug["fine_offset"] = {"dx": dx, "dy": dy}
         return shifted, shifted_bin
+
+    def _refine_alignment_with_affine_anchors(self, aligned: np.ndarray, aligned_binary: np.ndarray, template: Template) -> tuple[np.ndarray, np.ndarray]:
+        if len(template.anchors) < 4:
+            return aligned, aligned_binary
+        template_pts = np.array([(a.x * template.width, a.y * template.height) if a.x <= 1.0 and a.y <= 1.0 else (a.x, a.y) for a in template.anchors], dtype=np.float32)
+        detected = np.array(self.detect_anchors(aligned_binary, use_border_padding=True, relaxed_polygon=True, max_points=120), dtype=np.float32)
+        if len(detected) < 4:
+            return aligned, aligned_binary
+
+        max_dist = max(10.0, 0.03 * float(np.hypot(template.width, template.height)))
+        src_matches: list[np.ndarray] = []
+        dst_matches: list[np.ndarray] = []
+        used: set[int] = set()
+        for t in template_pts:
+            d2 = np.sum((detected - t) ** 2, axis=1)
+            idx = int(np.argmin(d2))
+            if idx in used:
+                continue
+            dist = float(np.sqrt(float(d2[idx])))
+            if dist <= max_dist:
+                used.add(idx)
+                src_matches.append(detected[idx])
+                dst_matches.append(t)
+        if len(src_matches) < 4:
+            return aligned, aligned_binary
+
+        src = np.array(src_matches, dtype=np.float32)
+        dst = np.array(dst_matches, dtype=np.float32)
+        affine, inliers = cv2.estimateAffine2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=3.5)
+        if affine is None:
+            return aligned, aligned_binary
+        if inliers is not None and int(inliers.sum()) < 4:
+            return aligned, aligned_binary
+
+        linear = affine[:, :2].astype(np.float64)
+        det = float(np.linalg.det(linear))
+        if not np.isfinite(det) or det <= 0.0:
+            return aligned, aligned_binary
+        if det < 0.90 or det > 1.10:
+            return aligned, aligned_binary
+        if float(np.max(np.abs(linear - np.eye(2)))) > 0.18:
+            return aligned, aligned_binary
+
+        proj = cv2.transform(src.reshape(1, -1, 2), affine.astype(np.float32)).reshape(-1, 2)
+        base_err = float(np.mean(np.min(np.sqrt(np.sum((detected[:, None, :] - template_pts[None, :, :]) ** 2, axis=2)), axis=0)))
+        new_err = float(np.sqrt(np.mean(np.sum((proj - dst) ** 2, axis=1))))
+        if not np.isfinite(new_err) or new_err > max(2.5, base_err - 0.3):
+            return aligned, aligned_binary
+
+        refined = cv2.warpAffine(aligned, affine.astype(np.float32), (template.width, template.height), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        refined_bin = cv2.warpAffine(aligned_binary, affine.astype(np.float32), (template.width, template.height), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_REPLICATE)
+        self._last_alignment_debug["affine_refine"] = {
+            "matrix": affine.astype(float).tolist(),
+            "rmse": new_err,
+            "match_count": len(src_matches),
+        }
+        return refined, refined_bin
 
     def _refine_alignment_with_template_anchors(self, aligned: np.ndarray, aligned_binary: np.ndarray, template: Template) -> tuple[np.ndarray, np.ndarray]:
         if len(template.anchors) < 4:

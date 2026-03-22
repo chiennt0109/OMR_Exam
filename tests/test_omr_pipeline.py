@@ -1804,6 +1804,33 @@ class OMRPipelineTests(unittest.TestCase):
         inner = np.array([[80, 120], [320, 120], [320, 480], [80, 480]], dtype=np.float32)
         self.assertFalse(self.processor._is_reasonable_page_warp(inner, (600, 400), template))
 
+    def test_affine_anchor_refine_improves_mild_sheet_skew(self):
+        template = Template(
+            name="sheet_affine",
+            image_path="",
+            width=400,
+            height=600,
+            anchors=[AnchorPoint(0.08, 0.08), AnchorPoint(0.92, 0.08), AnchorPoint(0.92, 0.92), AnchorPoint(0.08, 0.92)],
+            zones=[],
+        )
+        aligned = np.full((600, 400, 3), 255, dtype=np.uint8)
+        aligned_binary = np.zeros((600, 400), dtype=np.uint8)
+        expected = np.array([[32, 48], [368, 48], [368, 552], [32, 552]], dtype=np.float32)
+        skewed = np.array([[18, 54], [356, 40], [381, 548], [44, 560]], dtype=np.float32)
+        for x, y in skewed.astype(np.int32):
+            cv2.rectangle(aligned_binary, (x - 13, y - 13), (x + 13, y + 13), 255, -1)
+            cv2.rectangle(aligned, (x - 13, y - 13), (x + 13, y + 13), (0, 0, 0), -1)
+
+        refined_img, refined_bin = self.processor._refine_alignment_with_affine_anchors(aligned, aligned_binary, template)
+        refined_anchors = np.array(self.processor.detect_anchors(refined_bin, max_points=20), dtype=np.float32)
+        distances = []
+        for pt in expected:
+            d2 = np.sum((refined_anchors - pt) ** 2, axis=1)
+            distances.append(np.sqrt(np.min(d2)))
+
+        self.assertLess(float(np.mean(distances)), 12.0)
+        self.assertIn("affine_refine", self.processor._last_alignment_debug)
+
     def test_correct_perspective_fallback_path_does_not_use_uninitialized_alignment(self):
         template = Template(name="sheet", image_path="", width=400, height=600, anchors=[], zones=[])
         image = np.zeros((600, 400, 3), dtype=np.uint8)
