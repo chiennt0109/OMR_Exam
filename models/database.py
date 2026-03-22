@@ -339,92 +339,129 @@ class OMRDatabase:
             self.set_app_state("default_session_id", "")
         self.conn.commit()
 
-    def upsert_scan_result(self, subject_key: str, result_payload: dict[str, Any]) -> None:
-        self.conn.execute(
-            """
-            INSERT INTO scan_results(subject_key, image_path, exam_code_text, student_code_text, mcq_answer, tf_answer, numeric_answer, payload_json, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """,
-            (
-                str(subject_key or ""),
-                str(result_payload.get("image_path", "") or ""),
-                str(result_payload.get("exam_code", "") or ""),
-                str(result_payload.get("student_id", "") or ""),
-                str(result_payload.get("answer_string", result_payload.get("mcq_answer", "")) or ""),
-                str(result_payload.get("tf_answer", "") or json.dumps(result_payload.get("true_false_answers", {}), ensure_ascii=False)),
-                str(result_payload.get("numeric_answer", "") or json.dumps(result_payload.get("numeric_answers", {}), ensure_ascii=False)),
-                json.dumps(result_payload, ensure_ascii=False),
+    def _scan_result_db_tuple(self, subject_key: str, result_payload: dict[str, Any]) -> tuple[str, str, str, str, str, str, str, str]:
+        payload = dict(result_payload or {})
+        return (
+            str(subject_key or ""),
+            str(payload.get("image_path", "") or ""),
+            str(payload.get("exam_code", "") or ""),
+            str(payload.get("student_id", "") or ""),
+            str(payload.get("answer_string", payload.get("mcq_answer", "")) or ""),
+            json.dumps(payload.get("true_false_answers", {}) or {}, ensure_ascii=False),
+            json.dumps(payload.get("numeric_answers", {}) or {}, ensure_ascii=False),
+            json.dumps(
+                {
+                    "mcq_answers": payload.get("mcq_answers", {}) or {},
+                    "confidence_scores": payload.get("confidence_scores", {}) or {},
+                    "recognition_errors": payload.get("recognition_errors", []) or [],
+                    "processing_time_sec": float(payload.get("processing_time_sec", 0.0) or 0.0),
+                    "debug_image_path": str(payload.get("debug_image_path", "") or ""),
+                    "full_name": str(payload.get("full_name", "") or ""),
+                    "birth_date": str(payload.get("birth_date", "") or ""),
+                },
+                ensure_ascii=False,
             ),
         )
+
+    def upsert_scan_result(self, subject_key: str, result_payload: dict[str, Any]) -> None:
+        payload_tuple = self._scan_result_db_tuple(subject_key, result_payload)
+        image_path = payload_tuple[1]
+        row = self.conn.execute(
+            "SELECT id FROM scan_results WHERE subject_key = ? AND image_path = ? ORDER BY id DESC LIMIT 1",
+            (payload_tuple[0], image_path),
+        ).fetchone()
+        if row:
+            self.conn.execute(
+                """
+                UPDATE scan_results
+                SET exam_code_text = ?, student_code_text = ?, mcq_answer = ?, tf_answer = ?, numeric_answer = ?, payload_json = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (payload_tuple[2], payload_tuple[3], payload_tuple[4], payload_tuple[5], payload_tuple[6], payload_tuple[7], int(row[0])),
+            )
+        else:
+            self.conn.execute(
+                """
+                INSERT INTO scan_results(subject_key, image_path, exam_code_text, student_code_text, mcq_answer, tf_answer, numeric_answer, payload_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                payload_tuple,
+            )
+        self.conn.commit()
+
+    def delete_scan_results_for_subject(self, subject_key: str) -> None:
+        self.conn.execute("DELETE FROM scan_results WHERE subject_key = ?", (str(subject_key or ""),))
         self.conn.commit()
 
     def replace_scan_results_for_subject(self, subject_key: str, rows: Iterable[dict[str, Any]]) -> None:
         subject = str(subject_key or "")
         cur = self.conn.cursor()
         cur.execute("DELETE FROM scan_results WHERE subject_key = ?", (subject,))
-        payload_rows = list(rows)
+        payload_rows = [self._scan_result_db_tuple(subject, row) for row in list(rows)]
         cur.executemany(
             """
             INSERT INTO scan_results(subject_key, image_path, exam_code_text, student_code_text, mcq_answer, tf_answer, numeric_answer, payload_json, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,
-            [
-                (
-                    subject,
-                    str(row.get("image_path", "") or ""),
-                    str(row.get("exam_code", "") or ""),
-                    str(row.get("student_id", "") or ""),
-                    str(row.get("answer_string", "") or ""),
-                    json.dumps(row.get("true_false_answers", {}), ensure_ascii=False),
-                    json.dumps(row.get("numeric_answers", {}), ensure_ascii=False),
-                    json.dumps(row, ensure_ascii=False),
-                )
-                for row in payload_rows
-            ],
+            payload_rows,
         )
         self.conn.commit()
 
     def fetch_scan_results_for_subject(self, subject_key: str) -> list[dict[str, Any]]:
         rows = self.conn.execute(
-            "SELECT payload_json FROM scan_results WHERE subject_key = ? ORDER BY id ASC",
+            "SELECT image_path, exam_code_text, student_code_text, mcq_answer, tf_answer, numeric_answer, payload_json FROM scan_results WHERE subject_key = ? ORDER BY id ASC",
             (str(subject_key or ""),),
         ).fetchall()
         out: list[dict[str, Any]] = []
-        for (payload_json,) in rows:
+        for image_path, exam_code_text, student_code_text, mcq_answer, tf_answer, numeric_answer, payload_json in rows:
             try:
-                payload = json.loads(payload_json or "{}") if payload_json else {}
+                extras = json.loads(payload_json or "{}") if payload_json else {}
             except Exception:
-                payload = {}
-            if isinstance(payload, dict):
-                out.append(payload)
+                extras = {}
+            if not isinstance(extras, dict):
+                extras = {}
+            try:
+                tf_answers = json.loads(tf_answer or "{}") if tf_answer else {}
+            except Exception:
+                tf_answers = {}
+            try:
+                numeric_answers = json.loads(numeric_answer or "{}") if numeric_answer else {}
+            except Exception:
+                numeric_answers = {}
+            payload = {
+                "image_path": str(image_path or ""),
+                "student_id": str(student_code_text or ""),
+                "exam_code": str(exam_code_text or ""),
+                "answer_string": str(mcq_answer or ""),
+                "true_false_answers": {int(k): dict(v or {}) for k, v in (tf_answers.items() if isinstance(tf_answers, dict) else [])},
+                "numeric_answers": {int(k): str(v) for k, v in (numeric_answers.items() if isinstance(numeric_answers, dict) else [])},
+                "mcq_answers": {int(k): str(v) for k, v in ((extras.get("mcq_answers", {}) or {}).items() if isinstance(extras.get("mcq_answers", {}), dict) else [])},
+                "confidence_scores": {str(k): float(v) for k, v in ((extras.get("confidence_scores", {}) or {}).items() if isinstance(extras.get("confidence_scores", {}), dict) else [])},
+                "recognition_errors": [str(x) for x in (extras.get("recognition_errors", []) if isinstance(extras.get("recognition_errors", []), list) else [])],
+                "processing_time_sec": float(extras.get("processing_time_sec", 0.0) or 0.0),
+                "debug_image_path": str(extras.get("debug_image_path", "") or ""),
+                "full_name": str(extras.get("full_name", "") or ""),
+                "birth_date": str(extras.get("birth_date", "") or ""),
+            }
+            out.append(payload)
         return out
 
-    def update_scan_result_payload(self, image_path: str, payload: dict[str, Any], note: str = "") -> None:
+    def update_scan_result_payload(self, subject_key: str, image_path: str, payload: dict[str, Any], note: str = "") -> None:
         image_key = str(image_path or "")
-        old_row = self.conn.execute(
-            "SELECT payload_json FROM scan_results WHERE image_path = ? ORDER BY id DESC LIMIT 1",
-            (image_key,),
-        ).fetchone()
-        old_payload = json.loads(old_row[0]) if old_row and old_row[0] else {}
-        self.conn.execute(
-            """
-            UPDATE scan_results
-            SET exam_code_text = ?, student_code_text = ?, mcq_answer = ?, tf_answer = ?, numeric_answer = ?, payload_json = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE image_path = ?
-            """,
-            (
-                str(payload.get("exam_code", "") or ""),
-                str(payload.get("student_id", "") or ""),
-                str(payload.get("answer_string", "") or ""),
-                json.dumps(payload.get("true_false_answers", {}), ensure_ascii=False),
-                json.dumps(payload.get("numeric_answers", {}), ensure_ascii=False),
-                json.dumps(payload, ensure_ascii=False),
-                image_key,
-            ),
-        )
-        self.conn.commit()
+        subject = str(subject_key or "")
+        old_payload = next((row for row in self.fetch_scan_results_for_subject(subject) if str(row.get("image_path", "") or "") == image_key), {})
+        self.upsert_scan_result(subject, payload)
         if old_payload != payload:
             self.log_change("scan_results", image_key, "payload_json", old_payload, payload, note or "scan_result_update")
+
+    def delete_scan_result(self, subject_key: str, image_path: str) -> None:
+        subject = str(subject_key or "")
+        image_key = str(image_path or "")
+        old_payload = next((row for row in self.fetch_scan_results_for_subject(subject) if str(row.get("image_path", "") or "") == image_key), {})
+        self.conn.execute("DELETE FROM scan_results WHERE subject_key = ? AND image_path = ?", (subject, image_key))
+        self.conn.commit()
+        if old_payload:
+            self.log_change("scan_results", image_key, "payload_json", old_payload, {}, "scan_result_delete")
 
     def upsert_score_row(self, subject_key: str, student_code: str, exam_code: str, payload: dict[str, Any]) -> None:
         self.conn.execute(
