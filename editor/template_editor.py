@@ -900,10 +900,12 @@ class TemplateEditorWindow(QMainWindow):
         base_row_spacing = (zh / max(1, rows)) if rows > 0 else max(1.0, zh)
         if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
             col_spacing = base_col_spacing * float(model.get('sid_col_spacing_scale', 1.0) or 1.0)
-            row_spacing = base_row_spacing * float(model.get('sid_row_spacing_scale', 1.0) or 1.0)
+            row_spacing_scale = float(model.get('sid_row_spacing_scale', 1.0) or 1.0)
+            row_spacing = base_row_spacing * row_spacing_scale
         else:
             col_spacing = base_col_spacing * float(model.get('exam_col_spacing_scale', 1.0) or 1.0)
-            row_spacing = base_row_spacing * float(model.get('exam_row_spacing_scale', 1.0) or 1.0)
+            row_spacing_scale = float(model.get('exam_row_spacing_scale', 1.0) or 1.0)
+            row_spacing = base_row_spacing * row_spacing_scale
         off_key = 'offset_sid' if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else 'offset_exam'
         off = model.get(off_key, [0.0, 0.0]) or [0.0, 0.0]
         ruler_anchors = [np.array(pt, dtype=np.float32) for pt in top_points]
@@ -917,29 +919,38 @@ class TemplateEditorWindow(QMainWindow):
         row_segments = []
         # Normalized digit ruler:
         # - anchor #1 is only the handwritten top separator and is not used for row sampling
-        # - anchors #2..#11 define 10 independent row midpoints from consecutive pairs
+        # - anchors #2..#11 define row midpoints from consecutive real anchor pairs
         usable_anchors = ruler_anchors[:required_anchor_count]
-        if len(usable_anchors) >= 2:
-            pair_anchors = usable_anchors[1:]
-        else:
-            pair_anchors = usable_anchors
+        pair_anchors = usable_anchors[1:] if len(usable_anchors) >= 2 else usable_anchors
+
+        base_row_midpoints: list[np.ndarray] = []
+        if len(pair_anchors) >= 2:
+            base_row_midpoints = [((pair_anchors[i] + pair_anchors[i + 1]) * 0.5) for i in range(len(pair_anchors) - 1)]
+            last_gap_vec = pair_anchors[-1] - pair_anchors[-2]
+            base_row_midpoints.append(pair_anchors[-1] + (0.5 * last_gap_vec))
+        elif len(pair_anchors) == 1:
+            base_row_midpoints = [pair_anchors[0] + (0.5 * median_gap * row_unit)]
+        row_origin = base_row_midpoints[0] if base_row_midpoints else ref_anchor
+
         for r in range(rows):
-            if len(pair_anchors) >= 2 and r < len(pair_anchors) - 1:
-                a = pair_anchors[r]
-                b = pair_anchors[r + 1]
-                center_base = (a + b) * 0.5
-            elif len(pair_anchors) == 1:
-                center_base = pair_anchors[0] + (0.5 * median_gap * row_unit)
-            elif pair_anchors:
-                last_anchor = pair_anchors[-1]
-                prev_anchor = pair_anchors[-2]
-                center_base = last_anchor + (0.5 * (last_anchor - prev_anchor))
+            if r < len(base_row_midpoints):
+                center_base = base_row_midpoints[r].copy()
+            elif base_row_midpoints:
+                center_base = row_origin + ((r) * median_gap * row_unit)
             else:
                 center_base = ref_anchor + ((r + 0.5) * median_gap * row_unit)
-            center = center_base + (float(off[0]) * col_unit) + (float(off[1]) * row_unit)
+
+            delta = center_base - row_origin
+            along = float(np.dot(delta, row_unit))
+            perp = delta - (along * row_unit)
+            scaled_base = row_origin + perp + ((along * row_spacing_scale) * row_unit)
+
+            center = scaled_base + (float(off[0]) * col_unit) + (float(off[1]) * row_unit)
             row_centers.append(center)
-            row_start = center.copy()
-            row_end = row_start - ((cols - 1) * col_spacing * col_unit)
+
+            line_center = scaled_base + (float(off[1]) * row_unit)
+            row_start = line_center.copy()
+            row_end = row_start - (zw * col_unit)
             row_segments.append((tuple(row_start.tolist()), tuple(row_end.tolist())))
         points=[]
         for r in range(rows):
