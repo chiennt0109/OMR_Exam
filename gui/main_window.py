@@ -3104,8 +3104,8 @@ class MainWindow(QMainWindow):
             res.student_id = "" if sid_text == "-" else sid_text
             res.exam_code = exam_code
             if hasattr(self, "scan_list"):
-                res.full_name = str(self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "")
-                res.birth_date = str(self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "")
+                res.full_name = str(self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "")
+                res.birth_date = str(self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "")
             res.sync_legacy_aliases()
             out.append(res)
 
@@ -10551,38 +10551,7 @@ class MainWindow(QMainWindow):
         subject_key = self._subject_key_from_cfg(cfg)
         self.scan_results = self._refresh_scan_results_from_db(subject_key)
         if self.scan_results:
-            duplicate_ids: dict[str, int] = {}
-            for res in self.scan_results:
-                sid = (res.student_id or "").strip()
-                if sid:
-                    duplicate_ids[sid] = duplicate_ids.get(sid, 0) + 1
-            for r, result in enumerate(self.scan_results):
-                sid = (result.student_id or "").strip()
-                self._refresh_student_profile_for_result(result, r)
-                scoped = self._scoped_result_copy(result)
-                blank_map = self._compute_blank_questions(scoped)
-                self.scan_blank_questions[r] = blank_map.get("MCQ", [])
-                self.scan_blank_summary[r] = blank_map
-                exam_code_text = (result.exam_code or "").strip()
-                content_text = self._build_recognition_content_text(result, blank_map)
-                status_parts = self._status_parts_for_row(sid, exam_code_text, duplicate_ids.get(sid, 0))
-                status = ", ".join(status_parts) if status_parts else "OK"
-
-                self.scan_list.insertRow(r)
-                sid_item = QTableWidgetItem(sid or "-")
-                sid_item.setData(Qt.UserRole, str(result.image_path))
-                sid_item.setData(Qt.UserRole + 1, exam_code_text)
-                sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(result))
-                self.scan_list.setItem(r, 0, sid_item)
-                self.scan_list.setItem(r, 1, QTableWidgetItem(exam_code_text or "-"))
-                self.scan_list.setItem(r, 2, QTableWidgetItem(str(getattr(result, "full_name", "") or "-")))
-                self.scan_list.setItem(r, 3, QTableWidgetItem(str(getattr(result, "birth_date", "") or "-")))
-                self.scan_list.setItem(r, 4, QTableWidgetItem(content_text))
-                item_status = QTableWidgetItem(status)
-                if item_status.text() != "OK":
-                    item_status.setForeground(Qt.red)
-                self.scan_list.setItem(r, 5, item_status)
-                self._set_scan_action_widget(r)
+            self._populate_scan_grid_from_results(self.scan_results)
             self.scan_image_preview.setText("Đã nạp kết quả Batch Scan từ cơ sở dữ liệu cho môn này")
         elif bool(cfg.get("batch_saved")):
             self.scan_image_preview.setText(
@@ -10603,9 +10572,9 @@ class MainWindow(QMainWindow):
                     "image_path": str(sid_item.data(Qt.UserRole) if sid_item else ""),
                     "exam_code": str(sid_item.data(Qt.UserRole + 1) if sid_item else ""),
                     "recognized_short": str(sid_item.data(Qt.UserRole + 2) if sid_item else ""),
-                    "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                    "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                    "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                    "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
+                    "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
+                    "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
                     "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                 }
             )
@@ -10927,50 +10896,16 @@ class MainWindow(QMainWindow):
                 duplicate_ids[sid_for_dup] = duplicate_ids.get(sid_for_dup, 0) + 1
             self.scan_results_by_subject[subject_key_for_results] = list(self.scan_results)
 
-            rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
-            sid = (result.student_id or "").strip()
-            full_name = str(getattr(result, "full_name", "") or "-")
-            birth_date = str(getattr(result, "birth_date", "") or "-")
-            scoped = self._scoped_result_copy(result)
-            blank_map = self._compute_blank_questions(scoped)
-            blank_questions = blank_map.get("MCQ", [])
-            self.scan_blank_questions[idx] = blank_questions
-            self.scan_blank_summary[idx] = blank_map
-            exam_code_text = (result.exam_code or "").strip()
-            forced_status = self.scan_forced_status_by_index.get(idx, "")
-            if forced_status:
-                status = forced_status
-            else:
-                status_parts = self._status_parts_for_row(sid, exam_code_text, duplicate_ids.get(sid, 0))
-                status = ", ".join(status_parts) if status_parts else "OK"
-            content_text = self._build_recognition_content_text(result, blank_map)
-
-            self.scan_list.insertRow(idx)
-            sid_item = QTableWidgetItem(sid or "-")
-            sid_item.setData(Qt.UserRole, str(result.image_path))
-            sid_item.setData(Qt.UserRole + 1, exam_code_text)
-            sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(result))
-            self.scan_list.setItem(idx, 0, sid_item)
-            self.scan_list.setItem(idx, 1, QTableWidgetItem(exam_code_text or "-"))
-            self.scan_list.setItem(idx, 2, QTableWidgetItem(full_name))
-            self.scan_list.setItem(idx, 3, QTableWidgetItem(birth_date))
-            self.scan_list.setItem(idx, 4, QTableWidgetItem(content_text))
-            status_item = QTableWidgetItem(status)
-            if status != "OK":
-                status_item.setForeground(Qt.red)
-            self.scan_list.setItem(idx, 5, status_item)
-            self._set_scan_action_widget(idx)
-            for issue in result.issues:
-                self.error_list.addItem(f"{Path(result.image_path).name}: {issue.code} - {issue.message}")
-            for err in rec_errors:
-                self.error_list.addItem(f"{Path(result.image_path).name}: RECOGNITION - {err}")
-
             # Keep UI responsive while filling table after recognition reaches 100%.
             if idx % 10 == 0:
                 QApplication.processEvents()
 
-        self.scan_results_by_subject[subject_key_for_results] = list(self.scan_results)
-
+        forced_status_by_image = {
+            str(result.image_path or ""): str(self.scan_forced_status_by_index.get(idx, "") or "")
+            for idx, result in enumerate(self.scan_results)
+        }
+        self._populate_scan_grid_from_results(self.scan_results, forced_status_by_image)
+        self._rebuild_error_list()
         self.btn_save_batch_subject.setEnabled(False)
         self._apply_scan_filter()
 
@@ -12871,7 +12806,7 @@ class MainWindow(QMainWindow):
             self.scan_blank_summary[idx] = blank_map
             self.scan_blank_questions[idx] = blank_map.get("MCQ", [])
             if idx < self.scan_list.rowCount():
-                self.scan_list.setItem(idx, 3, QTableWidgetItem(self._build_recognition_content_text(res, blank_map)))
+                self.scan_list.setItem(idx, 4, QTableWidgetItem(self._build_recognition_content_text(res, blank_map)))
                 sid_item = self.scan_list.item(idx, 0)
                 if sid_item:
                     sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(res))
@@ -12956,6 +12891,98 @@ class MainWindow(QMainWindow):
             for err in rec_errors:
                 self.error_list.addItem(f"{Path(result.image_path).name}: RECOGNITION - {err}")
 
+    @staticmethod
+    def _student_sort_token(student_id: str) -> tuple[int, object]:
+        sid = str(student_id or "").strip()
+        if not sid or sid == "-":
+            return (1, "")
+        if sid.isdigit():
+            return (0, int(sid))
+        return (0, sid.casefold())
+
+    def _row_sort_bucket(self, status: str, blank_map: dict[str, list[int]]) -> int:
+        status_text = str(status or "").strip()
+        has_error = bool(status_text and status_text != "OK")
+        has_blank = any(bool(blank_map.get(sec, [])) for sec in ["MCQ", "TF", "NUMERIC"])
+        if has_error:
+            return 0
+        if has_blank:
+            return 1
+        return 2
+
+    def _populate_scan_grid_from_results(self, results: list[OMRResult], forced_status_by_image: dict[str, str] | None = None) -> None:
+        forced_status_by_image = forced_status_by_image or {}
+        duplicate_ids: dict[str, int] = {}
+        for res in results:
+            sid = str(getattr(res, "student_id", "") or "").strip()
+            if sid:
+                duplicate_ids[sid] = duplicate_ids.get(sid, 0) + 1
+
+        row_views: list[dict[str, object]] = []
+        for result in results:
+            self._refresh_student_profile_for_result(result)
+            scoped = self._scoped_result_copy(result)
+            blank_map = self._compute_blank_questions(scoped)
+            sid = str(result.student_id or "").strip()
+            exam_code_text = str(result.exam_code or "").strip()
+            image_path = str(result.image_path or "")
+            forced_status = str(forced_status_by_image.get(image_path, "") or "")
+            if forced_status:
+                status = forced_status
+            else:
+                status_parts = self._status_parts_for_row(sid, exam_code_text, duplicate_ids.get(sid, 0))
+                status = ", ".join(status_parts) if status_parts else "OK"
+            row_views.append(
+                {
+                    "result": result,
+                    "image_path": image_path,
+                    "sid": sid,
+                    "exam_code": exam_code_text,
+                    "full_name": str(getattr(result, "full_name", "") or "-"),
+                    "birth_date": str(getattr(result, "birth_date", "") or "-"),
+                    "blank_map": blank_map,
+                    "content": self._build_recognition_content_text(result, blank_map),
+                    "status": status,
+                    "forced_status": forced_status,
+                    "recognized_short": self._short_recognition_text_for_result(result),
+                }
+            )
+
+        row_views.sort(
+            key=lambda item: (
+                self._row_sort_bucket(str(item["status"]), item["blank_map"]),
+                self._student_sort_token(str(item["sid"])),
+                str(item["exam_code"] or "").casefold(),
+                Path(str(item["image_path"] or "")).name.casefold(),
+            )
+        )
+
+        self.scan_results = [item["result"] for item in row_views]
+        subject_key = self._current_batch_subject_key()
+        if subject_key:
+            self.scan_results_by_subject[subject_key] = list(self.scan_results)
+        self.scan_blank_questions = {idx: list(item["blank_map"].get("MCQ", [])) for idx, item in enumerate(row_views)}
+        self.scan_blank_summary = {idx: dict(item["blank_map"]) for idx, item in enumerate(row_views)}
+        self.scan_forced_status_by_index = {idx: str(item["forced_status"] or "") for idx, item in enumerate(row_views) if str(item["forced_status"] or "")}
+
+        self.scan_list.setRowCount(0)
+        for idx, item in enumerate(row_views):
+            self.scan_list.insertRow(idx)
+            sid_item = QTableWidgetItem(str(item["sid"] or "-"))
+            sid_item.setData(Qt.UserRole, str(item["image_path"] or ""))
+            sid_item.setData(Qt.UserRole + 1, str(item["exam_code"] or ""))
+            sid_item.setData(Qt.UserRole + 2, str(item["recognized_short"] or ""))
+            self.scan_list.setItem(idx, 0, sid_item)
+            self.scan_list.setItem(idx, 1, QTableWidgetItem(str(item["exam_code"] or "-")))
+            self.scan_list.setItem(idx, 2, QTableWidgetItem(str(item["full_name"] or "-")))
+            self.scan_list.setItem(idx, 3, QTableWidgetItem(str(item["birth_date"] or "-")))
+            self.scan_list.setItem(idx, 4, QTableWidgetItem(str(item["content"] or "")))
+            status_item = QTableWidgetItem(str(item["status"] or "OK"))
+            if str(item["status"] or "OK") != "OK":
+                status_item.setForeground(Qt.red)
+            self.scan_list.setItem(idx, 5, status_item)
+            self._set_scan_action_widget(idx)
+
     def _update_scan_row_from_result(self, idx: int, result) -> None:
         if idx < 0 or idx >= self.scan_list.rowCount():
             return
@@ -12966,11 +12993,12 @@ class MainWindow(QMainWindow):
         sid_item.setData(Qt.UserRole + 1, exam_code_text)
         sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(result))
         self.scan_list.setItem(idx, 0, sid_item)
-        self.scan_list.setItem(idx, 1, QTableWidgetItem(str(getattr(result, "full_name", "") or "-")))
-        self.scan_list.setItem(idx, 2, QTableWidgetItem(str(getattr(result, "birth_date", "") or "-")))
+        self.scan_list.setItem(idx, 1, QTableWidgetItem((result.exam_code or "").strip() or "-"))
+        self.scan_list.setItem(idx, 2, QTableWidgetItem(str(getattr(result, "full_name", "") or "-")))
+        self.scan_list.setItem(idx, 3, QTableWidgetItem(str(getattr(result, "birth_date", "") or "-")))
         self.scan_list.setItem(
             idx,
-            3,
+            4,
             QTableWidgetItem(self._build_recognition_content_text(result, self.scan_blank_summary.get(idx, {"MCQ": [], "TF": [], "NUMERIC": []}))),
         )
 
@@ -12997,7 +13025,7 @@ class MainWindow(QMainWindow):
             image_path = str(sid_item.data(Qt.UserRole) if sid_item else "").strip()
             if image_path:
                 result.image_path = image_path
-            setattr(result, "full_name", str(self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else ""))
+            setattr(result, "full_name", str(self.scan_list.item(idx, 2).text() if self.scan_list.item(idx, 2) else ""))
             setattr(result, "birth_date", str(self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else ""))
             out.append(result)
         return out
@@ -13014,7 +13042,7 @@ class MainWindow(QMainWindow):
             student_id = ""
         exam_code = str(sid_item.data(Qt.UserRole + 1) if sid_item else "").strip()
         result = OMRResult(image_path=image_path, student_id=student_id, exam_code=exam_code)
-        result.full_name = str(self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else "")
+        result.full_name = str(self.scan_list.item(idx, 2).text() if self.scan_list.item(idx, 2) else "")
         result.birth_date = str(self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else "")
         result.sync_legacy_aliases()
         return result
@@ -13644,7 +13672,7 @@ class MainWindow(QMainWindow):
         if row < 0:
             return
         # Only show edit history when clicking the Status column.
-        if col != 4:
+        if col != 5:
             return
         history = self.scan_edit_history.get(row, [])
         if not history:
