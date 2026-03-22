@@ -640,6 +640,41 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(digits, "37")
         self.assertEqual(confs, [1.0, 1.0])
 
+    def test_recognize_block_prefers_direct_identifier_decode_before_sampling(self):
+        template = Template(
+            name="sid_direct_first",
+            image_path="",
+            width=120,
+            height=220,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="sid_direct_first",
+                    name="sid",
+                    zone_type=ZoneType.STUDENT_ID_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(40, 20 + r * 18) for r in range(10)]),
+                    metadata={"bubble_radius": 6},
+                )
+            ],
+        )
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": "", "digit_zone_debug": {}})()
+        with patch.object(
+            self.processor,
+            "_decode_identifier_zone_from_centers",
+            return_value=("7", [1.4], np.array([[40, 20 + r * 18] for r in range(10)], dtype=np.float32), np.zeros((10, 1), dtype=np.float32), {"direct_scores": [[0.0]]}),
+        ), patch.object(
+            self.processor,
+            "_read_digit_zone_with_offset_fallback",
+            side_effect=AssertionError("sampling should not run when direct decode is valid"),
+        ):
+            self.processor.recognize_block(np.zeros((220, 120), dtype=np.uint8), template.zones[0], template, result_stub)
+        self.assertEqual(result_stub.student_id, "7")
+        self.assertEqual(result_stub.digit_zone_debug["sid_direct_first"].get("recognition_path"), "direct")
+
     def test_recognize_block_reads_student_id_from_template_grid_sampling(self):
         template = Template(
             name="sid_grid_sample",
