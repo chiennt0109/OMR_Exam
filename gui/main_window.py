@@ -3347,14 +3347,15 @@ class MainWindow(QMainWindow):
         try:
             self._refresh_all_statuses()
             ses = ExamSession.load_json(session_path)
-            disk_cfg = ses.config or {}
-            mem_cfg = self.session.config if self.session else {}
-            cfg = {**disk_cfg, **(mem_cfg or {})}
+            cfg = ses.config or {}
             subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
             subject_key = self._subject_key_from_cfg(subject_cfg)
-            current_results = self._collect_current_subject_results_for_save(subject_key)
-            self.scan_results_by_subject[subject_key] = list(current_results)
-            saved_results = [self._serialize_omr_result(x) for x in current_results]
+            current_results = self._current_scan_results_snapshot()
+            self.scan_results = list(current_results)
+            for result in current_results:
+                result.answer_string = self._build_answer_string_for_result(result, subject_key)
+                self.database.upsert_scan_result(subject_key, self._serialize_omr_result(result))
+
             timestamp = datetime.now().isoformat(timespec="seconds")
             updated = False
             for item in subject_cfgs:
@@ -3366,29 +3367,9 @@ class MainWindow(QMainWindow):
                     item["batch_saved"] = True
                     item["batch_saved_at"] = timestamp
                     item["batch_result_count"] = row_count
-                    item["batch_saved_rows"] = [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "preview_rotation": int(self.preview_rotation_by_index.get(r, 0) or 0),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ]
-                    item["batch_saved_preview"] = [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ]
-                    item["batch_saved_results"] = saved_results
+                    item["batch_saved_rows"] = []
+                    item["batch_saved_preview"] = []
+                    item["batch_saved_results"] = []
                     updated = True
                     break
             if not updated:
@@ -3397,63 +3378,44 @@ class MainWindow(QMainWindow):
             ses.config = {**cfg, "subject_configs": subject_cfgs}
             ses.save_json(session_path)
 
-            # Write sidecar cache to ensure grids can be restored even if subject config is trimmed elsewhere.
-            try:
-                cache_path = session_path.with_suffix(".batch_cache.json")
-                cache_data = {}
-                if cache_path.exists():
-                    raw = json.loads(cache_path.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        cache_data = raw
-                cache_key = f"{str(subject_cfg.get('name','')).strip().lower()}::{str(subject_cfg.get('block','')).strip().lower()}::{str(subject_cfg.get('answer_key_key','')).strip().lower()}"
-                cache_data[cache_key] = {
-                    "batch_saved": True,
-                    "batch_saved_at": timestamp,
-                    "batch_result_count": row_count,
-                    "batch_saved_rows": [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "birth_date": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "preview_rotation": int(self.preview_rotation_by_index.get(r, 0) or 0),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ],
-                    "batch_saved_preview": [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ],
-                    "batch_saved_results": saved_results,
-                }
-                cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                pass
-
             if self.session:
-                merged_session_cfg = {**(self.session.config or {}), "subject_configs": subject_cfgs}
-                if self.scoring_phases:
-                    merged_session_cfg["scoring_phases"] = list(self.scoring_phases)
-                if self.scoring_results_by_subject:
-                    merged_session_cfg["scoring_results"] = dict(self.scoring_results_by_subject)
-                self.session.config = merged_session_cfg
+                self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
             self.scan_results_by_subject[subject_key] = list(current_results)
             if isinstance(self.batch_editor_return_payload, dict):
                 self.batch_editor_return_payload["subject_configs"] = subject_cfgs
-            self._refresh_batch_subject_controls()
+
+            current_row = self.scan_list.currentRow() if hasattr(self, "scan_list") else -1
+            current_image = ""
+            if hasattr(self, "scan_list") and 0 <= current_row < self.scan_list.rowCount():
+                it = self.scan_list.item(current_row, 0)
+                current_image = str(it.data(Qt.UserRole) if it else "")
+
+            if hasattr(self, "batch_subject_combo"):
+                for i in range(1, self.batch_subject_combo.count()):
+                    cfg_i = self.batch_subject_combo.itemData(i)
+                    if isinstance(cfg_i, dict) and self._subject_key_from_cfg(cfg_i) == subject_key:
+                        self.batch_subject_combo.setCurrentIndex(i)
+                        self._on_batch_subject_changed(i)
+                        break
+
+            if hasattr(self, "scan_list") and self.scan_list.rowCount() > 0:
+                target_row = -1
+                if current_image:
+                    for r in range(self.scan_list.rowCount()):
+                        it = self.scan_list.item(r, 0)
+                        if str(it.data(Qt.UserRole) if it else "") == current_image:
+                            target_row = r
+                            break
+                if target_row < 0 and current_row >= 0:
+                    target_row = min(current_row, self.scan_list.rowCount() - 1)
+                if target_row >= 0:
+                    self.scan_list.selectRow(target_row)
+                    self._on_scan_selected()
+
             self.btn_save_batch_subject.setEnabled(False)
-            QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
+            QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn vào cơ sở dữ liệu.")
         except Exception as exc:
             QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu trạng thái Batch\n{exc}")
-
 
     def _build_correction_tab(self) -> QWidget:
         w = QWidget()
@@ -10586,54 +10548,42 @@ class MainWindow(QMainWindow):
         if tpl_for_view:
             self._apply_template_recognition_settings(tpl_for_view)
 
-        saved_results_payload = cfg.get("batch_saved_results", []) if isinstance(cfg.get("batch_saved_results", []), list) else []
-        self.scan_results = []
-        for payload in saved_results_payload:
-            if not isinstance(payload, dict):
-                continue
-            try:
-                self.scan_results.append(self._deserialize_omr_result(payload))
-            except Exception:
-                continue
         subject_key = self._subject_key_from_cfg(cfg)
+        self.scan_results = self._refresh_scan_results_from_db(subject_key)
         if self.scan_results:
-            self.scan_results_by_subject[subject_key] = list(self.scan_results)
+            duplicate_ids: dict[str, int] = {}
+            for res in self.scan_results:
+                sid = (res.student_id or "").strip()
+                if sid:
+                    duplicate_ids[sid] = duplicate_ids.get(sid, 0) + 1
+            for r, result in enumerate(self.scan_results):
+                sid = (result.student_id or "").strip()
+                self._refresh_student_profile_for_result(result, r)
+                scoped = self._scoped_result_copy(result)
+                blank_map = self._compute_blank_questions(scoped)
+                self.scan_blank_questions[r] = blank_map.get("MCQ", [])
+                self.scan_blank_summary[r] = blank_map
+                exam_code_text = (result.exam_code or "").strip()
+                content_text = self._build_recognition_content_text(result, blank_map)
+                status_parts = self._status_parts_for_row(sid, exam_code_text, duplicate_ids.get(sid, 0))
+                status = ", ".join(status_parts) if status_parts else "OK"
 
-        saved_rows = cfg.get("batch_saved_rows", []) if isinstance(cfg.get("batch_saved_rows", []), list) else []
-        for row in saved_rows:
-            if not isinstance(row, dict):
-                continue
-            r = self.scan_list.rowCount()
-            self.scan_list.insertRow(r)
-            sid_item = QTableWidgetItem(str(row.get("student_id", "-")))
-            sid_item.setData(Qt.UserRole, str(row.get("image_path", "") or ""))
-            sid_item.setData(Qt.UserRole + 1, str(row.get("exam_code", "") or ""))
-            sid_item.setData(Qt.UserRole + 2, str(row.get("recognized_short", "") or ""))
-            self.scan_list.setItem(r, 0, sid_item)
-            self.scan_list.setItem(r, 1, QTableWidgetItem(str(row.get("exam_code", "-") or "-")))
-            self.scan_list.setItem(r, 2, QTableWidgetItem(str(row.get("full_name", "-"))))
-            self.scan_list.setItem(r, 3, QTableWidgetItem(str(row.get("birth_date", "-"))))
-            self.scan_list.setItem(r, 4, QTableWidgetItem(str(row.get("content", "-"))))
-            forced_status = str(row.get("forced_status", "") or "")
-            if forced_status:
-                self.scan_forced_status_by_index[r] = forced_status
-            item_status = QTableWidgetItem(str(row.get("status", "-")))
-            if item_status.text() != "OK":
-                item_status.setForeground(Qt.red)
-            self.scan_list.setItem(r, 5, item_status)
-            self._set_scan_action_widget(r)
-
-        saved_preview = cfg.get("batch_saved_preview", []) if isinstance(cfg.get("batch_saved_preview", []), list) else []
-        for row in saved_preview:
-            if not isinstance(row, dict):
-                continue
-            r = self.scan_result_preview.rowCount()
-            self.scan_result_preview.insertRow(r)
-            self.scan_result_preview.setItem(r, 0, QTableWidgetItem(str(row.get("label", ""))))
-            self.scan_result_preview.setItem(r, 1, QTableWidgetItem(str(row.get("value", ""))))
-
-        if saved_rows:
-            self.scan_image_preview.setText("Đã nạp nội dung Batch đã lưu cho môn này")
+                self.scan_list.insertRow(r)
+                sid_item = QTableWidgetItem(sid or "-")
+                sid_item.setData(Qt.UserRole, str(result.image_path))
+                sid_item.setData(Qt.UserRole + 1, exam_code_text)
+                sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(result))
+                self.scan_list.setItem(r, 0, sid_item)
+                self.scan_list.setItem(r, 1, QTableWidgetItem(exam_code_text or "-"))
+                self.scan_list.setItem(r, 2, QTableWidgetItem(str(getattr(result, "full_name", "") or "-")))
+                self.scan_list.setItem(r, 3, QTableWidgetItem(str(getattr(result, "birth_date", "") or "-")))
+                self.scan_list.setItem(r, 4, QTableWidgetItem(content_text))
+                item_status = QTableWidgetItem(status)
+                if item_status.text() != "OK":
+                    item_status.setForeground(Qt.red)
+                self.scan_list.setItem(r, 5, item_status)
+                self._set_scan_action_widget(r)
+            self.scan_image_preview.setText("Đã nạp kết quả Batch Scan từ cơ sở dữ liệu cho môn này")
         elif bool(cfg.get("batch_saved")):
             self.scan_image_preview.setText(
                 f"Môn này đã lưu Batch ({cfg.get('batch_saved_at', '-')}) - Số bài: {cfg.get('batch_result_count', '-')}."
@@ -10939,16 +10889,14 @@ class MainWindow(QMainWindow):
             self.progress.setValue(current)
             QApplication.processEvents()
 
-        self.scan_results = self.omr_processor.process_batch(file_paths, self.template, on_progress)
         subject_key_for_results = self._subject_key_from_cfg(subject_cfg) if subject_cfg else self._resolve_preferred_scoring_subject()
-        self.scan_list.setRowCount(0)
+        self.database.delete_scan_results_for_subject(subject_key_for_results)
+        self.scan_results = []
         duplicate_ids: dict[str, int] = {}
-        for res in self.scan_results:
-            sid = (res.student_id or "").strip()
-            if sid:
-                duplicate_ids[sid] = duplicate_ids.get(sid, 0) + 1
 
-        for idx, result in enumerate(self.scan_results):
+        for idx, image_path in enumerate(file_paths):
+            on_progress(idx + 1, len(file_paths), image_path)
+            result = self.omr_processor.run_recognition_test(image_path, copy.deepcopy(self.template), None)
             forced_status = ""
             original_meaningful = self._result_has_meaningful_recognition(result)
             original_identity = self._has_valid_identity(result)
@@ -10960,7 +10908,6 @@ class MainWindow(QMainWindow):
                 # Accept 180° retry only when quality is strictly improved, otherwise keep original orientation.
                 if improved:
                     result = retried
-                    self.scan_results[idx] = result
                     self.preview_rotation_by_index[idx] = (int(self.preview_rotation_by_index.get(idx, 0) or 0) + 180) % 360
 
             if self._should_force_image_error_status(result):
@@ -10971,9 +10918,17 @@ class MainWindow(QMainWindow):
             if forced_status:
                 self.scan_forced_status_by_index[idx] = forced_status
 
+            self._refresh_student_profile_for_result(result)
+            result.answer_string = self._build_answer_string_for_result(result, subject_key_for_results)
+            self.database.upsert_scan_result(subject_key_for_results, self._serialize_omr_result(result))
+            self.scan_results.append(result)
+            sid_for_dup = (result.student_id or "").strip()
+            if sid_for_dup:
+                duplicate_ids[sid_for_dup] = duplicate_ids.get(sid_for_dup, 0) + 1
+            self.scan_results_by_subject[subject_key_for_results] = list(self.scan_results)
+
             rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
             sid = (result.student_id or "").strip()
-            self._refresh_student_profile_for_result(result)
             full_name = str(getattr(result, "full_name", "") or "-")
             birth_date = str(getattr(result, "birth_date", "") or "-")
             scoped = self._scoped_result_copy(result)
@@ -11016,7 +10971,7 @@ class MainWindow(QMainWindow):
 
         self.scan_results_by_subject[subject_key_for_results] = list(self.scan_results)
 
-        self.btn_save_batch_subject.setEnabled(True)
+        self.btn_save_batch_subject.setEnabled(False)
         self._apply_scan_filter()
 
     @staticmethod
@@ -13679,7 +13634,7 @@ class MainWindow(QMainWindow):
     def _persist_single_scan_result_to_db(self, result: OMRResult, note: str = "") -> None:
         subject_key = self._current_batch_subject_key()
         result.answer_string = self._build_answer_string_for_result(result, subject_key)
-        self.database.update_scan_result_payload(str(getattr(result, "image_path", "") or ""), self._serialize_omr_result(result), note=note)
+        self.database.update_scan_result_payload(subject_key, str(getattr(result, "image_path", "") or ""), self._serialize_omr_result(result), note=note)
 
     def _refresh_all_statuses(self) -> None:
         for row_idx in range(self.scan_list.rowCount()):
