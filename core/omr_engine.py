@@ -2063,7 +2063,13 @@ class OMRProcessor:
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
             centers = self._detect_digit_bubble_centers(working_binary, centers, float(radius))
         ratios = self.detect_bubbles(working_binary, centers, radius)
-        if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+        if zone.zone_type == ZoneType.MCQ_BLOCK:
+            core_ratios = self._detect_center_core_marks(working_binary, centers, radius)
+            eroded_ratios = self._detect_eroded_mark_density(working_binary, centers, radius)
+            core_boosted = np.clip((0.62 * ratios) + (0.38 * core_ratios), 0.0, 1.0)
+            xmark_boosted = np.clip((0.50 * ratios) + (0.30 * core_ratios) + (0.20 * eroded_ratios), 0.0, 1.0)
+            ratios = np.maximum(ratios, np.maximum(core_boosted, xmark_boosted))
+        elif zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
             core_ratios = self._detect_center_core_marks(working_binary, centers, radius)
             multi_probe_ratios = self._detect_digit_zone_multi_probe_marks(working_binary, centers, radius)
             if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:

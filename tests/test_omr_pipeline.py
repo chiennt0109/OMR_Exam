@@ -990,6 +990,52 @@ class OMRPipelineTests(unittest.TestCase):
         self.processor.recognize_block(binary, template.zones[0], template, result_stub)
         self.assertEqual(result_stub.mcq_answers.get(1), "C")
 
+    def test_mcq_recognize_block_uses_core_boost_for_x_mark_answer(self):
+        template = Template(
+            name="mcq_core_boost",
+            image_path="",
+            width=200,
+            height=120,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="mcq_core_boost",
+                    name="mcq",
+                    zone_type=ZoneType.MCQ_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=1, cols=4, question_start=1, question_count=1, options=["A", "B", "C", "D"], bubble_positions=[(40, 60), (80, 60), (120, 60), (160, 60)]),
+                    metadata={"bubble_radius": 10},
+                )
+            ],
+        )
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": ""})()
+        with patch.object(
+            self.processor,
+            "_resolve_zone_centers",
+            return_value=np.array([(40, 60), (80, 60), (120, 60), (160, 60)], dtype=np.float32),
+        ), patch.object(
+            self.processor,
+            "detect_bubbles",
+            return_value=np.array([0.22, 0.26, 0.41, 0.20], dtype=np.float32),
+        ), patch.object(
+            self.processor,
+            "_detect_center_core_marks",
+            return_value=np.array([0.14, 0.18, 0.92, 0.12], dtype=np.float32),
+        ), patch.object(
+            self.processor,
+            "_detect_eroded_mark_density",
+            return_value=np.array([0.08, 0.09, 0.74, 0.07], dtype=np.float32),
+        ), patch.object(
+            self.processor,
+            "_estimate_local_fill_threshold",
+            side_effect=[0.62, 0.62, 0.62, 0.62],
+        ):
+            self.processor.recognize_block(np.zeros((120, 200), dtype=np.uint8), template.zones[0], template, result_stub)
+        self.assertEqual(result_stub.mcq_answers.get(1), "C")
+
     def test_mcq_best_fallback_keeps_strongest_row_answer_below_strict_threshold(self):
         zone = Zone(
             id="mcq_best_fallback",
