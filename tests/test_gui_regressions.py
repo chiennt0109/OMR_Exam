@@ -28,6 +28,22 @@ class GuiRegressionTests(unittest.TestCase):
         return 2''', source)
         self.assertIn('self._student_sort_token(str(item["sid"]))', source)
 
+    def test_student_id_error_status_is_not_treated_as_duplicate(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('def _student_id_has_recognition_error(student_id: str) -> bool:', source)
+        self.assertIn('parts.append("Lỗi SBD")', source)
+        self.assertIn('elif sid and duplicate_count > 1:', source)
+        self.assertIn('if not self._student_id_has_recognition_error(sid):', source)
+
+    def test_batch_scan_supports_new_only_and_all_modes(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('self.batch_file_scope_combo.addItem("Nhận dạng file mới", "new_only")', source)
+        self.assertIn('self.batch_file_scope_combo.addItem("Nhận dạng toàn bộ", "all")', source)
+        self.assertIn('self.batch_scan_state_value = QLineEdit("-"); self.batch_scan_state_value.setReadOnly(True)', source)
+        self.assertIn('if file_scope_mode == "new_only":', source)
+        self.assertIn('def _recommended_batch_timeout_sec(template: Template | None) -> float:', source)
+        self.assertIn('self.template.metadata["recognition_timeout_sec"] = self._recommended_batch_timeout_sec(self.template)', source)
+
     def test_scoring_uses_lightweight_scan_copies_and_batch_results_drop_large_arrays(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
         self.assertIn('def _strip_transient_scan_artifacts(result: OMRResult) -> OMRResult:', source)
@@ -41,6 +57,19 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('SP_TrashIcon', source)
         self.assertIn('def _delete_scan_row_by_index(self, row: int) -> None:', source)
         self.assertIn('delete_scan_result(subject_key, image_path)', source)
+
+    def test_edit_dialog_preview_and_combo_validation_regressions(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('QFrame,', source)
+        self.assertIn('preview_result = self._scoped_result_copy(result)', source)
+        self.assertIn('preview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)', source)
+        self.assertIn('preview_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)', source)
+        self.assertIn('def _valid_student_ids() -> list[str]:', source)
+        self.assertIn('return None', source)
+        self.assertIn('sorted(set(int(q) for q in (key.answers or {}).keys())) or fallback_snapshot["MCQ"]', source)
+        self.assertIn('expected_by_section[sec] = []', source)
+        self.assertIn("Student ID '{student_id_text}' không có trong danh sách học sinh hợp lệ của ca thi.", source)
+        self.assertIn("Exam code '{exam_code_text}' không có đáp án hợp lệ cho môn hiện tại.", source)
 
 
 if __name__ == '__main__':
