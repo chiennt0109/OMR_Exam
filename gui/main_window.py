@@ -12927,10 +12927,10 @@ class MainWindow(QMainWindow):
             self.scan_blank_summary[idx] = blank_map
             self.scan_blank_questions[idx] = blank_map.get("MCQ", [])
             if idx < self.scan_list.rowCount():
-                self.scan_list.setItem(idx, 4, QTableWidgetItem(self._build_recognition_content_text(res, blank_map)))
+                self.scan_list.setItem(idx, 4, QTableWidgetItem(self._build_recognition_content_text(scoped, blank_map)))
                 sid_item = self.scan_list.item(idx, 0)
                 if sid_item:
-                    sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(res))
+                    sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(scoped))
         self._refresh_all_statuses()
         current = self.scan_list.currentRow() if hasattr(self, "scan_list") else -1
         if 0 <= current < len(self.scan_results):
@@ -13062,10 +13062,10 @@ class MainWindow(QMainWindow):
                     "full_name": str(getattr(result, "full_name", "") or "-"),
                     "birth_date": str(getattr(result, "birth_date", "") or "-"),
                     "blank_map": blank_map,
-                    "content": self._build_recognition_content_text(result, blank_map),
+                    "content": self._build_recognition_content_text(scoped, blank_map),
                     "status": status,
                     "forced_status": forced_status,
-                    "recognized_short": self._short_recognition_text_for_result(result),
+                    "recognized_short": self._short_recognition_text_for_result(scoped),
                 }
             )
 
@@ -13107,12 +13107,13 @@ class MainWindow(QMainWindow):
     def _update_scan_row_from_result(self, idx: int, result) -> None:
         if idx < 0 or idx >= self.scan_list.rowCount():
             return
+        scoped = self._scoped_result_copy(result)
         sid = (result.student_id or "").strip()
         exam_code_text = (result.exam_code or "").strip()
         sid_item = QTableWidgetItem(sid or "-")
         sid_item.setData(Qt.UserRole, str(result.image_path))
         sid_item.setData(Qt.UserRole + 1, exam_code_text)
-        sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(result))
+        sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(scoped))
         self.scan_list.setItem(idx, 0, sid_item)
         self.scan_list.setItem(idx, 1, QTableWidgetItem((result.exam_code or "").strip() or "-"))
         self.scan_list.setItem(idx, 2, QTableWidgetItem(str(getattr(result, "full_name", "") or "-")))
@@ -13120,7 +13121,7 @@ class MainWindow(QMainWindow):
         self.scan_list.setItem(
             idx,
             4,
-            QTableWidgetItem(self._build_recognition_content_text(result, self.scan_blank_summary.get(idx, {"MCQ": [], "TF": [], "NUMERIC": []}))),
+            QTableWidgetItem(self._build_recognition_content_text(scoped, self.scan_blank_summary.get(idx, {"MCQ": [], "TF": [], "NUMERIC": []}))),
         )
 
     def _current_scan_results_snapshot(self) -> list[OMRResult]:
@@ -13454,7 +13455,7 @@ class MainWindow(QMainWindow):
             f"Ảnh: {Path(image_path).name}\n"
             f"STUDENT ID mới: {new_result.student_id or '-'}\n"
             f"Mã đề mới: {new_result.exam_code or '-'}\n"
-            f"Nhận dạng ngắn: {self._compact_value(self._short_recognition_text_for_result(new_result), 180)}\n"
+            f"Nhận dạng ngắn: {self._compact_value(self._short_recognition_text_for_result(scoped_new), 180)}\n"
             f"Số lỗi nhận dạng: {len(rec_errors)}\n\n"
             "Lưu nhận dạng hay không?\n"
             "Yes: Cập nhật lưới và lưu batch ngay.\n"

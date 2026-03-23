@@ -68,6 +68,8 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('return None', source)
         self.assertIn('sorted(set(int(q) for q in (key.answers or {}).keys())) or fallback_snapshot["MCQ"]', source)
         self.assertIn('expected_by_section[sec] = []', source)
+        self.assertIn('self._build_recognition_content_text(scoped, blank_map)', source)
+        self.assertIn('self._short_recognition_text_for_result(scoped)', source)
         self.assertIn("Student ID '{student_id_text}' không có trong danh sách học sinh hợp lệ của ca thi.", source)
         self.assertIn("Exam code '{exam_code_text}' không có đáp án hợp lệ cho môn hiện tại.", source)
 
