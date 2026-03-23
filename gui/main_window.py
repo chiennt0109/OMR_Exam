@@ -14159,11 +14159,15 @@ class MainWindow(QMainWindow):
         dialog_state = {"index": idx, "loading": False}
         default_zoom_factor = 0.34
 
-        dlg = QDialog(self, Qt.Window)
+        dlg = QDialog(None)
         dlg.setWindowTitle(f"Sửa bài thi: {Path(self.scan_results[dialog_state['index']].image_path).name}")
-        dlg.setWindowModality(Qt.ApplicationModal)
-        dlg.setWindowState(Qt.WindowFullScreen)
-        QTimer.singleShot(0, lambda: (dlg.raise_(), dlg.showFullScreen(), dlg.activateWindow()))
+        dlg.setModal(True)
+        dlg.setWindowFlag(Qt.Window, True)
+        screen_geom = QApplication.primaryScreen().availableGeometry() if QApplication.primaryScreen() else self.geometry()
+        dlg.setGeometry(screen_geom)
+        dlg.setMinimumSize(screen_geom.size())
+        dlg.setMaximumSize(screen_geom.size())
+        QTimer.singleShot(0, lambda: (dlg.raise_(), dlg.showMaximized(), dlg.activateWindow()))
         lay = QHBoxLayout(dlg)
         splitter = QSplitter(Qt.Horizontal)
         left = QWidget()
@@ -14336,17 +14340,18 @@ class MainWindow(QMainWindow):
             combo.blockSignals(True)
             combo.clear()
             valid_codes = _valid_exam_codes(subject_key, current_code)
+            selected_code = str(current_code or "").strip()
+            selected_is_valid = bool(selected_code and selected_code in valid_codes)
+            if not selected_is_valid:
+                combo.addItem("-", "-")
             for code in valid_codes:
                 combo.addItem(code, code)
             if combo.count() == 0:
-                combo.addItem("", "")
-            selected_code = str(current_code or "").strip()
-            if selected_code and selected_code in valid_codes:
+                combo.addItem("-", "-")
+            if selected_is_valid:
                 _set_combo_to_value(combo, selected_code)
-            elif valid_codes:
-                combo.setCurrentIndex(0)
             else:
-                combo.setEditText("")
+                combo.setCurrentIndex(0)
             combo.blockSignals(False)
 
         def _answer_key_for_exam_code(exam_code_text: str):
@@ -14354,7 +14359,7 @@ class MainWindow(QMainWindow):
             code = str(exam_code_text or "").strip()
             if not subject or not self.answer_keys:
                 return None
-            if code and "?" not in code:
+            if code and code != "-" and "?" not in code:
                 key = self.answer_keys.get_flexible(subject, code)
                 if key is not None:
                     return key
@@ -14478,7 +14483,7 @@ class MainWindow(QMainWindow):
                 valid_exam_codes = _valid_exam_codes(self._current_batch_subject_key(), exam_code_text)
                 if valid_student_ids and student_id_text and student_id_text not in valid_student_ids:
                     raise ValueError(f"Student ID '{student_id_text}' không có trong danh sách học sinh hợp lệ của ca thi.")
-                if valid_exam_codes and exam_code_text and exam_code_text not in valid_exam_codes:
+                if valid_exam_codes and exam_code_text not in {"", "-"} and exam_code_text not in valid_exam_codes:
                     raise ValueError(f"Exam code '{exam_code_text}' không có đáp án hợp lệ cho môn hiện tại.")
             snapshot = {
                 "student_id": student_id_text,
