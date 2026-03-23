@@ -1521,7 +1521,7 @@ class OMRProcessor:
         refined_centers = refined.astype(np.float32)
         return refined_centers
 
-    def _find_local_component_offset(
+    def _find_local_component(
         self,
         binary: np.ndarray,
         center: np.ndarray,
@@ -1529,7 +1529,7 @@ class OMRProcessor:
         min_area: float,
         max_area: float,
         max_dist: float,
-    ) -> np.ndarray | None:
+    ) -> dict[str, float] | None:
         h, w = binary.shape[:2]
         exp_x, exp_y = float(center[0]), float(center[1])
         x0 = int(max(0, exp_x - search_pad))
@@ -1540,7 +1540,7 @@ class OMRProcessor:
         if roi.size == 0:
             return None
         num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(roi, connectivity=8)
-        best_offset: np.ndarray | None = None
+        best: dict[str, float] | None = None
         best_score = float("inf")
         for idx in range(1, num_labels):
             area = float(stats[idx, cv2.CC_STAT_AREA])
@@ -1552,10 +1552,62 @@ class OMRProcessor:
             dist = float(np.linalg.norm(offset))
             if dist > max_dist:
                 continue
-            if dist < best_score:
-                best_score = dist
-                best_offset = offset
-        return best_offset
+            bw = max(1.0, float(stats[idx, cv2.CC_STAT_WIDTH]))
+            bh = max(1.0, float(stats[idx, cv2.CC_STAT_HEIGHT]))
+            extent = float(area / max(1.0, bw * bh))
+            aspect = float(min(bw, bh) / max(bw, bh))
+            score = dist + (0.35 * search_pad * max(0.0, 0.45 - (aspect * extent)))
+            if score < best_score:
+                best_score = score
+                best = {
+                    "offset_x": float(offset[0]),
+                    "offset_y": float(offset[1]),
+                    "distance": dist,
+                    "area": area,
+                    "width": bw,
+                    "height": bh,
+                    "extent": extent,
+                    "aspect": aspect,
+                }
+        return best
+
+    def _find_local_component_offset(
+        self,
+        binary: np.ndarray,
+        center: np.ndarray,
+        search_pad: int,
+        min_area: float,
+        max_area: float,
+        max_dist: float,
+    ) -> np.ndarray | None:
+        component = self._find_local_component(binary, center, search_pad, min_area, max_area, max_dist)
+        if component is None:
+            return None
+        return np.array([component["offset_x"], component["offset_y"]], dtype=np.float32)
+
+    def _detect_digit_zone_component_marks(
+        self,
+        binary: np.ndarray,
+        centers: np.ndarray,
+        bubble_radius: int,
+    ) -> np.ndarray:
+        detected = np.zeros(len(centers), dtype=np.float32)
+        if len(centers) == 0:
+            return detected
+        min_area = max(5.0, 0.14 * np.pi * (bubble_radius ** 2))
+        max_area = max(min_area * 6.0, 6.0 * np.pi * (bubble_radius ** 2))
+        search_pad = max(10, int(round(bubble_radius * 2.6)))
+        max_dist = max(8.0, bubble_radius * 2.2)
+        target_area = max(min_area, 0.65 * np.pi * (bubble_radius ** 2))
+        for idx, center in enumerate(np.asarray(centers, dtype=np.float32)):
+            component = self._find_local_component(binary, center, search_pad, min_area, max_area, max_dist)
+            if component is None:
+                continue
+            dist_score = float(np.clip(1.0 - (component["distance"] / max(max_dist, 1e-6)), 0.0, 1.0))
+            shape_score = float(np.clip((component["aspect"] ** 0.5) * (component["extent"] / 0.45), 0.0, 1.0))
+            area_score = float(np.clip(component["area"] / max(target_area, 1.0), 0.0, 1.0))
+            detected[idx] = float(np.clip((0.45 * dist_score) + (0.35 * shape_score) + (0.20 * area_score), 0.0, 1.0))
+        return detected
 
     def _refit_digit_grid_from_clear_points(
         self,
@@ -2002,15 +2054,16 @@ class OMRProcessor:
         core_ratios = self._detect_center_core_marks(binary, refined_centers, radius)
         multi_probe_ratios = self._detect_digit_zone_multi_probe_marks(binary, refined_centers, radius)
         peak_window_ratios = np.zeros_like(ratios)
+        component_ratios = self._detect_digit_zone_component_marks(binary, refined_centers, radius)
         if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
             square_ratios = self._detect_square_mark_density(binary, refined_centers, radius)
             eroded_ratios = self._detect_eroded_mark_density(binary, refined_centers, radius)
-            legacy_ratios = np.clip((0.15 * ratios) + (0.30 * core_ratios) + (0.30 * square_ratios) + (0.25 * eroded_ratios), 0.0, 1.0)
-            widened_ratios = np.clip((0.08 * ratios) + (0.18 * core_ratios) + (0.20 * square_ratios) + (0.16 * eroded_ratios) + (0.20 * multi_probe_ratios) + (0.18 * peak_window_ratios), 0.0, 1.0)
+            legacy_ratios = np.clip((0.12 * ratios) + (0.24 * core_ratios) + (0.24 * square_ratios) + (0.20 * eroded_ratios) + (0.20 * component_ratios), 0.0, 1.0)
+            widened_ratios = np.clip((0.06 * ratios) + (0.14 * core_ratios) + (0.16 * square_ratios) + (0.14 * eroded_ratios) + (0.18 * multi_probe_ratios) + (0.14 * peak_window_ratios) + (0.18 * component_ratios), 0.0, 1.0)
             ratios = np.maximum(legacy_ratios, widened_ratios)
         else:
-            legacy_ratios = np.clip((0.55 * ratios) + (0.45 * core_ratios), 0.0, 1.0)
-            widened_ratios = np.clip((0.24 * ratios) + (0.22 * core_ratios) + (0.30 * multi_probe_ratios) + (0.24 * peak_window_ratios), 0.0, 1.0)
+            legacy_ratios = np.clip((0.42 * ratios) + (0.28 * core_ratios) + (0.30 * component_ratios), 0.0, 1.0)
+            widened_ratios = np.clip((0.18 * ratios) + (0.16 * core_ratios) + (0.22 * multi_probe_ratios) + (0.18 * peak_window_ratios) + (0.26 * component_ratios), 0.0, 1.0)
             ratios = np.maximum(legacy_ratios, widened_ratios)
         weak_mask = ratios < max(self.empty_threshold + 0.16, min(self.fill_threshold * 0.82, 0.44))
         if np.any(weak_mask):
@@ -2040,6 +2093,7 @@ class OMRProcessor:
             "direct_local_fill": local_fill.tolist(),
             "direct_radius": int(radius),
             "peak_window_scores": peak_window_ratios.tolist(),
+            "component_scores": component_ratios.tolist(),
         }
         return value, confs, refined_centers, mat, debug
 
