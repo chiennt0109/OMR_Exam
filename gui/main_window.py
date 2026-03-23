@@ -2881,8 +2881,10 @@ class MainWindow(QMainWindow):
 
         self.scan_image_preview = PreviewImageWidget(); self.scan_image_preview.setText("Chọn bài thi ở danh sách bên trái")
         self.scan_image_scroll = QScrollArea()
-        self.scan_image_scroll.setWidgetResizable(True)
+        self.scan_image_scroll.setWidgetResizable(False)
         self.scan_image_scroll.setAlignment(Qt.AlignCenter)
+        self.scan_image_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scan_image_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scan_image_scroll.setWidget(self.scan_image_preview)
         self.scan_image_scroll.viewport().installEventFilter(self)
 
@@ -9966,52 +9968,55 @@ class MainWindow(QMainWindow):
                 widget.deleteLater()
         expected = self._expected_questions_by_section(result)
 
-        mcq_box = QGroupBox("MCQ")
-        mcq_layout = QVBoxLayout(mcq_box)
-        for q_no in expected.get("MCQ", []):
-            row = QHBoxLayout()
-            row.addWidget(QLabel(f"Câu {q_no}"))
-            group = QButtonGroup(mcq_box)
-            current_value = str((result.mcq_answers or {}).get(q_no, "") or "")[:1]
-            for choice in ["A", "B", "C", "D", "E"]:
-                radio = QRadioButton(choice)
-                if current_value == choice:
-                    radio.setChecked(True)
-                radio.toggled.connect(lambda checked, q=q_no, v=choice: checked and self._handle_mcq_visual_change(q, v))
-                group.addButton(radio)
-                row.addWidget(radio)
-            clear_btn = QPushButton("Clear")
-            clear_btn.clicked.connect(lambda _=False, q=q_no: self._handle_mcq_visual_change(q, ""))
-            row.addWidget(clear_btn)
-            row.addStretch()
-            mcq_layout.addLayout(row)
-        self.answer_editor_layout.addWidget(mcq_box)
+        if expected.get("MCQ", []):
+            mcq_box = QGroupBox("MCQ")
+            mcq_layout = QVBoxLayout(mcq_box)
+            for q_no in expected.get("MCQ", []):
+                row = QHBoxLayout()
+                row.addWidget(QLabel(f"Câu {q_no}"))
+                group = QButtonGroup(mcq_box)
+                current_value = str((result.mcq_answers or {}).get(q_no, "") or "")[:1]
+                for choice in ["A", "B", "C", "D", "E"]:
+                    radio = QRadioButton(choice)
+                    if current_value == choice:
+                        radio.setChecked(True)
+                    radio.toggled.connect(lambda checked, q=q_no, v=choice: checked and self._handle_mcq_visual_change(q, v))
+                    group.addButton(radio)
+                    row.addWidget(radio)
+                clear_btn = QPushButton("Clear")
+                clear_btn.clicked.connect(lambda _=False, q=q_no: self._handle_mcq_visual_change(q, ""))
+                row.addWidget(clear_btn)
+                row.addStretch()
+                mcq_layout.addLayout(row)
+            self.answer_editor_layout.addWidget(mcq_box)
 
-        tf_box = QGroupBox("True/False")
-        tf_layout = QVBoxLayout(tf_box)
-        for q_no in expected.get("TF", []):
-            row = QHBoxLayout()
-            row.addWidget(QLabel(f"Câu {q_no}"))
-            flags = (result.true_false_answers or {}).get(q_no, {}) or {}
-            for key in ["a", "b", "c", "d"]:
-                cb = QCheckBox(key.upper())
-                cb.setChecked(bool(flags.get(key)))
-                cb.toggled.connect(lambda checked, q=q_no, k=key: self._handle_tf_visual_change(q, k, checked))
-                row.addWidget(cb)
-            row.addStretch()
-            tf_layout.addLayout(row)
-        self.answer_editor_layout.addWidget(tf_box)
+        if expected.get("TF", []):
+            tf_box = QGroupBox("True/False")
+            tf_layout = QVBoxLayout(tf_box)
+            for q_no in expected.get("TF", []):
+                row = QHBoxLayout()
+                row.addWidget(QLabel(f"Câu {q_no}"))
+                flags = (result.true_false_answers or {}).get(q_no, {}) or {}
+                for key in ["a", "b", "c", "d"]:
+                    cb = QCheckBox(key.upper())
+                    cb.setChecked(bool(flags.get(key)))
+                    cb.toggled.connect(lambda checked, q=q_no, k=key: self._handle_tf_visual_change(q, k, checked))
+                    row.addWidget(cb)
+                row.addStretch()
+                tf_layout.addLayout(row)
+            self.answer_editor_layout.addWidget(tf_box)
 
-        num_box = QGroupBox("Numeric")
-        num_layout = QVBoxLayout(num_box)
-        for q_no in expected.get("NUMERIC", []):
-            row = QHBoxLayout()
-            row.addWidget(QLabel(f"Câu {q_no}"))
-            edit = QLineEdit(str((result.numeric_answers or {}).get(q_no, "") or ""))
-            edit.editingFinished.connect(lambda q=q_no, w=edit: self._handle_numeric_visual_change(q, w.text()))
-            row.addWidget(edit)
-            num_layout.addLayout(row)
-        self.answer_editor_layout.addWidget(num_box)
+        if expected.get("NUMERIC", []):
+            num_box = QGroupBox("Numeric")
+            num_layout = QVBoxLayout(num_box)
+            for q_no in expected.get("NUMERIC", []):
+                row = QHBoxLayout()
+                row.addWidget(QLabel(f"Câu {q_no}"))
+                edit = QLineEdit(str((result.numeric_answers or {}).get(q_no, "") or ""))
+                edit.editingFinished.connect(lambda q=q_no, w=edit: self._handle_numeric_visual_change(q, w.text()))
+                row.addWidget(edit)
+                num_layout.addLayout(row)
+            self.answer_editor_layout.addWidget(num_box)
         self.answer_editor_layout.addStretch()
 
     def _ensure_correction_state(self) -> None:
@@ -10353,24 +10358,63 @@ class MainWindow(QMainWindow):
             if candidate == sid:
                 return {
                     "name": str(getattr(s, "name", "") or ""),
-                    "birth_date": str((getattr(s, "extra", {}) or {}).get("birth_date", "") or ""),
+                    "birth_date": self._format_birth_date_mmddyyyy(str((getattr(s, "extra", {}) or {}).get("birth_date", "") or "")),
                     "class_name": str((getattr(s, "extra", {}) or {}).get("class_name", "") or ""),
                     "exam_room": str((getattr(s, "extra", {}) or {}).get("exam_room", "") or ""),
                 }
             if normalized_sid and self._normalized_student_id_for_match(candidate) == normalized_sid:
                 return {
                     "name": str(getattr(s, "name", "") or ""),
-                    "birth_date": str((getattr(s, "extra", {}) or {}).get("birth_date", "") or ""),
+                    "birth_date": self._format_birth_date_mmddyyyy(str((getattr(s, "extra", {}) or {}).get("birth_date", "") or "")),
                     "class_name": str((getattr(s, "extra", {}) or {}).get("class_name", "") or ""),
                     "exam_room": str((getattr(s, "extra", {}) or {}).get("exam_room", "") or ""),
                 }
         return {}
 
+    @staticmethod
+    def _format_birth_date_mmddyyyy(value: str) -> str:
+        text = str(value or "").strip()
+        if not text or text == "-":
+            return ""
+        normalized = text.replace("-", "/").replace(".", "/")
+        candidates = [
+            "%m/%d/%Y", "%m/%d/%y",
+            "%d/%m/%Y", "%d/%m/%y",
+            "%Y/%m/%d", "%Y/%d/%m",
+        ]
+        for fmt in candidates:
+            try:
+                parsed = datetime.strptime(normalized, fmt)
+                return parsed.strftime("%m/%d/%Y")
+            except Exception:
+                pass
+        chunks = [part for part in normalized.split("/") if part]
+        if len(chunks) == 3 and all(part.isdigit() for part in chunks):
+            nums = [int(part) for part in chunks]
+            if len(chunks[0]) == 4:
+                year, month, day = nums
+            elif int(chunks[0]) > 12 and int(chunks[1]) <= 12:
+                day, month, year = nums
+            else:
+                month, day, year = nums
+            if year < 100:
+                year += 2000 if year < 70 else 1900
+            try:
+                return datetime(year, month, day).strftime("%m/%d/%Y")
+            except Exception:
+                return text
+        return text
+
+    @staticmethod
+    def _birth_date_missing(birth_date_text: str) -> bool:
+        birth = str(birth_date_text or "").strip()
+        return birth in {"", "-"}
+
     def _refresh_student_profile_for_result(self, result, row_idx: int | None = None) -> None:
         sid = str(getattr(result, "student_id", "") or "").strip()
         profile = self._student_profile_by_id(sid)
         setattr(result, "full_name", str(profile.get("name", "") or ""))
-        setattr(result, "birth_date", str(profile.get("birth_date", "") or ""))
+        setattr(result, "birth_date", self._format_birth_date_mmddyyyy(str(profile.get("birth_date", "") or "")))
         setattr(result, "class_name", str(profile.get("class_name", "") or ""))
         setattr(result, "exam_room", str(profile.get("exam_room", "") or ""))
         if row_idx is not None and 0 <= row_idx < self.scan_list.rowCount():
@@ -11242,7 +11286,7 @@ class MainWindow(QMainWindow):
             self.scan_blank_questions[idx] = blank_questions
             self.scan_blank_summary[idx] = blank_map
             exam_code_text = (result.exam_code or "").strip()
-            status_parts = self._status_parts_for_row(sid, exam_code_text, duplicate_ids.get(sid, 0))
+            status_parts = self._status_parts_for_result(result, duplicate_ids.get(sid, 0))
             status = ", ".join(status_parts) if status_parts else "OK"
             content_text = self._build_recognition_content_text(result, blank_map)
 
@@ -13051,7 +13095,7 @@ class MainWindow(QMainWindow):
             if forced_status:
                 status = forced_status
             else:
-                status_parts = self._status_parts_for_row(sid, exam_code_text, duplicate_ids.get(sid, 0))
+                status_parts = self._status_parts_for_result(result, duplicate_ids.get(sid, 0))
                 status = ", ".join(status_parts) if status_parts else "OK"
             row_views.append(
                 {
@@ -13390,30 +13434,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Nhận dạng lại", f"Không tìm thấy ảnh để nhận dạng lại:\n{image_path or '-'}")
             return
 
-        if self.scan_image_preview.has_markers():
-            choose = QMessageBox.question(
-                self,
-                "Nhận dạng lại",
-                "Bạn muốn áp dụng vị trí dấu X đã chỉnh để cập nhật kết quả (không thay đổi template)?\nChọn No để chạy nhận dạng ảnh lại như bình thường.",
-                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
-                QMessageBox.Yes,
-            )
-            if choose == QMessageBox.Cancel:
-                return
-            if choose == QMessageBox.Yes:
-                manual_result = copy.deepcopy(old_result)
-                if self._apply_adjusted_markers_to_result(idx, manual_result):
-                    self._set_scan_result_at_row(idx, manual_result)
-                    scoped_manual = self._scoped_result_copy(manual_result)
-                    self.scan_blank_questions[idx] = self._compute_blank_questions(scoped_manual).get("MCQ", [])
-                    self.scan_blank_summary[idx] = self._compute_blank_questions(scoped_manual)
-                    self._update_scan_row_from_result(idx, manual_result)
-                    self._refresh_all_statuses()
-                    self._update_scan_preview(idx)
-                    self.btn_save_batch_subject.setEnabled(True)
-                    return
-                QMessageBox.information(self, "Nhận dạng lại", "Không áp dụng được dấu X đã chỉnh. Hệ thống sẽ chạy nhận dạng ảnh lại.")
-
         process_path = image_path
         rotation = int(self.preview_rotation_by_index.get(idx, 0) or 0) % 360
         temp_rotated_path = None
@@ -13442,56 +13462,56 @@ class MainWindow(QMainWindow):
         if profile.get("name"):
             setattr(new_result, "full_name", profile.get("name"))
         if profile.get("birth_date"):
-            setattr(new_result, "birth_date", profile.get("birth_date"))
+            setattr(new_result, "birth_date", self._format_birth_date_mmddyyyy(profile.get("birth_date")))
         if profile.get("class_name"):
             setattr(new_result, "class_name", profile.get("class_name"))
         if profile.get("exam_room"):
             setattr(new_result, "exam_room", profile.get("exam_room"))
         scoped_new = self._scoped_result_copy(new_result)
         blank_map = self._compute_blank_questions(scoped_new)
-
         rec_errors = list(getattr(new_result, "recognition_errors", [])) or list(getattr(new_result, "errors", []))
-        message = (
-            f"Ảnh: {Path(image_path).name}\n"
-            f"STUDENT ID mới: {new_result.student_id or '-'}\n"
-            f"Mã đề mới: {new_result.exam_code or '-'}\n"
-            f"Nhận dạng ngắn: {self._compact_value(self._short_recognition_text_for_result(scoped_new), 180)}\n"
-            f"Số lỗi nhận dạng: {len(rec_errors)}\n\n"
-            "Lưu nhận dạng hay không?\n"
-            "Yes: Cập nhật lưới và lưu batch ngay.\n"
-            "No: Chỉ cập nhật lưới (chưa lưu batch).\n"
-            "Cancel: Không cập nhật."
-        )
-        decision = QMessageBox.question(
-            self,
-            "Xác nhận nhận dạng lại",
-            message,
-            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
-            QMessageBox.Yes,
-        )
-        if decision == QMessageBox.Cancel:
-            return
 
         self._set_scan_result_at_row(idx, new_result)
+        subject_key = self._current_batch_subject_key()
+        if subject_key:
+            self.scan_results_by_subject[subject_key] = list(self.scan_results)
         self.scan_blank_questions[idx] = blank_map.get("MCQ", [])
         self.scan_blank_summary[idx] = blank_map
         self._update_scan_row_from_result(idx, new_result)
         self._refresh_all_statuses()
         self._rebuild_error_list()
         self._update_scan_preview(idx)
-        self._sync_correction_detail_panel(res, rebuild_editor=False)
-        self.btn_save_batch_subject.setEnabled(True)
+        self._sync_correction_detail_panel(new_result, rebuild_editor=False)
+        self._persist_single_scan_result_to_db(new_result, note="rerecognize_selected_scan")
+        self.btn_save_batch_subject.setEnabled(False)
 
-        if decision == QMessageBox.Yes:
-            self._save_batch_for_selected_subject()
+        summary = (
+            f"Ảnh: {Path(image_path).name}\n"
+            f"STUDENT ID: {new_result.student_id or '-'}\n"
+            f"Họ tên: {str(getattr(new_result, 'full_name', '') or '-')}\n"
+            f"Ngày sinh: {str(getattr(new_result, 'birth_date', '') or '-')}\n"
+            f"Mã đề: {new_result.exam_code or '-'}\n"
+            f"Nhận dạng ngắn: {self._compact_value(self._short_recognition_text_for_result(scoped_new), 180)}\n"
+            f"Số lỗi nhận dạng: {len(rec_errors)}"
+        )
+        QMessageBox.information(self, "Kết quả nhận dạng lại", summary)
 
     def _render_preview_pixmap(self) -> None:
         if self.preview_source_pixmap.isNull():
+            self.scan_image_preview.setPixmap(QPixmap())
             return
-        base_w = max(1, self.scan_image_scroll.viewport().width() - 8)
-        w = max(1, int(base_w * self.preview_zoom_factor))
-        scaled = self.preview_source_pixmap.scaledToWidth(w, Qt.SmoothTransformation)
+        src_size = self.preview_source_pixmap.size()
+        target_w = max(1, int(src_size.width() * self.preview_zoom_factor))
+        target_h = max(1, int(src_size.height() * self.preview_zoom_factor))
+        scaled = self.preview_source_pixmap.scaled(
+            target_w,
+            target_h,
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
         self.scan_image_preview.setPixmap(scaled)
+        self.scan_image_preview.resize(scaled.size())
+        self.scan_image_preview.adjustSize()
 
     def _zoom_preview_in(self) -> None:
         self.preview_zoom_factor = min(4.0, self.preview_zoom_factor + 0.1)
@@ -13696,6 +13716,18 @@ class MainWindow(QMainWindow):
         name = str(name_text or "").strip()
         return name in {"", "-"}
 
+    def _status_parts_for_result(self, result, duplicate_count: int) -> list[str]:
+        sid = str(getattr(result, "student_id", "") or "").strip()
+        exam_code_text = str(getattr(result, "exam_code", "") or "").strip()
+        parts = self._status_parts_for_row(sid, exam_code_text, duplicate_count)
+        full_name = str(getattr(result, "full_name", "") or "")
+        birth_date = str(getattr(result, "birth_date", "") or "")
+        if not self._student_id_has_recognition_error(sid) and (self._name_missing(full_name) or self._birth_date_missing(birth_date)):
+            profile = self._student_profile_by_id(sid)
+            if self._name_missing(str(profile.get("name", "") or "")) or self._birth_date_missing(str(profile.get("birth_date", "") or "")):
+                parts.append("Lỗi SBD")
+        return parts
+
     def _status_text_for_row(self, idx: int) -> str:
         if idx < 0 or idx >= len(self.scan_results):
             return "OK"
@@ -13706,13 +13738,7 @@ class MainWindow(QMainWindow):
             for r in self.scan_results
             if not self._student_id_has_recognition_error((r.student_id or "").strip()) and (r.student_id or "").strip() == sid
         ) if not self._student_id_has_recognition_error(sid) else 0
-        exam_code_text = (res.exam_code or "").strip()
-        status_parts = self._status_parts_for_row(sid, exam_code_text, dup)
-        full_name = str(getattr(res, "full_name", "") or "")
-        if not self._student_id_has_recognition_error(sid) and self._name_missing(full_name):
-            profile = self._student_profile_by_id(sid)
-            if not str(profile.get("name", "") or "").strip():
-                status_parts.append("Lỗi SBD")
+        status_parts = self._status_parts_for_result(res, dup)
         return ", ".join(status_parts) if status_parts else "OK"
 
     def _current_batch_subject_key(self) -> str:
@@ -13835,7 +13861,9 @@ class MainWindow(QMainWindow):
         status_parts = self._status_parts_for_row("" if self._student_id_has_recognition_error(sid) else sid, exam_code_text, dup)
         name_item = self.scan_list.item(row_idx, 2)
         name_text = name_item.text().strip() if name_item else ""
-        if not self._student_id_has_recognition_error(sid) and self._name_missing(name_text):
+        birth_item = self.scan_list.item(row_idx, 3)
+        birth_text = birth_item.text().strip() if birth_item else ""
+        if not self._student_id_has_recognition_error(sid) and (self._name_missing(name_text) or self._birth_date_missing(birth_text)):
             status_parts.append("Lỗi SBD")
         return ", ".join(status_parts) if status_parts else "OK"
 
@@ -14076,10 +14104,11 @@ class MainWindow(QMainWindow):
         dialog_state = {"index": idx, "loading": False}
         default_zoom_factor = 0.34
 
-        dlg = QDialog(self)
+        dlg = QDialog(self, Qt.Window)
         dlg.setWindowTitle(f"Sửa bài thi: {Path(self.scan_results[dialog_state['index']].image_path).name}")
-        dlg.setWindowState(Qt.WindowMaximized)
-        QTimer.singleShot(0, dlg.showMaximized)
+        dlg.setWindowModality(Qt.ApplicationModal)
+        dlg.setWindowState(Qt.WindowFullScreen)
+        QTimer.singleShot(0, lambda: (dlg.raise_(), dlg.showFullScreen(), dlg.activateWindow()))
         lay = QHBoxLayout(dlg)
         splitter = QSplitter(Qt.Horizontal)
         left = QWidget()
@@ -14113,28 +14142,34 @@ class MainWindow(QMainWindow):
         left_lay.addLayout(form)
         left_lay.addWidget(mcq_label)
         left_lay.addWidget(mcq_host)
-        row_mcq = QHBoxLayout()
+        mcq_hint_row = QWidget()
+        row_mcq = QHBoxLayout(mcq_hint_row)
+        row_mcq.setContentsMargins(0, 0, 0, 0)
         row_mcq.addWidget(mcq_hint)
         row_mcq.addStretch()
-        left_lay.addLayout(row_mcq)
+        left_lay.addWidget(mcq_hint_row)
         left_lay.addWidget(tf_label)
         left_lay.addWidget(tf_host)
-        tf_actions = QHBoxLayout()
+        tf_actions_row = QWidget()
+        tf_actions = QHBoxLayout(tf_actions_row)
+        tf_actions.setContentsMargins(0, 0, 0, 0)
         btn_add_tf = QPushButton("Thêm dòng TF")
         btn_del_tf = QPushButton("Xoá dòng chọn")
         tf_actions.addWidget(btn_add_tf)
         tf_actions.addWidget(btn_del_tf)
         tf_actions.addStretch()
-        left_lay.addLayout(tf_actions)
+        left_lay.addWidget(tf_actions_row)
         left_lay.addWidget(numeric_label)
         left_lay.addWidget(numeric_host)
-        num_actions = QHBoxLayout()
+        num_actions_row = QWidget()
+        num_actions = QHBoxLayout(num_actions_row)
+        num_actions.setContentsMargins(0, 0, 0, 0)
         btn_add_num = QPushButton("Thêm dòng Numeric")
         btn_del_num = QPushButton("Xoá dòng chọn")
         num_actions.addWidget(btn_add_num)
         num_actions.addWidget(btn_del_num)
         num_actions.addStretch()
-        left_lay.addLayout(num_actions)
+        left_lay.addWidget(num_actions_row)
 
         button_row = QHBoxLayout()
         btn_prev = QPushButton("← Bài trước")
@@ -14188,6 +14223,7 @@ class MainWindow(QMainWindow):
         editor_refs: dict[str, object] = {"mcq_edits": {}, "table_tf": None, "table_num": None}
         preview_state: dict[str, object] = {"pix": QPixmap(), "image_name": "-", "zoom": default_zoom_factor}
         loaded_snapshots: dict[int, dict[str, object]] = {}
+        dialog_saved_rows: set[int] = set()
 
         def _question_numbers(values) -> list[int]:
             out = {int(q) for q in (values or {}).keys() if str(q).strip().lstrip('-').isdigit()}
@@ -14514,6 +14550,18 @@ class MainWindow(QMainWindow):
             editor_refs["mcq_edits"] = mcq_edits
             editor_refs["table_tf"] = table_tf
             editor_refs["table_num"] = table_num
+            has_mcq = bool(expected.get("MCQ", []))
+            has_tf = bool(expected.get("TF", []))
+            has_numeric = bool(expected.get("NUMERIC", []))
+            mcq_label.setVisible(has_mcq)
+            mcq_host.setVisible(has_mcq)
+            mcq_hint_row.setVisible(has_mcq)
+            tf_label.setVisible(has_tf)
+            tf_host.setVisible(has_tf)
+            tf_actions_row.setVisible(has_tf)
+            numeric_label.setVisible(has_numeric)
+            numeric_host.setVisible(has_numeric)
+            num_actions_row.setVisible(has_numeric)
 
         def _apply_changes(save_feedback: bool = False) -> bool:
             result = _current_result()
@@ -14551,22 +14599,11 @@ class MainWindow(QMainWindow):
             if not changes:
                 return True
 
-            sid_item = QTableWidgetItem((result.student_id or "").strip() or "-")
-            sid_item.setData(Qt.UserRole, str(result.image_path))
-            sid_item.setData(Qt.UserRole + 1, result.exam_code or "")
-            sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(result))
-            self.scan_list.setItem(idx_local, 0, sid_item)
             self._refresh_student_profile_for_result(result)
-            scoped = self._scoped_result_copy(result)
-            self.scan_blank_summary[idx_local] = self._compute_blank_questions(scoped)
-            self._update_scan_row_from_result(idx_local, result)
             self._record_adjustment(idx_local, changes, "dialog_edit")
             self._persist_single_scan_result_to_db(result, note="dialog_edit")
-            self._refresh_all_statuses()
-            self.scan_list.setCurrentCell(idx_local, 0)
-            self._update_scan_preview(idx_local)
-            self._sync_correction_detail_panel(result, rebuild_editor=False)
-            self.btn_save_batch_subject.setEnabled(True)
+            dialog_saved_rows.add(idx_local)
+            self.btn_save_batch_subject.setEnabled(False)
             invalidated = self._invalidate_scoring_for_student_ids([old_sid_for_score, str(result.student_id or "").strip()], reason="dialog_edit")
             loaded_snapshots[idx_local] = _snapshot_from_result(result)
             if save_feedback:
@@ -14658,6 +14695,20 @@ class MainWindow(QMainWindow):
                     return
                 if choice == QMessageBox.Save and not _apply_changes(save_feedback=False):
                     return
+            if dialog_saved_rows:
+                for saved_idx in sorted(dialog_saved_rows):
+                    if 0 <= saved_idx < len(self.scan_results):
+                        saved_result = self.scan_results[saved_idx]
+                        self._refresh_student_profile_for_result(saved_result, saved_idx)
+                        scoped_saved = self._scoped_result_copy(saved_result)
+                        self.scan_blank_summary[saved_idx] = self._compute_blank_questions(scoped_saved)
+                        self._update_scan_row_from_result(saved_idx, saved_result)
+                self._refresh_all_statuses()
+                current_idx = dialog_state["index"]
+                if 0 <= current_idx < len(self.scan_results):
+                    self.scan_list.setCurrentCell(current_idx, 0)
+                    self._update_scan_preview(current_idx)
+                    self._sync_correction_detail_panel(self.scan_results[current_idx], rebuild_editor=False)
             dlg.accept()
 
         inp_code.currentIndexChanged.connect(lambda _=0: _rebuild_for_exam_code_change())
