@@ -2046,6 +2046,42 @@ class OMRProcessor:
                 final_value = "-" if raw_digits is not None else ""
         return final_value, conf_list
 
+    def _should_retry_exam_code_with_sampling(
+        self,
+        recognition_errors: list[str],
+        error_mark: int,
+        confs: list[float] | None,
+    ) -> bool:
+        recent_errors = recognition_errors[error_mark:]
+        if any("fallback accepted" in err for err in recent_errors):
+            return True
+        if not confs:
+            return False
+        mean_conf = float(np.mean(confs))
+        min_conf = float(np.min(confs))
+        return mean_conf < 1.35 or min_conf < 1.20
+
+    def _pick_best_exam_code_result(
+        self,
+        direct_value: str,
+        direct_confs: list[float],
+        sampled_value: str,
+        sampled_confs: list[float],
+    ) -> tuple[str, list[float], str]:
+        direct_valid = direct_value not in ("", "-")
+        sampled_valid = sampled_value not in ("", "-")
+        if sampled_valid and not direct_valid:
+            return sampled_value, sampled_confs, "sampling_fallback"
+        if direct_valid and not sampled_valid:
+            return direct_value, direct_confs, "direct"
+        if not direct_valid and not sampled_valid:
+            return direct_value, direct_confs, "direct"
+        direct_score = float(np.mean(direct_confs)) if direct_confs else 0.0
+        sampled_score = float(np.mean(sampled_confs)) if sampled_confs else 0.0
+        if sampled_score >= max(0.99, direct_score + 0.05):
+            return sampled_value, sampled_confs, "sampling_fallback"
+        return direct_value, direct_confs, "direct"
+
     def _pick_best_mcq_option(
         self,
         row_scores: np.ndarray,
@@ -2121,7 +2157,10 @@ class OMRProcessor:
                 "col_segments": [],
                 "recognition_path": "direct",
             }
-            if not final_value:
+            should_try_sampling = (not final_value) or (
+                key == "exam_code" and self._should_retry_exam_code_with_sampling(result.recognition_errors, error_mark, final_confs)
+            )
+            if should_try_sampling:
                 rows, cols = 10, max(1, grid.cols)
                 source_img = self._preprocess_digit_sampling(working_image if working_image is not None else working_binary)
                 bbox = self._digit_zone_bbox(zone, source_img.shape[:2])
@@ -2140,14 +2179,26 @@ class OMRProcessor:
                     raw_digits=digits,
                     result=result,
                 )
+                chosen_value = final_value
+                chosen_confs = final_confs
+                chosen_path = "direct"
+                if key == "exam_code":
+                    chosen_value, chosen_confs, chosen_path = self._pick_best_exam_code_result(
+                        final_value,
+                        final_confs,
+                        sampled_value,
+                        sampled_confs,
+                    )
+                elif sampled_value not in ("", "-"):
+                    chosen_value, chosen_confs, chosen_path = sampled_value, sampled_confs, "sampling_fallback"
                 zone_debug[zone.id] = dict(zone_debug.get(zone.id, {})) | sampling_debug | {
                     "sampling_scores": mat.tolist(),
-                    "recognition_path": "sampling_fallback",
+                    "recognition_path": chosen_path if chosen_path == "sampling_fallback" else zone_debug.get(zone.id, {}).get("recognition_path", "direct"),
                 }
-                if sampled_value not in ("", "-"):
+                if chosen_path == "sampling_fallback":
                     del result.recognition_errors[error_mark:]
                     del result.recognition_errors[sampled_error_mark:]
-                    final_value, final_confs = sampled_value, sampled_confs
+                    final_value, final_confs = chosen_value, chosen_confs
                     used_sampling = True
                 elif final_value == "":
                     final_value = "-"

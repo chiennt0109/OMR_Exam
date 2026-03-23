@@ -764,6 +764,45 @@ class OMRPipelineTests(unittest.TestCase):
         self.processor.recognize_block(binary, template.zones[0], template, result_stub)
         self.assertEqual(result_stub.student_id, "28")
 
+    def test_recognize_block_prefers_sampling_for_exam_code_when_direct_uses_soft_fallback(self):
+        template = Template(
+            name="exam_sampling_preferred",
+            image_path="",
+            width=120,
+            height=220,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="exam_sampling_preferred",
+                    name="exam",
+                    zone_type=ZoneType.EXAM_CODE_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(40, 20 + r * 18) for r in range(10)]),
+                    metadata={"bubble_radius": 6},
+                )
+            ],
+        )
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": "", "digit_zone_debug": {}})()
+        direct_centers = np.array([[40, 20 + r * 18] for r in range(10)], dtype=np.float32)
+        direct_mat = np.zeros((10, 1), dtype=np.float32)
+        direct_mat[2, 0] = 0.44
+        direct_mat[3, 0] = 0.39
+        with patch.object(
+            self.processor,
+            "_decode_identifier_zone_from_centers",
+            return_value=("2", [1.18], direct_centers, direct_mat, {"direct_scores": direct_mat.tolist()}),
+        ), patch.object(
+            self.processor,
+            "_read_digit_zone_with_offset_fallback",
+            return_value=([5], np.array([[0.0], [0.0], [0.0], [0.0], [0.0], [0.82], [0.0], [0.0], [0.0], [0.0]], dtype=np.float32), {"sample_points": []}),
+        ):
+            self.processor.recognize_block(np.zeros((220, 120), dtype=np.uint8), template.zones[0], template, result_stub)
+        self.assertEqual(result_stub.exam_code, "5")
+        self.assertEqual(result_stub.digit_zone_debug["exam_sampling_preferred"].get("recognition_path"), "sampling_fallback")
+
     def test_recognize_block_rejects_exam_code_when_column_has_multiple_sampled_marks(self):
         template = Template(
             name="exam_grid_sample",
