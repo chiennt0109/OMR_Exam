@@ -1053,7 +1053,14 @@ class OMRProcessor:
         h, w = binary.shape[:2]
         expected = np.array([(x * w, y * h) if x <= 1.0 and y <= 1.0 else (x, y) for x, y in grid.bubble_positions], dtype=np.float32)
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
-            expected, _ = self._digit_zone_guidance(binary, expected, zone, template)
+            if zone.zone_type == ZoneType.EXAM_CODE_BLOCK:
+                modeled_expected, _ = self._digit_model_expected_points(template, zone)
+                if len(modeled_expected) == len(expected):
+                    expected = modeled_expected
+                else:
+                    expected, _ = self._digit_zone_guidance(binary, expected, zone, template)
+            else:
+                expected, _ = self._digit_zone_guidance(binary, expected, zone, template)
             return self._resolve_column_digit_centers(binary, expected, grid, float(zone.metadata.get("bubble_radius", 9)))
         bubble_radius = float(zone.metadata.get("bubble_radius", 9))
         min_area = max(6.0, 0.25 * np.pi * (bubble_radius ** 2))
@@ -2046,6 +2053,113 @@ class OMRProcessor:
                 final_value = "-" if raw_digits is not None else ""
         return final_value, conf_list
 
+    def _digit_model_expected_points(
+        self,
+        template: Template,
+        zone: Zone,
+    ) -> tuple[np.ndarray, dict[str, object]]:
+        if zone.zone_type != ZoneType.EXAM_CODE_BLOCK or not zone.grid:
+            return np.empty((0, 2), dtype=np.float32), {}
+        model = dict((getattr(template, "metadata", {}) or {}).get("digit_model", {}) or {})
+        if not model:
+            return np.empty((0, 2), dtype=np.float32), {}
+        anchors = np.array(self._get_manual_digit_anchor_points(template, zone), dtype=np.float32)
+        rows = max(1, int(zone.grid.rows))
+        cols = max(1, int(zone.grid.cols))
+        if len(anchors) < 2 or rows <= 0 or cols <= 0:
+            return np.empty((0, 2), dtype=np.float32), {}
+
+        ref_anchor = anchors[0].copy()
+        ruler_anchors = np.array(anchors[1:] if len(anchors) > 2 else anchors, dtype=np.float32)
+        required_anchor_count = rows + 1
+        if len(ruler_anchors) > required_anchor_count:
+            ruler_anchors = ruler_anchors[:required_anchor_count]
+        elif len(ruler_anchors) < required_anchor_count and len(ruler_anchors) >= 2:
+            interp = []
+            for idx in range(required_anchor_count):
+                alpha = 0.0 if required_anchor_count <= 1 else float(idx / max(1, required_anchor_count - 1))
+                interp.append(((1.0 - alpha) * ruler_anchors[0]) + (alpha * ruler_anchors[-1]))
+            ruler_anchors = np.array(interp, dtype=np.float32)
+        if len(ruler_anchors) == 0:
+            return np.empty((0, 2), dtype=np.float32), {}
+
+        anchor_vec = ruler_anchors[-1] - ruler_anchors[0] if len(ruler_anchors) >= 2 else np.array([0.0, 1.0], dtype=np.float32)
+        norm = float(np.linalg.norm(anchor_vec))
+        if norm < 1e-6:
+            return np.empty((0, 2), dtype=np.float32), {}
+        row_unit = anchor_vec / norm
+        ang = np.deg2rad(float(model.get("rotation_deg", 0.0) or 0.0))
+        rot = np.array([[np.cos(ang), -np.sin(ang)], [np.sin(ang), np.cos(ang)]], dtype=np.float32)
+        row_unit = rot @ row_unit
+        col_unit = np.array([-row_unit[1], row_unit[0]], dtype=np.float32)
+
+        zone_width = float(zone.width * template.width if zone.width <= 1.0 else zone.width)
+        zone_height = float(zone.height * template.height if zone.height <= 1.0 else zone.height)
+        base_col_spacing = (zone_width / max(1, cols - 1)) if cols > 1 else max(1.0, zone_width)
+        base_row_spacing = (zone_height / max(1, rows)) if rows > 0 else max(1.0, zone_height)
+        col_spacing = base_col_spacing * float(model.get("exam_col_spacing_scale", 1.0) or 1.0)
+        row_spacing_scale = float(model.get("exam_row_spacing_scale", 1.0) or 1.0)
+        row_spacing = base_row_spacing * row_spacing_scale
+        off = model.get("offset_exam", [0.0, 0.0]) or [0.0, 0.0]
+        off_x = float(off[0] if len(off) > 0 else 0.0)
+        off_y = float(off[1] if len(off) > 1 else 0.0)
+
+        median_gap = row_spacing
+        if len(ruler_anchors) >= 2:
+            gaps = [float(np.dot(ruler_anchors[i + 1] - ruler_anchors[i], row_unit)) for i in range(len(ruler_anchors) - 1)]
+            valid = [g for g in gaps if g > 1e-3]
+            if valid:
+                median_gap = float(np.median(valid))
+
+        base_row_midpoints: list[np.ndarray] = []
+        if len(ruler_anchors) >= 2:
+            base_row_midpoints = [((ruler_anchors[i] + ruler_anchors[i + 1]) * 0.5) for i in range(len(ruler_anchors) - 1)]
+            if len(base_row_midpoints) < rows:
+                last_gap_vec = ruler_anchors[-1] - ruler_anchors[-2]
+                base_row_midpoints.append(ruler_anchors[-1] + (0.5 * last_gap_vec))
+        else:
+            base_row_midpoints = [ruler_anchors[0] + (0.5 * median_gap * row_unit)]
+        row_origin = base_row_midpoints[0] if base_row_midpoints else ref_anchor
+
+        row_centers: list[np.ndarray] = []
+        row_segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+        for r in range(rows):
+            if r < len(base_row_midpoints):
+                center_base = base_row_midpoints[r].copy()
+            elif base_row_midpoints:
+                center_base = row_origin + (r * median_gap * row_unit)
+            else:
+                center_base = ref_anchor + ((r + 0.5) * median_gap * row_unit)
+            delta = center_base - row_origin
+            along = float(np.dot(delta, row_unit))
+            perp = delta - (along * row_unit)
+            scaled_base = row_origin + perp + ((along * row_spacing_scale) * row_unit)
+            center = scaled_base + (off_x * col_unit) + (off_y * row_unit)
+            row_centers.append(center)
+            line_center = scaled_base + (off_y * row_unit)
+            row_start = line_center.copy()
+            row_end = row_start - (zone_width * col_unit)
+            row_segments.append((tuple(float(v) for v in row_start.tolist()), tuple(float(v) for v in row_end.tolist())))
+
+        points: list[np.ndarray] = []
+        for r in range(rows):
+            for c in range(cols):
+                points.append(row_centers[r] + (c * col_spacing * col_unit))
+        col_lines = []
+        for c in range(cols):
+            start = row_centers[0] + (c * col_spacing * col_unit)
+            end = row_centers[-1] + (c * col_spacing * col_unit)
+            col_lines.append((tuple(float(v) for v in start.tolist()), tuple(float(v) for v in end.tolist())))
+        debug = {
+            "digit_model_applied": True,
+            "anchor_points": [(float(x), float(y)) for x, y in anchors],
+            "anchor_line": [tuple(float(v) for v in ref_anchor.tolist()), tuple(float(v) for v in (ref_anchor + (row_unit * max(median_gap * rows, 1.0))).tolist())],
+            "col_segments": col_lines,
+            "row_segments": row_segments,
+            "bubble_centers": [(float(pt[0]), float(pt[1])) for pt in points],
+        }
+        return np.array(points, dtype=np.float32), debug
+
     def _pick_best_mcq_option(
         self,
         row_scores: np.ndarray,
@@ -2089,7 +2203,14 @@ class OMRProcessor:
                 dtype=np.float32,
             )
             bubble_radius = float(zone.metadata.get("bubble_radius", 9))
-            guided, digit_debug = self._digit_zone_guidance(working_binary, expected, zone, template)
+            if zone.zone_type == ZoneType.EXAM_CODE_BLOCK:
+                modeled_expected, model_debug = self._digit_model_expected_points(template, zone)
+                if len(modeled_expected) == len(expected):
+                    guided, digit_debug = modeled_expected, model_debug
+                else:
+                    guided, digit_debug = self._digit_zone_guidance(working_binary, expected, zone, template)
+            else:
+                guided, digit_debug = self._digit_zone_guidance(working_binary, expected, zone, template)
             column_guided = self._resolve_column_digit_centers(working_binary, guided.astype(np.float32), grid, bubble_radius)
             centers, grid_fit_debug = self._refit_digit_grid_from_clear_points(
                 working_binary,
