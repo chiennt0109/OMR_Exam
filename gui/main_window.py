@@ -14328,18 +14328,25 @@ class MainWindow(QMainWindow):
                         if str(getattr(item, "subject", "") or "").strip() == subject and str(getattr(item, "exam_code", "") or "").strip()
                     )
             codes.update(str(x).strip() for x in (self.imported_exam_codes or []) if str(x).strip())
-            if current_code:
+            if current_code and current_code != "-":
                 codes.add(str(current_code).strip())
             return sorted(codes)
 
         def _populate_exam_code_combo(combo: QComboBox, subject_key: str, current_code: str) -> None:
             combo.blockSignals(True)
             combo.clear()
-            for code in _valid_exam_codes(subject_key, current_code):
+            valid_codes = _valid_exam_codes(subject_key, current_code)
+            for code in valid_codes:
                 combo.addItem(code, code)
             if combo.count() == 0:
-                combo.addItem(current_code or "-", current_code or "")
-            _set_combo_to_value(combo, str(current_code or "").strip())
+                combo.addItem("", "")
+            selected_code = str(current_code or "").strip()
+            if selected_code and selected_code in valid_codes:
+                _set_combo_to_value(combo, selected_code)
+            elif valid_codes:
+                combo.setCurrentIndex(0)
+            else:
+                combo.setEditText("")
             combo.blockSignals(False)
 
         def _answer_key_for_exam_code(exam_code_text: str):
@@ -14354,6 +14361,7 @@ class MainWindow(QMainWindow):
             return None
 
         def _expected_questions_for_dialog(result: OMRResult, exam_code_text: str, data_snapshot: dict[str, object]) -> dict[str, list[int]]:
+            configured_counts = self._subject_section_question_counts(self._current_batch_subject_key())
             key = _answer_key_for_exam_code(exam_code_text)
             if key is not None:
                 fallback_snapshot = {
@@ -14361,16 +14369,24 @@ class MainWindow(QMainWindow):
                     "TF": _question_numbers(data_snapshot.get("true_false_answers", {})),
                     "NUMERIC": _question_numbers(data_snapshot.get("numeric_answers", {})),
                 }
-                return {
+                expected = {
                     "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())) or fallback_snapshot["MCQ"],
                     "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
                     "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
                 }
-            return {
+            else:
+                expected = {
                 "MCQ": _question_numbers(data_snapshot.get("mcq_answers", {})),
                 "TF": _question_numbers(data_snapshot.get("true_false_answers", {})),
                 "NUMERIC": _question_numbers(data_snapshot.get("numeric_answers", {})),
             }
+            for sec in ["MCQ", "TF", "NUMERIC"]:
+                limit = max(0, int(configured_counts.get(sec, 0) or 0))
+                if limit <= 0:
+                    expected[sec] = []
+                else:
+                    expected[sec] = sorted(expected.get(sec, []))[:limit]
+            return expected
 
         def _clear_layout(layout_obj: QVBoxLayout) -> None:
             while layout_obj.count():
