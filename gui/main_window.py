@@ -2881,8 +2881,10 @@ class MainWindow(QMainWindow):
 
         self.scan_image_preview = PreviewImageWidget(); self.scan_image_preview.setText("Chọn bài thi ở danh sách bên trái")
         self.scan_image_scroll = QScrollArea()
-        self.scan_image_scroll.setWidgetResizable(True)
+        self.scan_image_scroll.setWidgetResizable(False)
         self.scan_image_scroll.setAlignment(Qt.AlignCenter)
+        self.scan_image_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scan_image_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scan_image_scroll.setWidget(self.scan_image_preview)
         self.scan_image_scroll.viewport().installEventFilter(self)
 
@@ -13409,7 +13411,9 @@ class MainWindow(QMainWindow):
                     self.scan_blank_summary[idx] = self._compute_blank_questions(scoped_manual)
                     self._update_scan_row_from_result(idx, manual_result)
                     self._refresh_all_statuses()
+                    self._rebuild_error_list()
                     self._update_scan_preview(idx)
+                    self._sync_correction_detail_panel(manual_result, rebuild_editor=False)
                     self.btn_save_batch_subject.setEnabled(True)
                     return
                 QMessageBox.information(self, "Nhận dạng lại", "Không áp dụng được dấu X đã chỉnh. Hệ thống sẽ chạy nhận dạng ảnh lại.")
@@ -13479,7 +13483,7 @@ class MainWindow(QMainWindow):
         self._refresh_all_statuses()
         self._rebuild_error_list()
         self._update_scan_preview(idx)
-        self._sync_correction_detail_panel(res, rebuild_editor=False)
+        self._sync_correction_detail_panel(new_result, rebuild_editor=False)
         self.btn_save_batch_subject.setEnabled(True)
 
         if decision == QMessageBox.Yes:
@@ -13487,11 +13491,20 @@ class MainWindow(QMainWindow):
 
     def _render_preview_pixmap(self) -> None:
         if self.preview_source_pixmap.isNull():
+            self.scan_image_preview.setPixmap(QPixmap())
             return
-        base_w = max(1, self.scan_image_scroll.viewport().width() - 8)
-        w = max(1, int(base_w * self.preview_zoom_factor))
-        scaled = self.preview_source_pixmap.scaledToWidth(w, Qt.SmoothTransformation)
+        src_size = self.preview_source_pixmap.size()
+        target_w = max(1, int(src_size.width() * self.preview_zoom_factor))
+        target_h = max(1, int(src_size.height() * self.preview_zoom_factor))
+        scaled = self.preview_source_pixmap.scaled(
+            target_w,
+            target_h,
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
         self.scan_image_preview.setPixmap(scaled)
+        self.scan_image_preview.resize(scaled.size())
+        self.scan_image_preview.adjustSize()
 
     def _zoom_preview_in(self) -> None:
         self.preview_zoom_factor = min(4.0, self.preview_zoom_factor + 0.1)
