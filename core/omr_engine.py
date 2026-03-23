@@ -52,6 +52,7 @@ class RecognitionContext:
     semantic_grids: dict[str, object] = field(default_factory=dict)
     recognized_answers: dict[str, dict] = field(default_factory=dict)
     digit_zone_debug: dict[str, dict[str, object]] = field(default_factory=dict)
+    deadline_monotonic: float = 0.0
 
     def reset(self) -> None:
         self.detected_anchors = []
@@ -59,6 +60,7 @@ class RecognitionContext:
         self.bubble_states_by_zone = {}
         self.semantic_grids = {}
         self.digit_zone_debug = {}
+        self.deadline_monotonic = 0.0
         self.recognized_answers = {
             "student_id": "",
             "exam_code": "",
@@ -86,6 +88,12 @@ class OMRProcessor:
         self.alignment_profile: str = "auto"
         self.standard_width: int = 1200
         self._last_alignment_debug: dict[str, object] = {}
+        self.processing_time_limit_sec: float = 8.0
+        self._processing_deadline_monotonic: float | None = None
+
+    def _time_budget_exceeded(self) -> bool:
+        deadline = self._processing_deadline_monotonic
+        return bool(deadline and time.monotonic() >= deadline)
 
     def recognize_sheet(self, image: str | Path | np.ndarray, template: Template, context: RecognitionContext | None = None) -> OMRResult:
         started = time.perf_counter()
@@ -102,6 +110,9 @@ class OMRProcessor:
         prev_profile = self.alignment_profile
         if template_profile in {"auto", "legacy", "border", "hybrid", "one_side"}:
             self.alignment_profile = template_profile
+        timeout_sec = float((template.metadata or {}).get("recognition_timeout_sec", self.processing_time_limit_sec) or self.processing_time_limit_sec)
+        context.deadline_monotonic = time.monotonic() + max(1.0, timeout_sec)
+        self._processing_deadline_monotonic = context.deadline_monotonic
 
         try:
             if isinstance(image, np.ndarray):
@@ -133,6 +144,9 @@ class OMRProcessor:
                 self._draw_alignment_debug(debug_overlay, template)
 
             for zone in template.zones:
+                if self._time_budget_exceeded():
+                    result.issues.append(OMRIssue("TIMEOUT", "Recognition time budget exceeded; skipped remaining zones"))
+                    break
                 if zone.zone_type == ZoneType.ANCHOR:
                     continue
                 if zone.grid is not None:
@@ -173,6 +187,7 @@ class OMRProcessor:
             return result
         finally:
             self.alignment_profile = prev_profile
+            self._processing_deadline_monotonic = None
 
     def run_recognition_test(self, image: str | Path | np.ndarray, template: Template, context: RecognitionContext | None = None) -> OMRResult:
         return self.recognize_sheet(image, template, context)
@@ -297,7 +312,9 @@ class OMRProcessor:
         if len(contours) > max_candidates:
             contours = sorted(contours, key=cv2.contourArea, reverse=True)[:max_candidates]
 
-        for cnt in contours:
+        for idx, cnt in enumerate(contours):
+            if (idx % 24 == 0) and self._time_budget_exceeded():
+                break
             area = cv2.contourArea(cnt)
             if area < min_area:
                 continue
@@ -557,6 +574,8 @@ class OMRProcessor:
         base_binary = aligned_binary if aligned_binary is not None else binary
 
         for candidate in candidates:
+            if self._time_budget_exceeded():
+                break
             if candidate == "one_side":
                 coarse_img, coarse_bin = self._fallback_align_page_contour(image, template, conservative=True)
                 refined_img, refined_bin = self._refine_alignment_with_one_side_anchors(coarse_img, coarse_bin, template)

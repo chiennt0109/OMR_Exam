@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 import tempfile
 from pathlib import Path
+import time
 
 import cv2
 import numpy as np
@@ -65,6 +66,20 @@ class OMRPipelineTests(unittest.TestCase):
 
         self.assertLessEqual(approx_calls["count"], 200)
         self.assertEqual(len(anchors), 10)
+
+    def test_detect_anchors_stops_immediately_when_time_budget_is_exceeded(self):
+        binary = np.zeros((120, 120), dtype=np.uint8)
+        contours = [
+            np.array([[[idx, 0]], [[idx, 1]], [[idx + 1, 1]], [[idx + 1, 0]]], dtype=np.int32)
+            for idx in range(100)
+        ]
+        self.processor._processing_deadline_monotonic = time.monotonic() - 1.0
+        with patch.object(cv2, "findContours", return_value=(contours, None)), \
+            patch.object(cv2, "approxPolyDP", side_effect=AssertionError("detect_anchors should stop before polygon approximation when timed out")):
+            anchors = self.processor.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True, max_points=10)
+        self.processor._processing_deadline_monotonic = None
+
+        self.assertEqual(anchors, [])
 
     def test_student_id_zone_keeps_expected_centers(self):
         template = Template(
