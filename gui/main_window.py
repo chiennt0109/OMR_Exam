@@ -10520,6 +10520,17 @@ class MainWindow(QMainWindow):
         mode_label = "File mới" if mode == "new_only" else "Toàn bộ"
         self.batch_scan_state_value.setText(f"{mode_label} | Đã nhận diện: {recognized_count} | Chưa nhận diện: {pending_count}")
 
+    @staticmethod
+    def _recommended_batch_timeout_sec(template: Template | None) -> float:
+        if template is None:
+            return 3.0
+        zones = list(getattr(template, "zones", []) or [])
+        answer_zone_count = sum(1 for z in zones if getattr(z, "zone_type", None) in {ZoneType.MCQ_BLOCK, ZoneType.TRUE_FALSE_BLOCK, ZoneType.NUMERIC_BLOCK})
+        id_zone_count = sum(1 for z in zones if getattr(z, "zone_type", None) in {ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK})
+        other_zone_count = max(0, len(zones) - answer_zone_count - id_zone_count)
+        timeout = 2.5 + (0.25 * answer_zone_count) + (0.15 * id_zone_count) + (0.10 * other_zone_count)
+        return float(min(6.0, max(2.5, timeout)))
+
     def _merge_saved_batch_snapshot(self, cfg: dict) -> dict:
         merged = dict(cfg)
         if merged.get("batch_saved_rows") or merged.get("batch_saved_preview"):
@@ -10912,7 +10923,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Batch Scan", f"Không thể tải mẫu giấy\n{exc}")
             return
-        self.template.metadata["recognition_timeout_sec"] = 1.0
+        self.template.metadata["recognition_timeout_sec"] = self._recommended_batch_timeout_sec(self.template)
 
         scan_folder = str(scan_folder or "").strip()
         if not scan_folder:

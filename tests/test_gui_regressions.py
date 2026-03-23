@@ -41,7 +41,8 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('self.batch_file_scope_combo.addItem("Nhận dạng toàn bộ", "all")', source)
         self.assertIn('self.batch_scan_state_value = QLineEdit("-"); self.batch_scan_state_value.setReadOnly(True)', source)
         self.assertIn('if file_scope_mode == "new_only":', source)
-        self.assertIn('self.template.metadata["recognition_timeout_sec"] = 1.0', source)
+        self.assertIn('def _recommended_batch_timeout_sec(template: Template | None) -> float:', source)
+        self.assertIn('self.template.metadata["recognition_timeout_sec"] = self._recommended_batch_timeout_sec(self.template)', source)
 
     def test_scoring_uses_lightweight_scan_copies_and_batch_results_drop_large_arrays(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
