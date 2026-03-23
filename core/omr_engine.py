@@ -2217,10 +2217,12 @@ class OMRProcessor:
                 dtype=np.float32,
             )
             bubble_radius = float(zone.metadata.get("bubble_radius", 9))
+            exam_digit_model_applied = False
             if zone.zone_type == ZoneType.EXAM_CODE_BLOCK:
                 modeled_expected, model_debug = self._digit_model_expected_points(template, zone)
                 if len(modeled_expected) == len(expected):
                     guided, digit_debug = modeled_expected, model_debug
+                    exam_digit_model_applied = True
                 else:
                     guided, digit_debug = self._digit_zone_guidance(working_binary, expected, zone, template)
             else:
@@ -2256,10 +2258,8 @@ class OMRProcessor:
                 "col_segments": [],
                 "recognition_path": "direct",
             }
-            should_try_sampling = (not final_value) or (
-                key == "exam_code" and self._should_retry_exam_code_with_sampling(result.recognition_errors, error_mark, final_confs)
-            )
-            if should_try_sampling:
+            skip_sampling_fallback = key == "exam_code" and exam_digit_model_applied
+            if not final_value and not skip_sampling_fallback:
                 rows, cols = 10, max(1, grid.cols)
                 source_img = self._preprocess_digit_sampling(working_image if working_image is not None else working_binary)
                 bbox = self._digit_zone_bbox(zone, source_img.shape[:2])
@@ -2301,6 +2301,8 @@ class OMRProcessor:
                     used_sampling = True
                 elif final_value == "":
                     final_value = "-"
+            elif not final_value and skip_sampling_fallback:
+                final_value = "-"
             setattr(result, "digit_zone_debug", zone_debug)
             if self.debug_mode and working_image is not None:
                 digit_overlay = working_image.copy()
