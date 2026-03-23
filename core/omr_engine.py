@@ -52,6 +52,8 @@ class RecognitionContext:
     semantic_grids: dict[str, object] = field(default_factory=dict)
     recognized_answers: dict[str, dict] = field(default_factory=dict)
     digit_zone_debug: dict[str, dict[str, object]] = field(default_factory=dict)
+    deadline_monotonic: float = 0.0
+    collect_diagnostics: bool = True
 
     def reset(self) -> None:
         self.detected_anchors = []
@@ -59,6 +61,7 @@ class RecognitionContext:
         self.bubble_states_by_zone = {}
         self.semantic_grids = {}
         self.digit_zone_debug = {}
+        self.deadline_monotonic = 0.0
         self.recognized_answers = {
             "student_id": "",
             "exam_code": "",
@@ -86,6 +89,27 @@ class OMRProcessor:
         self.alignment_profile: str = "auto"
         self.standard_width: int = 1200
         self._last_alignment_debug: dict[str, object] = {}
+        self.processing_time_limit_sec: float = 8.0
+        self._processing_deadline_monotonic: float | None = None
+
+    def _time_budget_exceeded(self) -> bool:
+        deadline = self._processing_deadline_monotonic
+        return bool(deadline and time.monotonic() >= deadline)
+
+    @staticmethod
+    def _zone_recognition_priority(zone: Zone) -> tuple[int, str]:
+        zone_type = getattr(zone, "zone_type", None)
+        if zone_type == ZoneType.MCQ_BLOCK:
+            return (0, str(getattr(zone, "id", "") or ""))
+        if zone_type == ZoneType.TRUE_FALSE_BLOCK:
+            return (1, str(getattr(zone, "id", "") or ""))
+        if zone_type == ZoneType.NUMERIC_BLOCK:
+            return (2, str(getattr(zone, "id", "") or ""))
+        if zone_type == ZoneType.STUDENT_ID_BLOCK:
+            return (3, str(getattr(zone, "id", "") or ""))
+        if zone_type == ZoneType.EXAM_CODE_BLOCK:
+            return (4, str(getattr(zone, "id", "") or ""))
+        return (5, str(getattr(zone, "id", "") or ""))
 
     def recognize_sheet(self, image: str | Path | np.ndarray, template: Template, context: RecognitionContext | None = None) -> OMRResult:
         started = time.perf_counter()
@@ -102,6 +126,9 @@ class OMRProcessor:
         prev_profile = self.alignment_profile
         if template_profile in {"auto", "legacy", "border", "hybrid", "one_side"}:
             self.alignment_profile = template_profile
+        timeout_sec = float((template.metadata or {}).get("recognition_timeout_sec", self.processing_time_limit_sec) or self.processing_time_limit_sec)
+        context.deadline_monotonic = time.monotonic() + max(1.0, timeout_sec)
+        self._processing_deadline_monotonic = context.deadline_monotonic
 
         try:
             if isinstance(image, np.ndarray):
@@ -132,7 +159,10 @@ class OMRProcessor:
             if debug_overlay is not None:
                 self._draw_alignment_debug(debug_overlay, template)
 
-            for zone in template.zones:
+            for zone in sorted(template.zones, key=self._zone_recognition_priority):
+                if self._time_budget_exceeded():
+                    result.issues.append(OMRIssue("TIMEOUT", "Recognition time budget exceeded; skipped remaining zones"))
+                    break
                 if zone.zone_type == ZoneType.ANCHOR:
                     continue
                 if zone.grid is not None:
@@ -149,13 +179,14 @@ class OMRProcessor:
             setattr(result, "aligned_image", aligned)
             setattr(result, "aligned_binary", aligned_binary)
             setattr(result, "alignment_debug", dict(self._last_alignment_debug))
-            context.detected_anchors = self.detect_anchors(aligned_binary, max_points=120)
-            setattr(result, "detected_anchors", context.detected_anchors)
-            context.detected_digit_anchors = self._detect_digit_anchor_ruler(aligned_binary, template)
-            setattr(result, "detected_digit_anchors", context.detected_digit_anchors)
+            if context.collect_diagnostics:
+                context.detected_anchors = self.detect_anchors(aligned_binary, max_points=120)
+                setattr(result, "detected_anchors", context.detected_anchors)
+                context.detected_digit_anchors = self._detect_digit_anchor_ruler(aligned_binary, template)
+                setattr(result, "detected_digit_anchors", context.detected_digit_anchors)
 
-            context.bubble_states_by_zone = self.extract_bubble_states(aligned_binary, template)
-            setattr(result, "bubble_states_by_zone", context.bubble_states_by_zone)
+                context.bubble_states_by_zone = self.extract_bubble_states(aligned_binary, template)
+                setattr(result, "bubble_states_by_zone", context.bubble_states_by_zone)
             context.digit_zone_debug = dict(getattr(result, "digit_zone_debug", {}) or {})
             setattr(result, "digit_zone_debug", context.digit_zone_debug)
 
@@ -173,6 +204,7 @@ class OMRProcessor:
             return result
         finally:
             self.alignment_profile = prev_profile
+            self._processing_deadline_monotonic = None
 
     def run_recognition_test(self, image: str | Path | np.ndarray, template: Template, context: RecognitionContext | None = None) -> OMRResult:
         return self.recognize_sheet(image, template, context)
@@ -205,6 +237,7 @@ class OMRProcessor:
         for idx, image_path in enumerate(image_paths, start=1):
             template_copy = deepcopy(template)
             context = RecognitionContext()
+            context.collect_diagnostics = False
             results.append(self.run_recognition_test(image_path, template_copy, context))
             if progress_callback:
                 progress_callback(idx, total, image_path)
@@ -292,8 +325,14 @@ class OMRProcessor:
         min_area = max(50, int((h * w) * 0.00003))
         border_margin = max(24.0, min(w, h) * 0.18)
         anchors: list[tuple[float, float, float]] = []
+        max_keep = max(4, int(max_points or 40))
+        max_candidates = max(200, max_keep * (18 if use_border_padding else 12))
+        if len(contours) > max_candidates:
+            contours = sorted(contours, key=cv2.contourArea, reverse=True)[:max_candidates]
 
-        for cnt in contours:
+        for idx, cnt in enumerate(contours):
+            if (idx % 24 == 0) and self._time_budget_exceeded():
+                break
             area = cv2.contourArea(cnt)
             if area < min_area:
                 continue
@@ -336,7 +375,6 @@ class OMRProcessor:
             anchors.append((cx, cy, score))
 
         anchors.sort(key=lambda p: p[2], reverse=True)
-        max_keep = max(4, int(max_points or 40))
         if use_border_padding:
             max_keep = min(max_keep, 24)
         return [(x, y) for x, y, _ in anchors[:max_keep]]
@@ -554,6 +592,8 @@ class OMRProcessor:
         base_binary = aligned_binary if aligned_binary is not None else binary
 
         for candidate in candidates:
+            if self._time_budget_exceeded():
+                break
             if candidate == "one_side":
                 coarse_img, coarse_bin = self._fallback_align_page_contour(image, template, conservative=True)
                 refined_img, refined_bin = self._refine_alignment_with_one_side_anchors(coarse_img, coarse_bin, template)
@@ -1053,7 +1093,14 @@ class OMRProcessor:
         h, w = binary.shape[:2]
         expected = np.array([(x * w, y * h) if x <= 1.0 and y <= 1.0 else (x, y) for x, y in grid.bubble_positions], dtype=np.float32)
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
-            expected, _ = self._digit_zone_guidance(binary, expected, zone, template)
+            if zone.zone_type == ZoneType.EXAM_CODE_BLOCK:
+                modeled_expected, _ = self._digit_model_expected_points(template, zone)
+                if len(modeled_expected) == len(expected):
+                    expected = modeled_expected
+                else:
+                    expected, _ = self._digit_zone_guidance(binary, expected, zone, template)
+            else:
+                expected, _ = self._digit_zone_guidance(binary, expected, zone, template)
             return self._resolve_column_digit_centers(binary, expected, grid, float(zone.metadata.get("bubble_radius", 9)))
         bubble_radius = float(zone.metadata.get("bubble_radius", 9))
         min_area = max(6.0, 0.25 * np.pi * (bubble_radius ** 2))
@@ -2046,6 +2093,127 @@ class OMRProcessor:
                 final_value = "-" if raw_digits is not None else ""
         return final_value, conf_list
 
+    def _digit_model_expected_points(
+        self,
+        template: Template,
+        zone: Zone,
+    ) -> tuple[np.ndarray, dict[str, object]]:
+        if zone.zone_type != ZoneType.EXAM_CODE_BLOCK or not zone.grid:
+            return np.empty((0, 2), dtype=np.float32), {}
+        model = dict((getattr(template, "metadata", {}) or {}).get("digit_model", {}) or {})
+        if not model:
+            return np.empty((0, 2), dtype=np.float32), {}
+        anchors = np.array(self._get_manual_digit_anchor_points(template, zone), dtype=np.float32)
+        rows = max(1, int(zone.grid.rows))
+        cols = max(1, int(zone.grid.cols))
+        if len(anchors) < 2 or rows <= 0 or cols <= 0:
+            return np.empty((0, 2), dtype=np.float32), {}
+
+        ref_anchor = anchors[0].copy()
+        ruler_anchors = np.array(anchors[1:] if len(anchors) > 2 else anchors, dtype=np.float32)
+        required_anchor_count = rows + 1
+        if len(ruler_anchors) > required_anchor_count:
+            ruler_anchors = ruler_anchors[:required_anchor_count]
+        elif len(ruler_anchors) < required_anchor_count and len(ruler_anchors) >= 2:
+            interp = []
+            for idx in range(required_anchor_count):
+                alpha = 0.0 if required_anchor_count <= 1 else float(idx / max(1, required_anchor_count - 1))
+                interp.append(((1.0 - alpha) * ruler_anchors[0]) + (alpha * ruler_anchors[-1]))
+            ruler_anchors = np.array(interp, dtype=np.float32)
+        if len(ruler_anchors) == 0:
+            return np.empty((0, 2), dtype=np.float32), {}
+
+        anchor_vec = ruler_anchors[-1] - ruler_anchors[0] if len(ruler_anchors) >= 2 else np.array([0.0, 1.0], dtype=np.float32)
+        norm = float(np.linalg.norm(anchor_vec))
+        if norm < 1e-6:
+            return np.empty((0, 2), dtype=np.float32), {}
+        row_unit = anchor_vec / norm
+        ang = np.deg2rad(float(model.get("rotation_deg", 0.0) or 0.0))
+        rot = np.array([[np.cos(ang), -np.sin(ang)], [np.sin(ang), np.cos(ang)]], dtype=np.float32)
+        row_unit = rot @ row_unit
+        col_unit = np.array([-row_unit[1], row_unit[0]], dtype=np.float32)
+
+        zone_width = float(zone.width * template.width if zone.width <= 1.0 else zone.width)
+        zone_height = float(zone.height * template.height if zone.height <= 1.0 else zone.height)
+        base_col_spacing = (zone_width / max(1, cols - 1)) if cols > 1 else max(1.0, zone_width)
+        base_row_spacing = (zone_height / max(1, rows)) if rows > 0 else max(1.0, zone_height)
+        col_spacing = base_col_spacing * float(model.get("exam_col_spacing_scale", 1.0) or 1.0)
+        row_spacing_scale = float(model.get("exam_row_spacing_scale", 1.0) or 1.0)
+        row_spacing = base_row_spacing * row_spacing_scale
+        off = model.get("offset_exam", [0.0, 0.0]) or [0.0, 0.0]
+        off_x = float(off[0] if len(off) > 0 else 0.0)
+        off_y = float(off[1] if len(off) > 1 else 0.0)
+
+        median_gap = row_spacing
+        if len(ruler_anchors) >= 2:
+            gaps = [float(np.dot(ruler_anchors[i + 1] - ruler_anchors[i], row_unit)) for i in range(len(ruler_anchors) - 1)]
+            valid = [g for g in gaps if g > 1e-3]
+            if valid:
+                median_gap = float(np.median(valid))
+
+        base_row_midpoints: list[np.ndarray] = []
+        if len(ruler_anchors) >= 2:
+            base_row_midpoints = [((ruler_anchors[i] + ruler_anchors[i + 1]) * 0.5) for i in range(len(ruler_anchors) - 1)]
+            if len(base_row_midpoints) < rows:
+                last_gap_vec = ruler_anchors[-1] - ruler_anchors[-2]
+                base_row_midpoints.append(ruler_anchors[-1] + (0.5 * last_gap_vec))
+        else:
+            base_row_midpoints = [ruler_anchors[0] + (0.5 * median_gap * row_unit)]
+        row_origin = base_row_midpoints[0] if base_row_midpoints else ref_anchor
+
+        row_centers: list[np.ndarray] = []
+        row_segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+        for r in range(rows):
+            if r < len(base_row_midpoints):
+                center_base = base_row_midpoints[r].copy()
+            elif base_row_midpoints:
+                center_base = row_origin + (r * median_gap * row_unit)
+            else:
+                center_base = ref_anchor + ((r + 0.5) * median_gap * row_unit)
+            delta = center_base - row_origin
+            along = float(np.dot(delta, row_unit))
+            perp = delta - (along * row_unit)
+            scaled_base = row_origin + perp + ((along * row_spacing_scale) * row_unit)
+            center = scaled_base + (off_x * col_unit) + (off_y * row_unit)
+            row_centers.append(center)
+            line_center = scaled_base + (off_y * row_unit)
+            row_start = line_center.copy()
+            row_end = row_start - (zone_width * col_unit)
+            row_segments.append((tuple(float(v) for v in row_start.tolist()), tuple(float(v) for v in row_end.tolist())))
+
+        points: list[np.ndarray] = []
+        for r in range(rows):
+            for c in range(cols):
+                points.append(row_centers[r] + (c * col_spacing * col_unit))
+        col_lines = []
+        for c in range(cols):
+            start = row_centers[0] + (c * col_spacing * col_unit)
+            end = row_centers[-1] + (c * col_spacing * col_unit)
+            col_lines.append((tuple(float(v) for v in start.tolist()), tuple(float(v) for v in end.tolist())))
+        debug = {
+            "digit_model_applied": True,
+            "anchor_points": [(float(x), float(y)) for x, y in anchors],
+            "anchor_line": [tuple(float(v) for v in ref_anchor.tolist()), tuple(float(v) for v in (ref_anchor + (row_unit * max(median_gap * rows, 1.0))).tolist())],
+            "col_segments": col_lines,
+            "row_segments": row_segments,
+            "bubble_centers": [(float(pt[0]), float(pt[1])) for pt in points],
+        }
+        return np.array(points, dtype=np.float32), debug
+
+    def _should_retry_exam_code_with_sampling(
+        self,
+        recognition_errors: list[str],
+        error_mark: int,
+        confs: list[float] | None,
+    ) -> bool:
+        """Backward-compatible shim for older exam-code retry call sites.
+
+        The extra retry path was removed to avoid slowing down mã đề
+        recognition. Keep the method so older code paths do not crash.
+        """
+        _ = recognition_errors, error_mark, confs
+        return False
+
     def _pick_best_mcq_option(
         self,
         row_scores: np.ndarray,
@@ -2089,7 +2257,16 @@ class OMRProcessor:
                 dtype=np.float32,
             )
             bubble_radius = float(zone.metadata.get("bubble_radius", 9))
-            guided, digit_debug = self._digit_zone_guidance(working_binary, expected, zone, template)
+            exam_digit_model_applied = False
+            if zone.zone_type == ZoneType.EXAM_CODE_BLOCK:
+                modeled_expected, model_debug = self._digit_model_expected_points(template, zone)
+                if len(modeled_expected) == len(expected):
+                    guided, digit_debug = modeled_expected, model_debug
+                    exam_digit_model_applied = True
+                else:
+                    guided, digit_debug = self._digit_zone_guidance(working_binary, expected, zone, template)
+            else:
+                guided, digit_debug = self._digit_zone_guidance(working_binary, expected, zone, template)
             column_guided = self._resolve_column_digit_centers(working_binary, guided.astype(np.float32), grid, bubble_radius)
             centers, grid_fit_debug = self._refit_digit_grid_from_clear_points(
                 working_binary,
@@ -2121,7 +2298,8 @@ class OMRProcessor:
                 "col_segments": [],
                 "recognition_path": "direct",
             }
-            if not final_value:
+            skip_sampling_fallback = key == "exam_code" and exam_digit_model_applied
+            if not final_value and not skip_sampling_fallback:
                 rows, cols = 10, max(1, grid.cols)
                 source_img = self._preprocess_digit_sampling(working_image if working_image is not None else working_binary)
                 bbox = self._digit_zone_bbox(zone, source_img.shape[:2])
@@ -2151,6 +2329,8 @@ class OMRProcessor:
                     used_sampling = True
                 elif final_value == "":
                     final_value = "-"
+            elif not final_value and skip_sampling_fallback:
+                final_value = "-"
             setattr(result, "digit_zone_debug", zone_debug)
             if self.debug_mode and working_image is not None:
                 digit_overlay = working_image.copy()
