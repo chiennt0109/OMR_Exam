@@ -10940,7 +10940,7 @@ class MainWindow(QMainWindow):
             self.database.upsert_scan_result(subject_key_for_results, self._serialize_omr_result(result))
             self.scan_results.append(self._strip_transient_scan_artifacts(result))
             sid_for_dup = (result.student_id or "").strip()
-            if sid_for_dup:
+            if not self._student_id_has_recognition_error(sid_for_dup):
                 duplicate_ids[sid_for_dup] = duplicate_ids.get(sid_for_dup, 0) + 1
             self.scan_results_by_subject[subject_key_for_results] = list(self.scan_results)
 
@@ -11147,7 +11147,7 @@ class MainWindow(QMainWindow):
         duplicate_ids: dict[str, int] = {}
         for res in self.scan_results:
             sid = (res.student_id or "").strip()
-            if sid:
+            if not self._student_id_has_recognition_error(sid):
                 duplicate_ids[sid] = duplicate_ids.get(sid, 0) + 1
 
         for idx, result in enumerate(self.scan_results):
@@ -12963,7 +12963,7 @@ class MainWindow(QMainWindow):
         duplicate_ids: dict[str, int] = {}
         for res in results:
             sid = str(getattr(res, "student_id", "") or "").strip()
-            if sid:
+            if not self._student_id_has_recognition_error(sid):
                 duplicate_ids[sid] = duplicate_ids.get(sid, 0) + 1
 
         row_views: list[dict[str, object]] = []
@@ -13601,7 +13601,9 @@ class MainWindow(QMainWindow):
 
     def _status_parts_for_row(self, sid: str, exam_code_text: str, duplicate_count: int) -> list[str]:
         parts: list[str] = []
-        if sid and duplicate_count > 1:
+        if self._student_id_has_recognition_error(sid):
+            parts.append("Lỗi SBD")
+        elif sid and duplicate_count > 1:
             parts.append("Trùng SBD")
         avail_codes = self._available_exam_codes()
         code = (exam_code_text or "").strip()
@@ -13609,6 +13611,11 @@ class MainWindow(QMainWindow):
         if not code or "?" in code or (avail_codes and (code not in avail_codes and norm_code not in avail_codes)):
             parts.append("Lỗi mã đề")
         return parts
+
+    @staticmethod
+    def _student_id_has_recognition_error(student_id: str) -> bool:
+        sid = str(student_id or "").strip()
+        return sid in {"", "-"} or ("?" in sid)
 
     @staticmethod
     def _name_missing(name_text: str) -> bool:
@@ -13620,11 +13627,15 @@ class MainWindow(QMainWindow):
             return "OK"
         res = self.scan_results[idx]
         sid = (res.student_id or "").strip()
-        dup = sum(1 for r in self.scan_results if (r.student_id or "").strip() == sid) if sid else 0
+        dup = sum(
+            1
+            for r in self.scan_results
+            if not self._student_id_has_recognition_error((r.student_id or "").strip()) and (r.student_id or "").strip() == sid
+        ) if not self._student_id_has_recognition_error(sid) else 0
         exam_code_text = (res.exam_code or "").strip()
         status_parts = self._status_parts_for_row(sid, exam_code_text, dup)
         full_name = str(getattr(res, "full_name", "") or "")
-        if sid and self._name_missing(full_name):
+        if not self._student_id_has_recognition_error(sid) and self._name_missing(full_name):
             profile = self._student_profile_by_id(sid)
             if not str(profile.get("name", "") or "").strip():
                 status_parts.append("Lỗi SBD")
@@ -13741,16 +13752,16 @@ class MainWindow(QMainWindow):
         sid = (sid_item.text().strip() if sid_item else "")
         exam_code_text = str(sid_item.data(Qt.UserRole + 1) if sid_item else "").strip()
         dup = 0
-        if sid and sid != "-":
+        if not self._student_id_has_recognition_error(sid):
             for r in range(self.scan_list.rowCount()):
                 it = self.scan_list.item(r, 0)
                 v = (it.text().strip() if it else "")
-                if v and v != "-" and v == sid:
+                if not self._student_id_has_recognition_error(v) and v == sid:
                     dup += 1
-        status_parts = self._status_parts_for_row(sid if sid != "-" else "", exam_code_text, dup)
+        status_parts = self._status_parts_for_row("" if self._student_id_has_recognition_error(sid) else sid, exam_code_text, dup)
         name_item = self.scan_list.item(row_idx, 2)
         name_text = name_item.text().strip() if name_item else ""
-        if sid and sid != "-" and self._name_missing(name_text):
+        if not self._student_id_has_recognition_error(sid) and self._name_missing(name_text):
             status_parts.append("Lỗi SBD")
         return ", ".join(status_parts) if status_parts else "OK"
 
