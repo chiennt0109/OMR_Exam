@@ -2160,6 +2160,20 @@ class OMRProcessor:
         }
         return np.array(points, dtype=np.float32), debug
 
+    def _should_retry_exam_code_with_sampling(
+        self,
+        recognition_errors: list[str],
+        error_mark: int,
+        confs: list[float] | None,
+    ) -> bool:
+        """Backward-compatible shim for older exam-code retry call sites.
+
+        The extra retry path was removed to avoid slowing down mã đề
+        recognition. Keep the method so older code paths do not crash.
+        """
+        _ = recognition_errors, error_mark, confs
+        return False
+
     def _pick_best_mcq_option(
         self,
         row_scores: np.ndarray,
