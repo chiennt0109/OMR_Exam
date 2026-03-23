@@ -13877,17 +13877,18 @@ class MainWindow(QMainWindow):
             self.scan_image_preview.set_markers(self._marker_positions_for_result(result))
 
         rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
-        blank_map = self.scan_blank_summary.get(index, {"MCQ": [], "TF": [], "NUMERIC": []})
+        preview_result = self._scoped_result_copy(result)
+        blank_map = self.scan_blank_summary.get(index) or self._compute_blank_questions(preview_result)
         rows = [
             ("STUDENT ID", result.student_id or "-"),
             ("Họ tên", str(getattr(result, "full_name", "") or "-")),
             ("Ngày sinh", str(getattr(result, "birth_date", "") or "-")),
             ("Exam code", result.exam_code or "-"),
             ("Xoay tạm", f"{int(self.preview_rotation_by_index.get(index, 0) or 0)%360}°"),
-            ("Nhận dạng ngắn", self._compact_value(self._short_recognition_text_for_result(result), 220)),
-            ("MCQ", self._compact_value(self._format_mcq_answers(result.mcq_answers or {}), 220)),
-            ("TF", self._compact_value(self._format_tf_answers(result.true_false_answers or {}), 220)),
-            ("NUM", self._compact_value(self._format_numeric_answers(result.numeric_answers or {}), 220)),
+            ("Nhận dạng ngắn", self._compact_value(self._short_recognition_text_for_result(preview_result), 220)),
+            ("MCQ", self._compact_value(self._format_mcq_answers(preview_result.mcq_answers or {}), 220)),
+            ("TF", self._compact_value(self._format_tf_answers(preview_result.true_false_answers or {}), 220)),
+            ("NUM", self._compact_value(self._format_numeric_answers(preview_result.numeric_answers or {}), 220)),
             ("MCQ không tô", ", ".join(str(x) for x in blank_map.get("MCQ", [])) or "-"),
             ("TF không tô", ", ".join(str(x) for x in blank_map.get("TF", [])) or "-"),
             ("NUMERIC không tô", ", ".join(str(x) for x in blank_map.get("NUMERIC", [])) or "-"),
@@ -14179,6 +14180,9 @@ class MainWindow(QMainWindow):
         preview_scroll = QScrollArea()
         preview_scroll.setWidgetResizable(False)
         preview_scroll.setAlignment(Qt.AlignCenter)
+        preview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        preview_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        preview_scroll.setFrameShape(QFrame.NoFrame)
         preview_scroll.setWidget(preview)
         right_lay.addWidget(preview_scroll, 1)
         splitter.addWidget(right)
@@ -14217,9 +14221,15 @@ class MainWindow(QMainWindow):
             else:
                 combo.setEditText(value)
 
-        def _populate_exam_code_combo(combo: QComboBox, subject_key: str, current_code: str) -> None:
-            combo.blockSignals(True)
-            combo.clear()
+        def _valid_student_ids() -> list[str]:
+            values: list[str] = []
+            for i in range(inp_sid.count()):
+                sid_text = str(inp_sid.itemData(i) or "").strip()
+                if sid_text:
+                    values.append(sid_text)
+            return sorted(set(values))
+
+        def _valid_exam_codes(subject_key: str, current_code: str = "") -> list[str]:
             codes: set[str] = set()
             subject = str(subject_key or "").strip()
             if subject:
@@ -14236,7 +14246,12 @@ class MainWindow(QMainWindow):
             codes.update(str(x).strip() for x in (self.imported_exam_codes or []) if str(x).strip())
             if current_code:
                 codes.add(str(current_code).strip())
-            for code in sorted(codes):
+            return sorted(codes)
+
+        def _populate_exam_code_combo(combo: QComboBox, subject_key: str, current_code: str) -> None:
+            combo.blockSignals(True)
+            combo.clear()
+            for code in _valid_exam_codes(subject_key, current_code):
                 combo.addItem(code, code)
             if combo.count() == 0:
                 combo.addItem(current_code or "-", current_code or "")
@@ -14355,9 +14370,18 @@ class MainWindow(QMainWindow):
 
         def _collect_editor_snapshot(validate: bool = True) -> dict[str, object]:
             result = _current_result()
+            student_id_text = str(inp_sid.currentData() or inp_sid.currentText() or "").strip()
+            exam_code_text = str(inp_code.currentData() or inp_code.currentText() or "").strip()
+            if validate:
+                valid_student_ids = _valid_student_ids()
+                valid_exam_codes = _valid_exam_codes(self._current_batch_subject_key(), exam_code_text)
+                if valid_student_ids and student_id_text and student_id_text not in valid_student_ids:
+                    raise ValueError(f"Student ID '{student_id_text}' không có trong danh sách học sinh hợp lệ của ca thi.")
+                if valid_exam_codes and exam_code_text and exam_code_text not in valid_exam_codes:
+                    raise ValueError(f"Exam code '{exam_code_text}' không có đáp án hợp lệ cho môn hiện tại.")
             snapshot = {
-                "student_id": str(inp_sid.currentData() or inp_sid.currentText() or "").strip(),
-                "exam_code": str(inp_code.currentData() or inp_code.currentText() or "").strip(),
+                "student_id": student_id_text,
+                "exam_code": exam_code_text,
                 "mcq_answers": {},
                 "true_false_answers": {},
                 "numeric_answers": {},
@@ -14466,9 +14490,13 @@ class MainWindow(QMainWindow):
                 preview.setPixmap(scaled)
                 preview.resize(scaled.size())
                 preview.setMinimumSize(scaled.size())
+                preview.setMaximumSize(scaled.size())
                 preview.adjustSize()
+                preview_scroll.ensureVisible(0, 0)
             else:
                 preview.setPixmap(QPixmap())
+                preview.setMinimumSize(preview_scroll.viewport().size())
+                preview.setMaximumSize(16777215, 16777215)
                 preview.setText(f"Không thể tải ảnh bài làm tương ứng.\n{image_name}")
                 preview.resize(preview_scroll.viewport().size())
             btn_zoom_reset_dlg.setText(f"{int(round(factor * 100))}%")

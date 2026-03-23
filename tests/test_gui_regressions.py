@@ -58,6 +58,15 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('def _delete_scan_row_by_index(self, row: int) -> None:', source)
         self.assertIn('delete_scan_result(subject_key, image_path)', source)
 
+    def test_edit_dialog_preview_and_combo_validation_regressions(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('preview_result = self._scoped_result_copy(result)', source)
+        self.assertIn('preview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)', source)
+        self.assertIn('preview_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)', source)
+        self.assertIn('def _valid_student_ids() -> list[str]:', source)
+        self.assertIn("Student ID '{student_id_text}' không có trong danh sách học sinh hợp lệ của ca thi.", source)
+        self.assertIn("Exam code '{exam_code_text}' không có đáp án hợp lệ cho môn hiện tại.", source)
+
 
 if __name__ == '__main__':
     unittest.main()
