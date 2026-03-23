@@ -1344,6 +1344,30 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(confidence, 0.0)
         self.assertEqual(reason, "multiple")
 
+    def test_mcq_dominant_fallback_ignores_boosted_secondary_noise_without_core_support(self):
+        best_idx, confidence, reason = self.processor._pick_best_mcq_option(
+            np.array([0.18, 0.69, 0.91, 0.16], dtype=np.float32),
+            0.62,
+            row_raw_scores=np.array([0.10, 0.24, 0.86, 0.09], dtype=np.float32),
+            row_core_scores=np.array([0.08, 0.22, 0.88, 0.07], dtype=np.float32),
+            row_eroded_scores=np.array([0.09, 0.26, 0.82, 0.08], dtype=np.float32),
+        )
+        self.assertEqual(best_idx, 2)
+        self.assertGreater(confidence, 0.20)
+        self.assertEqual(reason, "dominant_fallback")
+
+    def test_mcq_dominant_fallback_rejects_true_second_mark_with_strong_support(self):
+        best_idx, confidence, reason = self.processor._pick_best_mcq_option(
+            np.array([0.18, 0.74, 0.92, 0.16], dtype=np.float32),
+            0.62,
+            row_raw_scores=np.array([0.10, 0.70, 0.88, 0.09], dtype=np.float32),
+            row_core_scores=np.array([0.08, 0.68, 0.90, 0.07], dtype=np.float32),
+            row_eroded_scores=np.array([0.09, 0.66, 0.84, 0.08], dtype=np.float32),
+        )
+        self.assertIsNone(best_idx)
+        self.assertEqual(confidence, 0.0)
+        self.assertEqual(reason, "multiple")
+
     def test_legacy_template_absolute_coordinates_are_converted(self):
         raw = {
             "name": "legacy",

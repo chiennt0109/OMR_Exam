@@ -2272,6 +2272,9 @@ class OMRProcessor:
         self,
         row_scores: np.ndarray,
         row_threshold: float,
+        row_raw_scores: np.ndarray | None = None,
+        row_core_scores: np.ndarray | None = None,
+        row_eroded_scores: np.ndarray | None = None,
     ) -> tuple[int | None, float, str | None]:
         scores = np.asarray(row_scores, dtype=np.float32)
         if scores.size == 0:
@@ -2287,6 +2290,20 @@ class OMRProcessor:
             dominant_margin = max(self.certainty_margin * 1.10, 0.10)
             dominant_ratio = second <= 1e-6 or top >= (1.25 * second)
             if top >= row_threshold and margin >= dominant_margin and dominant_ratio:
+                if row_raw_scores is not None and row_core_scores is not None:
+                    raw_scores = np.asarray(row_raw_scores, dtype=np.float32)
+                    core_scores = np.asarray(row_core_scores, dtype=np.float32)
+                    eroded_scores = np.asarray(row_eroded_scores if row_eroded_scores is not None else raw_scores, dtype=np.float32)
+                    top_support = max(float(raw_scores[top_i]), float(core_scores[top_i]), float(eroded_scores[top_i]))
+                    second_support = max(float(raw_scores[second_i]), float(core_scores[second_i]), float(eroded_scores[second_i]))
+                    strong_top_support = top_support >= max(row_threshold + 0.06, self.fill_threshold + 0.02)
+                    weak_second_support = second_support <= min(
+                        second - 0.08,
+                        top_support - max(0.16, self.certainty_margin * 2.0),
+                    )
+                    if strong_top_support and weak_second_support:
+                        return top_i, margin, "dominant_fallback"
+                    return None, 0.0, "multiple"
                 return top_i, margin, "dominant_fallback"
             return None, 0.0, "multiple"
         if top > row_threshold and margin > self.certainty_margin:
@@ -2429,6 +2446,7 @@ class OMRProcessor:
             centers = self._detect_digit_bubble_centers(working_binary, centers, float(radius))
         ratios = self.detect_bubbles(working_binary, centers, radius)
         if zone.zone_type == ZoneType.MCQ_BLOCK:
+            raw_mcq_ratios = np.asarray(ratios, dtype=np.float32).copy()
             core_ratios = self._detect_center_core_marks(working_binary, centers, radius)
             eroded_ratios = self._detect_eroded_mark_density(working_binary, centers, radius)
             core_boosted = np.clip((0.62 * ratios) + (0.38 * core_ratios), 0.0, 1.0)
@@ -2461,6 +2479,9 @@ class OMRProcessor:
         else:
             mat = ratios[:need].reshape(rows, cols)
             local_fill = dynamic_thresholds[:need].reshape(rows, cols)
+            raw_mcq_mat = np.asarray(raw_mcq_ratios[:need], dtype=np.float32).reshape(rows, cols) if zone.zone_type == ZoneType.MCQ_BLOCK else None
+            core_mcq_mat = np.asarray(core_ratios[:need], dtype=np.float32).reshape(rows, cols) if zone.zone_type == ZoneType.MCQ_BLOCK else None
+            eroded_mcq_mat = np.asarray(eroded_ratios[:need], dtype=np.float32).reshape(rows, cols) if zone.zone_type == ZoneType.MCQ_BLOCK else None
 
         orig_fill = self.fill_threshold
         self.fill_threshold = float(np.clip(np.median(local_fill), orig_fill - 0.08, orig_fill + 0.08))
@@ -2509,7 +2530,13 @@ class OMRProcessor:
                     qno = grid.question_start + r
                     row_scores = mat[r, :]
                     row_threshold = float(np.median(local_fill[r, :])) if local_fill.shape[1] else self.fill_threshold
-                    best_idx, confidence, reason = self._pick_best_mcq_option(row_scores, row_threshold)
+                    best_idx, confidence, reason = self._pick_best_mcq_option(
+                        row_scores,
+                        row_threshold,
+                        row_raw_scores=raw_mcq_mat[r, :] if raw_mcq_mat is not None else None,
+                        row_core_scores=core_mcq_mat[r, :] if core_mcq_mat is not None else None,
+                        row_eroded_scores=eroded_mcq_mat[r, :] if eroded_mcq_mat is not None else None,
+                    )
                     if best_idx is None:
                         if reason == "multiple":
                             result.recognition_errors.append(f"MCQ Q{qno}: multiple answer")
