@@ -60,10 +60,14 @@ class GuiRegressionTests(unittest.TestCase):
 
     def test_edit_dialog_preview_and_combo_validation_regressions(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('QFrame,', source)
         self.assertIn('preview_result = self._scoped_result_copy(result)', source)
         self.assertIn('preview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)', source)
         self.assertIn('preview_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)', source)
         self.assertIn('def _valid_student_ids() -> list[str]:', source)
+        self.assertIn('return None', source)
+        self.assertIn('sorted(set(int(q) for q in (key.answers or {}).keys())) or fallback_snapshot["MCQ"]', source)
+        self.assertIn('expected_by_section[sec] = []', source)
         self.assertIn("Student ID '{student_id_text}' không có trong danh sách học sinh hợp lệ của ca thi.", source)
         self.assertIn("Exam code '{exam_code_text}' không có đáp án hợp lệ cho môn hiện tại.", source)
 

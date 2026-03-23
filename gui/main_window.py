@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
+    QFrame,
     QFormLayout,
     QGridLayout,
     QHeaderView,
@@ -11129,11 +11130,11 @@ class MainWindow(QMainWindow):
                     "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
                 }
                 for sec in ["MCQ", "TF", "NUMERIC"]:
-                    if not key_sections[sec]:
-                        continue
                     template_set = set(template_expected.get(sec, []))
                     key_set = set(key_sections[sec])
-                    if template_set:
+                    if not key_set:
+                        expected_by_section[sec] = []
+                    elif template_set:
                         overlap = sorted(template_set & key_set)
                         if overlap:
                             expected_by_section[sec] = overlap
@@ -11171,15 +11172,12 @@ class MainWindow(QMainWindow):
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
         expected = self._expected_questions_by_section(result)
-        if expected.get("MCQ"):
-            allow = set(expected["MCQ"])
-            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
-        if expected.get("TF"):
-            allow = set(expected["TF"])
-            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
-        if expected.get("NUMERIC"):
-            allow = set(expected["NUMERIC"])
-            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+        allow_mcq = set(expected.get("MCQ", []))
+        allow_tf = set(expected.get("TF", []))
+        allow_numeric = set(expected.get("NUMERIC", []))
+        result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow_mcq}
+        result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow_tf}
+        result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow_numeric}
 
     def _count_mismatch_status_parts(self, result) -> list[str]:
         expected = self._expected_questions_by_section(result)
@@ -11321,11 +11319,11 @@ class MainWindow(QMainWindow):
                     "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
                 }
                 for sec in ["MCQ", "TF", "NUMERIC"]:
-                    if not key_sections[sec]:
-                        continue
                     template_set = set(template_expected.get(sec, []))
                     key_set = set(key_sections[sec])
-                    if template_set:
+                    if not key_set:
+                        expected_by_section[sec] = []
+                    elif template_set:
                         overlap = sorted(template_set & key_set)
                         if overlap:
                             expected_by_section[sec] = overlap
@@ -11370,15 +11368,12 @@ class MainWindow(QMainWindow):
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
         expected = self._expected_questions_by_section(result)
-        if expected.get("MCQ"):
-            allow = set(expected["MCQ"])
-            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
-        if expected.get("TF"):
-            allow = set(expected["TF"])
-            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
-        if expected.get("NUMERIC"):
-            allow = set(expected["NUMERIC"])
-            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+        allow_mcq = set(expected.get("MCQ", []))
+        allow_tf = set(expected.get("TF", []))
+        allow_numeric = set(expected.get("NUMERIC", []))
+        result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow_mcq}
+        result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow_tf}
+        result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow_numeric}
 
     def _count_mismatch_status_parts(self, result) -> list[str]:
         expected = self._expected_questions_by_section(result)
@@ -12847,11 +12842,11 @@ class MainWindow(QMainWindow):
                     "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
                 }
                 for sec in ["MCQ", "TF", "NUMERIC"]:
-                    if not key_sections[sec]:
-                        continue
                     template_set = set(template_expected.get(sec, []))
                     key_set = set(key_sections[sec])
-                    if template_set:
+                    if not key_set:
+                        expected_by_section[sec] = []
+                    elif template_set:
                         overlap = sorted(template_set & key_set)
                         if overlap:
                             expected_by_section[sec] = overlap
@@ -12896,15 +12891,12 @@ class MainWindow(QMainWindow):
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
         expected = self._expected_questions_by_section(result)
-        if expected.get("MCQ"):
-            allow = set(expected["MCQ"])
-            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
-        if expected.get("TF"):
-            allow = set(expected["TF"])
-            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
-        if expected.get("NUMERIC"):
-            allow = set(expected["NUMERIC"])
-            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+        allow_mcq = set(expected.get("MCQ", []))
+        allow_tf = set(expected.get("TF", []))
+        allow_numeric = set(expected.get("NUMERIC", []))
+        result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow_mcq}
+        result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow_tf}
+        result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow_numeric}
 
     def _count_mismatch_status_parts(self, result) -> list[str]:
         expected = self._expected_questions_by_section(result)
@@ -14267,17 +14259,18 @@ class MainWindow(QMainWindow):
                 key = self.answer_keys.get_flexible(subject, code)
                 if key is not None:
                     return key
-            subject_keys = sorted(
-                (item for item in self.answer_keys.keys.values() if getattr(item, "subject", "") == subject),
-                key=lambda item: str(getattr(item, "exam_code", "") or ""),
-            )
-            return subject_keys[0] if subject_keys else None
+            return None
 
         def _expected_questions_for_dialog(result: OMRResult, exam_code_text: str, data_snapshot: dict[str, object]) -> dict[str, list[int]]:
             key = _answer_key_for_exam_code(exam_code_text)
             if key is not None:
+                fallback_snapshot = {
+                    "MCQ": _question_numbers(data_snapshot.get("mcq_answers", {})),
+                    "TF": _question_numbers(data_snapshot.get("true_false_answers", {})),
+                    "NUMERIC": _question_numbers(data_snapshot.get("numeric_answers", {})),
+                }
                 return {
-                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())) or fallback_snapshot["MCQ"],
                     "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
                     "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
                 }
