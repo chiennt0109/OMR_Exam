@@ -14104,10 +14104,11 @@ class MainWindow(QMainWindow):
         dialog_state = {"index": idx, "loading": False}
         default_zoom_factor = 0.34
 
-        dlg = QDialog(self)
+        dlg = QDialog(self, Qt.Window)
         dlg.setWindowTitle(f"Sửa bài thi: {Path(self.scan_results[dialog_state['index']].image_path).name}")
+        dlg.setWindowModality(Qt.ApplicationModal)
         dlg.setWindowState(Qt.WindowFullScreen)
-        QTimer.singleShot(0, dlg.showFullScreen)
+        QTimer.singleShot(0, lambda: (dlg.raise_(), dlg.showFullScreen(), dlg.activateWindow()))
         lay = QHBoxLayout(dlg)
         splitter = QSplitter(Qt.Horizontal)
         left = QWidget()
@@ -14598,15 +14599,7 @@ class MainWindow(QMainWindow):
             if not changes:
                 return True
 
-            sid_item = QTableWidgetItem((result.student_id or "").strip() or "-")
-            sid_item.setData(Qt.UserRole, str(result.image_path))
-            sid_item.setData(Qt.UserRole + 1, result.exam_code or "")
-            sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(result))
-            self.scan_list.setItem(idx_local, 0, sid_item)
             self._refresh_student_profile_for_result(result)
-            scoped = self._scoped_result_copy(result)
-            self.scan_blank_summary[idx_local] = self._compute_blank_questions(scoped)
-            self._update_scan_row_from_result(idx_local, result)
             self._record_adjustment(idx_local, changes, "dialog_edit")
             self._persist_single_scan_result_to_db(result, note="dialog_edit")
             dialog_saved_rows.add(idx_local)
