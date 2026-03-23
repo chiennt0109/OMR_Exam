@@ -53,7 +53,7 @@ from gui.import_answer_key_dialog import ImportAnswerKeyDialog
 from models.answer_key import AnswerKeyRepository, SubjectKey
 from models.database import OMRDatabase, bootstrap_application_db
 from models.exam_session import ExamSession, Student
-from models.template import Template
+from models.template import Template, ZoneType
 from models.template_repository import TemplateRepository
 
 
@@ -2804,6 +2804,10 @@ class MainWindow(QMainWindow):
         batch_form = QFormLayout(batch_group)
         self.batch_subject_combo = QComboBox()
         self.batch_subject_combo.currentIndexChanged.connect(self._on_batch_subject_changed)
+        self.batch_file_scope_combo = QComboBox()
+        self.batch_file_scope_combo.addItem("Nhận dạng file mới", "new_only")
+        self.batch_file_scope_combo.addItem("Nhận dạng toàn bộ", "all")
+        self.batch_file_scope_combo.currentIndexChanged.connect(lambda _=0: self._update_batch_scan_scope_summary())
         self.batch_recognition_mode_combo = QComboBox()
         self.batch_recognition_mode_combo.addItem("Tự động (khuyến nghị)", "auto")
         self.batch_recognition_mode_combo.addItem("Mẫu cũ / Anchor chuẩn", "legacy")
@@ -2814,6 +2818,7 @@ class MainWindow(QMainWindow):
         self.batch_answer_codes_value = QLineEdit("-"); self.batch_answer_codes_value.setReadOnly(True)
         self.batch_student_id_value = QLineEdit("-"); self.batch_student_id_value.setReadOnly(True)
         self.batch_scan_folder_value = QLineEdit("-"); self.batch_scan_folder_value.setReadOnly(True)
+        self.batch_scan_state_value = QLineEdit("-"); self.batch_scan_state_value.setReadOnly(True)
         style = self.style()
         self.btn_batch_recognize = QPushButton("Nhận dạng")
         self.btn_batch_recognize.setIcon(style.standardIcon(QStyle.SP_MediaPlay))
@@ -2835,11 +2840,13 @@ class MainWindow(QMainWindow):
         action_row.addStretch()
 
         batch_form.addRow("Môn", self.batch_subject_combo)
+        batch_form.addRow("Phạm vi", self.batch_file_scope_combo)
         batch_form.addRow("Cơ chế nhận dạng", self.batch_recognition_mode_combo)
         batch_form.addRow("Mẫu giấy dùng", self.batch_template_value)
         batch_form.addRow("Mã đề", self.batch_answer_codes_value)
         batch_form.addRow("Vùng STUDENT ID", self.batch_student_id_value)
         batch_form.addRow("Thư mục quét", self.batch_scan_folder_value)
+        batch_form.addRow("Trạng thái file", self.batch_scan_state_value)
         batch_form.addRow("", action_row)
 
         self.filter_column = QComboBox()
@@ -10472,6 +10479,58 @@ class MainWindow(QMainWindow):
             return self._session_path_from_id(self.batch_editor_return_session_id)
         return None
 
+    def _recognized_image_paths_for_subject(self, subject_key: str) -> set[str]:
+        key = str(subject_key or "").strip()
+        rows = list(self.scan_results_by_subject.get(key) or [])
+        if not rows and key:
+            rows = list(self._refresh_scan_results_from_db(key) or [])
+        return {
+            str(getattr(item, "image_path", "") or "").strip()
+            for item in rows
+            if str(getattr(item, "image_path", "") or "").strip()
+        }
+
+    def _configured_scan_file_paths(self, cfg: dict | None) -> list[str]:
+        if not cfg:
+            return []
+        scan_folder = str(cfg.get("scan_folder", "") or ((self.session.config or {}).get("scan_root", "") if self.session else "") or "").strip()
+        if not scan_folder or scan_folder == "-":
+            return []
+        scan_dir = Path(scan_folder)
+        if not scan_dir.exists() or not scan_dir.is_dir():
+            return []
+        scan_mode = str(cfg.get("scan_mode", "") or (self.session.config or {}).get("scan_mode", "") if self.session else "")
+        image_exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
+        if "thư mục con" in scan_mode.lower() or "sub" in scan_mode.lower():
+            return [str(p) for p in sorted(scan_dir.rglob("*")) if p.is_file() and p.suffix.lower() in image_exts]
+        return [str(p) for p in sorted(scan_dir.iterdir()) if p.is_file() and p.suffix.lower() in image_exts]
+
+    def _update_batch_scan_scope_summary(self) -> None:
+        if not hasattr(self, "batch_scan_state_value"):
+            return
+        cfg = self._selected_batch_subject_config()
+        if cfg:
+            cfg = self._merge_saved_batch_snapshot(cfg)
+        all_paths = self._configured_scan_file_paths(cfg)
+        subject_key = self._subject_key_from_cfg(cfg) if cfg else ""
+        recognized = self._recognized_image_paths_for_subject(subject_key)
+        recognized_count = sum(1 for path in all_paths if path in recognized)
+        pending_count = max(0, len(all_paths) - recognized_count)
+        mode = str(self.batch_file_scope_combo.currentData() or "new_only") if hasattr(self, "batch_file_scope_combo") else "new_only"
+        mode_label = "File mới" if mode == "new_only" else "Toàn bộ"
+        self.batch_scan_state_value.setText(f"{mode_label} | Đã nhận diện: {recognized_count} | Chưa nhận diện: {pending_count}")
+
+    @staticmethod
+    def _recommended_batch_timeout_sec(template: Template | None) -> float:
+        if template is None:
+            return 3.0
+        zones = list(getattr(template, "zones", []) or [])
+        answer_zone_count = sum(1 for z in zones if getattr(z, "zone_type", None) in {ZoneType.MCQ_BLOCK, ZoneType.TRUE_FALSE_BLOCK, ZoneType.NUMERIC_BLOCK})
+        id_zone_count = sum(1 for z in zones if getattr(z, "zone_type", None) in {ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK})
+        other_zone_count = max(0, len(zones) - answer_zone_count - id_zone_count)
+        timeout = 2.5 + (0.25 * answer_zone_count) + (0.15 * id_zone_count) + (0.10 * other_zone_count)
+        return float(min(6.0, max(2.5, timeout)))
+
     def _merge_saved_batch_snapshot(self, cfg: dict) -> dict:
         merged = dict(cfg)
         if merged.get("batch_saved_rows") or merged.get("batch_saved_preview"):
@@ -10574,6 +10633,7 @@ class MainWindow(QMainWindow):
             self.batch_answer_codes_value.setText("-")
             self.batch_student_id_value.setText("-")
             self.batch_scan_folder_value.setText("-")
+            self.batch_scan_state_value.setText("-")
             return
 
         template_path = self._normalize_template_path(str(cfg.get("template_path", "") or "")) or self._normalize_template_path(str(self.session.template_path if self.session else "")) or "-"
@@ -10595,6 +10655,7 @@ class MainWindow(QMainWindow):
         self.batch_student_id_value.setText(has_sid)
         if tpl_for_view:
             self._apply_template_recognition_settings(tpl_for_view)
+        self._update_batch_scan_scope_summary()
 
         subject_key = self._subject_key_from_cfg(cfg)
         self.scan_results = self._refresh_scan_results_from_db(subject_key)
@@ -10788,6 +10849,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "batch_recognition_mode_combo"):
             mode = str(self.batch_recognition_mode_combo.currentData() or "auto")
             setattr(self.omr_processor, "alignment_profile", mode)
+        file_scope_mode = str(self.batch_file_scope_combo.currentData() or "new_only") if hasattr(self, "batch_file_scope_combo") else "new_only"
 
         # Resolve template, scan folder and answer keys from selected subject config in session.
         subject_template_path = ""
@@ -10861,6 +10923,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Batch Scan", f"Không thể tải mẫu giấy\n{exc}")
             return
+        self.template.metadata["recognition_timeout_sec"] = self._recommended_batch_timeout_sec(self.template)
 
         scan_folder = str(scan_folder or "").strip()
         if not scan_folder:
@@ -10871,16 +10934,27 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Batch Scan", f"Không tìm thấy thư mục quét\n{scan_folder}")
             return
 
-        scan_mode = str((subject_cfg or {}).get("scan_mode", "") or (self.session.config or {}).get("scan_mode", "") if self.session else "")
-        image_exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
-        if "thư mục con" in scan_mode.lower() or "sub" in scan_mode.lower():
-            file_paths = [str(p) for p in sorted(scan_dir.rglob("*")) if p.is_file() and p.suffix.lower() in image_exts]
-        else:
-            file_paths = [str(p) for p in sorted(scan_dir.iterdir()) if p.is_file() and p.suffix.lower() in image_exts]
+        file_paths = self._configured_scan_file_paths(subject_cfg or {})
 
         if not file_paths:
             QMessageBox.warning(self, "Batch Scan", "Không tìm thấy ảnh bài thi trong thư mục quét.")
             return
+
+        subject_key_for_results = self._subject_key_from_cfg(subject_cfg) if subject_cfg else self._resolve_preferred_scoring_subject()
+        existing_results = list(self.scan_results_by_subject.get(subject_key_for_results) or self._refresh_scan_results_from_db(subject_key_for_results) or [])
+        recognized_paths = {
+            str(getattr(item, "image_path", "") or "").strip()
+            for item in existing_results
+            if str(getattr(item, "image_path", "") or "").strip()
+        }
+        if file_scope_mode == "new_only":
+            file_paths = [path for path in file_paths if str(path).strip() not in recognized_paths]
+            if not file_paths:
+                self.scan_results = list(existing_results)
+                self._populate_scan_grid_from_results(self.scan_results)
+                self._update_batch_scan_scope_summary()
+                QMessageBox.information(self, "Batch Scan", "Không còn file mới cần nhận dạng trong phạm vi đã cấu hình.")
+                return
 
         self.scan_list.setRowCount(0)
         self.error_list.clear()
@@ -10906,10 +10980,16 @@ class MainWindow(QMainWindow):
             self.progress.setValue(current)
             QApplication.processEvents()
 
-        subject_key_for_results = self._subject_key_from_cfg(subject_cfg) if subject_cfg else self._resolve_preferred_scoring_subject()
-        self.database.delete_scan_results_for_subject(subject_key_for_results)
-        self.scan_results = []
+        if file_scope_mode == "all":
+            self.database.delete_scan_results_for_subject(subject_key_for_results)
+            self.scan_results = []
+        else:
+            self.scan_results = list(existing_results)
         duplicate_ids: dict[str, int] = {}
+        for existing in self.scan_results:
+            sid_existing = (existing.student_id or "").strip()
+            if not self._student_id_has_recognition_error(sid_existing):
+                duplicate_ids[sid_existing] = duplicate_ids.get(sid_existing, 0) + 1
 
         for idx, image_path in enumerate(file_paths):
             on_progress(idx + 1, len(file_paths), image_path)
@@ -10940,7 +11020,7 @@ class MainWindow(QMainWindow):
             self.database.upsert_scan_result(subject_key_for_results, self._serialize_omr_result(result))
             self.scan_results.append(self._strip_transient_scan_artifacts(result))
             sid_for_dup = (result.student_id or "").strip()
-            if sid_for_dup:
+            if not self._student_id_has_recognition_error(sid_for_dup):
                 duplicate_ids[sid_for_dup] = duplicate_ids.get(sid_for_dup, 0) + 1
             self.scan_results_by_subject[subject_key_for_results] = list(self.scan_results)
 
@@ -10955,6 +11035,7 @@ class MainWindow(QMainWindow):
         self._populate_scan_grid_from_results(self.scan_results, forced_status_by_image)
         self._rebuild_error_list()
         self.btn_save_batch_subject.setEnabled(False)
+        self._update_batch_scan_scope_summary()
         self._apply_scan_filter()
 
     @staticmethod
@@ -11147,7 +11228,7 @@ class MainWindow(QMainWindow):
         duplicate_ids: dict[str, int] = {}
         for res in self.scan_results:
             sid = (res.student_id or "").strip()
-            if sid:
+            if not self._student_id_has_recognition_error(sid):
                 duplicate_ids[sid] = duplicate_ids.get(sid, 0) + 1
 
         for idx, result in enumerate(self.scan_results):
@@ -12963,7 +13044,7 @@ class MainWindow(QMainWindow):
         duplicate_ids: dict[str, int] = {}
         for res in results:
             sid = str(getattr(res, "student_id", "") or "").strip()
-            if sid:
+            if not self._student_id_has_recognition_error(sid):
                 duplicate_ids[sid] = duplicate_ids.get(sid, 0) + 1
 
         row_views: list[dict[str, object]] = []
@@ -13601,7 +13682,9 @@ class MainWindow(QMainWindow):
 
     def _status_parts_for_row(self, sid: str, exam_code_text: str, duplicate_count: int) -> list[str]:
         parts: list[str] = []
-        if sid and duplicate_count > 1:
+        if self._student_id_has_recognition_error(sid):
+            parts.append("Lỗi SBD")
+        elif sid and duplicate_count > 1:
             parts.append("Trùng SBD")
         avail_codes = self._available_exam_codes()
         code = (exam_code_text or "").strip()
@@ -13609,6 +13692,11 @@ class MainWindow(QMainWindow):
         if not code or "?" in code or (avail_codes and (code not in avail_codes and norm_code not in avail_codes)):
             parts.append("Lỗi mã đề")
         return parts
+
+    @staticmethod
+    def _student_id_has_recognition_error(student_id: str) -> bool:
+        sid = str(student_id or "").strip()
+        return sid in {"", "-"} or ("?" in sid)
 
     @staticmethod
     def _name_missing(name_text: str) -> bool:
@@ -13620,11 +13708,15 @@ class MainWindow(QMainWindow):
             return "OK"
         res = self.scan_results[idx]
         sid = (res.student_id or "").strip()
-        dup = sum(1 for r in self.scan_results if (r.student_id or "").strip() == sid) if sid else 0
+        dup = sum(
+            1
+            for r in self.scan_results
+            if not self._student_id_has_recognition_error((r.student_id or "").strip()) and (r.student_id or "").strip() == sid
+        ) if not self._student_id_has_recognition_error(sid) else 0
         exam_code_text = (res.exam_code or "").strip()
         status_parts = self._status_parts_for_row(sid, exam_code_text, dup)
         full_name = str(getattr(res, "full_name", "") or "")
-        if sid and self._name_missing(full_name):
+        if not self._student_id_has_recognition_error(sid) and self._name_missing(full_name):
             profile = self._student_profile_by_id(sid)
             if not str(profile.get("name", "") or "").strip():
                 status_parts.append("Lỗi SBD")
@@ -13741,16 +13833,16 @@ class MainWindow(QMainWindow):
         sid = (sid_item.text().strip() if sid_item else "")
         exam_code_text = str(sid_item.data(Qt.UserRole + 1) if sid_item else "").strip()
         dup = 0
-        if sid and sid != "-":
+        if not self._student_id_has_recognition_error(sid):
             for r in range(self.scan_list.rowCount()):
                 it = self.scan_list.item(r, 0)
                 v = (it.text().strip() if it else "")
-                if v and v != "-" and v == sid:
+                if not self._student_id_has_recognition_error(v) and v == sid:
                     dup += 1
-        status_parts = self._status_parts_for_row(sid if sid != "-" else "", exam_code_text, dup)
+        status_parts = self._status_parts_for_row("" if self._student_id_has_recognition_error(sid) else sid, exam_code_text, dup)
         name_item = self.scan_list.item(row_idx, 2)
         name_text = name_item.text().strip() if name_item else ""
-        if sid and sid != "-" and self._name_missing(name_text):
+        if not self._student_id_has_recognition_error(sid) and self._name_missing(name_text):
             status_parts.append("Lỗi SBD")
         return ", ".join(status_parts) if status_parts else "OK"
 
@@ -13785,17 +13877,18 @@ class MainWindow(QMainWindow):
             self.scan_image_preview.set_markers(self._marker_positions_for_result(result))
 
         rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
-        blank_map = self.scan_blank_summary.get(index, {"MCQ": [], "TF": [], "NUMERIC": []})
+        preview_result = self._scoped_result_copy(result)
+        blank_map = self.scan_blank_summary.get(index) or self._compute_blank_questions(preview_result)
         rows = [
             ("STUDENT ID", result.student_id or "-"),
             ("Họ tên", str(getattr(result, "full_name", "") or "-")),
             ("Ngày sinh", str(getattr(result, "birth_date", "") or "-")),
             ("Exam code", result.exam_code or "-"),
             ("Xoay tạm", f"{int(self.preview_rotation_by_index.get(index, 0) or 0)%360}°"),
-            ("Nhận dạng ngắn", self._compact_value(self._short_recognition_text_for_result(result), 220)),
-            ("MCQ", self._compact_value(self._format_mcq_answers(result.mcq_answers or {}), 220)),
-            ("TF", self._compact_value(self._format_tf_answers(result.true_false_answers or {}), 220)),
-            ("NUM", self._compact_value(self._format_numeric_answers(result.numeric_answers or {}), 220)),
+            ("Nhận dạng ngắn", self._compact_value(self._short_recognition_text_for_result(preview_result), 220)),
+            ("MCQ", self._compact_value(self._format_mcq_answers(preview_result.mcq_answers or {}), 220)),
+            ("TF", self._compact_value(self._format_tf_answers(preview_result.true_false_answers or {}), 220)),
+            ("NUM", self._compact_value(self._format_numeric_answers(preview_result.numeric_answers or {}), 220)),
             ("MCQ không tô", ", ".join(str(x) for x in blank_map.get("MCQ", [])) or "-"),
             ("TF không tô", ", ".join(str(x) for x in blank_map.get("TF", [])) or "-"),
             ("NUMERIC không tô", ", ".join(str(x) for x in blank_map.get("NUMERIC", [])) or "-"),
@@ -14087,6 +14180,9 @@ class MainWindow(QMainWindow):
         preview_scroll = QScrollArea()
         preview_scroll.setWidgetResizable(False)
         preview_scroll.setAlignment(Qt.AlignCenter)
+        preview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        preview_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        preview_scroll.setFrameShape(QFrame.NoFrame)
         preview_scroll.setWidget(preview)
         right_lay.addWidget(preview_scroll, 1)
         splitter.addWidget(right)
@@ -14125,9 +14221,15 @@ class MainWindow(QMainWindow):
             else:
                 combo.setEditText(value)
 
-        def _populate_exam_code_combo(combo: QComboBox, subject_key: str, current_code: str) -> None:
-            combo.blockSignals(True)
-            combo.clear()
+        def _valid_student_ids() -> list[str]:
+            values: list[str] = []
+            for i in range(inp_sid.count()):
+                sid_text = str(inp_sid.itemData(i) or "").strip()
+                if sid_text:
+                    values.append(sid_text)
+            return sorted(set(values))
+
+        def _valid_exam_codes(subject_key: str, current_code: str = "") -> list[str]:
             codes: set[str] = set()
             subject = str(subject_key or "").strip()
             if subject:
@@ -14144,7 +14246,12 @@ class MainWindow(QMainWindow):
             codes.update(str(x).strip() for x in (self.imported_exam_codes or []) if str(x).strip())
             if current_code:
                 codes.add(str(current_code).strip())
-            for code in sorted(codes):
+            return sorted(codes)
+
+        def _populate_exam_code_combo(combo: QComboBox, subject_key: str, current_code: str) -> None:
+            combo.blockSignals(True)
+            combo.clear()
+            for code in _valid_exam_codes(subject_key, current_code):
                 combo.addItem(code, code)
             if combo.count() == 0:
                 combo.addItem(current_code or "-", current_code or "")
@@ -14263,9 +14370,18 @@ class MainWindow(QMainWindow):
 
         def _collect_editor_snapshot(validate: bool = True) -> dict[str, object]:
             result = _current_result()
+            student_id_text = str(inp_sid.currentData() or inp_sid.currentText() or "").strip()
+            exam_code_text = str(inp_code.currentData() or inp_code.currentText() or "").strip()
+            if validate:
+                valid_student_ids = _valid_student_ids()
+                valid_exam_codes = _valid_exam_codes(self._current_batch_subject_key(), exam_code_text)
+                if valid_student_ids and student_id_text and student_id_text not in valid_student_ids:
+                    raise ValueError(f"Student ID '{student_id_text}' không có trong danh sách học sinh hợp lệ của ca thi.")
+                if valid_exam_codes and exam_code_text and exam_code_text not in valid_exam_codes:
+                    raise ValueError(f"Exam code '{exam_code_text}' không có đáp án hợp lệ cho môn hiện tại.")
             snapshot = {
-                "student_id": str(inp_sid.currentData() or inp_sid.currentText() or "").strip(),
-                "exam_code": str(inp_code.currentData() or inp_code.currentText() or "").strip(),
+                "student_id": student_id_text,
+                "exam_code": exam_code_text,
                 "mcq_answers": {},
                 "true_false_answers": {},
                 "numeric_answers": {},
@@ -14374,9 +14490,13 @@ class MainWindow(QMainWindow):
                 preview.setPixmap(scaled)
                 preview.resize(scaled.size())
                 preview.setMinimumSize(scaled.size())
+                preview.setMaximumSize(scaled.size())
                 preview.adjustSize()
+                preview_scroll.ensureVisible(0, 0)
             else:
                 preview.setPixmap(QPixmap())
+                preview.setMinimumSize(preview_scroll.viewport().size())
+                preview.setMaximumSize(16777215, 16777215)
                 preview.setText(f"Không thể tải ảnh bài làm tương ứng.\n{image_name}")
                 preview.resize(preview_scroll.viewport().size())
             btn_zoom_reset_dlg.setText(f"{int(round(factor * 100))}%")
