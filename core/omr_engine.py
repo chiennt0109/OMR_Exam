@@ -96,6 +96,21 @@ class OMRProcessor:
         deadline = self._processing_deadline_monotonic
         return bool(deadline and time.monotonic() >= deadline)
 
+    @staticmethod
+    def _zone_recognition_priority(zone: Zone) -> tuple[int, str]:
+        zone_type = getattr(zone, "zone_type", None)
+        if zone_type == ZoneType.MCQ_BLOCK:
+            return (0, str(getattr(zone, "id", "") or ""))
+        if zone_type == ZoneType.TRUE_FALSE_BLOCK:
+            return (1, str(getattr(zone, "id", "") or ""))
+        if zone_type == ZoneType.NUMERIC_BLOCK:
+            return (2, str(getattr(zone, "id", "") or ""))
+        if zone_type == ZoneType.STUDENT_ID_BLOCK:
+            return (3, str(getattr(zone, "id", "") or ""))
+        if zone_type == ZoneType.EXAM_CODE_BLOCK:
+            return (4, str(getattr(zone, "id", "") or ""))
+        return (5, str(getattr(zone, "id", "") or ""))
+
     def recognize_sheet(self, image: str | Path | np.ndarray, template: Template, context: RecognitionContext | None = None) -> OMRResult:
         started = time.perf_counter()
         image_path = str(image) if isinstance(image, (str, Path)) else "<in-memory>"
@@ -144,7 +159,7 @@ class OMRProcessor:
             if debug_overlay is not None:
                 self._draw_alignment_debug(debug_overlay, template)
 
-            for zone in template.zones:
+            for zone in sorted(template.zones, key=self._zone_recognition_priority):
                 if self._time_budget_exceeded():
                     result.issues.append(OMRIssue("TIMEOUT", "Recognition time budget exceeded; skipped remaining zones"))
                     break

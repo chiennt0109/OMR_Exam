@@ -2804,6 +2804,10 @@ class MainWindow(QMainWindow):
         batch_form = QFormLayout(batch_group)
         self.batch_subject_combo = QComboBox()
         self.batch_subject_combo.currentIndexChanged.connect(self._on_batch_subject_changed)
+        self.batch_file_scope_combo = QComboBox()
+        self.batch_file_scope_combo.addItem("Nhận dạng file mới", "new_only")
+        self.batch_file_scope_combo.addItem("Nhận dạng toàn bộ", "all")
+        self.batch_file_scope_combo.currentIndexChanged.connect(lambda _=0: self._update_batch_scan_scope_summary())
         self.batch_recognition_mode_combo = QComboBox()
         self.batch_recognition_mode_combo.addItem("Tự động (khuyến nghị)", "auto")
         self.batch_recognition_mode_combo.addItem("Mẫu cũ / Anchor chuẩn", "legacy")
@@ -2814,6 +2818,7 @@ class MainWindow(QMainWindow):
         self.batch_answer_codes_value = QLineEdit("-"); self.batch_answer_codes_value.setReadOnly(True)
         self.batch_student_id_value = QLineEdit("-"); self.batch_student_id_value.setReadOnly(True)
         self.batch_scan_folder_value = QLineEdit("-"); self.batch_scan_folder_value.setReadOnly(True)
+        self.batch_scan_state_value = QLineEdit("-"); self.batch_scan_state_value.setReadOnly(True)
         style = self.style()
         self.btn_batch_recognize = QPushButton("Nhận dạng")
         self.btn_batch_recognize.setIcon(style.standardIcon(QStyle.SP_MediaPlay))
@@ -2835,11 +2840,13 @@ class MainWindow(QMainWindow):
         action_row.addStretch()
 
         batch_form.addRow("Môn", self.batch_subject_combo)
+        batch_form.addRow("Phạm vi", self.batch_file_scope_combo)
         batch_form.addRow("Cơ chế nhận dạng", self.batch_recognition_mode_combo)
         batch_form.addRow("Mẫu giấy dùng", self.batch_template_value)
         batch_form.addRow("Mã đề", self.batch_answer_codes_value)
         batch_form.addRow("Vùng STUDENT ID", self.batch_student_id_value)
         batch_form.addRow("Thư mục quét", self.batch_scan_folder_value)
+        batch_form.addRow("Trạng thái file", self.batch_scan_state_value)
         batch_form.addRow("", action_row)
 
         self.filter_column = QComboBox()
@@ -10472,6 +10479,47 @@ class MainWindow(QMainWindow):
             return self._session_path_from_id(self.batch_editor_return_session_id)
         return None
 
+    def _recognized_image_paths_for_subject(self, subject_key: str) -> set[str]:
+        key = str(subject_key or "").strip()
+        rows = list(self.scan_results_by_subject.get(key) or [])
+        if not rows and key:
+            rows = list(self._refresh_scan_results_from_db(key) or [])
+        return {
+            str(getattr(item, "image_path", "") or "").strip()
+            for item in rows
+            if str(getattr(item, "image_path", "") or "").strip()
+        }
+
+    def _configured_scan_file_paths(self, cfg: dict | None) -> list[str]:
+        if not cfg:
+            return []
+        scan_folder = str(cfg.get("scan_folder", "") or ((self.session.config or {}).get("scan_root", "") if self.session else "") or "").strip()
+        if not scan_folder or scan_folder == "-":
+            return []
+        scan_dir = Path(scan_folder)
+        if not scan_dir.exists() or not scan_dir.is_dir():
+            return []
+        scan_mode = str(cfg.get("scan_mode", "") or (self.session.config or {}).get("scan_mode", "") if self.session else "")
+        image_exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
+        if "thư mục con" in scan_mode.lower() or "sub" in scan_mode.lower():
+            return [str(p) for p in sorted(scan_dir.rglob("*")) if p.is_file() and p.suffix.lower() in image_exts]
+        return [str(p) for p in sorted(scan_dir.iterdir()) if p.is_file() and p.suffix.lower() in image_exts]
+
+    def _update_batch_scan_scope_summary(self) -> None:
+        if not hasattr(self, "batch_scan_state_value"):
+            return
+        cfg = self._selected_batch_subject_config()
+        if cfg:
+            cfg = self._merge_saved_batch_snapshot(cfg)
+        all_paths = self._configured_scan_file_paths(cfg)
+        subject_key = self._subject_key_from_cfg(cfg) if cfg else ""
+        recognized = self._recognized_image_paths_for_subject(subject_key)
+        recognized_count = sum(1 for path in all_paths if path in recognized)
+        pending_count = max(0, len(all_paths) - recognized_count)
+        mode = str(self.batch_file_scope_combo.currentData() or "new_only") if hasattr(self, "batch_file_scope_combo") else "new_only"
+        mode_label = "File mới" if mode == "new_only" else "Toàn bộ"
+        self.batch_scan_state_value.setText(f"{mode_label} | Đã nhận diện: {recognized_count} | Chưa nhận diện: {pending_count}")
+
     def _merge_saved_batch_snapshot(self, cfg: dict) -> dict:
         merged = dict(cfg)
         if merged.get("batch_saved_rows") or merged.get("batch_saved_preview"):
@@ -10574,6 +10622,7 @@ class MainWindow(QMainWindow):
             self.batch_answer_codes_value.setText("-")
             self.batch_student_id_value.setText("-")
             self.batch_scan_folder_value.setText("-")
+            self.batch_scan_state_value.setText("-")
             return
 
         template_path = self._normalize_template_path(str(cfg.get("template_path", "") or "")) or self._normalize_template_path(str(self.session.template_path if self.session else "")) or "-"
@@ -10595,6 +10644,7 @@ class MainWindow(QMainWindow):
         self.batch_student_id_value.setText(has_sid)
         if tpl_for_view:
             self._apply_template_recognition_settings(tpl_for_view)
+        self._update_batch_scan_scope_summary()
 
         subject_key = self._subject_key_from_cfg(cfg)
         self.scan_results = self._refresh_scan_results_from_db(subject_key)
@@ -10788,6 +10838,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "batch_recognition_mode_combo"):
             mode = str(self.batch_recognition_mode_combo.currentData() or "auto")
             setattr(self.omr_processor, "alignment_profile", mode)
+        file_scope_mode = str(self.batch_file_scope_combo.currentData() or "new_only") if hasattr(self, "batch_file_scope_combo") else "new_only"
 
         # Resolve template, scan folder and answer keys from selected subject config in session.
         subject_template_path = ""
@@ -10861,6 +10912,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Batch Scan", f"Không thể tải mẫu giấy\n{exc}")
             return
+        self.template.metadata["recognition_timeout_sec"] = 1.0
 
         scan_folder = str(scan_folder or "").strip()
         if not scan_folder:
@@ -10871,16 +10923,27 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Batch Scan", f"Không tìm thấy thư mục quét\n{scan_folder}")
             return
 
-        scan_mode = str((subject_cfg or {}).get("scan_mode", "") or (self.session.config or {}).get("scan_mode", "") if self.session else "")
-        image_exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
-        if "thư mục con" in scan_mode.lower() or "sub" in scan_mode.lower():
-            file_paths = [str(p) for p in sorted(scan_dir.rglob("*")) if p.is_file() and p.suffix.lower() in image_exts]
-        else:
-            file_paths = [str(p) for p in sorted(scan_dir.iterdir()) if p.is_file() and p.suffix.lower() in image_exts]
+        file_paths = self._configured_scan_file_paths(subject_cfg or {})
 
         if not file_paths:
             QMessageBox.warning(self, "Batch Scan", "Không tìm thấy ảnh bài thi trong thư mục quét.")
             return
+
+        subject_key_for_results = self._subject_key_from_cfg(subject_cfg) if subject_cfg else self._resolve_preferred_scoring_subject()
+        existing_results = list(self.scan_results_by_subject.get(subject_key_for_results) or self._refresh_scan_results_from_db(subject_key_for_results) or [])
+        recognized_paths = {
+            str(getattr(item, "image_path", "") or "").strip()
+            for item in existing_results
+            if str(getattr(item, "image_path", "") or "").strip()
+        }
+        if file_scope_mode == "new_only":
+            file_paths = [path for path in file_paths if str(path).strip() not in recognized_paths]
+            if not file_paths:
+                self.scan_results = list(existing_results)
+                self._populate_scan_grid_from_results(self.scan_results)
+                self._update_batch_scan_scope_summary()
+                QMessageBox.information(self, "Batch Scan", "Không còn file mới cần nhận dạng trong phạm vi đã cấu hình.")
+                return
 
         self.scan_list.setRowCount(0)
         self.error_list.clear()
@@ -10906,10 +10969,16 @@ class MainWindow(QMainWindow):
             self.progress.setValue(current)
             QApplication.processEvents()
 
-        subject_key_for_results = self._subject_key_from_cfg(subject_cfg) if subject_cfg else self._resolve_preferred_scoring_subject()
-        self.database.delete_scan_results_for_subject(subject_key_for_results)
-        self.scan_results = []
+        if file_scope_mode == "all":
+            self.database.delete_scan_results_for_subject(subject_key_for_results)
+            self.scan_results = []
+        else:
+            self.scan_results = list(existing_results)
         duplicate_ids: dict[str, int] = {}
+        for existing in self.scan_results:
+            sid_existing = (existing.student_id or "").strip()
+            if not self._student_id_has_recognition_error(sid_existing):
+                duplicate_ids[sid_existing] = duplicate_ids.get(sid_existing, 0) + 1
 
         for idx, image_path in enumerate(file_paths):
             on_progress(idx + 1, len(file_paths), image_path)
@@ -10955,6 +11024,7 @@ class MainWindow(QMainWindow):
         self._populate_scan_grid_from_results(self.scan_results, forced_status_by_image)
         self._rebuild_error_list()
         self.btn_save_batch_subject.setEnabled(False)
+        self._update_batch_scan_scope_summary()
         self._apply_scan_filter()
 
     @staticmethod

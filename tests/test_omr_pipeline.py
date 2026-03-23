@@ -22,6 +22,17 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(self.processor.classify_bubble(0.1), "empty")
         self.assertEqual(self.processor.classify_bubble(0.3), "uncertain")
 
+    def test_zone_recognition_priority_reads_answer_blocks_before_ids(self):
+        mcq = Zone(id="mcq", name="mcq", zone_type=ZoneType.MCQ_BLOCK, x=0, y=0, width=1, height=1, grid=None)
+        tf = Zone(id="tf", name="tf", zone_type=ZoneType.TRUE_FALSE_BLOCK, x=0, y=0, width=1, height=1, grid=None)
+        num = Zone(id="num", name="num", zone_type=ZoneType.NUMERIC_BLOCK, x=0, y=0, width=1, height=1, grid=None)
+        sid = Zone(id="sid", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0, y=0, width=1, height=1, grid=None)
+        exam = Zone(id="exam", name="exam", zone_type=ZoneType.EXAM_CODE_BLOCK, x=0, y=0, width=1, height=1, grid=None)
+
+        ordered = sorted([exam, sid, num, tf, mcq], key=self.processor._zone_recognition_priority)
+
+        self.assertEqual([z.id for z in ordered], ["mcq", "tf", "num", "sid", "exam"])
+
     def test_detect_anchors_square_markers(self):
         img = np.zeros((400, 300), dtype=np.uint8)
         cv2.rectangle(img, (20, 20), (45, 45), 255, -1)
