@@ -88,6 +88,18 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('self._sync_current_batch_subject_snapshot(persist_to_db=True)', source)
         self.assertIn('current_subject, current_results = self._sync_current_batch_subject_snapshot(persist_to_db=True)', source)
 
+    def test_batch_scan_db_refresh_migrates_config_cache_once_and_reloads_from_db(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('cached_results = self._cached_subject_scans_from_config(subject)', source)
+        self.assertIn('self.database.replace_scan_results_for_subject(subject, [self._serialize_omr_result(x) for x in cached_results])', source)
+        self.assertIn('rows = self.database.fetch_scan_results_for_subject(subject)', source)
+
+    def test_batch_scan_grid_uses_db_refresh_as_single_shared_source(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('existing_results = list(self._refresh_scan_results_from_db(subject_key_for_results) or [])', source)
+        self.assertIn('self.scan_results = self._refresh_scan_results_from_db(subject_key)', source)
+        self.assertIn('Đã nạp kết quả Batch Scan từ nguồn dữ liệu chuẩn trong cơ sở dữ liệu cho môn này', source)
+
 
 if __name__ == '__main__':
     unittest.main()

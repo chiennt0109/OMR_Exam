@@ -2127,6 +2127,39 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertLess(float(np.mean(distances)), 12.0)
         self.assertIn("affine_refine", self.processor._last_alignment_debug)
 
+    def test_correct_perspective_auto_mode_chooses_best_alignment_candidate(self):
+        template = Template(
+            name="sheet_auto_best",
+            image_path="",
+            width=400,
+            height=600,
+            anchors=[AnchorPoint(0.08, 0.08), AnchorPoint(0.92, 0.08), AnchorPoint(0.92, 0.92), AnchorPoint(0.08, 0.92)],
+            zones=[],
+        )
+        image = np.zeros((600, 400, 3), dtype=np.uint8)
+        binary = np.zeros((600, 400), dtype=np.uint8)
+        result_stub = type("R", (), {"issues": []})()
+        legacy_img = np.full_like(image, 11)
+        border_img = np.full_like(image, 22)
+        hybrid_img = np.full_like(image, 33)
+        legacy_bin = np.full((600, 400), 11, dtype=np.uint8)
+        border_bin = np.full((600, 400), 22, dtype=np.uint8)
+        hybrid_bin = np.full((600, 400), 33, dtype=np.uint8)
+
+        attempts = {
+            "border": (border_img, border_bin),
+            "hybrid": (hybrid_img, hybrid_bin),
+            "legacy": (legacy_img, legacy_bin),
+        }
+        scores = {11: 90.0, 22: 150.0, 33: 120.0}
+        with patch.object(self.processor, "_template_has_one_side_anchor_ruler", return_value=False),             patch.object(self.processor, "_template_has_border_anchors", return_value=True),             patch.object(self.processor, "_try_anchor_alignment", side_effect=lambda _img, _bin, _tpl, candidate: attempts.get(candidate)),             patch.object(self.processor, "_refine_alignment_with_template_anchors", side_effect=lambda img, bin_img, _tpl: (img, bin_img)),             patch.object(self.processor, "_auto_orient", side_effect=lambda img, bin_img, _tpl: (img, bin_img)),             patch.object(self.processor, "_refine_corner_translation", side_effect=lambda img, bin_img, _tpl: (img, bin_img)),             patch.object(self.processor, "_refine_alignment_with_affine_anchors", side_effect=lambda img, bin_img, _tpl: (img, bin_img)),             patch.object(self.processor, "_orientation_score", side_effect=lambda bin_img, _tpl: scores[int(bin_img[0, 0])]):
+            aligned, aligned_binary = self.processor.correct_perspective(image, binary, template, result_stub)
+
+        self.assertEqual(int(aligned[0, 0, 0]), 22)
+        self.assertEqual(int(aligned_binary[0, 0]), 22)
+        self.assertEqual(self.processor._last_alignment_debug["alignment_mode"], "border")
+        self.assertEqual(self.processor._last_alignment_debug["alignment_score"], 150.0)
+
     def test_correct_perspective_fallback_path_does_not_use_uninitialized_alignment(self):
         template = Template(name="sheet", image_path="", width=400, height=600, anchors=[], zones=[])
         image = np.zeros((600, 400, 3), dtype=np.uint8)

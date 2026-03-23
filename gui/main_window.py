@@ -3213,15 +3213,24 @@ class MainWindow(QMainWindow):
         return out
 
     def _refresh_scan_results_from_db(self, subject_key: str) -> list[OMRResult]:
-        rows = self.database.fetch_scan_results_for_subject(subject_key)
+        subject = str(subject_key or "").strip()
+        if not subject:
+            return []
+        rows = self.database.fetch_scan_results_for_subject(subject)
+        if not rows:
+            cached_results = self._cached_subject_scans_from_config(subject)
+            if cached_results:
+                for result in cached_results:
+                    result.answer_string = self._build_answer_string_for_result(result, subject)
+                self.database.replace_scan_results_for_subject(subject, [self._serialize_omr_result(x) for x in cached_results])
+                rows = self.database.fetch_scan_results_for_subject(subject)
         refreshed: list[OMRResult] = []
         for item in rows:
             try:
                 refreshed.append(self._deserialize_omr_result(item))
             except Exception:
                 continue
-        if refreshed:
-            self.scan_results_by_subject[subject_key] = list(refreshed)
+        self.scan_results_by_subject[subject] = list(refreshed)
         return refreshed
 
     def _refresh_dashboard_summary_from_db(self, subject_key: str) -> None:
@@ -10758,7 +10767,7 @@ class MainWindow(QMainWindow):
         self.scan_results = self._refresh_scan_results_from_db(subject_key)
         if self.scan_results:
             self._populate_scan_grid_from_results(self.scan_results)
-            self.scan_image_preview.setText("Đã nạp kết quả Batch Scan từ cơ sở dữ liệu cho môn này")
+            self.scan_image_preview.setText("Đã nạp kết quả Batch Scan từ nguồn dữ liệu chuẩn trong cơ sở dữ liệu cho môn này")
         elif bool(cfg.get("batch_saved")):
             self.scan_image_preview.setText(
                 f"Môn này đã lưu Batch ({cfg.get('batch_saved_at', '-')}) - Số bài: {cfg.get('batch_result_count', '-')}."
@@ -11038,7 +11047,7 @@ class MainWindow(QMainWindow):
             return
 
         subject_key_for_results = self._subject_key_from_cfg(subject_cfg) if subject_cfg else self._resolve_preferred_scoring_subject()
-        existing_results = list(self.scan_results_by_subject.get(subject_key_for_results) or self._refresh_scan_results_from_db(subject_key_for_results) or [])
+        existing_results = list(self._refresh_scan_results_from_db(subject_key_for_results) or [])
         recognized_paths = {
             str(getattr(item, "image_path", "") or "").strip()
             for item in existing_results

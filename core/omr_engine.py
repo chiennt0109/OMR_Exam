@@ -590,6 +590,7 @@ class OMRProcessor:
 
         base_image = aligned if aligned is not None else image
         base_binary = aligned_binary if aligned_binary is not None else binary
+        best_attempt: tuple[float, str, np.ndarray, np.ndarray] | None = None
 
         for candidate in candidates:
             if self._time_budget_exceeded():
@@ -597,22 +598,24 @@ class OMRProcessor:
             if candidate == "one_side":
                 coarse_img, coarse_bin = self._fallback_align_page_contour(image, template, conservative=True)
                 refined_img, refined_bin = self._refine_alignment_with_one_side_anchors(coarse_img, coarse_bin, template)
-                oriented_img, oriented_bin = self._auto_orient(refined_img, refined_bin, template)
-                shifted_img, shifted_bin = self._refine_corner_translation(oriented_img, oriented_bin, template)
-                affine_img, affine_bin = self._refine_alignment_with_affine_anchors(shifted_img, shifted_bin, template)
-                self._last_alignment_debug["alignment_mode"] = "one_side"
-                return affine_img, affine_bin
-
-            attempt = self._try_anchor_alignment(base_image, base_binary, template, candidate)
-            if attempt is None:
-                continue
-            coarse_img, coarse_bin = attempt
-            refined_img, refined_bin = (coarse_img, coarse_bin) if candidate == "legacy" else self._refine_alignment_with_template_anchors(coarse_img, coarse_bin, template)
+            else:
+                attempt = self._try_anchor_alignment(base_image, base_binary, template, candidate)
+                if attempt is None:
+                    continue
+                coarse_img, coarse_bin = attempt
+                refined_img, refined_bin = (coarse_img, coarse_bin) if candidate == "legacy" else self._refine_alignment_with_template_anchors(coarse_img, coarse_bin, template)
             oriented_img, oriented_bin = self._auto_orient(refined_img, refined_bin, template)
             shifted_img, shifted_bin = self._refine_corner_translation(oriented_img, oriented_bin, template)
             affine_img, affine_bin = self._refine_alignment_with_affine_anchors(shifted_img, shifted_bin, template)
+            candidate_score = self._orientation_score(affine_bin, template)
+            if best_attempt is None or candidate_score > best_attempt[0]:
+                best_attempt = (candidate_score, candidate, affine_img, affine_bin)
+
+        if best_attempt is not None:
+            score, candidate, best_img, best_bin = best_attempt
             self._last_alignment_debug["alignment_mode"] = candidate
-            return affine_img, affine_bin
+            self._last_alignment_debug["alignment_score"] = float(score)
+            return best_img, best_bin
 
         result.issues.append(OMRIssue("MISSING_ANCHORS", "Anchor detection failed; using page contour fallback"))
         aligned, aligned_binary = self._fallback_align_page_contour(image, template)
@@ -621,6 +624,7 @@ class OMRProcessor:
         shifted_img, shifted_bin = self._refine_corner_translation(oriented_img, oriented_bin, template)
         affine_img, affine_bin = self._refine_alignment_with_affine_anchors(shifted_img, shifted_bin, template)
         self._last_alignment_debug.setdefault("alignment_mode", "page_contour")
+        self._last_alignment_debug["alignment_score"] = float(self._orientation_score(affine_bin, template))
         return affine_img, affine_bin
 
     def _auto_orient(self, aligned: np.ndarray, aligned_binary: np.ndarray, template: Template) -> tuple[np.ndarray, np.ndarray]:
