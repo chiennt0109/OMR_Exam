@@ -292,6 +292,10 @@ class OMRProcessor:
         min_area = max(50, int((h * w) * 0.00003))
         border_margin = max(24.0, min(w, h) * 0.18)
         anchors: list[tuple[float, float, float]] = []
+        max_keep = max(4, int(max_points or 40))
+        max_candidates = max(200, max_keep * (18 if use_border_padding else 12))
+        if len(contours) > max_candidates:
+            contours = sorted(contours, key=cv2.contourArea, reverse=True)[:max_candidates]
 
         for cnt in contours:
             area = cv2.contourArea(cnt)
@@ -336,7 +340,6 @@ class OMRProcessor:
             anchors.append((cx, cy, score))
 
         anchors.sort(key=lambda p: p[2], reverse=True)
-        max_keep = max(4, int(max_points or 40))
         if use_border_padding:
             max_keep = min(max_keep, 24)
         return [(x, y) for x, y, _ in anchors[:max_keep]]

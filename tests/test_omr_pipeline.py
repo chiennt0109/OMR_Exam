@@ -42,6 +42,30 @@ class OMRPipelineTests(unittest.TestCase):
         anchors = self.processor.detect_anchors(img, use_border_padding=True, relaxed_polygon=True, max_points=40)
         self.assertLessEqual(len(anchors), 8)
 
+    def test_detect_anchors_caps_candidate_contours_on_noisy_images(self):
+        binary = np.zeros((120, 120), dtype=np.uint8)
+        contours = [
+            np.array([[[idx, 0]], [[idx, 1]], [[idx + 1, 1]], [[idx + 1, 0]]], dtype=np.int32)
+            for idx in range(1000)
+        ]
+        approx_calls = {"count": 0}
+
+        def _approx(cnt, epsilon, closed):
+            approx_calls["count"] += 1
+            return np.array([[[0, 0]], [[10, 0]], [[10, 10]], [[0, 10]]], dtype=np.int32)
+
+        with patch.object(cv2, "findContours", return_value=(contours, None)), \
+            patch.object(cv2, "contourArea", return_value=120.0), \
+            patch.object(cv2, "arcLength", return_value=44.0), \
+            patch.object(cv2, "approxPolyDP", side_effect=_approx), \
+            patch.object(cv2, "boundingRect", return_value=(0, 0, 10, 10)), \
+            patch.object(cv2, "countNonZero", return_value=90), \
+            patch.object(cv2, "moments", return_value={"m00": 1.0, "m10": 8.0, "m01": 8.0}):
+            anchors = self.processor.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True, max_points=10)
+
+        self.assertLessEqual(approx_calls["count"], 200)
+        self.assertEqual(len(anchors), 10)
+
     def test_student_id_zone_keeps_expected_centers(self):
         template = Template(
             name="sid",
