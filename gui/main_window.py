@@ -9968,52 +9968,55 @@ class MainWindow(QMainWindow):
                 widget.deleteLater()
         expected = self._expected_questions_by_section(result)
 
-        mcq_box = QGroupBox("MCQ")
-        mcq_layout = QVBoxLayout(mcq_box)
-        for q_no in expected.get("MCQ", []):
-            row = QHBoxLayout()
-            row.addWidget(QLabel(f"Câu {q_no}"))
-            group = QButtonGroup(mcq_box)
-            current_value = str((result.mcq_answers or {}).get(q_no, "") or "")[:1]
-            for choice in ["A", "B", "C", "D", "E"]:
-                radio = QRadioButton(choice)
-                if current_value == choice:
-                    radio.setChecked(True)
-                radio.toggled.connect(lambda checked, q=q_no, v=choice: checked and self._handle_mcq_visual_change(q, v))
-                group.addButton(radio)
-                row.addWidget(radio)
-            clear_btn = QPushButton("Clear")
-            clear_btn.clicked.connect(lambda _=False, q=q_no: self._handle_mcq_visual_change(q, ""))
-            row.addWidget(clear_btn)
-            row.addStretch()
-            mcq_layout.addLayout(row)
-        self.answer_editor_layout.addWidget(mcq_box)
+        if expected.get("MCQ", []):
+            mcq_box = QGroupBox("MCQ")
+            mcq_layout = QVBoxLayout(mcq_box)
+            for q_no in expected.get("MCQ", []):
+                row = QHBoxLayout()
+                row.addWidget(QLabel(f"Câu {q_no}"))
+                group = QButtonGroup(mcq_box)
+                current_value = str((result.mcq_answers or {}).get(q_no, "") or "")[:1]
+                for choice in ["A", "B", "C", "D", "E"]:
+                    radio = QRadioButton(choice)
+                    if current_value == choice:
+                        radio.setChecked(True)
+                    radio.toggled.connect(lambda checked, q=q_no, v=choice: checked and self._handle_mcq_visual_change(q, v))
+                    group.addButton(radio)
+                    row.addWidget(radio)
+                clear_btn = QPushButton("Clear")
+                clear_btn.clicked.connect(lambda _=False, q=q_no: self._handle_mcq_visual_change(q, ""))
+                row.addWidget(clear_btn)
+                row.addStretch()
+                mcq_layout.addLayout(row)
+            self.answer_editor_layout.addWidget(mcq_box)
 
-        tf_box = QGroupBox("True/False")
-        tf_layout = QVBoxLayout(tf_box)
-        for q_no in expected.get("TF", []):
-            row = QHBoxLayout()
-            row.addWidget(QLabel(f"Câu {q_no}"))
-            flags = (result.true_false_answers or {}).get(q_no, {}) or {}
-            for key in ["a", "b", "c", "d"]:
-                cb = QCheckBox(key.upper())
-                cb.setChecked(bool(flags.get(key)))
-                cb.toggled.connect(lambda checked, q=q_no, k=key: self._handle_tf_visual_change(q, k, checked))
-                row.addWidget(cb)
-            row.addStretch()
-            tf_layout.addLayout(row)
-        self.answer_editor_layout.addWidget(tf_box)
+        if expected.get("TF", []):
+            tf_box = QGroupBox("True/False")
+            tf_layout = QVBoxLayout(tf_box)
+            for q_no in expected.get("TF", []):
+                row = QHBoxLayout()
+                row.addWidget(QLabel(f"Câu {q_no}"))
+                flags = (result.true_false_answers or {}).get(q_no, {}) or {}
+                for key in ["a", "b", "c", "d"]:
+                    cb = QCheckBox(key.upper())
+                    cb.setChecked(bool(flags.get(key)))
+                    cb.toggled.connect(lambda checked, q=q_no, k=key: self._handle_tf_visual_change(q, k, checked))
+                    row.addWidget(cb)
+                row.addStretch()
+                tf_layout.addLayout(row)
+            self.answer_editor_layout.addWidget(tf_box)
 
-        num_box = QGroupBox("Numeric")
-        num_layout = QVBoxLayout(num_box)
-        for q_no in expected.get("NUMERIC", []):
-            row = QHBoxLayout()
-            row.addWidget(QLabel(f"Câu {q_no}"))
-            edit = QLineEdit(str((result.numeric_answers or {}).get(q_no, "") or ""))
-            edit.editingFinished.connect(lambda q=q_no, w=edit: self._handle_numeric_visual_change(q, w.text()))
-            row.addWidget(edit)
-            num_layout.addLayout(row)
-        self.answer_editor_layout.addWidget(num_box)
+        if expected.get("NUMERIC", []):
+            num_box = QGroupBox("Numeric")
+            num_layout = QVBoxLayout(num_box)
+            for q_no in expected.get("NUMERIC", []):
+                row = QHBoxLayout()
+                row.addWidget(QLabel(f"Câu {q_no}"))
+                edit = QLineEdit(str((result.numeric_answers or {}).get(q_no, "") or ""))
+                edit.editingFinished.connect(lambda q=q_no, w=edit: self._handle_numeric_visual_change(q, w.text()))
+                row.addWidget(edit)
+                num_layout.addLayout(row)
+            self.answer_editor_layout.addWidget(num_box)
         self.answer_editor_layout.addStretch()
 
     def _ensure_correction_state(self) -> None:
@@ -14103,8 +14106,8 @@ class MainWindow(QMainWindow):
 
         dlg = QDialog(self)
         dlg.setWindowTitle(f"Sửa bài thi: {Path(self.scan_results[dialog_state['index']].image_path).name}")
-        dlg.setWindowState(Qt.WindowMaximized)
-        QTimer.singleShot(0, dlg.showMaximized)
+        dlg.setWindowState(Qt.WindowFullScreen)
+        QTimer.singleShot(0, dlg.showFullScreen)
         lay = QHBoxLayout(dlg)
         splitter = QSplitter(Qt.Horizontal)
         left = QWidget()
@@ -14138,28 +14141,34 @@ class MainWindow(QMainWindow):
         left_lay.addLayout(form)
         left_lay.addWidget(mcq_label)
         left_lay.addWidget(mcq_host)
-        row_mcq = QHBoxLayout()
+        mcq_hint_row = QWidget()
+        row_mcq = QHBoxLayout(mcq_hint_row)
+        row_mcq.setContentsMargins(0, 0, 0, 0)
         row_mcq.addWidget(mcq_hint)
         row_mcq.addStretch()
-        left_lay.addLayout(row_mcq)
+        left_lay.addWidget(mcq_hint_row)
         left_lay.addWidget(tf_label)
         left_lay.addWidget(tf_host)
-        tf_actions = QHBoxLayout()
+        tf_actions_row = QWidget()
+        tf_actions = QHBoxLayout(tf_actions_row)
+        tf_actions.setContentsMargins(0, 0, 0, 0)
         btn_add_tf = QPushButton("Thêm dòng TF")
         btn_del_tf = QPushButton("Xoá dòng chọn")
         tf_actions.addWidget(btn_add_tf)
         tf_actions.addWidget(btn_del_tf)
         tf_actions.addStretch()
-        left_lay.addLayout(tf_actions)
+        left_lay.addWidget(tf_actions_row)
         left_lay.addWidget(numeric_label)
         left_lay.addWidget(numeric_host)
-        num_actions = QHBoxLayout()
+        num_actions_row = QWidget()
+        num_actions = QHBoxLayout(num_actions_row)
+        num_actions.setContentsMargins(0, 0, 0, 0)
         btn_add_num = QPushButton("Thêm dòng Numeric")
         btn_del_num = QPushButton("Xoá dòng chọn")
         num_actions.addWidget(btn_add_num)
         num_actions.addWidget(btn_del_num)
         num_actions.addStretch()
-        left_lay.addLayout(num_actions)
+        left_lay.addWidget(num_actions_row)
 
         button_row = QHBoxLayout()
         btn_prev = QPushButton("← Bài trước")
@@ -14213,6 +14222,7 @@ class MainWindow(QMainWindow):
         editor_refs: dict[str, object] = {"mcq_edits": {}, "table_tf": None, "table_num": None}
         preview_state: dict[str, object] = {"pix": QPixmap(), "image_name": "-", "zoom": default_zoom_factor}
         loaded_snapshots: dict[int, dict[str, object]] = {}
+        dialog_saved_rows: set[int] = set()
 
         def _question_numbers(values) -> list[int]:
             out = {int(q) for q in (values or {}).keys() if str(q).strip().lstrip('-').isdigit()}
@@ -14539,6 +14549,18 @@ class MainWindow(QMainWindow):
             editor_refs["mcq_edits"] = mcq_edits
             editor_refs["table_tf"] = table_tf
             editor_refs["table_num"] = table_num
+            has_mcq = bool(expected.get("MCQ", []))
+            has_tf = bool(expected.get("TF", []))
+            has_numeric = bool(expected.get("NUMERIC", []))
+            mcq_label.setVisible(has_mcq)
+            mcq_host.setVisible(has_mcq)
+            mcq_hint_row.setVisible(has_mcq)
+            tf_label.setVisible(has_tf)
+            tf_host.setVisible(has_tf)
+            tf_actions_row.setVisible(has_tf)
+            numeric_label.setVisible(has_numeric)
+            numeric_host.setVisible(has_numeric)
+            num_actions_row.setVisible(has_numeric)
 
         def _apply_changes(save_feedback: bool = False) -> bool:
             result = _current_result()
@@ -14587,11 +14609,8 @@ class MainWindow(QMainWindow):
             self._update_scan_row_from_result(idx_local, result)
             self._record_adjustment(idx_local, changes, "dialog_edit")
             self._persist_single_scan_result_to_db(result, note="dialog_edit")
-            self._refresh_all_statuses()
-            self.scan_list.setCurrentCell(idx_local, 0)
-            self._update_scan_preview(idx_local)
-            self._sync_correction_detail_panel(result, rebuild_editor=False)
-            self.btn_save_batch_subject.setEnabled(True)
+            dialog_saved_rows.add(idx_local)
+            self.btn_save_batch_subject.setEnabled(False)
             invalidated = self._invalidate_scoring_for_student_ids([old_sid_for_score, str(result.student_id or "").strip()], reason="dialog_edit")
             loaded_snapshots[idx_local] = _snapshot_from_result(result)
             if save_feedback:
@@ -14683,6 +14702,20 @@ class MainWindow(QMainWindow):
                     return
                 if choice == QMessageBox.Save and not _apply_changes(save_feedback=False):
                     return
+            if dialog_saved_rows:
+                for saved_idx in sorted(dialog_saved_rows):
+                    if 0 <= saved_idx < len(self.scan_results):
+                        saved_result = self.scan_results[saved_idx]
+                        self._refresh_student_profile_for_result(saved_result, saved_idx)
+                        scoped_saved = self._scoped_result_copy(saved_result)
+                        self.scan_blank_summary[saved_idx] = self._compute_blank_questions(scoped_saved)
+                        self._update_scan_row_from_result(saved_idx, saved_result)
+                self._refresh_all_statuses()
+                current_idx = dialog_state["index"]
+                if 0 <= current_idx < len(self.scan_results):
+                    self.scan_list.setCurrentCell(current_idx, 0)
+                    self._update_scan_preview(current_idx)
+                    self._sync_correction_detail_panel(self.scan_results[current_idx], rebuild_editor=False)
             dlg.accept()
 
         inp_code.currentIndexChanged.connect(lambda _=0: _rebuild_for_exam_code_change())
