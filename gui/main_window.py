@@ -673,6 +673,7 @@ class SubjectConfigDialog(QDialog):
             "score_mode": self.score_mode.currentText(),
             "section_scores": section_scores,
             "question_scores": question_scores,
+            "question_counts": self._question_counts(),
             "total_exam_points": self._to_float(self.total_score.text()),
             "paper_part_count": int(self.paper_part_label.text() or self.paper_part_count_default),
         }
@@ -3373,6 +3374,7 @@ class MainWindow(QMainWindow):
     def _handle_scoring_subject_changed(self, _index: int) -> None:
         subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
         if subject_key:
+            self._apply_subject_section_visibility(subject_key)
             self._refresh_dashboard_summary_from_db(subject_key)
 
     def _run_scoring_from_panel(self) -> None:
@@ -10515,6 +10517,42 @@ class MainWindow(QMainWindow):
         cfg = self.batch_subject_combo.itemData(idx)
         return cfg if isinstance(cfg, dict) else None
 
+    def _subject_section_question_counts(self, subject_key: str = "") -> dict[str, int]:
+        counts = {"MCQ": 0, "TF": 0, "NUMERIC": 0}
+        cfg = self._subject_config_by_subject_key(subject_key) if subject_key else (self._selected_batch_subject_config() or self._resolve_subject_config_for_batch())
+        if not cfg:
+            return counts
+        raw_counts = cfg.get("question_counts", {}) if isinstance(cfg.get("question_counts", {}), dict) else {}
+        for sec in counts:
+            try:
+                counts[sec] = max(0, int(raw_counts.get(sec, 0) or 0))
+            except Exception:
+                counts[sec] = 0
+        if any(counts.values()):
+            return counts
+        template_path = self._normalize_template_path(str(cfg.get("template_path", "") or ""))
+        if template_path:
+            try:
+                return SubjectConfigDialog._template_question_counts(template_path)
+            except Exception:
+                return counts
+        return counts
+
+    def _apply_subject_section_visibility(self, subject_key: str = "") -> None:
+        if not hasattr(self, "score_preview_table"):
+            return
+        counts = self._subject_section_question_counts(subject_key)
+        visibility = {
+            4: counts.get("MCQ", 0) > 0,
+            5: counts.get("TF", 0) > 0,
+            6: counts.get("NUMERIC", 0) > 0,
+            13: counts.get("MCQ", 0) > 0,
+            14: counts.get("TF", 0) > 0,
+            15: counts.get("NUMERIC", 0) > 0,
+        }
+        for col, is_visible in visibility.items():
+            self.score_preview_table.setColumnHidden(col, not is_visible)
+
     def _batch_context_session_path(self) -> Path | None:
         if self.current_session_id:
             return self._session_path_from_id(self.current_session_id)
@@ -11189,6 +11227,13 @@ class MainWindow(QMainWindow):
                             expected_by_section[sec] = sorted(template_set)[: max(0, count)]
                     else:
                         expected_by_section[sec] = key_sections[sec]
+        configured_counts = self._subject_section_question_counts(subject_key_name)
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            limit = max(0, int(configured_counts.get(sec, 0) or 0))
+            if limit <= 0:
+                expected_by_section[sec] = []
+            else:
+                expected_by_section[sec] = sorted(expected_by_section.get(sec, []))[:limit]
         return expected_by_section
 
     @staticmethod
@@ -13900,6 +13945,7 @@ class MainWindow(QMainWindow):
         rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
         preview_result = self._scoped_result_copy(result)
         blank_map = self.scan_blank_summary.get(index) or self._compute_blank_questions(preview_result)
+        section_counts = self._subject_section_question_counts(self._current_batch_subject_key())
         rows = [
             ("STUDENT ID", result.student_id or "-"),
             ("Họ tên", str(getattr(result, "full_name", "") or "-")),
@@ -13907,15 +13953,24 @@ class MainWindow(QMainWindow):
             ("Exam code", result.exam_code or "-"),
             ("Xoay tạm", f"{int(self.preview_rotation_by_index.get(index, 0) or 0)%360}°"),
             ("Nhận dạng ngắn", self._compact_value(self._short_recognition_text_for_result(preview_result), 220)),
-            ("MCQ", self._compact_value(self._format_mcq_answers(preview_result.mcq_answers or {}), 220)),
-            ("TF", self._compact_value(self._format_tf_answers(preview_result.true_false_answers or {}), 220)),
-            ("NUM", self._compact_value(self._format_numeric_answers(preview_result.numeric_answers or {}), 220)),
-            ("MCQ không tô", ", ".join(str(x) for x in blank_map.get("MCQ", [])) or "-"),
-            ("TF không tô", ", ".join(str(x) for x in blank_map.get("TF", [])) or "-"),
-            ("NUMERIC không tô", ", ".join(str(x) for x in blank_map.get("NUMERIC", [])) or "-"),
             ("Issues", "; ".join(f"{i.code}:{i.message}" for i in result.issues) or "-"),
             ("Recognition errors", "; ".join(rec_errors) or "-"),
         ]
+        if section_counts.get("MCQ", 0) > 0:
+            rows.extend([
+                ("MCQ", self._compact_value(self._format_mcq_answers(preview_result.mcq_answers or {}), 220)),
+                ("MCQ không tô", ", ".join(str(x) for x in blank_map.get("MCQ", [])) or "-"),
+            ])
+        if section_counts.get("TF", 0) > 0:
+            rows.extend([
+                ("TF", self._compact_value(self._format_tf_answers(preview_result.true_false_answers or {}), 220)),
+                ("TF không tô", ", ".join(str(x) for x in blank_map.get("TF", [])) or "-"),
+            ])
+        if section_counts.get("NUMERIC", 0) > 0:
+            rows.extend([
+                ("NUM", self._compact_value(self._format_numeric_answers(preview_result.numeric_answers or {}), 220)),
+                ("NUMERIC không tô", ", ".join(str(x) for x in blank_map.get("NUMERIC", [])) or "-"),
+            ])
         self.scan_result_preview.setRowCount(0)
         for r, (k, v) in enumerate(rows):
             self.scan_result_preview.insertRow(r)
@@ -14821,6 +14876,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Missing data", "Không tìm thấy đáp án cho môn đã chọn. Vui lòng kiểm tra cấu hình môn.")
             return []
         subject_cfg = self._subject_config_by_subject_key(subject) or {}
+        self._apply_subject_section_visibility(subject)
         mode_text = (mode or "Tính lại toàn bộ").strip()
         prev_subject_scores = self.scoring_results_by_subject.get(subject, {})
         rows = []
