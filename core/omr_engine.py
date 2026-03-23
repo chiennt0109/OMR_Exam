@@ -53,6 +53,7 @@ class RecognitionContext:
     recognized_answers: dict[str, dict] = field(default_factory=dict)
     digit_zone_debug: dict[str, dict[str, object]] = field(default_factory=dict)
     deadline_monotonic: float = 0.0
+    collect_diagnostics: bool = True
 
     def reset(self) -> None:
         self.detected_anchors = []
@@ -163,13 +164,14 @@ class OMRProcessor:
             setattr(result, "aligned_image", aligned)
             setattr(result, "aligned_binary", aligned_binary)
             setattr(result, "alignment_debug", dict(self._last_alignment_debug))
-            context.detected_anchors = self.detect_anchors(aligned_binary, max_points=120)
-            setattr(result, "detected_anchors", context.detected_anchors)
-            context.detected_digit_anchors = self._detect_digit_anchor_ruler(aligned_binary, template)
-            setattr(result, "detected_digit_anchors", context.detected_digit_anchors)
+            if context.collect_diagnostics:
+                context.detected_anchors = self.detect_anchors(aligned_binary, max_points=120)
+                setattr(result, "detected_anchors", context.detected_anchors)
+                context.detected_digit_anchors = self._detect_digit_anchor_ruler(aligned_binary, template)
+                setattr(result, "detected_digit_anchors", context.detected_digit_anchors)
 
-            context.bubble_states_by_zone = self.extract_bubble_states(aligned_binary, template)
-            setattr(result, "bubble_states_by_zone", context.bubble_states_by_zone)
+                context.bubble_states_by_zone = self.extract_bubble_states(aligned_binary, template)
+                setattr(result, "bubble_states_by_zone", context.bubble_states_by_zone)
             context.digit_zone_debug = dict(getattr(result, "digit_zone_debug", {}) or {})
             setattr(result, "digit_zone_debug", context.digit_zone_debug)
 
@@ -220,6 +222,7 @@ class OMRProcessor:
         for idx, image_path in enumerate(image_paths, start=1):
             template_copy = deepcopy(template)
             context = RecognitionContext()
+            context.collect_diagnostics = False
             results.append(self.run_recognition_test(image_path, template_copy, context))
             if progress_callback:
                 progress_callback(idx, total, image_path)

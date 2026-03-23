@@ -7,7 +7,7 @@ import time
 import cv2
 import numpy as np
 
-from core.omr_engine import OMRProcessor
+from core.omr_engine import OMRProcessor, RecognitionContext
 from core.template_engine import TemplateEngine
 from models.template import AnchorPoint, BubbleGrid, Template, Zone, ZoneType
 
@@ -1157,6 +1157,23 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(editor_res.mcq_answers, batch_res.mcq_answers)
         self.assertEqual(editor_res.true_false_answers, batch_res.true_false_answers)
         self.assertEqual(editor_res.numeric_answers, batch_res.numeric_answers)
+
+    def test_batch_context_skips_expensive_diagnostics_collection(self):
+        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[])
+        context = RecognitionContext()
+        context.collect_diagnostics = False
+        with tempfile.TemporaryDirectory() as td:
+            img_path = Path(td) / "sheet.png"
+            cv2.imwrite(str(img_path), np.zeros((100, 200, 3), dtype=np.uint8))
+
+            with patch.object(self.processor, "_normalize_to_200_dpi", return_value=(str(img_path), "")), \
+                patch.object(self.processor, "_correct_rotation", side_effect=lambda x: x), \
+                patch.object(self.processor, "_preprocess", return_value={"binary": np.zeros((100, 200), dtype=np.uint8)}), \
+                patch.object(self.processor, "correct_perspective", return_value=(np.zeros((100, 200, 3), dtype=np.uint8), np.zeros((100, 200), dtype=np.uint8))), \
+                patch.object(self.processor, "extract_bubble_states", side_effect=AssertionError("batch/lightweight context should skip diagnostics extraction")):
+                res = self.processor.recognize_sheet(str(img_path), template, context)
+
+        self.assertEqual(getattr(res, "bubble_states_by_zone", {}), {})
 
     def test_mcq_recognition(self):
         template = Template(
