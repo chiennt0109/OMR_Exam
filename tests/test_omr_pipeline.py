@@ -1330,13 +1330,13 @@ class OMRPipelineTests(unittest.TestCase):
         best_idx, confidence, reason = self.processor._pick_best_mcq_option(np.array([0.14, 0.71, 0.92, 0.15], dtype=np.float32), 0.62)
         self.assertEqual(best_idx, 2)
         self.assertGreater(confidence, 0.18)
-        self.assertEqual(reason, "dominant_fallback")
+        self.assertEqual(reason, "row_max_fallback")
 
     def test_mcq_dominant_fallback_accepts_much_darker_choice_when_second_is_borderline(self):
         best_idx, confidence, reason = self.processor._pick_best_mcq_option(np.array([0.18, 0.63, 0.92, 0.14], dtype=np.float32), 0.62)
         self.assertEqual(best_idx, 2)
         self.assertGreater(confidence, 0.20)
-        self.assertEqual(reason, "dominant_fallback")
+        self.assertEqual(reason, "row_max_fallback")
 
     def test_mcq_best_fallback_rejects_multiple_filled_choices(self):
         best_idx, confidence, reason = self.processor._pick_best_mcq_option(np.array([0.64, 0.66, 0.18, 0.17], dtype=np.float32), 0.62)
@@ -1344,7 +1344,7 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(confidence, 0.0)
         self.assertEqual(reason, "multiple")
 
-    def test_mcq_dominant_fallback_ignores_boosted_secondary_noise_without_core_support(self):
+    def test_mcq_row_max_fallback_ignores_boosted_secondary_noise_without_core_support(self):
         best_idx, confidence, reason = self.processor._pick_best_mcq_option(
             np.array([0.18, 0.69, 0.91, 0.16], dtype=np.float32),
             0.62,
@@ -1354,15 +1354,27 @@ class OMRPipelineTests(unittest.TestCase):
         )
         self.assertEqual(best_idx, 2)
         self.assertGreater(confidence, 0.20)
-        self.assertEqual(reason, "dominant_fallback")
+        self.assertEqual(reason, "row_max_fallback")
 
-    def test_mcq_dominant_fallback_rejects_true_second_mark_with_strong_support(self):
+    def test_mcq_row_max_fallback_keeps_darker_choice_when_second_mark_is_not_95_percent_similar(self):
         best_idx, confidence, reason = self.processor._pick_best_mcq_option(
             np.array([0.18, 0.74, 0.92, 0.16], dtype=np.float32),
             0.62,
             row_raw_scores=np.array([0.10, 0.70, 0.88, 0.09], dtype=np.float32),
             row_core_scores=np.array([0.08, 0.68, 0.90, 0.07], dtype=np.float32),
             row_eroded_scores=np.array([0.09, 0.66, 0.84, 0.08], dtype=np.float32),
+        )
+        self.assertEqual(best_idx, 2)
+        self.assertGreater(confidence, 0.15)
+        self.assertEqual(reason, "row_max_fallback")
+
+    def test_mcq_row_max_fallback_still_marks_multiple_when_two_choices_are_95_percent_similar(self):
+        best_idx, confidence, reason = self.processor._pick_best_mcq_option(
+            np.array([0.18, 0.88, 0.91, 0.16], dtype=np.float32),
+            0.62,
+            row_raw_scores=np.array([0.10, 0.84, 0.88, 0.09], dtype=np.float32),
+            row_core_scores=np.array([0.08, 0.85, 0.89, 0.07], dtype=np.float32),
+            row_eroded_scores=np.array([0.09, 0.86, 0.87, 0.08], dtype=np.float32),
         )
         self.assertIsNone(best_idx)
         self.assertEqual(confidence, 0.0)

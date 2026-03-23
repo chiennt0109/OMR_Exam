@@ -2291,24 +2291,17 @@ class OMRProcessor:
         filled = np.where(scores > row_threshold)[0]
         margin = top - second
         if len(filled) > 1:
-            dominant_margin = max(self.certainty_margin * 1.10, 0.10)
-            dominant_ratio = second <= 1e-6 or top >= (1.25 * second)
-            if top >= row_threshold and margin >= dominant_margin and dominant_ratio:
-                if row_raw_scores is not None and row_core_scores is not None:
-                    raw_scores = np.asarray(row_raw_scores, dtype=np.float32)
-                    core_scores = np.asarray(row_core_scores, dtype=np.float32)
-                    eroded_scores = np.asarray(row_eroded_scores if row_eroded_scores is not None else raw_scores, dtype=np.float32)
-                    top_support = max(float(raw_scores[top_i]), float(core_scores[top_i]), float(eroded_scores[top_i]))
-                    second_support = max(float(raw_scores[second_i]), float(core_scores[second_i]), float(eroded_scores[second_i]))
-                    strong_top_support = top_support >= max(row_threshold + 0.06, self.fill_threshold + 0.02)
-                    weak_second_support = second_support <= min(
-                        second - 0.08,
-                        top_support - max(0.16, self.certainty_margin * 2.0),
-                    )
-                    if strong_top_support and weak_second_support:
-                        return top_i, margin, "dominant_fallback"
-                    return None, 0.0, "multiple"
-                return top_i, margin, "dominant_fallback"
+            top_support = top
+            second_support = second
+            if row_raw_scores is not None and row_core_scores is not None:
+                raw_scores = np.asarray(row_raw_scores, dtype=np.float32)
+                core_scores = np.asarray(row_core_scores, dtype=np.float32)
+                eroded_scores = np.asarray(row_eroded_scores if row_eroded_scores is not None else raw_scores, dtype=np.float32)
+                top_support = max(float(raw_scores[top_i]), float(core_scores[top_i]), float(eroded_scores[top_i]))
+                second_support = max(float(raw_scores[second_i]), float(core_scores[second_i]), float(eroded_scores[second_i]))
+            support_similarity = second_support / max(top_support, 1e-6)
+            if top >= row_threshold and support_similarity < 0.95:
+                return top_i, max(margin, top_support - second_support), "row_max_fallback"
             return None, 0.0, "multiple"
         if top > row_threshold and margin > self.certainty_margin:
             return top_i, margin, None
