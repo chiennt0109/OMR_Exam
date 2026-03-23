@@ -2278,14 +2278,26 @@ class OMRProcessor:
                     raw_digits=digits,
                     result=result,
                 )
+                chosen_value = final_value
+                chosen_confs = final_confs
+                chosen_path = "direct"
+                if key == "exam_code":
+                    chosen_value, chosen_confs, chosen_path = self._pick_best_exam_code_result(
+                        final_value,
+                        final_confs,
+                        sampled_value,
+                        sampled_confs,
+                    )
+                elif sampled_value not in ("", "-"):
+                    chosen_value, chosen_confs, chosen_path = sampled_value, sampled_confs, "sampling_fallback"
                 zone_debug[zone.id] = dict(zone_debug.get(zone.id, {})) | sampling_debug | {
                     "sampling_scores": mat.tolist(),
-                    "recognition_path": "sampling_fallback",
+                    "recognition_path": chosen_path if chosen_path == "sampling_fallback" else zone_debug.get(zone.id, {}).get("recognition_path", "direct"),
                 }
-                if sampled_value not in ("", "-"):
+                if chosen_path == "sampling_fallback":
                     del result.recognition_errors[error_mark:]
                     del result.recognition_errors[sampled_error_mark:]
-                    final_value, final_confs = sampled_value, sampled_confs
+                    final_value, final_confs = chosen_value, chosen_confs
                     used_sampling = True
                 elif final_value == "":
                     final_value = "-"
