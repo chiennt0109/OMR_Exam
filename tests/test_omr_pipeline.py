@@ -764,6 +764,109 @@ class OMRPipelineTests(unittest.TestCase):
         self.processor.recognize_block(binary, template.zones[0], template, result_stub)
         self.assertEqual(result_stub.student_id, "28")
 
+    def test_digit_model_expected_points_apply_exam_offsets_only(self):
+        exam_zone = Zone(
+            id="exam_model_offsets",
+            name="exam",
+            zone_type=ZoneType.EXAM_CODE_BLOCK,
+            x=160 / 240,
+            y=10 / 140,
+            width=24 / 240,
+            height=90 / 140,
+            grid=BubbleGrid(rows=4, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(170 + c * 12, 20 + r * 20) for r in range(4) for c in range(2)]),
+            metadata={"bubble_radius": 5},
+        )
+        template = Template(
+            name="exam_digit_model",
+            image_path="",
+            width=240,
+            height=140,
+            anchors=[
+                AnchorPoint(196 / 240, y / 140, f"DIGIT_ANCHOR_{i:02d}")
+                for i, y in enumerate((18, 38, 58, 78, 98), start=1)
+            ],
+            zones=[exam_zone],
+            metadata={"digit_model": {"exam_col_spacing_scale": 0.8, "exam_row_spacing_scale": 1.1, "offset_exam": [6.0, -2.0]}},
+        )
+
+        points, debug = self.processor._digit_model_expected_points(template, exam_zone)
+
+        self.assertEqual(points.shape, (8, 2))
+        self.assertTrue(debug.get("digit_model_applied"))
+        self.assertGreater(float(points[0, 0]), 170.0)
+        self.assertLess(float(points[0, 1]), 28.0)
+
+    def test_recognize_block_uses_exam_digit_model_positions_before_center_refine(self):
+        exam_zone = Zone(
+            id="exam_model_guided",
+            name="exam",
+            zone_type=ZoneType.EXAM_CODE_BLOCK,
+            x=160 / 240,
+            y=10 / 140,
+            width=24 / 240,
+            height=90 / 140,
+            grid=BubbleGrid(rows=4, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(170 + c * 12, 20 + r * 20) for r in range(4) for c in range(2)]),
+            metadata={"bubble_radius": 5},
+        )
+        template = Template(
+            name="exam_model_guided",
+            image_path="",
+            width=240,
+            height=140,
+            anchors=[
+                AnchorPoint(196 / 240, y / 140, f"DIGIT_ANCHOR_{i:02d}")
+                for i, y in enumerate((18, 38, 58, 78, 98), start=1)
+            ],
+            zones=[exam_zone],
+            metadata={"digit_model": {"exam_col_spacing_scale": 0.8, "exam_row_spacing_scale": 1.1, "offset_exam": [6.0, -2.0]}},
+        )
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": "", "digit_zone_debug": {}})()
+
+        modeled_points, _ = self.processor._digit_model_expected_points(template, exam_zone)
+        with patch.object(self.processor, "_resolve_column_digit_centers", side_effect=lambda binary, expected, grid, bubble_radius: expected) as resolve_mock, \
+            patch.object(self.processor, "_refit_digit_grid_from_clear_points", side_effect=lambda binary, guided, grid, bubble_radius: (guided, {})), \
+            patch.object(self.processor, "_decode_identifier_zone_from_centers", return_value=("23", [1.5, 1.5], modeled_points, np.zeros((10, 2), dtype=np.float32), {"direct_scores": [[0.0, 0.0]]})):
+            self.processor.recognize_block(np.zeros((140, 240), dtype=np.uint8), exam_zone, template, result_stub)
+
+        guided_arg = resolve_mock.call_args.args[1]
+        self.assertTrue(np.allclose(guided_arg, modeled_points))
+        self.assertEqual(result_stub.exam_code, "23")
+
+    def test_recognize_block_skips_exam_sampling_fallback_when_digit_model_is_active(self):
+        exam_zone = Zone(
+            id="exam_model_no_sampling",
+            name="exam",
+            zone_type=ZoneType.EXAM_CODE_BLOCK,
+            x=160 / 240,
+            y=10 / 140,
+            width=24 / 240,
+            height=90 / 140,
+            grid=BubbleGrid(rows=4, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[(170 + c * 12, 20 + r * 20) for r in range(4) for c in range(2)]),
+            metadata={"bubble_radius": 5},
+        )
+        template = Template(
+            name="exam_model_no_sampling",
+            image_path="",
+            width=240,
+            height=140,
+            anchors=[
+                AnchorPoint(196 / 240, y / 140, f"DIGIT_ANCHOR_{i:02d}")
+                for i, y in enumerate((18, 38, 58, 78, 98), start=1)
+            ],
+            zones=[exam_zone],
+            metadata={"digit_model": {"exam_col_spacing_scale": 0.8, "exam_row_spacing_scale": 1.1, "offset_exam": [6.0, -2.0]}},
+        )
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": "", "digit_zone_debug": {}})()
+
+        modeled_points, _ = self.processor._digit_model_expected_points(template, exam_zone)
+        with patch.object(self.processor, "_resolve_column_digit_centers", side_effect=lambda binary, expected, grid, bubble_radius: expected), \
+            patch.object(self.processor, "_refit_digit_grid_from_clear_points", side_effect=lambda binary, guided, grid, bubble_radius: (guided, {})), \
+            patch.object(self.processor, "_decode_identifier_zone_from_centers", return_value=("", [0.0, 0.0], modeled_points, np.zeros((10, 2), dtype=np.float32), {"direct_scores": [[0.0, 0.0]]})), \
+            patch.object(self.processor, "_read_digit_zone_with_offset_fallback", side_effect=AssertionError("exam digit-model path should skip sampling fallback")):
+            self.processor.recognize_block(np.zeros((140, 240), dtype=np.uint8), exam_zone, template, result_stub)
+
+        self.assertEqual(result_stub.exam_code, "-")
+
     def test_recognize_block_rejects_exam_code_when_column_has_multiple_sampled_marks(self):
         template = Template(
             name="exam_grid_sample",
