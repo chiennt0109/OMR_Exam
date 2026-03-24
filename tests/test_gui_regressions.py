@@ -66,7 +66,7 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('preview_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)', source)
         self.assertIn('def _valid_student_ids() -> list[str]:', source)
         self.assertIn('return None', source)
-        self.assertIn('sorted(set(int(q) for q in (key.answers or {}).keys())) or fallback_snapshot["MCQ"]', source)
+        self.assertIn('sorted(set(int(q) for q in (key.answers or {}).keys())) or list(default_by_config["MCQ"])', source)
         self.assertIn('expected_by_section[sec] = []', source)
         self.assertIn('self._build_recognition_content_text(scoped, blank_map)', source)
         self.assertIn('self._short_recognition_text_for_result(scoped)', source)
@@ -112,6 +112,13 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn("if tpl_for_view:\n            self.template = tpl_for_view", source)
         self.assertIn('self._ensure_answer_keys_for_subject(subject_key)', source)
         self.assertIn('self._finalize_batch_scan_display()', source)
+
+    def test_edit_dialog_question_numbers_follow_configured_answer_counts(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('default_by_config = {', source)
+        self.assertIn('list(range(1, max(0, int(configured_counts.get(sec, 0) or 0)) + 1))', source)
+        self.assertIn('"MCQ": list(default_by_config["MCQ"]),', source)
+
 
 
 if __name__ == '__main__':

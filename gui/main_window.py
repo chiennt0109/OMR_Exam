@@ -14416,24 +14416,23 @@ class MainWindow(QMainWindow):
 
         def _expected_questions_for_dialog(result: OMRResult, exam_code_text: str, data_snapshot: dict[str, object]) -> dict[str, list[int]]:
             configured_counts = self._subject_section_question_counts(self._current_batch_subject_key())
+            default_by_config = {
+                sec: list(range(1, max(0, int(configured_counts.get(sec, 0) or 0)) + 1))
+                for sec in ["MCQ", "TF", "NUMERIC"]
+            }
             key = _answer_key_for_exam_code(exam_code_text)
             if key is not None:
-                fallback_snapshot = {
-                    "MCQ": _question_numbers(data_snapshot.get("mcq_answers", {})),
-                    "TF": _question_numbers(data_snapshot.get("true_false_answers", {})),
-                    "NUMERIC": _question_numbers(data_snapshot.get("numeric_answers", {})),
-                }
                 expected = {
-                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())) or fallback_snapshot["MCQ"],
-                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
-                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())) or list(default_by_config["MCQ"]),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())) or list(default_by_config["TF"]),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())) or list(default_by_config["NUMERIC"]),
                 }
             else:
                 expected = {
-                "MCQ": _question_numbers(data_snapshot.get("mcq_answers", {})),
-                "TF": _question_numbers(data_snapshot.get("true_false_answers", {})),
-                "NUMERIC": _question_numbers(data_snapshot.get("numeric_answers", {})),
-            }
+                    "MCQ": list(default_by_config["MCQ"]),
+                    "TF": list(default_by_config["TF"]),
+                    "NUMERIC": list(default_by_config["NUMERIC"]),
+                }
             for sec in ["MCQ", "TF", "NUMERIC"]:
                 limit = max(0, int(configured_counts.get(sec, 0) or 0))
                 if limit <= 0:
