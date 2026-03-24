@@ -3093,6 +3093,11 @@ class MainWindow(QMainWindow):
             "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
             "full_name": str(getattr(result, "full_name", "") or ""),
             "birth_date": str(getattr(result, "birth_date", "") or ""),
+            "cached_status": str(getattr(result, "cached_status", "") or ""),
+            "cached_content": str(getattr(result, "cached_content", "") or ""),
+            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
+            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
+            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
         }
 
     @staticmethod
@@ -3112,6 +3117,11 @@ class MainWindow(QMainWindow):
         )
         setattr(result, "full_name", str(payload.get("full_name", "") or ""))
         setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
+        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
+        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
+        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
+        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
+        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
         result.sync_legacy_aliases()
         return result
 
@@ -3625,6 +3635,11 @@ class MainWindow(QMainWindow):
             "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
             "full_name": str(getattr(result, "full_name", "") or ""),
             "birth_date": str(getattr(result, "birth_date", "") or ""),
+            "cached_status": str(getattr(result, "cached_status", "") or ""),
+            "cached_content": str(getattr(result, "cached_content", "") or ""),
+            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
+            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
+            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
         }
 
     @staticmethod
@@ -3643,6 +3658,11 @@ class MainWindow(QMainWindow):
         )
         setattr(result, "full_name", str(payload.get("full_name", "") or ""))
         setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
+        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
+        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
+        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
+        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
+        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
         result.sync_legacy_aliases()
         return result
 
@@ -4055,6 +4075,11 @@ class MainWindow(QMainWindow):
             "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
             "full_name": str(getattr(result, "full_name", "") or ""),
             "birth_date": str(getattr(result, "birth_date", "") or ""),
+            "cached_status": str(getattr(result, "cached_status", "") or ""),
+            "cached_content": str(getattr(result, "cached_content", "") or ""),
+            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
+            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
+            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
         }
 
     @staticmethod
@@ -4073,6 +4098,11 @@ class MainWindow(QMainWindow):
         )
         setattr(result, "full_name", str(payload.get("full_name", "") or ""))
         setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
+        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
+        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
+        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
+        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
+        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
         result.sync_legacy_aliases()
         return result
 
@@ -4484,6 +4514,11 @@ class MainWindow(QMainWindow):
             "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
             "full_name": str(getattr(result, "full_name", "") or ""),
             "birth_date": str(getattr(result, "birth_date", "") or ""),
+            "cached_status": str(getattr(result, "cached_status", "") or ""),
+            "cached_content": str(getattr(result, "cached_content", "") or ""),
+            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
+            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
+            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
         }
 
     @staticmethod
@@ -4502,6 +4537,11 @@ class MainWindow(QMainWindow):
         )
         setattr(result, "full_name", str(payload.get("full_name", "") or ""))
         setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
+        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
+        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
+        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
+        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
+        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
         result.sync_legacy_aliases()
         return result
 
@@ -4903,6 +4943,11 @@ class MainWindow(QMainWindow):
             "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
             "full_name": str(getattr(result, "full_name", "") or ""),
             "birth_date": str(getattr(result, "birth_date", "") or ""),
+            "cached_status": str(getattr(result, "cached_status", "") or ""),
+            "cached_content": str(getattr(result, "cached_content", "") or ""),
+            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
+            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
+            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
         }
 
     @staticmethod
@@ -4921,6 +4966,11 @@ class MainWindow(QMainWindow):
         )
         setattr(result, "full_name", str(payload.get("full_name", "") or ""))
         setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
+        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
+        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
+        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
+        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
+        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
         result.sync_legacy_aliases()
         return result
 
@@ -5322,6 +5372,11 @@ class MainWindow(QMainWindow):
             "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
             "full_name": str(getattr(result, "full_name", "") or ""),
             "birth_date": str(getattr(result, "birth_date", "") or ""),
+            "cached_status": str(getattr(result, "cached_status", "") or ""),
+            "cached_content": str(getattr(result, "cached_content", "") or ""),
+            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
+            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
+            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
         }
 
     @staticmethod
@@ -5340,6 +5395,11 @@ class MainWindow(QMainWindow):
         )
         setattr(result, "full_name", str(payload.get("full_name", "") or ""))
         setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
+        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
+        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
+        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
+        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
+        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
         result.sync_legacy_aliases()
         return result
 
@@ -5741,6 +5801,11 @@ class MainWindow(QMainWindow):
             "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
             "full_name": str(getattr(result, "full_name", "") or ""),
             "birth_date": str(getattr(result, "birth_date", "") or ""),
+            "cached_status": str(getattr(result, "cached_status", "") or ""),
+            "cached_content": str(getattr(result, "cached_content", "") or ""),
+            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
+            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
+            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
         }
 
     @staticmethod
@@ -5759,6 +5824,11 @@ class MainWindow(QMainWindow):
         )
         setattr(result, "full_name", str(payload.get("full_name", "") or ""))
         setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
+        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
+        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
+        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
+        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
+        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
         result.sync_legacy_aliases()
         return result
 
@@ -6160,6 +6230,11 @@ class MainWindow(QMainWindow):
             "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
             "full_name": str(getattr(result, "full_name", "") or ""),
             "birth_date": str(getattr(result, "birth_date", "") or ""),
+            "cached_status": str(getattr(result, "cached_status", "") or ""),
+            "cached_content": str(getattr(result, "cached_content", "") or ""),
+            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
+            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
+            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
         }
 
     @staticmethod
@@ -6178,6 +6253,11 @@ class MainWindow(QMainWindow):
         )
         setattr(result, "full_name", str(payload.get("full_name", "") or ""))
         setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
+        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
+        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
+        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
+        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
+        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
         result.sync_legacy_aliases()
         return result
 
@@ -6579,6 +6659,11 @@ class MainWindow(QMainWindow):
             "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
             "full_name": str(getattr(result, "full_name", "") or ""),
             "birth_date": str(getattr(result, "birth_date", "") or ""),
+            "cached_status": str(getattr(result, "cached_status", "") or ""),
+            "cached_content": str(getattr(result, "cached_content", "") or ""),
+            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
+            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
+            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
         }
 
     @staticmethod
@@ -6597,6 +6682,11 @@ class MainWindow(QMainWindow):
         )
         setattr(result, "full_name", str(payload.get("full_name", "") or ""))
         setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
+        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
+        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
+        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
+        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
+        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
         result.sync_legacy_aliases()
         return result
 
@@ -6998,6 +7088,11 @@ class MainWindow(QMainWindow):
             "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
             "full_name": str(getattr(result, "full_name", "") or ""),
             "birth_date": str(getattr(result, "birth_date", "") or ""),
+            "cached_status": str(getattr(result, "cached_status", "") or ""),
+            "cached_content": str(getattr(result, "cached_content", "") or ""),
+            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
+            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
+            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
         }
 
     @staticmethod
@@ -7016,6 +7111,11 @@ class MainWindow(QMainWindow):
         )
         setattr(result, "full_name", str(payload.get("full_name", "") or ""))
         setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
+        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
+        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
+        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
+        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
+        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
         result.sync_legacy_aliases()
         return result
 
@@ -7417,6 +7517,11 @@ class MainWindow(QMainWindow):
             "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
             "full_name": str(getattr(result, "full_name", "") or ""),
             "birth_date": str(getattr(result, "birth_date", "") or ""),
+            "cached_status": str(getattr(result, "cached_status", "") or ""),
+            "cached_content": str(getattr(result, "cached_content", "") or ""),
+            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
+            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
+            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
         }
 
     @staticmethod
@@ -7435,6 +7540,11 @@ class MainWindow(QMainWindow):
         )
         setattr(result, "full_name", str(payload.get("full_name", "") or ""))
         setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
+        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
+        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
+        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
+        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
+        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
         result.sync_legacy_aliases()
         return result
 
@@ -7836,6 +7946,11 @@ class MainWindow(QMainWindow):
             "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
             "full_name": str(getattr(result, "full_name", "") or ""),
             "birth_date": str(getattr(result, "birth_date", "") or ""),
+            "cached_status": str(getattr(result, "cached_status", "") or ""),
+            "cached_content": str(getattr(result, "cached_content", "") or ""),
+            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
+            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
+            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
         }
 
     @staticmethod
@@ -7854,6 +7969,11 @@ class MainWindow(QMainWindow):
         )
         setattr(result, "full_name", str(payload.get("full_name", "") or ""))
         setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
+        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
+        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
+        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
+        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
+        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
         result.sync_legacy_aliases()
         return result
 
@@ -8255,6 +8375,11 @@ class MainWindow(QMainWindow):
             "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
             "full_name": str(getattr(result, "full_name", "") or ""),
             "birth_date": str(getattr(result, "birth_date", "") or ""),
+            "cached_status": str(getattr(result, "cached_status", "") or ""),
+            "cached_content": str(getattr(result, "cached_content", "") or ""),
+            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
+            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
+            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
         }
 
     @staticmethod
@@ -8273,430 +8398,11 @@ class MainWindow(QMainWindow):
         )
         setattr(result, "full_name", str(payload.get("full_name", "") or ""))
         setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
-        result.sync_legacy_aliases()
-        return result
-
-    def _is_subject_marked_batched(self, cfg: dict) -> bool:
-        key = self._subject_key_from_cfg(cfg)
-        if self.scan_results_by_subject.get(key):
-            return True
-        merged = self._merge_saved_batch_snapshot(cfg)
-        if bool(merged.get("batch_saved")):
-            return True
-        if isinstance(merged.get("batch_saved_rows", []), list) and merged.get("batch_saved_rows"):
-            return True
-        if isinstance(merged.get("batch_saved_results", []), list) and merged.get("batch_saved_results"):
-            return True
-        return False
-
-    def _cached_subject_scans_from_config(self, subject_key: str) -> list[OMRResult]:
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return []
-        merged = self._merge_saved_batch_snapshot(cfg)
-        cached = merged.get("batch_saved_results", [])
-        if not isinstance(cached, list) or not cached:
-            return []
-        out: list[OMRResult] = []
-        for item in cached:
-            if not isinstance(item, dict):
-                continue
-            try:
-                out.append(self._deserialize_omr_result(item))
-            except Exception:
-                continue
-        return out
-
-    def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
-        if self.answer_keys and any(str(k).startswith(f"{subject_key}::") for k in self.answer_keys.keys.keys()):
-            return True
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return self.answer_keys is not None
-
-        imported_keys = cfg.get("imported_answer_keys", {}) or {}
-        if isinstance(imported_keys, dict) and imported_keys:
-            repo = self.answer_keys or AnswerKeyRepository()
-            for exam_code, kd in imported_keys.items():
-                repo.upsert(
-                    SubjectKey(
-                        subject=subject_key,
-                        exam_code=str(exam_code),
-                        answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
-                        true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
-                        numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
-                        full_credit_questions={
-                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
-                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
-                        },
-                        invalid_answer_rows={
-                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
-                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
-                        },
-                    )
-                )
-            self.answer_keys = repo
-            self.imported_exam_codes = sorted(str(k) for k in imported_keys.keys())
-            self.active_batch_subject_key = subject_key
-            return True
-
-        answer_key_path = str(cfg.get("answer_key_path", "") or (self.session.answer_key_path if self.session else "") or "")
-        if answer_key_path:
-            pth = Path(answer_key_path)
-            if pth.exists() and pth.suffix.lower() == ".json":
-                try:
-                    loaded = AnswerKeyRepository.load_json(pth)
-                    repo = self.answer_keys or AnswerKeyRepository()
-                    for key_obj in loaded.keys.values():
-                        repo.upsert(key_obj)
-                    self.answer_keys = repo
-                    all_codes: set[str] = set()
-                    for key_name in self.answer_keys.keys.keys():
-                        parts = str(key_name).split("::", 1)
-                        if len(parts) == 2 and parts[0] == subject_key:
-                            all_codes.add(parts[1])
-                    if all_codes:
-                        self.imported_exam_codes = sorted(all_codes)
-                    self.active_batch_subject_key = subject_key
-                    return True
-                except Exception:
-                    pass
-
-        return self.answer_keys is not None
-
-    @staticmethod
-    def _subject_key_from_cfg(cfg: dict) -> str:
-        key = str(cfg.get("answer_key_key", "") or "").strip()
-        if key:
-            return key
-        name = str(cfg.get("name", "") or "").strip()
-        block = str(cfg.get("block", "") or "").strip()
-        return f"{name}_{block}" if name and block else (name or "General")
-
-    def _resolve_preferred_scoring_subject(self) -> str:
-        if self.stack.currentIndex() == 1:
-            cfg = self._selected_batch_subject_config()
-            if cfg:
-                return self._subject_key_from_cfg(cfg)
-        cfgs = self._subject_configs_for_scoring()
-        if cfgs:
-            return self._subject_key_from_cfg(cfgs[0])
-        if self.session and self.session.subjects:
-            return str(self.session.subjects[0])
-        return "General"
-
-    def _eligible_scoring_subject_keys(self) -> list[str]:
-        out: list[str] = []
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if self._is_subject_marked_batched(cfg):
-                out.append(key)
-        return out
-
-    def _populate_scoring_subjects(self, preferred_key: str = "") -> None:
-        if not hasattr(self, "scoring_subject_combo"):
-            return
-        self.scoring_subject_combo.blockSignals(True)
-        self.scoring_subject_combo.clear()
-        eligible = set(self._eligible_scoring_subject_keys())
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if eligible and key not in eligible:
-                continue
-            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
-            self.scoring_subject_combo.addItem(label, key)
-        if self.scoring_subject_combo.count() == 0:
-            fallback = self._resolve_preferred_scoring_subject()
-            self.scoring_subject_combo.addItem(fallback, fallback)
-        pick = preferred_key or self._resolve_preferred_scoring_subject()
-        for i in range(self.scoring_subject_combo.count()):
-            if str(self.scoring_subject_combo.itemData(i)) == pick:
-                self.scoring_subject_combo.setCurrentIndex(i)
-                break
-        self.scoring_subject_combo.blockSignals(False)
-
-    def _open_scoring_view(self) -> None:
-        if not self.session:
-            QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
-            return
-        if not self._eligible_scoring_subject_keys():
-            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
-            return
-        self.stack.setCurrentIndex(1)
-        self._populate_scoring_subjects(self._resolve_preferred_scoring_subject())
-        self._refresh_scoring_phase_table()
-        self._show_scoring_panel()
-
-    def _refresh_scoring_phase_table(self) -> None:
-        if not hasattr(self, "scoring_phase_table"):
-            return
-        self.scoring_phase_table.setRowCount(0)
-        for i, p in enumerate(self.scoring_phases[-100:]):
-            self.scoring_phase_table.insertRow(i)
-            self.scoring_phase_table.setItem(i, 0, QTableWidgetItem(str(p.get("timestamp", "-"))))
-            self.scoring_phase_table.setItem(i, 1, QTableWidgetItem(str(p.get("subject", "-"))))
-            self.scoring_phase_table.setItem(i, 2, QTableWidgetItem(str(p.get("mode", "-"))))
-            self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
-            self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
-
-    def _run_scoring_from_panel(self) -> None:
-        subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
-        mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
-        note = self.scoring_phase_note.text().strip() if hasattr(self, "scoring_phase_note") else ""
-        self.calculate_scores(subject_key=subject_key or self._resolve_preferred_scoring_subject(), mode=mode, note=note)
-
-
-
-    def _save_batch_for_selected_subject(self) -> None:
-        subject_cfg = self._selected_batch_subject_config()
-        if not subject_cfg:
-            QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
-            return
-        row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
-        if row_count <= 0:
-            QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
-            return
-
-        session_path = self.current_session_path
-        if not session_path and self.batch_editor_return_session_id:
-            p = self._session_path_from_id(self.batch_editor_return_session_id)
-            if p.exists():
-                session_path = p
-        if not session_path:
-            QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy kỳ thi để lưu trạng thái Batch theo môn.")
-            return
-
-        try:
-            self._refresh_all_statuses()
-            ses = ExamSession.load_json(session_path)
-            cfg = ses.config or {}
-            subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
-            subject_key = self._subject_key_from_cfg(subject_cfg)
-            current_results = self._current_scan_results_snapshot()
-            self.scan_results = list(current_results)
-            for result in current_results:
-                result.answer_string = self._build_answer_string_for_result(result, subject_key)
-            saved_results = [self._serialize_omr_result(x) for x in current_results]
-            timestamp = datetime.now().isoformat(timespec="seconds")
-            updated = False
-            for item in subject_cfgs:
-                if not isinstance(item, dict):
-                    continue
-                same_name_block = str(item.get("name", "")).strip() == str(subject_cfg.get("name", "")).strip() and str(item.get("block", "")).strip() == str(subject_cfg.get("block", "")).strip()
-                same_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
-                if same_name_block or same_key:
-                    item["batch_saved"] = True
-                    item["batch_saved_at"] = timestamp
-                    item["batch_result_count"] = row_count
-                    item["batch_saved_rows"] = [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ]
-                    item["batch_saved_preview"] = [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ]
-                    item["batch_saved_results"] = saved_results
-                    updated = True
-                    break
-            if not updated:
-                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
-                return
-            ses.config = {**cfg, "subject_configs": subject_cfgs}
-            ses.save_json(session_path)
-
-            # Write sidecar cache to ensure grids can be restored even if subject config is trimmed elsewhere.
-            try:
-                cache_path = session_path.with_suffix(".batch_cache.json")
-                cache_data = {}
-                if cache_path.exists():
-                    raw = json.loads(cache_path.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        cache_data = raw
-                cache_key = f"{str(subject_cfg.get('name','')).strip().lower()}::{str(subject_cfg.get('block','')).strip().lower()}::{str(subject_cfg.get('answer_key_key','')).strip().lower()}"
-                cache_data[cache_key] = {
-                    "batch_saved": True,
-                    "batch_saved_at": timestamp,
-                    "batch_result_count": row_count,
-                    "batch_saved_rows": [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ],
-                    "batch_saved_preview": [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ],
-                    "batch_saved_results": saved_results,
-                }
-                cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                pass
-
-            if self.session:
-                self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
-            self.scan_results_by_subject[subject_key] = list(current_results)
-            if isinstance(self.batch_editor_return_payload, dict):
-                self.batch_editor_return_payload["subject_configs"] = subject_cfgs
-            self._refresh_batch_subject_controls()
-            self.btn_save_batch_subject.setEnabled(False)
-            QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
-        except Exception as exc:
-            QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu trạng thái Batch\n{exc}")
-
-
-    def _build_correction_tab(self) -> QWidget:
-        w = QWidget()
-        splitter = QSplitter(Qt.Horizontal)
-        self.exam_code_correction_combo = QComboBox()
-        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
-        self.student_correction_combo = QComboBox()
-        self.student_correction_combo.setEditable(True)
-        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
-        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
-        self.answer_editor_scroll = QScrollArea()
-        self.answer_editor_scroll.setWidgetResizable(True)
-        self.answer_editor_container = QWidget()
-        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
-        self.answer_editor_scroll.setWidget(self.answer_editor_container)
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        self.error_list = QListWidget()
-        self.preview_label = QLabel("Image preview / bubble overlay placeholder")
-        self.preview_label.setAlignment(Qt.AlignCenter)
-        self.manual_edit = QTextEdit()
-        self.manual_edit.setPlaceholderText("Manual corrections JSON (e.g. {'student_id': '1001', 'answers': {'1':'A'}})")
-        self.result_preview = QTextEdit()
-        self.result_preview.setReadOnly(True)
-        self.result_preview.setPlaceholderText("Recognized result for selected scan")
-
-        btn_load_selected = QPushButton("Load Selected Scan Result")
-        btn_load_selected.clicked.connect(self._load_selected_result_for_correction)
-        btn_apply_correction = QPushButton("Apply Manual Correction")
-        btn_apply_correction.clicked.connect(self.apply_manual_correction)
-
-        payload = dict(self.batch_editor_return_payload)
-        session_id = self.batch_editor_return_session_id
-        self.batch_editor_return_payload = None
-        self.batch_editor_return_session_id = None
-
-        if not session_id:
-            self.stack.setCurrentIndex(0)
-            return
-        p = self._session_path_from_id(session_id)
-        if not p.exists():
-            self.stack.setCurrentIndex(0)
-            return
-        try:
-            session = ExamSession.load_json(p)
-        except Exception:
-            self.stack.setCurrentIndex(0)
-            return
-        cfg = session.config or {}
-        payload["subject_configs"] = cfg.get("subject_configs", payload.get("subject_configs", []))
-        payload["scan_root"] = cfg.get("scan_root", payload.get("scan_root", ""))
-        payload["student_list_path"] = cfg.get("student_list_path", payload.get("student_list_path", ""))
-        payload["students"] = [
-            {
-                "student_id": s.student_id,
-                "name": s.name,
-                "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
-                "class_name": str((s.extra or {}).get("class_name", "") or ""),
-                "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
-            }
-            for s in (session.students or [])
-        ]
-        payload["scan_mode"] = cfg.get("scan_mode", payload.get("scan_mode", "Ảnh trong thư mục gốc"))
-        payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
-        self._open_embedded_exam_editor(session_id, session, payload)
-
-    def _show_batch_scan_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(True)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(False)
-
-    def _show_scoring_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(False)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(True)
-
-    def _back_to_batch_scan(self) -> None:
-        if not self._confirm_before_switching_work("Batch Scan"):
-            return
-        self._show_batch_scan_panel()
-
-    def _subject_configs_for_scoring(self) -> list[dict]:
-        return self._effective_subject_configs_for_batch()
-
-    def _subject_config_by_subject_key(self, subject_key: str) -> dict | None:
-        key_norm = str(subject_key or "").strip()
-        if not key_norm:
-            return None
-        for cfg in self._subject_configs_for_scoring():
-            if self._subject_key_from_cfg(cfg) == key_norm:
-                return cfg
-        return None
-
-    @staticmethod
-    def _serialize_omr_result(result: OMRResult) -> dict:
-        return {
-            "image_path": str(getattr(result, "image_path", "") or ""),
-            "student_id": str(getattr(result, "student_id", "") or ""),
-            "exam_code": str(getattr(result, "exam_code", "") or ""),
-            "mcq_answers": {int(k): str(v) for k, v in (getattr(result, "mcq_answers", {}) or {}).items()},
-            "true_false_answers": {int(k): dict(v) for k, v in (getattr(result, "true_false_answers", {}) or {}).items()},
-            "numeric_answers": {int(k): str(v) for k, v in (getattr(result, "numeric_answers", {}) or {}).items()},
-            "confidence_scores": {str(k): float(v) for k, v in (getattr(result, "confidence_scores", {}) or {}).items()},
-            "recognition_errors": [str(x) for x in (getattr(result, "recognition_errors", []) or [])],
-            "processing_time_sec": float(getattr(result, "processing_time_sec", 0.0) or 0.0),
-            "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
-            "full_name": str(getattr(result, "full_name", "") or ""),
-            "birth_date": str(getattr(result, "birth_date", "") or ""),
-        }
-
-    @staticmethod
-    def _deserialize_omr_result(payload: dict) -> OMRResult:
-        result = OMRResult(
-            image_path=str(payload.get("image_path", "") or ""),
-            student_id=str(payload.get("student_id", "") or ""),
-            exam_code=str(payload.get("exam_code", "") or ""),
-            mcq_answers={int(k): str(v) for k, v in (payload.get("mcq_answers", {}) or {}).items()},
-            true_false_answers={int(k): dict(v) for k, v in (payload.get("true_false_answers", {}) or {}).items()},
-            numeric_answers={int(k): str(v) for k, v in (payload.get("numeric_answers", {}) or {}).items()},
-            confidence_scores={str(k): float(v) for k, v in (payload.get("confidence_scores", {}) or {}).items()},
-            recognition_errors=[str(x) for x in (payload.get("recognition_errors", []) or [])],
-            processing_time_sec=float(payload.get("processing_time_sec", 0.0) or 0.0),
-            debug_image_path=str(payload.get("debug_image_path", "") or ""),
-        )
-        setattr(result, "full_name", str(payload.get("full_name", "") or ""))
-        setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
+        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
+        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
+        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
+        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
+        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
         result.sync_legacy_aliases()
         return result
 
@@ -9103,6 +8809,11 @@ class MainWindow(QMainWindow):
             "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
             "full_name": str(getattr(result, "full_name", "") or ""),
             "birth_date": str(getattr(result, "birth_date", "") or ""),
+            "cached_status": str(getattr(result, "cached_status", "") or ""),
+            "cached_content": str(getattr(result, "cached_content", "") or ""),
+            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
+            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
+            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
         }
 
     @staticmethod
@@ -9121,6 +8832,11 @@ class MainWindow(QMainWindow):
         )
         setattr(result, "full_name", str(payload.get("full_name", "") or ""))
         setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
+        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
+        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
+        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
+        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
+        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
         result.sync_legacy_aliases()
         return result
 
@@ -9527,6 +9243,11 @@ class MainWindow(QMainWindow):
             "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
             "full_name": str(getattr(result, "full_name", "") or ""),
             "birth_date": str(getattr(result, "birth_date", "") or ""),
+            "cached_status": str(getattr(result, "cached_status", "") or ""),
+            "cached_content": str(getattr(result, "cached_content", "") or ""),
+            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
+            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
+            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
         }
 
     @staticmethod
@@ -9545,6 +9266,445 @@ class MainWindow(QMainWindow):
         )
         setattr(result, "full_name", str(payload.get("full_name", "") or ""))
         setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
+        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
+        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
+        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
+        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
+        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
+        result.sync_legacy_aliases()
+        return result
+
+    def _is_subject_marked_batched(self, cfg: dict) -> bool:
+        key = self._subject_key_from_cfg(cfg)
+        if self.scan_results_by_subject.get(key):
+            return True
+        merged = self._merge_saved_batch_snapshot(cfg)
+        if bool(merged.get("batch_saved")):
+            return True
+        if isinstance(merged.get("batch_saved_rows", []), list) and merged.get("batch_saved_rows"):
+            return True
+        if isinstance(merged.get("batch_saved_results", []), list) and merged.get("batch_saved_results"):
+            return True
+        return False
+
+    def _cached_subject_scans_from_config(self, subject_key: str) -> list[OMRResult]:
+        cfg = self._subject_config_by_subject_key(subject_key)
+        if not cfg:
+            return []
+        merged = self._merge_saved_batch_snapshot(cfg)
+        cached = merged.get("batch_saved_results", [])
+        if not isinstance(cached, list) or not cached:
+            return []
+        out: list[OMRResult] = []
+        for item in cached:
+            if not isinstance(item, dict):
+                continue
+            try:
+                out.append(self._deserialize_omr_result(item))
+            except Exception:
+                continue
+        return out
+
+    def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
+        if self.answer_keys and any(str(k).startswith(f"{subject_key}::") for k in self.answer_keys.keys.keys()):
+            return True
+        cfg = self._subject_config_by_subject_key(subject_key)
+        if not cfg:
+            return self.answer_keys is not None
+
+        imported_keys = cfg.get("imported_answer_keys", {}) or {}
+        if isinstance(imported_keys, dict) and imported_keys:
+            repo = self.answer_keys or AnswerKeyRepository()
+            for exam_code, kd in imported_keys.items():
+                repo.upsert(
+                    SubjectKey(
+                        subject=subject_key,
+                        exam_code=str(exam_code),
+                        answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
+                        true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
+                        numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
+                        full_credit_questions={
+                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
+                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
+                        },
+                        invalid_answer_rows={
+                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
+                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
+                        },
+                    )
+                )
+            self.answer_keys = repo
+            self.imported_exam_codes = sorted(str(k) for k in imported_keys.keys())
+            self.active_batch_subject_key = subject_key
+            return True
+
+        answer_key_path = str(cfg.get("answer_key_path", "") or (self.session.answer_key_path if self.session else "") or "")
+        if answer_key_path:
+            pth = Path(answer_key_path)
+            if pth.exists() and pth.suffix.lower() == ".json":
+                try:
+                    loaded = AnswerKeyRepository.load_json(pth)
+                    repo = self.answer_keys or AnswerKeyRepository()
+                    for key_obj in loaded.keys.values():
+                        repo.upsert(key_obj)
+                    self.answer_keys = repo
+                    all_codes: set[str] = set()
+                    for key_name in self.answer_keys.keys.keys():
+                        parts = str(key_name).split("::", 1)
+                        if len(parts) == 2 and parts[0] == subject_key:
+                            all_codes.add(parts[1])
+                    if all_codes:
+                        self.imported_exam_codes = sorted(all_codes)
+                    self.active_batch_subject_key = subject_key
+                    return True
+                except Exception:
+                    pass
+
+        return self.answer_keys is not None
+
+    @staticmethod
+    def _subject_key_from_cfg(cfg: dict) -> str:
+        key = str(cfg.get("answer_key_key", "") or "").strip()
+        if key:
+            return key
+        name = str(cfg.get("name", "") or "").strip()
+        block = str(cfg.get("block", "") or "").strip()
+        return f"{name}_{block}" if name and block else (name or "General")
+
+    def _resolve_preferred_scoring_subject(self) -> str:
+        if self.stack.currentIndex() == 1:
+            cfg = self._selected_batch_subject_config()
+            if cfg:
+                return self._subject_key_from_cfg(cfg)
+        cfgs = self._subject_configs_for_scoring()
+        if cfgs:
+            return self._subject_key_from_cfg(cfgs[0])
+        if self.session and self.session.subjects:
+            return str(self.session.subjects[0])
+        return "General"
+
+    def _eligible_scoring_subject_keys(self) -> list[str]:
+        out: list[str] = []
+        for cfg in self._subject_configs_for_scoring():
+            key = self._subject_key_from_cfg(cfg)
+            if self._is_subject_marked_batched(cfg):
+                out.append(key)
+        return out
+
+    def _populate_scoring_subjects(self, preferred_key: str = "") -> None:
+        if not hasattr(self, "scoring_subject_combo"):
+            return
+        self.scoring_subject_combo.blockSignals(True)
+        self.scoring_subject_combo.clear()
+        eligible = set(self._eligible_scoring_subject_keys())
+        for cfg in self._subject_configs_for_scoring():
+            key = self._subject_key_from_cfg(cfg)
+            if eligible and key not in eligible:
+                continue
+            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
+            self.scoring_subject_combo.addItem(label, key)
+        if self.scoring_subject_combo.count() == 0:
+            fallback = self._resolve_preferred_scoring_subject()
+            self.scoring_subject_combo.addItem(fallback, fallback)
+        pick = preferred_key or self._resolve_preferred_scoring_subject()
+        for i in range(self.scoring_subject_combo.count()):
+            if str(self.scoring_subject_combo.itemData(i)) == pick:
+                self.scoring_subject_combo.setCurrentIndex(i)
+                break
+        self.scoring_subject_combo.blockSignals(False)
+
+    def _open_scoring_view(self) -> None:
+        if not self.session:
+            QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
+            return
+        if not self._eligible_scoring_subject_keys():
+            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
+            return
+        self.stack.setCurrentIndex(1)
+        self._populate_scoring_subjects(self._resolve_preferred_scoring_subject())
+        self._refresh_scoring_phase_table()
+        self._show_scoring_panel()
+
+    def _refresh_scoring_phase_table(self) -> None:
+        if not hasattr(self, "scoring_phase_table"):
+            return
+        self.scoring_phase_table.setRowCount(0)
+        for i, p in enumerate(self.scoring_phases[-100:]):
+            self.scoring_phase_table.insertRow(i)
+            self.scoring_phase_table.setItem(i, 0, QTableWidgetItem(str(p.get("timestamp", "-"))))
+            self.scoring_phase_table.setItem(i, 1, QTableWidgetItem(str(p.get("subject", "-"))))
+            self.scoring_phase_table.setItem(i, 2, QTableWidgetItem(str(p.get("mode", "-"))))
+            self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
+            self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
+
+    def _run_scoring_from_panel(self) -> None:
+        subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
+        mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
+        note = self.scoring_phase_note.text().strip() if hasattr(self, "scoring_phase_note") else ""
+        self.calculate_scores(subject_key=subject_key or self._resolve_preferred_scoring_subject(), mode=mode, note=note)
+
+
+
+    def _save_batch_for_selected_subject(self) -> None:
+        subject_cfg = self._selected_batch_subject_config()
+        if not subject_cfg:
+            QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
+            return
+        row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
+        if row_count <= 0:
+            QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
+            return
+
+        session_path = self.current_session_path
+        if not session_path and self.batch_editor_return_session_id:
+            p = self._session_path_from_id(self.batch_editor_return_session_id)
+            if p.exists():
+                session_path = p
+        if not session_path:
+            QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy kỳ thi để lưu trạng thái Batch theo môn.")
+            return
+
+        try:
+            self._refresh_all_statuses()
+            ses = ExamSession.load_json(session_path)
+            cfg = ses.config or {}
+            subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
+            subject_key = self._subject_key_from_cfg(subject_cfg)
+            current_results = self._current_scan_results_snapshot()
+            self.scan_results = list(current_results)
+            for result in current_results:
+                result.answer_string = self._build_answer_string_for_result(result, subject_key)
+            saved_results = [self._serialize_omr_result(x) for x in current_results]
+            timestamp = datetime.now().isoformat(timespec="seconds")
+            updated = False
+            for item in subject_cfgs:
+                if not isinstance(item, dict):
+                    continue
+                same_name_block = str(item.get("name", "")).strip() == str(subject_cfg.get("name", "")).strip() and str(item.get("block", "")).strip() == str(subject_cfg.get("block", "")).strip()
+                same_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
+                if same_name_block or same_key:
+                    item["batch_saved"] = True
+                    item["batch_saved_at"] = timestamp
+                    item["batch_result_count"] = row_count
+                    item["batch_saved_rows"] = [
+                        {
+                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
+                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
+                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
+                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
+                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
+                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
+                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
+                        }
+                        for r in range(self.scan_list.rowCount())
+                    ]
+                    item["batch_saved_preview"] = [
+                        {
+                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
+                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
+                        }
+                        for r in range(self.scan_result_preview.rowCount())
+                    ]
+                    item["batch_saved_results"] = saved_results
+                    updated = True
+                    break
+            if not updated:
+                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
+                return
+            ses.config = {**cfg, "subject_configs": subject_cfgs}
+            ses.save_json(session_path)
+
+            # Write sidecar cache to ensure grids can be restored even if subject config is trimmed elsewhere.
+            try:
+                cache_path = session_path.with_suffix(".batch_cache.json")
+                cache_data = {}
+                if cache_path.exists():
+                    raw = json.loads(cache_path.read_text(encoding="utf-8"))
+                    if isinstance(raw, dict):
+                        cache_data = raw
+                cache_key = f"{str(subject_cfg.get('name','')).strip().lower()}::{str(subject_cfg.get('block','')).strip().lower()}::{str(subject_cfg.get('answer_key_key','')).strip().lower()}"
+                cache_data[cache_key] = {
+                    "batch_saved": True,
+                    "batch_saved_at": timestamp,
+                    "batch_result_count": row_count,
+                    "batch_saved_rows": [
+                        {
+                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
+                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
+                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
+                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
+                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
+                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
+                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
+                        }
+                        for r in range(self.scan_list.rowCount())
+                    ],
+                    "batch_saved_preview": [
+                        {
+                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
+                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
+                        }
+                        for r in range(self.scan_result_preview.rowCount())
+                    ],
+                    "batch_saved_results": saved_results,
+                }
+                cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+
+            if self.session:
+                self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
+            self.scan_results_by_subject[subject_key] = list(current_results)
+            if isinstance(self.batch_editor_return_payload, dict):
+                self.batch_editor_return_payload["subject_configs"] = subject_cfgs
+            self._refresh_batch_subject_controls()
+            self.btn_save_batch_subject.setEnabled(False)
+            QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
+        except Exception as exc:
+            QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu trạng thái Batch\n{exc}")
+
+
+    def _build_correction_tab(self) -> QWidget:
+        w = QWidget()
+        splitter = QSplitter(Qt.Horizontal)
+        self.exam_code_correction_combo = QComboBox()
+        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
+        self.student_correction_combo = QComboBox()
+        self.student_correction_combo.setEditable(True)
+        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
+        self.answer_editor_scroll = QScrollArea()
+        self.answer_editor_scroll.setWidgetResizable(True)
+        self.answer_editor_container = QWidget()
+        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
+        self.answer_editor_scroll.setWidget(self.answer_editor_container)
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        self.error_list = QListWidget()
+        self.preview_label = QLabel("Image preview / bubble overlay placeholder")
+        self.preview_label.setAlignment(Qt.AlignCenter)
+        self.manual_edit = QTextEdit()
+        self.manual_edit.setPlaceholderText("Manual corrections JSON (e.g. {'student_id': '1001', 'answers': {'1':'A'}})")
+        self.result_preview = QTextEdit()
+        self.result_preview.setReadOnly(True)
+        self.result_preview.setPlaceholderText("Recognized result for selected scan")
+
+        btn_load_selected = QPushButton("Load Selected Scan Result")
+        btn_load_selected.clicked.connect(self._load_selected_result_for_correction)
+        btn_apply_correction = QPushButton("Apply Manual Correction")
+        btn_apply_correction.clicked.connect(self.apply_manual_correction)
+
+        payload = dict(self.batch_editor_return_payload)
+        session_id = self.batch_editor_return_session_id
+        self.batch_editor_return_payload = None
+        self.batch_editor_return_session_id = None
+
+        if not session_id:
+            self.stack.setCurrentIndex(0)
+            return
+        p = self._session_path_from_id(session_id)
+        if not p.exists():
+            self.stack.setCurrentIndex(0)
+            return
+        try:
+            session = ExamSession.load_json(p)
+        except Exception:
+            self.stack.setCurrentIndex(0)
+            return
+        cfg = session.config or {}
+        payload["subject_configs"] = cfg.get("subject_configs", payload.get("subject_configs", []))
+        payload["scan_root"] = cfg.get("scan_root", payload.get("scan_root", ""))
+        payload["student_list_path"] = cfg.get("student_list_path", payload.get("student_list_path", ""))
+        payload["students"] = [
+            {
+                "student_id": s.student_id,
+                "name": s.name,
+                "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
+                "class_name": str((s.extra or {}).get("class_name", "") or ""),
+                "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
+            }
+            for s in (session.students or [])
+        ]
+        payload["scan_mode"] = cfg.get("scan_mode", payload.get("scan_mode", "Ảnh trong thư mục gốc"))
+        payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
+        self._open_embedded_exam_editor(session_id, session, payload)
+
+    def _show_batch_scan_panel(self) -> None:
+        if hasattr(self, "scan_lr_split"):
+            self.scan_lr_split.setVisible(True)
+        if hasattr(self, "scoring_panel"):
+            self.scoring_panel.setVisible(False)
+
+    def _show_scoring_panel(self) -> None:
+        if hasattr(self, "scan_lr_split"):
+            self.scan_lr_split.setVisible(False)
+        if hasattr(self, "scoring_panel"):
+            self.scoring_panel.setVisible(True)
+
+    def _back_to_batch_scan(self) -> None:
+        if not self._confirm_before_switching_work("Batch Scan"):
+            return
+        self._show_batch_scan_panel()
+
+    def _subject_configs_for_scoring(self) -> list[dict]:
+        return self._effective_subject_configs_for_batch()
+
+    def _subject_config_by_subject_key(self, subject_key: str) -> dict | None:
+        key_norm = str(subject_key or "").strip()
+        if not key_norm:
+            return None
+        for cfg in self._subject_configs_for_scoring():
+            if self._subject_key_from_cfg(cfg) == key_norm:
+                return cfg
+        return None
+
+    @staticmethod
+    def _serialize_omr_result(result: OMRResult) -> dict:
+        return {
+            "image_path": str(getattr(result, "image_path", "") or ""),
+            "student_id": str(getattr(result, "student_id", "") or ""),
+            "exam_code": str(getattr(result, "exam_code", "") or ""),
+            "mcq_answers": {int(k): str(v) for k, v in (getattr(result, "mcq_answers", {}) or {}).items()},
+            "true_false_answers": {int(k): dict(v) for k, v in (getattr(result, "true_false_answers", {}) or {}).items()},
+            "numeric_answers": {int(k): str(v) for k, v in (getattr(result, "numeric_answers", {}) or {}).items()},
+            "confidence_scores": {str(k): float(v) for k, v in (getattr(result, "confidence_scores", {}) or {}).items()},
+            "recognition_errors": [str(x) for x in (getattr(result, "recognition_errors", []) or [])],
+            "processing_time_sec": float(getattr(result, "processing_time_sec", 0.0) or 0.0),
+            "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
+            "full_name": str(getattr(result, "full_name", "") or ""),
+            "birth_date": str(getattr(result, "birth_date", "") or ""),
+            "cached_status": str(getattr(result, "cached_status", "") or ""),
+            "cached_content": str(getattr(result, "cached_content", "") or ""),
+            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
+            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
+            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
+        }
+
+    @staticmethod
+    def _deserialize_omr_result(payload: dict) -> OMRResult:
+        result = OMRResult(
+            image_path=str(payload.get("image_path", "") or ""),
+            student_id=str(payload.get("student_id", "") or ""),
+            exam_code=str(payload.get("exam_code", "") or ""),
+            mcq_answers={int(k): str(v) for k, v in (payload.get("mcq_answers", {}) or {}).items()},
+            true_false_answers={int(k): dict(v) for k, v in (payload.get("true_false_answers", {}) or {}).items()},
+            numeric_answers={int(k): str(v) for k, v in (payload.get("numeric_answers", {}) or {}).items()},
+            confidence_scores={str(k): float(v) for k, v in (payload.get("confidence_scores", {}) or {}).items()},
+            recognition_errors=[str(x) for x in (payload.get("recognition_errors", []) or [])],
+            processing_time_sec=float(payload.get("processing_time_sec", 0.0) or 0.0),
+            debug_image_path=str(payload.get("debug_image_path", "") or ""),
+        )
+        setattr(result, "full_name", str(payload.get("full_name", "") or ""))
+        setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
+        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
+        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
+        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
+        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
+        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
         result.sync_legacy_aliases()
         return result
 
@@ -10770,7 +10930,7 @@ class MainWindow(QMainWindow):
         self.scan_results = self._refresh_scan_results_from_db(subject_key)
         if self.scan_results:
             self._populate_scan_grid_from_results(self.scan_results)
-            self._finalize_batch_scan_display()
+            self._finalize_batch_scan_display(refresh_statuses=False)
             self.scan_image_preview.setText("Đã nạp kết quả Batch Scan từ nguồn dữ liệu chuẩn trong cơ sở dữ liệu cho môn này")
         elif bool(cfg.get("batch_saved")):
             self.scan_image_preview.setText(
@@ -13157,17 +13317,41 @@ class MainWindow(QMainWindow):
         row_views: list[dict[str, object]] = []
         for result in results:
             self._refresh_student_profile_for_result(result)
-            scoped = self._scoped_result_copy(result)
-            blank_map = self._compute_blank_questions(scoped)
+            cached_blank_map = getattr(result, "cached_blank_summary", None)
+            can_use_cached_display = isinstance(cached_blank_map, dict)
+            if can_use_cached_display:
+                blank_map = {
+                    "MCQ": [int(x) for x in (cached_blank_map.get("MCQ", []) or [])],
+                    "TF": [int(x) for x in (cached_blank_map.get("TF", []) or [])],
+                    "NUMERIC": [int(x) for x in (cached_blank_map.get("NUMERIC", []) or [])],
+                }
+                scoped = None
+            else:
+                scoped = self._scoped_result_copy(result)
+                blank_map = self._compute_blank_questions(scoped)
             sid = str(result.student_id or "").strip()
             exam_code_text = str(result.exam_code or "").strip()
             image_path = str(result.image_path or "")
             forced_status = str(forced_status_by_image.get(image_path, "") or "")
             if forced_status:
                 status = forced_status
+            elif can_use_cached_display:
+                status = str(getattr(result, "cached_status", "") or "OK")
             else:
                 status_parts = self._status_parts_for_result(result, duplicate_ids.get(sid, 0))
                 status = ", ".join(status_parts) if status_parts else "OK"
+            if can_use_cached_display:
+                content_text = str(getattr(result, "cached_content", "") or "")
+                recognized_short = str(getattr(result, "cached_recognized_short", "") or "")
+                forced_status = str(getattr(result, "cached_forced_status", "") or forced_status)
+            else:
+                content_text = self._build_recognition_content_text(scoped, blank_map)
+                recognized_short = self._short_recognition_text_for_result(scoped)
+                setattr(result, "cached_status", status)
+                setattr(result, "cached_content", content_text)
+                setattr(result, "cached_recognized_short", recognized_short)
+                setattr(result, "cached_forced_status", forced_status)
+                setattr(result, "cached_blank_summary", dict(blank_map))
             row_views.append(
                 {
                     "result": result,
@@ -13177,10 +13361,10 @@ class MainWindow(QMainWindow):
                     "full_name": str(getattr(result, "full_name", "") or "-"),
                     "birth_date": str(getattr(result, "birth_date", "") or "-"),
                     "blank_map": blank_map,
-                    "content": self._build_recognition_content_text(scoped, blank_map),
+                    "content": content_text,
                     "status": status,
                     "forced_status": forced_status,
-                    "recognized_short": self._short_recognition_text_for_result(scoped),
+                    "recognized_short": recognized_short,
                 }
             )
 
@@ -13219,10 +13403,11 @@ class MainWindow(QMainWindow):
             self.scan_list.setItem(idx, 5, status_item)
             self._set_scan_action_widget(idx)
 
-    def _finalize_batch_scan_display(self) -> None:
+    def _finalize_batch_scan_display(self, refresh_statuses: bool = True) -> None:
         if not hasattr(self, "scan_list"):
             return
-        self._refresh_all_statuses()
+        if refresh_statuses:
+            self._refresh_all_statuses()
         self._rebuild_error_list()
         self._apply_scan_filter()
         if self.scan_list.rowCount() <= 0:

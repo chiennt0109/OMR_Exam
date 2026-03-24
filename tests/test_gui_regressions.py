@@ -102,7 +102,7 @@ class GuiRegressionTests(unittest.TestCase):
 
     def test_batch_scan_initial_load_finalizes_display_and_selects_first_row(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
-        self.assertIn('def _finalize_batch_scan_display(self) -> None:', source)
+        self.assertIn('def _finalize_batch_scan_display(self, refresh_statuses: bool = True) -> None:', source)
         self.assertIn('self.scan_list.setCurrentCell(target_row, 0)', source)
         self.assertIn('self.scan_list.selectRow(target_row)', source)
         self.assertIn('self._on_scan_selected()', source)
@@ -111,7 +111,16 @@ class GuiRegressionTests(unittest.TestCase):
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
         self.assertIn("if tpl_for_view:\n            self.template = tpl_for_view", source)
         self.assertIn('self._ensure_answer_keys_for_subject(subject_key)', source)
-        self.assertIn('self._finalize_batch_scan_display()', source)
+        self.assertIn('self._finalize_batch_scan_display(refresh_statuses=False)', source)
+
+    def test_batch_subject_change_uses_cached_db_display_without_status_recompute(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('def _finalize_batch_scan_display(self, refresh_statuses: bool = True) -> None:', source)
+        self.assertIn('if refresh_statuses:\n            self._refresh_all_statuses()', source)
+        self.assertIn('cached_blank_map = getattr(result, "cached_blank_summary", None)', source)
+        self.assertIn('status = str(getattr(result, "cached_status", "") or "OK")', source)
+        self.assertIn('"cached_status": str(getattr(result, "cached_status", "") or "")', source)
+        self.assertIn('setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))', source)
 
     def test_edit_dialog_question_numbers_follow_configured_answer_counts(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
