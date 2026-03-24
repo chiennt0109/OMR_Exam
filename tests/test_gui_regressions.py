@@ -120,6 +120,16 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('"MCQ": list(default_by_config["MCQ"]),', source)
 
 
+    def test_invalidate_scoring_no_undefined_rows_loop_and_lightweight_path(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        start = source.find('    def _invalidate_scoring_for_student_ids(self, student_ids: list[str], subject_key: str = "", reason: str = "") -> int:')
+        end = source.find('    def _record_adjustment(self, idx: int, details: list[str], source: str) -> None:', start)
+        block = source[start:end]
+        self.assertNotIn('for row in rows:', block)
+        self.assertIn('self.database.log_change(', block)
+        self.assertIn('return changed', block)
+
+
 
 if __name__ == '__main__':
     unittest.main()

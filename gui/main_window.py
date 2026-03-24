@@ -13861,37 +13861,17 @@ class MainWindow(QMainWindow):
         if changed <= 0:
             return 0
         self.scoring_results_by_subject[subject] = subject_scores
-        for row in rows:
-            self.database.upsert_score_row(subject, row.student_id, row.exam_code, {
-                "student_id": row.student_id,
-                "name": row.name,
-                "subject": row.subject,
-                "exam_code": row.exam_code,
-                "score": row.score,
-                "correct": row.correct,
-                "wrong": row.wrong,
-                "blank": row.blank,
-            })
-        phase = {
-            "timestamp": datetime.now().isoformat(timespec="seconds"),
-            "subject": subject,
-            "mode": "Cập nhật sau sửa bài",
-            "count": changed,
-            "missing": 0,
-            "note": reason or "invalidate_scoring_records",
-        }
-        self.scoring_phases.append(phase)
-        if len(self.scoring_phases) > 500:
-            self.scoring_phases = self.scoring_phases[-500:]
-        if self.session:
-            cfg = dict(self.session.config or {})
-            cfg["scoring_phases"] = list(self.scoring_phases)
-            cfg["scoring_results"] = dict(self.scoring_results_by_subject)
-            cfg["last_scoring_phase"] = dict(phase)
-            self.session.config = cfg
-            self.session_dirty = True
-            self._persist_session_quietly()
-        self._refresh_scoring_phase_table()
+        try:
+            self.database.log_change(
+                "scoring_results",
+                subject,
+                "invalidate_scoring_records",
+                "",
+                f"removed={changed}; student_ids={','.join(sorted({str(s or '').strip() for s in student_ids if str(s or '').strip()}))}",
+                reason or "invalidate_scoring_records",
+            )
+        except Exception:
+            pass
         return changed
 
     def _record_adjustment(self, idx: int, details: list[str], source: str) -> None:
