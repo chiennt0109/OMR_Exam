@@ -122,6 +122,15 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('"cached_status": str(getattr(result, "cached_status", "") or "")', source)
         self.assertIn('setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))', source)
 
+    def test_exam_code_change_keeps_existing_tf_and_numeric_rows(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('tf_data = data_snapshot.get("true_false_answers", {}) or {}', source)
+        self.assertIn('set(int(q) for q in tf_data.keys())', source)
+        self.assertIn('table_tf = _build_tf_table(tf_questions, tf_data)', source)
+        self.assertIn('numeric_data = data_snapshot.get("numeric_answers", {}) or {}', source)
+        self.assertIn('set(int(q) for q in numeric_data.keys())', source)
+        self.assertIn('table_num = _build_pair_table(numeric_questions, numeric_data, "Ví dụ: -12.5")', source)
+
     def test_edit_dialog_question_numbers_follow_configured_answer_counts(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
         self.assertIn('default_by_config = {', source)

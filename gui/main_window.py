@@ -14828,8 +14828,20 @@ class MainWindow(QMainWindow):
             result = _current_result()
             expected = _expected_questions_for_dialog(result, str(data_snapshot.get("exam_code", "") or ""), data_snapshot)
             mcq_widget, mcq_edits = _build_mcq_grid(expected.get("MCQ", []), data_snapshot.get("mcq_answers", {}) or {})
-            table_tf = _build_tf_table(expected.get("TF", []), data_snapshot.get("true_false_answers", {}) or {})
-            table_num = _build_pair_table(expected.get("NUMERIC", []), data_snapshot.get("numeric_answers", {}) or {}, "Ví dụ: -12.5")
+
+            tf_data = data_snapshot.get("true_false_answers", {}) or {}
+            tf_questions = sorted(
+                set(int(q) for q in (expected.get("TF", []) or []))
+                | set(int(q) for q in tf_data.keys())
+            )
+            table_tf = _build_tf_table(tf_questions, tf_data)
+
+            numeric_data = data_snapshot.get("numeric_answers", {}) or {}
+            numeric_questions = sorted(
+                set(int(q) for q in (expected.get("NUMERIC", []) or []))
+                | set(int(q) for q in numeric_data.keys())
+            )
+            table_num = _build_pair_table(numeric_questions, numeric_data, "Ví dụ: -12.5")
             _clear_layout(mcq_host_lay)
             _clear_layout(tf_host_lay)
             _clear_layout(numeric_host_lay)
