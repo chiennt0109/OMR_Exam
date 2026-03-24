@@ -10764,9 +10764,13 @@ class MainWindow(QMainWindow):
         self._update_batch_scan_scope_summary()
 
         subject_key = self._subject_key_from_cfg(cfg)
+        if tpl_for_view:
+            self.template = tpl_for_view
+        self._ensure_answer_keys_for_subject(subject_key)
         self.scan_results = self._refresh_scan_results_from_db(subject_key)
         if self.scan_results:
             self._populate_scan_grid_from_results(self.scan_results)
+            self._finalize_batch_scan_display()
             self.scan_image_preview.setText("Đã nạp kết quả Batch Scan từ nguồn dữ liệu chuẩn trong cơ sở dữ liệu cho môn này")
         elif bool(cfg.get("batch_saved")):
             self.scan_image_preview.setText(
@@ -11139,10 +11143,9 @@ class MainWindow(QMainWindow):
             for idx, result in enumerate(self.scan_results)
         }
         self._populate_scan_grid_from_results(self.scan_results, forced_status_by_image)
-        self._rebuild_error_list()
+        self._finalize_batch_scan_display()
         self.btn_save_batch_subject.setEnabled(False)
         self._update_batch_scan_scope_summary()
-        self._apply_scan_filter()
 
     @staticmethod
     def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
@@ -13215,6 +13218,31 @@ class MainWindow(QMainWindow):
                 status_item.setForeground(Qt.red)
             self.scan_list.setItem(idx, 5, status_item)
             self._set_scan_action_widget(idx)
+
+    def _finalize_batch_scan_display(self) -> None:
+        if not hasattr(self, "scan_list"):
+            return
+        self._refresh_all_statuses()
+        self._rebuild_error_list()
+        self._apply_scan_filter()
+        if self.scan_list.rowCount() <= 0:
+            if hasattr(self, "scan_result_preview"):
+                self.scan_result_preview.setRowCount(0)
+            if hasattr(self, "result_preview"):
+                self.result_preview.clear()
+            if hasattr(self, "manual_edit"):
+                self.manual_edit.clear()
+            return
+        target_row = -1
+        for row in range(self.scan_list.rowCount()):
+            if not self.scan_list.isRowHidden(row):
+                target_row = row
+                break
+        if target_row < 0:
+            target_row = 0
+        self.scan_list.setCurrentCell(target_row, 0)
+        self.scan_list.selectRow(target_row)
+        self._on_scan_selected()
 
     def _update_scan_row_from_result(self, idx: int, result) -> None:
         if idx < 0 or idx >= self.scan_list.rowCount():

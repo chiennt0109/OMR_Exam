@@ -100,6 +100,19 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('self.scan_results = self._refresh_scan_results_from_db(subject_key)', source)
         self.assertIn('Đã nạp kết quả Batch Scan từ nguồn dữ liệu chuẩn trong cơ sở dữ liệu cho môn này', source)
 
+    def test_batch_scan_initial_load_finalizes_display_and_selects_first_row(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('def _finalize_batch_scan_display(self) -> None:', source)
+        self.assertIn('self.scan_list.setCurrentCell(target_row, 0)', source)
+        self.assertIn('self.scan_list.selectRow(target_row)', source)
+        self.assertIn('self._on_scan_selected()', source)
+
+    def test_batch_subject_change_preloads_template_answer_keys_and_finalizes_grid(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn("if tpl_for_view:\n            self.template = tpl_for_view", source)
+        self.assertIn('self._ensure_answer_keys_for_subject(subject_key)', source)
+        self.assertIn('self._finalize_batch_scan_display()', source)
+
 
 if __name__ == '__main__':
     unittest.main()
