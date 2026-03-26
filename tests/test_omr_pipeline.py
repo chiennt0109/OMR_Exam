@@ -511,6 +511,15 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertGreater(scores[0], 0.45)
         self.assertLess(scores[1], 0.20)
 
+    def test_digit_zone_component_marks_prefer_compact_bubble_over_tall_stroke(self):
+        binary = np.zeros((140, 160), dtype=np.uint8)
+        cv2.circle(binary, (42, 62), 8, 255, -1)
+        cv2.rectangle(binary, (96, 40), (101, 84), 255, -1)
+        centers = np.array([[40, 60], [100, 60]], dtype=np.float32)
+        scores = self.processor._detect_digit_zone_component_marks(binary, centers, 10)
+        self.assertGreater(scores[0], 0.70)
+        self.assertLess(scores[1], 0.55)
+
     def test_exam_code_recognize_block_uses_multi_probe_digit_signal_for_shifted_mark(self):
         template = Template(
             name="exam_multi_probe",
@@ -539,6 +548,38 @@ class OMRPipelineTests(unittest.TestCase):
             patch.object(self.processor, "_detect_digit_zone_multi_probe_marks", return_value=np.array([0.88, 0.22, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05], dtype=np.float32)):
             self.processor.recognize_block(np.zeros((140, 120), dtype=np.uint8), template.zones[0], template, result_stub)
         self.assertEqual(result_stub.exam_code, "0")
+
+    def test_exam_code_recognize_block_component_signal_suppresses_upper_stroke_bias(self):
+        template = Template(
+            name="exam_component_bias",
+            image_path="",
+            width=120,
+            height=140,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="exam_component_bias",
+                    name="exam",
+                    zone_type=ZoneType.EXAM_CODE_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(60, 20 + r * 10) for r in range(10)]),
+                    metadata={"bubble_radius": 6},
+                )
+            ],
+        )
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": "", "digit_zone_debug": {}})()
+        with patch.object(self.processor, "_resolve_column_digit_centers", return_value=np.array([[60, 20 + r * 10] for r in range(10)], dtype=np.float32)), \
+            patch.object(self.processor, "detect_bubbles", return_value=np.array([0.56, 0.10, 0.10, 0.10, 0.10, 0.58, 0.10, 0.10, 0.10, 0.10], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=np.array([0.52, 0.12, 0.12, 0.12, 0.12, 0.54, 0.12, 0.12, 0.12, 0.12], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_zone_multi_probe_marks", return_value=np.array([0.54, 0.08, 0.08, 0.08, 0.08, 0.60, 0.08, 0.08, 0.08, 0.08], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_zone_peak_window_marks", return_value=np.array([0.52, 0.07, 0.07, 0.07, 0.07, 0.61, 0.07, 0.07, 0.07, 0.07], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_zone_component_marks", return_value=np.array([0.22, 0.04, 0.04, 0.04, 0.04, 0.92, 0.04, 0.04, 0.04, 0.04], dtype=np.float32)), \
+            patch.object(self.processor, "_estimate_local_fill_threshold", return_value=0.45):
+            self.processor.recognize_block(np.zeros((140, 120), dtype=np.uint8), template.zones[0], template, result_stub)
+        self.assertEqual(result_stub.exam_code, "5")
 
     def test_exam_code_recognize_block_uses_peak_window_signal_for_off_center_mark(self):
         template = Template(
@@ -1289,16 +1330,52 @@ class OMRPipelineTests(unittest.TestCase):
         best_idx, confidence, reason = self.processor._pick_best_mcq_option(np.array([0.14, 0.71, 0.92, 0.15], dtype=np.float32), 0.62)
         self.assertEqual(best_idx, 2)
         self.assertGreater(confidence, 0.18)
-        self.assertEqual(reason, "dominant_fallback")
+        self.assertEqual(reason, "row_max_fallback")
 
     def test_mcq_dominant_fallback_accepts_much_darker_choice_when_second_is_borderline(self):
         best_idx, confidence, reason = self.processor._pick_best_mcq_option(np.array([0.18, 0.63, 0.92, 0.14], dtype=np.float32), 0.62)
         self.assertEqual(best_idx, 2)
         self.assertGreater(confidence, 0.20)
-        self.assertEqual(reason, "dominant_fallback")
+        self.assertEqual(reason, "row_max_fallback")
 
     def test_mcq_best_fallback_rejects_multiple_filled_choices(self):
         best_idx, confidence, reason = self.processor._pick_best_mcq_option(np.array([0.64, 0.66, 0.18, 0.17], dtype=np.float32), 0.62)
+        self.assertIsNone(best_idx)
+        self.assertEqual(confidence, 0.0)
+        self.assertEqual(reason, "multiple")
+
+    def test_mcq_row_max_fallback_ignores_boosted_secondary_noise_without_core_support(self):
+        best_idx, confidence, reason = self.processor._pick_best_mcq_option(
+            np.array([0.18, 0.69, 0.91, 0.16], dtype=np.float32),
+            0.62,
+            row_raw_scores=np.array([0.10, 0.24, 0.86, 0.09], dtype=np.float32),
+            row_core_scores=np.array([0.08, 0.22, 0.88, 0.07], dtype=np.float32),
+            row_eroded_scores=np.array([0.09, 0.26, 0.82, 0.08], dtype=np.float32),
+        )
+        self.assertEqual(best_idx, 2)
+        self.assertGreater(confidence, 0.20)
+        self.assertEqual(reason, "row_max_fallback")
+
+    def test_mcq_row_max_fallback_keeps_darker_choice_when_second_mark_is_not_95_percent_similar(self):
+        best_idx, confidence, reason = self.processor._pick_best_mcq_option(
+            np.array([0.18, 0.74, 0.92, 0.16], dtype=np.float32),
+            0.62,
+            row_raw_scores=np.array([0.10, 0.70, 0.88, 0.09], dtype=np.float32),
+            row_core_scores=np.array([0.08, 0.68, 0.90, 0.07], dtype=np.float32),
+            row_eroded_scores=np.array([0.09, 0.66, 0.84, 0.08], dtype=np.float32),
+        )
+        self.assertEqual(best_idx, 2)
+        self.assertGreater(confidence, 0.15)
+        self.assertEqual(reason, "row_max_fallback")
+
+    def test_mcq_row_max_fallback_still_marks_multiple_when_two_choices_are_95_percent_similar(self):
+        best_idx, confidence, reason = self.processor._pick_best_mcq_option(
+            np.array([0.18, 0.88, 0.91, 0.16], dtype=np.float32),
+            0.62,
+            row_raw_scores=np.array([0.10, 0.84, 0.88, 0.09], dtype=np.float32),
+            row_core_scores=np.array([0.08, 0.85, 0.89, 0.07], dtype=np.float32),
+            row_eroded_scores=np.array([0.09, 0.86, 0.87, 0.08], dtype=np.float32),
+        )
         self.assertIsNone(best_idx)
         self.assertEqual(confidence, 0.0)
         self.assertEqual(reason, "multiple")
@@ -1775,6 +1852,67 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(digits, "00")
         self.assertGreaterEqual(min(confs), 0.5)
 
+    def test_identifier_anchor_axis_reads_digits_left_to_right(self):
+        zone = Zone(
+            id="sid_axis",
+            name="sid",
+            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        template = Template(name="sid_axis_tpl", image_path="", width=200, height=160, anchors=[], zones=[zone])
+        centers = np.array([(40.0, 20.0 + (r * 10.0)) for r in range(10)] + [(80.0, 20.0 + (r * 10.0)) for r in range(10)], dtype=np.float32)
+        scores = np.zeros((20,), dtype=np.float32)
+        scores[3] = 0.95
+        scores[10 + 7] = 0.93
+        with patch.object(self.processor, "detect_bubbles", return_value=scores), \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=np.zeros((20,), dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_zone_component_marks", return_value=np.zeros((20,), dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_anchor_ruler", return_value=[(20.0, 10.0), (20.0, 110.0)]):
+            value, _, debug = self.processor._decode_identifier_by_anchor_axis(np.zeros((160, 200), dtype=np.uint8), zone, template, centers, 6)
+        self.assertEqual(value, "37")
+        self.assertEqual(debug.get("axis_mode"), "anchor_ruler")
+
+    def test_finalize_identifier_enforces_fixed_lengths_for_student_id_and_exam_code(self):
+        sid_zone = Zone(
+            id="sid_len",
+            name="sid",
+            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=12, question_start=1, question_count=12, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        exam_zone = Zone(
+            id="exam_len",
+            name="exam",
+            zone_type=ZoneType.EXAM_CODE_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=12, question_start=1, question_count=12, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        sid_result = type("R", (), {"recognition_errors": []})()
+        sid_value, _ = self.processor._finalize_identifier_value(sid_zone, "student_id", value="123456789012", confs=[1.0] * 12, result=sid_result)
+        self.assertEqual(sid_value, "12345678")
+
+        exam_result = type("R", (), {"recognition_errors": []})()
+        exam_value, _ = self.processor._finalize_identifier_value(exam_zone, "exam_code", value="567890", confs=[1.0] * 6, result=exam_result)
+        self.assertEqual(exam_value, "5678")
+
+        short_result = type("R", (), {"recognition_errors": []})()
+        short_value, _ = self.processor._finalize_identifier_value(sid_zone, "student_id", value="1234", confs=[1.0] * 4, result=short_result)
+        self.assertEqual(short_value, "")
+        self.assertTrue(any("Lỗi SBD" in err for err in short_result.recognition_errors))
+
     def test_recognize_block_invalidates_student_id_when_any_digit_is_ambiguous(self):
         template = Template(
             name="sid_invalid",
@@ -2061,6 +2199,39 @@ class OMRPipelineTests(unittest.TestCase):
 
         self.assertLess(float(np.mean(distances)), 12.0)
         self.assertIn("affine_refine", self.processor._last_alignment_debug)
+
+    def test_correct_perspective_auto_mode_chooses_best_alignment_candidate(self):
+        template = Template(
+            name="sheet_auto_best",
+            image_path="",
+            width=400,
+            height=600,
+            anchors=[AnchorPoint(0.08, 0.08), AnchorPoint(0.92, 0.08), AnchorPoint(0.92, 0.92), AnchorPoint(0.08, 0.92)],
+            zones=[],
+        )
+        image = np.zeros((600, 400, 3), dtype=np.uint8)
+        binary = np.zeros((600, 400), dtype=np.uint8)
+        result_stub = type("R", (), {"issues": []})()
+        legacy_img = np.full_like(image, 11)
+        border_img = np.full_like(image, 22)
+        hybrid_img = np.full_like(image, 33)
+        legacy_bin = np.full((600, 400), 11, dtype=np.uint8)
+        border_bin = np.full((600, 400), 22, dtype=np.uint8)
+        hybrid_bin = np.full((600, 400), 33, dtype=np.uint8)
+
+        attempts = {
+            "border": (border_img, border_bin),
+            "hybrid": (hybrid_img, hybrid_bin),
+            "legacy": (legacy_img, legacy_bin),
+        }
+        scores = {11: 90.0, 22: 150.0, 33: 120.0}
+        with patch.object(self.processor, "_template_has_one_side_anchor_ruler", return_value=False),             patch.object(self.processor, "_template_has_border_anchors", return_value=True),             patch.object(self.processor, "_try_anchor_alignment", side_effect=lambda _img, _bin, _tpl, candidate: attempts.get(candidate)),             patch.object(self.processor, "_refine_alignment_with_template_anchors", side_effect=lambda img, bin_img, _tpl: (img, bin_img)),             patch.object(self.processor, "_auto_orient", side_effect=lambda img, bin_img, _tpl: (img, bin_img)),             patch.object(self.processor, "_refine_corner_translation", side_effect=lambda img, bin_img, _tpl: (img, bin_img)),             patch.object(self.processor, "_refine_alignment_with_affine_anchors", side_effect=lambda img, bin_img, _tpl: (img, bin_img)),             patch.object(self.processor, "_orientation_score", side_effect=lambda bin_img, _tpl: scores[int(bin_img[0, 0])]):
+            aligned, aligned_binary = self.processor.correct_perspective(image, binary, template, result_stub)
+
+        self.assertEqual(int(aligned[0, 0, 0]), 22)
+        self.assertEqual(int(aligned_binary[0, 0]), 22)
+        self.assertEqual(self.processor._last_alignment_debug["alignment_mode"], "border")
+        self.assertEqual(self.processor._last_alignment_debug["alignment_score"], 150.0)
 
     def test_correct_perspective_fallback_path_does_not_use_uninitialized_alignment(self):
         template = Template(name="sheet", image_path="", width=400, height=600, anchors=[], zones=[])
