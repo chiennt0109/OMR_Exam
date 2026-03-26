@@ -2101,6 +2101,118 @@ class OMRProcessor:
         }
         return value, confs, refined_centers, mat, debug
 
+    @staticmethod
+    def _identifier_expected_len(key: str, zone: Zone) -> int:
+        if key == "student_id":
+            return 8
+        if key == "exam_code":
+            return 4
+        return max(1, int(getattr(zone.grid, "cols", 1) or 1))
+
+    def _decode_identifier_by_anchor_axis(
+        self,
+        binary: np.ndarray,
+        zone: Zone,
+        template: Template,
+        centers: np.ndarray,
+        radius: int,
+    ) -> tuple[str, list[float], dict[str, object]]:
+        rows = 10
+        cols = max(1, int(zone.grid.cols or 1))
+        if centers.size == 0:
+            return "", [], {"axis_mode": "empty_centers"}
+
+        scores = self.detect_bubbles(binary, centers, radius)
+        core_scores = self._detect_center_core_marks(binary, centers, radius)
+        component_scores = self._detect_digit_zone_component_marks(binary, centers, radius)
+        mark_scores = np.clip((0.30 * scores) + (0.30 * core_scores) + (0.40 * component_scores), 0.0, 1.0)
+
+        detected_anchors = np.array(self._detect_digit_anchor_ruler(binary, template, zone), dtype=np.float32)
+        if len(detected_anchors) < 2:
+            detected_anchors = np.array(self._get_manual_digit_anchor_points(template, zone), dtype=np.float32)
+
+        axis_mode = "anchor_ruler"
+        if len(detected_anchors) >= 2:
+            order = np.argsort(detected_anchors[:, 1])
+            axis_start = detected_anchors[order[0]]
+            axis_end = detected_anchors[order[-1]]
+        else:
+            axis_mode = "pca_fallback"
+            pts = centers.astype(np.float32)
+            mean_pt = np.mean(pts, axis=0)
+            cov = np.cov((pts - mean_pt).T) if len(pts) >= 2 else np.eye(2, dtype=np.float32)
+            eig_vals, eig_vecs = np.linalg.eigh(cov)
+            vec = eig_vecs[:, int(np.argmax(eig_vals))]
+            if float(abs(vec[1])) < float(abs(vec[0])):
+                vec = np.array([0.0, 1.0], dtype=np.float32)
+            if vec[1] < 0:
+                vec = -vec
+            axis_start = mean_pt - (120.0 * vec)
+            axis_end = mean_pt + (120.0 * vec)
+
+        axis_vec = (axis_end - axis_start).astype(np.float32)
+        axis_norm = float(np.linalg.norm(axis_vec))
+        if axis_norm <= 1e-6:
+            return "", [], {"axis_mode": "degenerate_axis"}
+        axis_y = axis_vec / axis_norm
+        axis_x = np.array([axis_y[1], -axis_y[0]], dtype=np.float32)
+        rel = centers.astype(np.float32) - axis_start
+        proj_y = rel @ axis_y
+        proj_x = rel @ axis_x
+
+        x_order = np.argsort(proj_x)
+        x_chunks = np.array_split(proj_x[x_order], cols)
+        col_centers = np.array([float(np.median(ch)) if len(ch) else 0.0 for ch in x_chunks], dtype=np.float32)
+        col_indices = np.array([int(np.argmin(np.abs(col_centers - px))) for px in proj_x], dtype=np.int32)
+
+        if len(detected_anchors) >= 2:
+            anchor_proj = np.sort(((detected_anchors - axis_start) @ axis_y).astype(np.float32))
+            if len(anchor_proj) >= rows + 1:
+                pick = np.linspace(0, len(anchor_proj) - 1, rows + 1).round().astype(int)
+                anchor_proj = anchor_proj[pick]
+                row_proj = 0.5 * (anchor_proj[:-1] + anchor_proj[1:])
+            else:
+                lo, hi = float(np.min(anchor_proj)), float(np.max(anchor_proj))
+                step = (hi - lo) / float(max(rows, 1))
+                row_proj = np.array([lo + ((idx + 0.5) * step) for idx in range(rows)], dtype=np.float32)
+        else:
+            y_order = np.argsort(proj_y)
+            y_chunks = np.array_split(proj_y[y_order], rows)
+            row_proj = np.array([float(np.median(ch)) if len(ch) else 0.0 for ch in y_chunks], dtype=np.float32)
+
+        mat = np.zeros((rows, cols), dtype=np.float32)
+        for idx, score in enumerate(mark_scores):
+            c_idx = int(col_indices[idx])
+            r_idx = int(np.argmin(np.abs(row_proj - proj_y[idx])))
+            if 0 <= r_idx < rows and 0 <= c_idx < cols:
+                mat[r_idx, c_idx] = max(float(mat[r_idx, c_idx]), float(score))
+
+        digit_map = zone.metadata.get("digit_map", list(range(rows)))
+        digits: list[str] = []
+        confs: list[float] = []
+        threshold = max(0.22, float(self.fill_threshold) * 0.72)
+        for c_idx in range(cols):
+            col = mat[:, c_idx]
+            top_idx = int(np.argmax(col))
+            top = float(col[top_idx])
+            second = float(np.partition(col, -2)[-2]) if len(col) > 1 else 0.0
+            if top < threshold or (second >= top * 0.92):
+                digits.append("?")
+                confs.append(max(0.0, top - second))
+                continue
+            mapped = digit_map[top_idx] if top_idx < len(digit_map) else top_idx
+            digits.append(str(mapped))
+            confs.append(max(0.0, top - second))
+
+        debug = {
+            "axis_mode": axis_mode,
+            "axis_line": [(float(axis_start[0]), float(axis_start[1])), (float(axis_end[0]), float(axis_end[1]))],
+            "axis_col_centers": [float(x) for x in col_centers],
+            "axis_row_centers": [float(y) for y in row_proj],
+            "axis_scores": mat.tolist(),
+        }
+        return "".join(digits), confs, debug
+
     def _finalize_identifier_value(
         self,
         zone: Zone,
@@ -2127,7 +2239,9 @@ class OMRProcessor:
         else:
             final_value = value or ""
             conf_list = list(confs or [])
-            expected_len = max(1, int(zone.grid.cols))
+            expected_len = self._identifier_expected_len(key, zone)
+            if len(final_value) > expected_len:
+                final_value = final_value[:expected_len]
             missing_digits = final_value.count("?")
             is_valid = len(final_value) == expected_len and missing_digits == 0
             global_score = float(expected_len - missing_digits) / float(expected_len or 1)
@@ -2135,6 +2249,10 @@ class OMRProcessor:
                 result.recognition_errors.append(f"{zone.zone_type.value}: LOW_CONFIDENCE")
                 if not is_valid:
                     result.recognition_errors.append(f"{zone.zone_type.value}: invalid length or ambiguous digit sequence")
+                    if key == "student_id":
+                        result.recognition_errors.append(f"{zone.zone_type.value}: Lỗi SBD")
+                    elif key == "exam_code":
+                        result.recognition_errors.append(f"{zone.zone_type.value}: Lỗi Mã đề")
                 final_value = ""
         if key == "student_id" and final_value and final_value != "-":
             longest_run = 1
@@ -2358,13 +2476,30 @@ class OMRProcessor:
                 confs=direct_confs,
                 result=result,
             )
+            axis_value, axis_confs, axis_debug = self._decode_identifier_by_anchor_axis(
+                working_binary,
+                zone,
+                template,
+                direct_centers,
+                int(round(bubble_radius)),
+            )
+            axis_final, axis_final_confs = self._finalize_identifier_value(
+                zone,
+                key,
+                value=axis_value,
+                confs=axis_confs,
+                result=None,
+            )
+            if axis_final and (not final_value or float(np.mean(axis_final_confs or [0.0])) >= float(np.mean(final_confs or [0.0]))):
+                del result.recognition_errors[error_mark:]
+                final_value, final_confs = axis_final, axis_final_confs
             used_sampling = False
             zone_debug = dict(getattr(result, "digit_zone_debug", {}) or {})
             final_col_lines = [float(np.median(direct_centers[c::grid.cols, 0])) for c in range(grid.cols)] if grid.cols > 0 else []
-            zone_debug[zone.id] = digit_debug | grid_fit_debug | direct_debug | {
+            zone_debug[zone.id] = digit_debug | grid_fit_debug | direct_debug | axis_debug | {
                 "col_lines": final_col_lines,
                 "col_segments": [],
-                "recognition_path": "direct",
+                "recognition_path": "axis_projection" if axis_final else "direct",
             }
             skip_sampling_fallback = key == "exam_code" and exam_digit_model_applied
             if not final_value and not skip_sampling_fallback:

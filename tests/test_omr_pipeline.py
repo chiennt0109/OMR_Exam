@@ -1852,6 +1852,67 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(digits, "00")
         self.assertGreaterEqual(min(confs), 0.5)
 
+    def test_identifier_anchor_axis_reads_digits_left_to_right(self):
+        zone = Zone(
+            id="sid_axis",
+            name="sid",
+            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        template = Template(name="sid_axis_tpl", image_path="", width=200, height=160, anchors=[], zones=[zone])
+        centers = np.array([(40.0, 20.0 + (r * 10.0)) for r in range(10)] + [(80.0, 20.0 + (r * 10.0)) for r in range(10)], dtype=np.float32)
+        scores = np.zeros((20,), dtype=np.float32)
+        scores[3] = 0.95
+        scores[10 + 7] = 0.93
+        with patch.object(self.processor, "detect_bubbles", return_value=scores), \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=np.zeros((20,), dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_zone_component_marks", return_value=np.zeros((20,), dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_anchor_ruler", return_value=[(20.0, 10.0), (20.0, 110.0)]):
+            value, _, debug = self.processor._decode_identifier_by_anchor_axis(np.zeros((160, 200), dtype=np.uint8), zone, template, centers, 6)
+        self.assertEqual(value, "37")
+        self.assertEqual(debug.get("axis_mode"), "anchor_ruler")
+
+    def test_finalize_identifier_enforces_fixed_lengths_for_student_id_and_exam_code(self):
+        sid_zone = Zone(
+            id="sid_len",
+            name="sid",
+            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=12, question_start=1, question_count=12, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        exam_zone = Zone(
+            id="exam_len",
+            name="exam",
+            zone_type=ZoneType.EXAM_CODE_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=12, question_start=1, question_count=12, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        sid_result = type("R", (), {"recognition_errors": []})()
+        sid_value, _ = self.processor._finalize_identifier_value(sid_zone, "student_id", value="123456789012", confs=[1.0] * 12, result=sid_result)
+        self.assertEqual(sid_value, "12345678")
+
+        exam_result = type("R", (), {"recognition_errors": []})()
+        exam_value, _ = self.processor._finalize_identifier_value(exam_zone, "exam_code", value="567890", confs=[1.0] * 6, result=exam_result)
+        self.assertEqual(exam_value, "5678")
+
+        short_result = type("R", (), {"recognition_errors": []})()
+        short_value, _ = self.processor._finalize_identifier_value(sid_zone, "student_id", value="1234", confs=[1.0] * 4, result=short_result)
+        self.assertEqual(short_value, "")
+        self.assertTrue(any("Lỗi SBD" in err for err in short_result.recognition_errors))
+
     def test_recognize_block_invalidates_student_id_when_any_digit_is_ambiguous(self):
         template = Template(
             name="sid_invalid",
