@@ -13288,13 +13288,13 @@ class MainWindow(QMainWindow):
                 self.error_list.addItem(f"{Path(result.image_path).name}: RECOGNITION - {err}")
 
     @staticmethod
-    def _student_sort_token(student_id: str) -> tuple[int, object]:
+    def _student_sort_token(student_id: str) -> tuple[int, int, object]:
         sid = str(student_id or "").strip()
         if not sid or sid == "-":
-            return (1, "")
+            return (1, 0, "")
         if sid.isdigit():
-            return (0, int(sid))
-        return (0, sid.casefold())
+            return (0, 0, int(sid))
+        return (0, 1, sid.casefold())
 
     def _row_sort_bucket(self, status: str, blank_map: dict[str, list[int]]) -> int:
         status_text = str(status or "").strip()

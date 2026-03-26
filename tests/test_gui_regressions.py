@@ -28,6 +28,12 @@ class GuiRegressionTests(unittest.TestCase):
         return 2''', source)
         self.assertIn('self._student_sort_token(str(item["sid"]))', source)
 
+    def test_student_sort_token_uses_consistent_tuple_shape_to_avoid_mixed_type_sort_errors(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('def _student_sort_token(student_id: str) -> tuple[int, int, object]:', source)
+        self.assertIn('return (0, 0, int(sid))', source)
+        self.assertIn('return (0, 1, sid.casefold())', source)
+
     def test_student_id_error_status_is_not_treated_as_duplicate(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
         self.assertIn('def _student_id_has_recognition_error(student_id: str) -> bool:', source)
