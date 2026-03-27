@@ -2473,28 +2473,16 @@ class OMRProcessor:
         second_i = int(order[1]) if len(order) > 1 else top_i
         top = float(scores[top_i])
         second = float(scores[second_i]) if len(order) > 1 else 0.0
-        filled = np.where(scores > row_threshold)[0]
         margin = top - second
-        if len(filled) > 1:
-            top_support = top
-            second_support = second
-            if row_raw_scores is not None and row_core_scores is not None:
-                raw_scores = np.asarray(row_raw_scores, dtype=np.float32)
-                core_scores = np.asarray(row_core_scores, dtype=np.float32)
-                eroded_scores = np.asarray(row_eroded_scores if row_eroded_scores is not None else raw_scores, dtype=np.float32)
-                top_support = max(float(raw_scores[top_i]), float(core_scores[top_i]), float(eroded_scores[top_i]))
-                second_support = max(float(raw_scores[second_i]), float(core_scores[second_i]), float(eroded_scores[second_i]))
-            support_similarity = second_support / max(top_support, 1e-6)
-            if top >= row_threshold and support_similarity < 0.95:
-                return top_i, max(margin, top_support - second_support), "row_max_fallback"
-            return None, 0.0, "multiple"
-        if top > row_threshold and margin > self.certainty_margin:
-            return top_i, margin, None
-        relaxed_threshold = max(self.empty_threshold + 0.10, row_threshold - 0.10)
-        strong_margin = max(self.certainty_margin * 0.75, 0.05)
-        strong_ratio = second <= 1e-6 or top >= (1.20 * second)
-        if len(filled) <= 1 and top >= relaxed_threshold and margin >= strong_margin and strong_ratio:
-            return top_i, margin, "best_fallback"
+        if top < max(self.empty_threshold + 0.08, row_threshold - 0.10):
+            return None, 0.0, "uncertain"
+        tie_tol = 0.015
+        if len(order) > 1 and abs(top - second) <= tie_tol:
+            return None, 0.0, "multiple_equal"
+        if margin <= 0:
+            return None, 0.0, "multiple_equal"
+        _ = row_raw_scores, row_core_scores, row_eroded_scores
+        return top_i, margin, "max_pick"
         return None, 0.0, "uncertain"
 
     def recognize_block(self, binary: np.ndarray, zone: Zone, template: Template, result: OMRResult, debug_overlay: np.ndarray | None = None) -> None:
