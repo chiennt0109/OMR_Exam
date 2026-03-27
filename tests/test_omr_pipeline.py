@@ -1210,6 +1210,27 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(editor_res.true_false_answers, batch_res.true_false_answers)
         self.assertEqual(editor_res.numeric_answers, batch_res.numeric_answers)
 
+    def test_process_batch_reuses_template_instance_for_speed(self):
+        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[])
+        fake_result = type("FakeResult", (), {"image_path": "x.png"})()
+        with patch.object(self.processor, "run_recognition_test", return_value=fake_result) as run_mock:
+            self.processor.process_batch(["a.png", "b.png"], template)
+        self.assertEqual(run_mock.call_count, 2)
+        self.assertIs(run_mock.call_args_list[0].args[1], template)
+        self.assertIs(run_mock.call_args_list[1].args[1], template)
+
+    def test_recognize_sheet_keeps_template_dimensions_stable(self):
+        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[])
+        original_size = (template.width, template.height)
+        with patch.object(self.processor, "_normalize_to_200_dpi", return_value=("x.png", "")), \
+            patch("cv2.imread", return_value=np.zeros((100, 200, 3), dtype=np.uint8)), \
+            patch.object(self.processor, "_correct_rotation", side_effect=lambda x: x), \
+            patch.object(self.processor, "_preprocess", return_value={"binary": np.zeros((100, 200), dtype=np.uint8)}), \
+            patch.object(self.processor, "correct_perspective", return_value=(np.zeros((100, 200, 3), dtype=np.uint8), np.zeros((100, 200), dtype=np.uint8))), \
+            patch.object(self.processor, "detect_anchors", return_value=[]):
+            self.processor.recognize_sheet("x.png", template)
+        self.assertEqual((template.width, template.height), original_size)
+
     def test_batch_context_skips_expensive_diagnostics_collection(self):
         template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[])
         context = RecognitionContext()

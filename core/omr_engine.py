@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 import time
@@ -147,13 +146,8 @@ class OMRProcessor:
             prepared = self._preprocess(rotated)
 
             aligned, aligned_binary = self.correct_perspective(rotated, prepared["binary"], template, result)
-            aligned_pre = self._preprocess(aligned)
             if aligned_binary is None:
-                aligned_binary = aligned_pre["binary"]
-
-            aligned_h, aligned_w = aligned_binary.shape[:2]
-            template.width = int(aligned_w)
-            template.height = int(aligned_h)
+                aligned_binary = self._preprocess(aligned)["binary"]
 
             debug_overlay = aligned.copy() if self.debug_mode else None
             if debug_overlay is not None:
@@ -235,10 +229,9 @@ class OMRProcessor:
         total = len(image_paths)
         results: list[OMRResult] = []
         for idx, image_path in enumerate(image_paths, start=1):
-            template_copy = deepcopy(template)
             context = RecognitionContext()
             context.collect_diagnostics = False
-            results.append(self.run_recognition_test(image_path, template_copy, context))
+            results.append(self.run_recognition_test(image_path, template, context))
             if progress_callback:
                 progress_callback(idx, total, image_path)
         return results
