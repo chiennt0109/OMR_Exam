@@ -2512,6 +2512,7 @@ class OMRProcessor:
             bubble_radius = float(zone.metadata.get("bubble_radius", 9))
             sid_ratio_debug: dict[str, object] = {}
             sid_ratio_guided: np.ndarray | None = None
+            sid_base_guided: np.ndarray | None = None
             exam_digit_model_applied = False
             if zone.zone_type == ZoneType.EXAM_CODE_BLOCK:
                 modeled_expected, model_debug = self._digit_model_expected_points(template, zone)
@@ -2530,15 +2531,7 @@ class OMRProcessor:
                 guided, digit_debug = self._digit_zone_guidance(working_binary, expected, zone, template)
             if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
                 sid_base_guided = guided.astype(np.float32)
-                sid_ratio_guided, sid_ratio_debug = self._adjust_identifier_points_by_anchor_distance(
-                    working_binary,
-                    template,
-                    zone,
-                    sid_base_guided,
-                )
-                sid_ratio_debug["student_ratio_applied"] = False
                 guided = sid_base_guided
-                digit_debug = dict(digit_debug) | sid_ratio_debug
             column_guided = self._resolve_column_digit_centers(working_binary, guided.astype(np.float32), grid, bubble_radius)
             centers, grid_fit_debug = self._refit_digit_grid_from_clear_points(
                 working_binary,
@@ -2562,62 +2555,78 @@ class OMRProcessor:
                 confs=direct_confs,
                 result=result,
             )
-            axis_value, axis_confs, axis_debug = self._decode_identifier_by_anchor_axis(
-                working_binary,
-                zone,
-                template,
-                direct_centers,
-                int(round(bubble_radius)),
-            )
-            axis_final, axis_final_confs = self._finalize_identifier_value(
-                zone,
-                key,
-                value=axis_value,
-                confs=axis_confs,
-                result=None,
-            )
-            if axis_final and (not final_value or float(np.mean(axis_final_confs or [0.0])) >= float(np.mean(final_confs or [0.0]))):
-                del result.recognition_errors[error_mark:]
-                final_value, final_confs = axis_final, axis_final_confs
+            axis_debug: dict[str, object] = {}
+            axis_needed = (not final_value) or (float(np.mean(final_confs or [0.0])) < 0.32)
+            if axis_needed:
+                axis_value, axis_confs, axis_debug = self._decode_identifier_by_anchor_axis(
+                    working_binary,
+                    zone,
+                    template,
+                    direct_centers,
+                    int(round(bubble_radius)),
+                )
+                axis_final, axis_final_confs = self._finalize_identifier_value(
+                    zone,
+                    key,
+                    value=axis_value,
+                    confs=axis_confs,
+                    result=None,
+                )
+                if axis_final and (not final_value or float(np.mean(axis_final_confs or [0.0])) >= float(np.mean(final_confs or [0.0]))):
+                    del result.recognition_errors[error_mark:]
+                    final_value, final_confs = axis_final, axis_final_confs
             if (
                 key == "student_id"
                 and not final_value
-                and sid_ratio_guided is not None
-                and bool(sid_ratio_debug.get("identifier_anchor_distance_ratio_applied"))
-                and int(sid_ratio_debug.get("detected_anchor_count", 0)) >= 3
+                and sid_base_guided is not None
             ):
-                retry_column_guided = self._resolve_column_digit_centers(working_binary, sid_ratio_guided.astype(np.float32), grid, bubble_radius)
-                retry_centers, retry_grid_fit_debug = self._refit_digit_grid_from_clear_points(
+                sid_ratio_guided, sid_ratio_debug = self._adjust_identifier_points_by_anchor_distance(
                     working_binary,
-                    retry_column_guided.astype(np.float32),
-                    grid,
-                    bubble_radius,
-                )
-                retry_value, retry_confs, retry_direct_centers, retry_mat, retry_direct_debug = self._decode_identifier_zone_from_centers(
-                    working_binary,
+                    template,
                     zone,
-                    result,
-                    retry_centers,
-                    int(round(bubble_radius)),
+                    sid_base_guided,
                 )
-                retry_final, retry_final_confs = self._finalize_identifier_value(
-                    zone,
-                    key,
-                    value=retry_value,
-                    confs=retry_confs,
-                    result=None,
-                )
-                sid_ratio_debug["student_ratio_retry_attempted"] = True
-                sid_ratio_debug["student_ratio_retry_success"] = bool(retry_final)
-                if retry_final:
-                    del result.recognition_errors[error_mark:]
-                    final_value, final_confs = retry_final, retry_final_confs
-                    direct_centers = retry_direct_centers
-                    direct_mat = retry_mat
-                    direct_debug = dict(direct_debug) | dict(retry_direct_debug) | dict(retry_grid_fit_debug) | {
-                        "student_ratio_applied": True,
-                        "recognition_path": "student_ratio_retry",
-                    }
+                if not (
+                    sid_ratio_guided is not None
+                    and bool(sid_ratio_debug.get("identifier_anchor_distance_ratio_applied"))
+                    and int(sid_ratio_debug.get("detected_anchor_count", 0)) >= 3
+                ):
+                    sid_ratio_debug["student_ratio_retry_attempted"] = False
+                else:
+                    retry_column_guided = self._resolve_column_digit_centers(working_binary, sid_ratio_guided.astype(np.float32), grid, bubble_radius)
+                    retry_centers, retry_grid_fit_debug = self._refit_digit_grid_from_clear_points(
+                        working_binary,
+                        retry_column_guided.astype(np.float32),
+                        grid,
+                        bubble_radius,
+                    )
+                    retry_value, retry_confs, retry_direct_centers, retry_mat, retry_direct_debug = self._decode_identifier_zone_from_centers(
+                        working_binary,
+                        zone,
+                        result,
+                        retry_centers,
+                        int(round(bubble_radius)),
+                    )
+                    retry_final, retry_final_confs = self._finalize_identifier_value(
+                        zone,
+                        key,
+                        value=retry_value,
+                        confs=retry_confs,
+                        result=None,
+                    )
+                    sid_ratio_debug["student_ratio_retry_attempted"] = True
+                    sid_ratio_debug["student_ratio_retry_success"] = bool(retry_final)
+                    if retry_final:
+                        del result.recognition_errors[error_mark:]
+                        final_value, final_confs = retry_final, retry_final_confs
+                        direct_centers = retry_direct_centers
+                        direct_mat = retry_mat
+                        direct_debug = dict(direct_debug) | dict(retry_direct_debug) | dict(retry_grid_fit_debug) | {
+                            "student_ratio_applied": True,
+                            "recognition_path": "student_ratio_retry",
+                        }
+            if sid_ratio_debug:
+                digit_debug = dict(digit_debug) | sid_ratio_debug
             used_sampling = False
             zone_debug = dict(getattr(result, "digit_zone_debug", {}) or {})
             final_col_lines = [float(np.median(direct_centers[c::grid.cols, 0])) for c in range(grid.cols)] if grid.cols > 0 else []
