@@ -169,6 +169,11 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('"note": str(getattr(r, "scoring_note", "") or ""),', source)
         self.assertIn('Danh sách Chấm thông minh:', source)
 
+    def test_batch_scan_uses_shared_process_batch_flow_instead_of_per_file_deepcopy(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('new_results = self.omr_processor.process_batch(file_paths, self.template, on_progress)', source)
+        self.assertNotIn('self.omr_processor.run_recognition_test(image_path, copy.deepcopy(self.template), None)', source)
+
 
 if __name__ == '__main__':
     unittest.main()

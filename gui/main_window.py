@@ -11323,9 +11323,10 @@ class MainWindow(QMainWindow):
             if not self._student_id_has_recognition_error(sid_existing):
                 duplicate_ids[sid_existing] = duplicate_ids.get(sid_existing, 0) + 1
 
-        for idx, image_path in enumerate(file_paths):
-            on_progress(idx + 1, len(file_paths), image_path)
-            result = self.omr_processor.run_recognition_test(image_path, copy.deepcopy(self.template), None)
+        base_count = len(self.scan_results)
+        new_results = self.omr_processor.process_batch(file_paths, self.template, on_progress)
+        for offset, result in enumerate(new_results):
+            idx = base_count + offset
             forced_status = ""
             original_meaningful = self._result_has_meaningful_recognition(result)
             original_identity = self._has_valid_identity(result)
@@ -11357,7 +11358,7 @@ class MainWindow(QMainWindow):
             self.scan_results_by_subject[subject_key_for_results] = list(self.scan_results)
 
             # Keep UI responsive while filling table after recognition reaches 100%.
-            if idx % 10 == 0:
+            if offset % 10 == 0:
                 QApplication.processEvents()
 
         forced_status_by_image = {
