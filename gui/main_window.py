@@ -11350,16 +11350,20 @@ class MainWindow(QMainWindow):
 
             self._refresh_student_profile_for_result(result)
             result.answer_string = self._build_answer_string_for_result(result, subject_key_for_results)
-            self.database.upsert_scan_result(subject_key_for_results, self._serialize_omr_result(result))
             self.scan_results.append(self._strip_transient_scan_artifacts(result))
             sid_for_dup = (result.student_id or "").strip()
             if not self._student_id_has_recognition_error(sid_for_dup):
                 duplicate_ids[sid_for_dup] = duplicate_ids.get(sid_for_dup, 0) + 1
-            self.scan_results_by_subject[subject_key_for_results] = list(self.scan_results)
 
             # Keep UI responsive while filling table after recognition reaches 100%.
             if offset % 10 == 0:
                 QApplication.processEvents()
+
+        self.scan_results_by_subject[subject_key_for_results] = list(self.scan_results)
+        self.database.replace_scan_results_for_subject(
+            subject_key_for_results,
+            [self._serialize_omr_result(x) for x in self.scan_results],
+        )
 
         forced_status_by_image = {
             str(result.image_path or ""): str(self.scan_forced_status_by_index.get(idx, "") or "")

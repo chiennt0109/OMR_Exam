@@ -173,6 +173,8 @@ class GuiRegressionTests(unittest.TestCase):
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
         self.assertIn('new_results = self.omr_processor.process_batch(file_paths, self.template, on_progress)', source)
         self.assertNotIn('self.omr_processor.run_recognition_test(image_path, copy.deepcopy(self.template), None)', source)
+        self.assertIn('self.database.replace_scan_results_for_subject(', source)
+        self.assertNotIn('self.database.upsert_scan_result(subject_key_for_results, self._serialize_omr_result(result))', source)
 
 
 if __name__ == '__main__':
