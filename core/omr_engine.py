@@ -167,9 +167,20 @@ class OMRProcessor:
                 rotated = self._correct_rotation(src)
             prepared = self._preprocess_fast(rotated) if fast_mode else self._preprocess(rotated)
 
-            aligned, aligned_binary = self.correct_perspective(rotated, prepared["binary"], template, result)
-            if aligned_binary is None:
-                aligned_binary = (self._preprocess_fast(aligned) if fast_mode else self._preprocess(aligned))["binary"]
+            direct_match = fast_mode and bool((template.metadata or {}).get("fast_direct_match", True))
+            if direct_match:
+                target_size = (int(template.width), int(template.height))
+                if rotated.shape[1] == target_size[0] and rotated.shape[0] == target_size[1]:
+                    aligned = rotated
+                    aligned_binary = prepared["binary"]
+                else:
+                    aligned = cv2.resize(rotated, target_size, interpolation=cv2.INTER_LINEAR)
+                    aligned_binary = cv2.resize(prepared["binary"], target_size, interpolation=cv2.INTER_NEAREST)
+                self._last_alignment_debug = {"mode": "fast_direct_match", "alignment_score": 1.0}
+            else:
+                aligned, aligned_binary = self.correct_perspective(rotated, prepared["binary"], template, result)
+                if aligned_binary is None:
+                    aligned_binary = (self._preprocess_fast(aligned) if fast_mode else self._preprocess(aligned))["binary"]
 
             debug_overlay = aligned.copy() if self.debug_mode else None
             if debug_overlay is not None:
@@ -269,12 +280,38 @@ class OMRProcessor:
 
     def _run_batch_item(self, image_path: str, template: Template):
         worker = self._get_thread_batch_worker()
-        return worker.run_recognition_test(image_path, template, RecognitionContext(collect_diagnostics=False))
+        started = time.perf_counter()
+        res = worker.run_recognition_test(image_path, template, RecognitionContext(collect_diagnostics=False))
+        return res, float(time.perf_counter() - started)
+
+    @staticmethod
+    def _write_batch_timing_log(log_path: Path, rows: list[tuple[int, str, float]], total_count: int) -> None:
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            lines: list[str] = []
+            lines.append("idx\tfile\tseconds")
+            for idx, image_path, sec in rows:
+                lines.append(f"{idx}\t{image_path}\t{sec:.4f}")
+            valid_secs = [sec for _, _, sec in rows if sec >= 0.0]
+            if valid_secs:
+                avg = float(sum(valid_secs) / len(valid_secs))
+                est_500 = avg * 500.0
+                est_600 = avg * 600.0
+                lines.append("")
+                lines.append(f"avg_seconds_per_file\t{avg:.4f}")
+                lines.append(f"estimated_500_files_seconds\t{est_500:.2f}")
+                lines.append(f"estimated_600_files_seconds\t{est_600:.2f}")
+                lines.append(f"target_under_120_seconds_for_500\t{'YES' if est_500 <= 120.0 else 'NO'}")
+            lines.append(f"total_files\t{total_count}")
+            log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except Exception:
+            pass
 
     def process_batch(self, image_paths: list[str], template: Template, progress_callback: Callable[[int, int, str], None] | None = None) -> list[OMRResult]:
         total = len(image_paths)
         if total == 0:
             return []
+        timing_rows: list[tuple[int, str, float]] = []
         configured_workers = int(((template.metadata or {}).get("batch_workers", 0) if getattr(template, "metadata", None) else 0) or 0)
         default_workers = min(8, max(1, (os.cpu_count() or 1) - 1))
         worker_count = configured_workers if configured_workers > 0 else default_workers
@@ -284,12 +321,17 @@ class OMRProcessor:
             for idx, image_path in enumerate(image_paths, start=1):
                 context = RecognitionContext()
                 context.collect_diagnostics = False
+                started = time.perf_counter()
                 results.append(self.run_recognition_test(image_path, template, context))
+                timing_rows.append((idx, str(image_path), float(time.perf_counter() - started)))
                 if progress_callback:
                     progress_callback(idx, total, image_path)
+            log_path = Path(str((template.metadata or {}).get("batch_timing_log_path", "") or "omr_batch_timing.log"))
+            self._write_batch_timing_log(log_path, timing_rows, total)
             return results
 
         ordered_results: list[OMRResult | None] = [None] * total
+        ordered_secs: list[float] = [0.0] * total
         completed = 0
         self._batch_worker_local = threading.local()
         with ThreadPoolExecutor(max_workers=worker_count) as pool:
@@ -299,10 +341,16 @@ class OMRProcessor:
             }
             for fut in as_completed(future_map):
                 idx, image_path = future_map[fut]
-                ordered_results[idx] = fut.result()
+                res, elapsed = fut.result()
+                ordered_results[idx] = res
+                ordered_secs[idx] = float(elapsed)
                 completed += 1
                 if progress_callback:
                     progress_callback(completed, total, image_path)
+        for idx, image_path in enumerate(image_paths, start=1):
+            timing_rows.append((idx, str(image_path), float(ordered_secs[idx - 1])))
+        log_path = Path(str((template.metadata or {}).get("batch_timing_log_path", "") or "omr_batch_timing.log"))
+        self._write_batch_timing_log(log_path, timing_rows, total)
         return [res for res in ordered_results if res is not None]
 
     def _load_image_normalized_to_200_dpi(self, path: str) -> tuple[np.ndarray | None, str]:
