@@ -175,6 +175,9 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertNotIn('self.omr_processor.run_recognition_test(image_path, copy.deepcopy(self.template), None)', source)
         self.assertIn('self.database.replace_scan_results_for_subject(', source)
         self.assertNotIn('self.database.upsert_scan_result(subject_key_for_results, self._serialize_omr_result(result))', source)
+        self.assertIn('timing_text = f"{elapsed_sec:.1f}s/{total_items} bài"', source)
+        self.assertIn('self.progress.setFormat(f"%p% ({timing_text})")', source)
+        self.assertIn('omr_batch_timing_manual.log', source)
 
 
 if __name__ == '__main__':

@@ -4,6 +4,7 @@ import copy
 import json
 from datetime import date, datetime
 from pathlib import Path
+import time
 
 from PySide6.QtCore import Qt, QEvent, QPointF, QTimer
 from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPixmap, QTransform, QPainter, QPen
@@ -11306,6 +11307,7 @@ class MainWindow(QMainWindow):
         self.scan_forced_status_by_index.clear()
 
         self._apply_template_recognition_settings(self.template, sync_mode_selector=False)
+        batch_started = time.perf_counter()
 
         def on_progress(current: int, total: int, image_path: str):
             self.progress.setMaximum(total)
@@ -11373,6 +11375,20 @@ class MainWindow(QMainWindow):
         self._finalize_batch_scan_display()
         self.btn_save_batch_subject.setEnabled(False)
         self._update_batch_scan_scope_summary()
+        elapsed_sec = max(0.0, float(time.perf_counter() - batch_started))
+        total_items = len(file_paths)
+        timing_text = f"{elapsed_sec:.1f}s/{total_items} bài"
+        if hasattr(self, "batch_scan_state_value"):
+            self.batch_scan_state_value.setText(timing_text)
+        if hasattr(self, "progress"):
+            self.progress.setFormat(f"%p% ({timing_text})")
+        try:
+            log_path = Path.cwd() / "omr_batch_timing_manual.log"
+            log_line = f"{datetime.now().isoformat(timespec='seconds')}\t{subject_key_for_results}\t{total_items}\t{elapsed_sec:.4f}\t{timing_text}\n"
+            with log_path.open("a", encoding="utf-8") as fh:
+                fh.write(log_line)
+        except Exception:
+            pass
 
     @staticmethod
     def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
