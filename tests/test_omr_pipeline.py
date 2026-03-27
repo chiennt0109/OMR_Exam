@@ -1219,6 +1219,13 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertIs(run_mock.call_args_list[0].args[1], template)
         self.assertIs(run_mock.call_args_list[1].args[1], template)
 
+    def test_process_batch_defaults_to_single_worker_for_stability(self):
+        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[])
+        fake_result = type("FakeResult", (), {"image_path": "x.png"})()
+        with patch.object(self.processor, "run_recognition_test", return_value=fake_result) as run_mock:
+            self.processor.process_batch(["a.png", "b.png"], template)
+        self.assertEqual(run_mock.call_count, 2)
+
     def test_process_batch_parallel_keeps_input_order(self):
         template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[], metadata={"batch_workers": 2})
 

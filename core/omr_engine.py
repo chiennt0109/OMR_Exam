@@ -296,9 +296,11 @@ class OMRProcessor:
             return []
         timing_rows: list[tuple[int, str, float]] = []
         configured_workers = int(((template.metadata or {}).get("batch_workers", 0) if getattr(template, "metadata", None) else 0) or 0)
-        default_workers = min(8, max(1, (os.cpu_count() or 1) - 1))
+        default_workers = 1
         worker_count = configured_workers if configured_workers > 0 else default_workers
         worker_count = max(1, min(worker_count, total))
+        log_path_text = str((template.metadata or {}).get("batch_timing_log_path", "") or "")
+        log_enabled = bool(log_path_text.strip())
         results: list[OMRResult] = []
         if worker_count <= 1:
             for idx, image_path in enumerate(image_paths, start=1):
@@ -309,8 +311,8 @@ class OMRProcessor:
                 timing_rows.append((idx, str(image_path), float(time.perf_counter() - started)))
                 if progress_callback:
                     progress_callback(idx, total, image_path)
-            log_path = Path(str((template.metadata or {}).get("batch_timing_log_path", "") or "omr_batch_timing.log"))
-            self._write_batch_timing_log(log_path, timing_rows, total)
+            if log_enabled:
+                self._write_batch_timing_log(Path(log_path_text), timing_rows, total)
             return results
 
         ordered_results: list[OMRResult | None] = [None] * total
@@ -332,8 +334,8 @@ class OMRProcessor:
                     progress_callback(completed, total, image_path)
         for idx, image_path in enumerate(image_paths, start=1):
             timing_rows.append((idx, str(image_path), float(ordered_secs[idx - 1])))
-        log_path = Path(str((template.metadata or {}).get("batch_timing_log_path", "") or "omr_batch_timing.log"))
-        self._write_batch_timing_log(log_path, timing_rows, total)
+        if log_enabled:
+            self._write_batch_timing_log(Path(log_path_text), timing_rows, total)
         return [res for res in ordered_results if res is not None]
 
     def _load_image_normalized_to_200_dpi(self, path: str) -> tuple[np.ndarray | None, str]:
