@@ -2443,6 +2443,33 @@ class OMRProcessor:
         }
         return np.array(adjusted, dtype=np.float32), debug
 
+    def _identifier_center_quality(
+        self,
+        binary: np.ndarray,
+        centers: np.ndarray,
+        radius: float,
+        cols: int,
+    ) -> float:
+        rows = 10
+        if centers.size == 0 or cols <= 0:
+            return -1e9
+        rr = max(1, int(round(radius)))
+        scores = self.detect_bubbles(binary, centers, rr)
+        core_scores = self._detect_center_core_marks(binary, centers, rr)
+        comp_scores = self._detect_digit_zone_component_marks(binary, centers, rr)
+        merged = np.clip((0.35 * scores) + (0.35 * core_scores) + (0.30 * comp_scores), 0.0, 1.0)
+        mat = self._cluster_digit_columns(centers, merged, rows, cols, 0.0)
+        quality = 0.0
+        for c_idx in range(cols):
+            col = mat[:, c_idx]
+            top = float(np.max(col)) if len(col) else 0.0
+            second = float(np.partition(col, -2)[-2]) if len(col) > 1 else 0.0
+            margin = max(0.0, top - second)
+            ambiguity_penalty = 0.40 if (top > 0.0 and second >= top * 0.95) else 0.0
+            weak_penalty = 0.25 if top < max(0.20, self.empty_threshold + 0.06) else 0.0
+            quality += top + (0.80 * margin) - ambiguity_penalty - weak_penalty
+        return quality / float(max(1, cols))
+
     def _should_retry_exam_code_with_sampling(
         self,
         recognition_errors: list[str],
@@ -2527,12 +2554,27 @@ class OMRProcessor:
             else:
                 guided, digit_debug = self._digit_zone_guidance(working_binary, expected, zone, template)
             if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
-                guided, sid_ratio_debug = self._adjust_identifier_points_by_anchor_distance(
+                base_guided = guided.astype(np.float32)
+                ratio_guided, sid_ratio_debug = self._adjust_identifier_points_by_anchor_distance(
                     working_binary,
                     template,
                     zone,
-                    guided.astype(np.float32),
+                    base_guided,
                 )
+                chosen_guided = base_guided
+                if bool(sid_ratio_debug.get("identifier_anchor_distance_ratio_applied")) and int(sid_ratio_debug.get("detected_anchor_count", 0)) >= 3:
+                    base_centers = self._resolve_column_digit_centers(working_binary, base_guided, grid, bubble_radius)
+                    ratio_centers = self._resolve_column_digit_centers(working_binary, ratio_guided, grid, bubble_radius)
+                    base_quality = self._identifier_center_quality(working_binary, base_centers, bubble_radius, int(grid.cols or 1))
+                    ratio_quality = self._identifier_center_quality(working_binary, ratio_centers, bubble_radius, int(grid.cols or 1))
+                    sid_ratio_debug["student_ratio_base_quality"] = float(base_quality)
+                    sid_ratio_debug["student_ratio_adjusted_quality"] = float(ratio_quality)
+                    sid_ratio_debug["student_ratio_applied"] = bool(ratio_quality > (base_quality + 0.025))
+                    if bool(sid_ratio_debug["student_ratio_applied"]):
+                        chosen_guided = ratio_guided
+                else:
+                    sid_ratio_debug["student_ratio_applied"] = False
+                guided = chosen_guided
                 digit_debug = dict(digit_debug) | sid_ratio_debug
             column_guided = self._resolve_column_digit_centers(working_binary, guided.astype(np.float32), grid, bubble_radius)
             centers, grid_fit_debug = self._refit_digit_grid_from_clear_points(
