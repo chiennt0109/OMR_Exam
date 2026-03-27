@@ -1239,6 +1239,50 @@ class OMRPipelineTests(unittest.TestCase):
             out = self.processor.process_batch(["a.png", "b.png"], template)
         self.assertEqual([getattr(x, "image_path", "") for x in out], ["a.png", "b.png"])
 
+    def test_process_batch_parallel_clears_stale_orientation_hint(self):
+        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[], metadata={"batch_workers": 2})
+        self.processor._batch_orientation_hint = 180
+        self.processor._batch_orientation_hint_score = 50.0
+
+        class FakeWorker:
+            def run_recognition_test(self, image_path, _template, _context):
+                return type("R", (), {"image_path": str(image_path)})()
+
+        with patch.object(self.processor, "_make_batch_worker", side_effect=[FakeWorker(), FakeWorker()]):
+            _ = self.processor.process_batch(["a.png", "b.png"], template)
+        self.assertIsNone(self.processor._batch_orientation_hint)
+        self.assertIsNone(self.processor._batch_orientation_hint_score)
+
+    def test_auto_orient_uses_batch_orientation_hint_for_speed(self):
+        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[])
+        img = np.zeros((100, 200, 3), dtype=np.uint8)
+        binary = np.zeros((100, 200), dtype=np.uint8)
+        self.processor._batch_orientation_hint = 0
+        self.processor._batch_orientation_hint_score = 100.0
+        with patch.object(self.processor, "_orientation_score", return_value=90.0) as score_mock:
+            _, _ = self.processor._auto_orient(img, binary, template)
+        self.assertEqual(score_mock.call_count, 1)
+
+    def test_rotation_estimation_uses_downscaled_probe_for_large_images(self):
+        large = np.zeros((2800, 4200, 3), dtype=np.uint8)
+        probe = self.processor._downscale_for_rotation_estimation(large, max_side=1400)
+        self.assertLessEqual(max(probe.shape[:2]), 1400)
+
+    def test_recognize_sheet_returns_early_if_timeout_after_rotation(self):
+        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[])
+        src = np.zeros((100, 200, 3), dtype=np.uint8)
+
+        def _force_timeout(img):
+            self.processor._processing_deadline_monotonic = time.monotonic() - 1.0
+            return img
+
+        with patch.object(self.processor, "_load_image_normalized_to_200_dpi", return_value=(src, "")), \
+            patch.object(self.processor, "_correct_rotation", side_effect=_force_timeout), \
+            patch.object(self.processor, "_preprocess", side_effect=AssertionError("preprocess should be skipped after timeout")):
+            result = self.processor.recognize_sheet("x.png", template)
+
+        self.assertTrue(any(i.code == "TIMEOUT" for i in result.issues))
+
     def test_recognize_sheet_keeps_template_dimensions_stable(self):
         template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[])
         original_size = (template.width, template.height)

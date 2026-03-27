@@ -94,6 +94,8 @@ class OMRProcessor:
         self.processing_time_limit_sec: float = 8.0
         self._processing_deadline_monotonic: float | None = None
         self._batch_worker_local = threading.local()
+        self._batch_orientation_hint: int | None = None
+        self._batch_orientation_hint_score: float | None = None
 
     def _time_budget_exceeded(self) -> bool:
         deadline = self._processing_deadline_monotonic
@@ -159,9 +161,29 @@ class OMRProcessor:
                     return result
 
             rotated = self._correct_rotation(src)
+            if self._time_budget_exceeded():
+                result.issues.append(OMRIssue("TIMEOUT", "Recognition time budget exceeded during rotation correction"))
+                setattr(result, "aligned_image", rotated)
+                result.processing_time_sec = time.perf_counter() - started
+                result.sync_legacy_aliases()
+                return result
             prepared = self._preprocess(rotated)
+            if self._time_budget_exceeded():
+                result.issues.append(OMRIssue("TIMEOUT", "Recognition time budget exceeded during preprocessing"))
+                setattr(result, "aligned_image", rotated)
+                setattr(result, "aligned_binary", prepared.get("binary"))
+                result.processing_time_sec = time.perf_counter() - started
+                result.sync_legacy_aliases()
+                return result
 
             aligned, aligned_binary = self.correct_perspective(rotated, prepared["binary"], template, result)
+            if self._time_budget_exceeded():
+                result.issues.append(OMRIssue("TIMEOUT", "Recognition time budget exceeded during alignment"))
+                setattr(result, "aligned_image", aligned)
+                setattr(result, "aligned_binary", aligned_binary if aligned_binary is not None else prepared.get("binary"))
+                result.processing_time_sec = time.perf_counter() - started
+                result.sync_legacy_aliases()
+                return result
             if aligned_binary is None:
                 aligned_binary = self._preprocess(aligned)["binary"]
 
@@ -290,10 +312,35 @@ class OMRProcessor:
         except Exception:
             pass
 
+    @staticmethod
+    def _rotate_pair(image: np.ndarray, binary: np.ndarray, rotation: int, template: Template) -> tuple[np.ndarray, np.ndarray]:
+        rot = int(rotation) % 360
+        if rot == 90:
+            img_r = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+            bin_r = cv2.rotate(binary, cv2.ROTATE_90_CLOCKWISE)
+        elif rot == 180:
+            img_r = cv2.rotate(image, cv2.ROTATE_180)
+            bin_r = cv2.rotate(binary, cv2.ROTATE_180)
+        elif rot == 270:
+            img_r = cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            bin_r = cv2.rotate(binary, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        else:
+            img_r = image
+            bin_r = binary
+        if img_r.shape[1] != template.width or img_r.shape[0] != template.height:
+            img_r = cv2.resize(img_r, (template.width, template.height), interpolation=cv2.INTER_LINEAR)
+            bin_r = cv2.resize(bin_r, (template.width, template.height), interpolation=cv2.INTER_NEAREST)
+        return img_r, bin_r
+
     def process_batch(self, image_paths: list[str], template: Template, progress_callback: Callable[[int, int, str], None] | None = None) -> list[OMRResult]:
         total = len(image_paths)
         if total == 0:
             return []
+        # Reset cross-file orientation hints at the start of each batch.
+        # Sequential batches (single worker) will repopulate these values from
+        # per-file alignment diagnostics as they progress.
+        self._batch_orientation_hint = None
+        self._batch_orientation_hint_score = None
         timing_rows: list[tuple[int, str, float]] = []
         configured_workers = int(((template.metadata or {}).get("batch_workers", 0) if getattr(template, "metadata", None) else 0) or 0)
         default_workers = 1
@@ -307,8 +354,16 @@ class OMRProcessor:
                 context = RecognitionContext()
                 context.collect_diagnostics = False
                 started = time.perf_counter()
-                results.append(self.run_recognition_test(image_path, template, context))
+                result = self.run_recognition_test(image_path, template, context)
+                results.append(result)
                 timing_rows.append((idx, str(image_path), float(time.perf_counter() - started)))
+                debug_payload = dict(getattr(result, "alignment_debug", {}) or {})
+                orient = debug_payload.get("orientation_rotation", None)
+                if isinstance(orient, (int, float)):
+                    self._batch_orientation_hint = int(orient) % 360
+                score = debug_payload.get("alignment_score", None)
+                if isinstance(score, (int, float)):
+                    self._batch_orientation_hint_score = float(score)
                 if progress_callback:
                     progress_callback(idx, total, image_path)
             if log_enabled:
@@ -378,6 +433,8 @@ class OMRProcessor:
         return {"gray": gray, "blur": blur, "binary": binary, "edges": edges}
 
     def _correct_rotation(self, image: np.ndarray) -> np.ndarray:
+        if self._time_budget_exceeded():
+            return image
         angle = self._estimate_rotation_angle(image)
         if abs(angle) < 0.15:
             return image
@@ -385,10 +442,22 @@ class OMRProcessor:
         matrix = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), angle, 1.0)
         return cv2.warpAffine(image, matrix, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
 
+    @staticmethod
+    def _downscale_for_rotation_estimation(image: np.ndarray, max_side: int = 1400) -> np.ndarray:
+        h, w = image.shape[:2]
+        longest = max(h, w)
+        if longest <= max_side:
+            return image
+        scale = max_side / float(longest)
+        new_w = max(1, int(round(w * scale)))
+        new_h = max(1, int(round(h * scale)))
+        return cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
     def _estimate_rotation_angle(self, image: np.ndarray) -> float:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        probe = self._downscale_for_rotation_estimation(image)
+        gray = cv2.cvtColor(probe, cv2.COLOR_BGR2GRAY)
         edges = cv2.Canny(gray, 50, 150)
-        lines = cv2.HoughLines(edges, 1, np.pi / 180, threshold=180)
+        lines = cv2.HoughLines(edges, 1, np.pi / 180, threshold=170)
         if lines is not None and len(lines) > 0:
             angles = []
             for ln in lines[:25]:
@@ -399,6 +468,8 @@ class OMRProcessor:
             if angles:
                 return float(np.median(angles))
 
+        if self._time_budget_exceeded():
+            return 0.0
         _, th = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         contours, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
@@ -721,23 +792,18 @@ class OMRProcessor:
         return affine_img, affine_bin
 
     def _auto_orient(self, aligned: np.ndarray, aligned_binary: np.ndarray, template: Template) -> tuple[np.ndarray, np.ndarray]:
+        hint = self._batch_orientation_hint
+        if hint is not None:
+            hinted_img, hinted_bin = self._rotate_pair(aligned, aligned_binary, int(hint), template)
+            hinted_score = self._orientation_score(hinted_bin, template)
+            baseline = self._batch_orientation_hint_score
+            if baseline is None or hinted_score >= (float(baseline) - 35.0):
+                self._last_alignment_debug["orientation_rotation"] = int(hint) % 360
+                return hinted_img, hinted_bin
+
         candidates = []
         for rotation in (0, 90, 180, 270):
-            if rotation == 0:
-                img_r = aligned
-                bin_r = aligned_binary
-            elif rotation == 90:
-                img_r = cv2.rotate(aligned, cv2.ROTATE_90_CLOCKWISE)
-                bin_r = cv2.rotate(aligned_binary, cv2.ROTATE_90_CLOCKWISE)
-            elif rotation == 180:
-                img_r = cv2.rotate(aligned, cv2.ROTATE_180)
-                bin_r = cv2.rotate(aligned_binary, cv2.ROTATE_180)
-            else:
-                img_r = cv2.rotate(aligned, cv2.ROTATE_90_COUNTERCLOCKWISE)
-                bin_r = cv2.rotate(aligned_binary, cv2.ROTATE_90_COUNTERCLOCKWISE)
-            if img_r.shape[1] != template.width or img_r.shape[0] != template.height:
-                img_r = cv2.resize(img_r, (template.width, template.height), interpolation=cv2.INTER_LINEAR)
-                bin_r = cv2.resize(bin_r, (template.width, template.height), interpolation=cv2.INTER_NEAREST)
+            img_r, bin_r = self._rotate_pair(aligned, aligned_binary, rotation, template)
             score = self._orientation_score(bin_r, template)
             candidates.append((score, rotation, img_r, bin_r))
         by_rotation = {rotation: (score, img_r, bin_r) for score, rotation, img_r, bin_r in candidates}
