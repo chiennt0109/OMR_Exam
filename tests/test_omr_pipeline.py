@@ -1931,16 +1931,41 @@ class OMRPipelineTests(unittest.TestCase):
         detected = np.array([(210.0, 10.0), (210.0, 140.0)], dtype=np.float32)
         with patch.object(self.processor, "_get_manual_digit_anchor_points", return_value=manual), \
             patch.object(self.processor, "_detect_digit_anchor_ruler", return_value=detected.tolist()):
-            adjusted, debug = self.processor._adjust_exam_code_points_by_anchor_distance(
+            adjusted, debug = self.processor._adjust_identifier_points_by_anchor_distance(
                 np.zeros((160, 240), dtype=np.uint8),
                 template,
                 zone,
                 modeled_points,
             )
-        self.assertTrue(bool(debug.get("exam_anchor_distance_ratio_applied")))
-        self.assertGreater(float(debug.get("exam_anchor_row_ratio", 0.0)), 1.0)
+        self.assertTrue(bool(debug.get("identifier_anchor_distance_ratio_applied")))
+        self.assertGreater(float(debug.get("identifier_anchor_row_ratio", 0.0)), 1.0)
         self.assertEqual(adjusted.shape, modeled_points.shape)
         self.assertFalse(np.allclose(adjusted, modeled_points))
+
+    def test_student_id_recognize_block_applies_anchor_distance_ratio_adjustment(self):
+        centers = np.array([(30.0 + (c * 20.0), 20.0 + (r * 8.0)) for r in range(10) for c in range(8)], dtype=np.float32)
+        zone = Zone(
+            id="sid_ratio",
+            name="sid",
+            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=8, question_start=1, question_count=8, options=[], bubble_positions=[tuple(pt) for pt in centers]),
+            metadata={"bubble_radius": 5},
+        )
+        template = Template(name="sid_ratio_tpl", image_path="", width=220, height=140, anchors=[], zones=[zone])
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": "", "digit_zone_debug": {}})()
+
+        with patch.object(self.processor, "_digit_zone_guidance", return_value=(centers, {})), \
+            patch.object(self.processor, "_adjust_identifier_points_by_anchor_distance", return_value=(centers, {"identifier_anchor_distance_ratio_applied": True})) as patched_adjust, \
+            patch.object(self.processor, "_resolve_column_digit_centers", return_value=centers), \
+            patch.object(self.processor, "_refit_digit_grid_from_clear_points", return_value=(centers, {})), \
+            patch.object(self.processor, "_decode_identifier_zone_from_centers", return_value=("00012029", [1.0] * 8, centers, np.zeros((10, 8), dtype=np.float32), {})):
+            self.processor.recognize_block(np.zeros((140, 220), dtype=np.uint8), zone, template, result_stub)
+
+        self.assertTrue(patched_adjust.called)
 
     def test_recognize_block_invalidates_student_id_when_any_digit_is_ambiguous(self):
         template = Template(

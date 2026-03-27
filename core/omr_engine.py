@@ -2376,7 +2376,7 @@ class OMRProcessor:
         }
         return np.array(points, dtype=np.float32), debug
 
-    def _adjust_exam_code_points_by_anchor_distance(
+    def _adjust_identifier_points_by_anchor_distance(
         self,
         binary: np.ndarray,
         template: Template,
@@ -2384,12 +2384,12 @@ class OMRProcessor:
         points: np.ndarray,
     ) -> tuple[np.ndarray, dict[str, object]]:
         if points.size == 0:
-            return points, {"exam_anchor_distance_ratio_applied": False, "reason": "empty_points"}
+            return points, {"identifier_anchor_distance_ratio_applied": False, "reason": "empty_points"}
         manual = np.array(self._get_manual_digit_anchor_points(template, zone), dtype=np.float32)
         detected = np.array(self._detect_digit_anchor_ruler(binary, template, zone), dtype=np.float32)
         if len(manual) < 2 or len(detected) < 2:
             return points, {
-                "exam_anchor_distance_ratio_applied": False,
+                "identifier_anchor_distance_ratio_applied": False,
                 "manual_anchor_count": int(len(manual)),
                 "detected_anchor_count": int(len(detected)),
             }
@@ -2404,7 +2404,7 @@ class OMRProcessor:
         manual_len = float(np.linalg.norm(manual_axis))
         detected_len = float(np.linalg.norm(detected_axis))
         if manual_len <= 1e-6 or detected_len <= 1e-6:
-            return points, {"exam_anchor_distance_ratio_applied": False, "reason": "degenerate_axis"}
+            return points, {"identifier_anchor_distance_ratio_applied": False, "reason": "degenerate_axis"}
 
         row_ratio = float(np.clip(detected_len / manual_len, 0.75, 1.35))
         row_unit_manual = manual_axis / manual_len
@@ -2432,9 +2432,10 @@ class OMRProcessor:
             adjusted.append(adj.astype(np.float32))
 
         debug = {
-            "exam_anchor_distance_ratio_applied": True,
-            "exam_anchor_row_ratio": row_ratio,
-            "exam_anchor_distance_ratio": distance_ratio,
+            "identifier_anchor_distance_ratio_applied": True,
+            "identifier_anchor_row_ratio": row_ratio,
+            "identifier_anchor_distance_ratio": distance_ratio,
+            "identifier_anchor_zone": str(getattr(zone.zone_type, "value", "") or ""),
             "manual_anchor_distance_mean": manual_dist,
             "detected_anchor_distance_mean": detected_dist,
             "manual_anchor_count": int(len(manual)),
@@ -2513,7 +2514,7 @@ class OMRProcessor:
             if zone.zone_type == ZoneType.EXAM_CODE_BLOCK:
                 modeled_expected, model_debug = self._digit_model_expected_points(template, zone)
                 if len(modeled_expected) == len(expected):
-                    adjusted_expected, ratio_debug = self._adjust_exam_code_points_by_anchor_distance(
+                    adjusted_expected, ratio_debug = self._adjust_identifier_points_by_anchor_distance(
                         working_binary,
                         template,
                         zone,
@@ -2525,6 +2526,14 @@ class OMRProcessor:
                     guided, digit_debug = self._digit_zone_guidance(working_binary, expected, zone, template)
             else:
                 guided, digit_debug = self._digit_zone_guidance(working_binary, expected, zone, template)
+            if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
+                guided, sid_ratio_debug = self._adjust_identifier_points_by_anchor_distance(
+                    working_binary,
+                    template,
+                    zone,
+                    guided.astype(np.float32),
+                )
+                digit_debug = dict(digit_debug) | sid_ratio_debug
             column_guided = self._resolve_column_digit_centers(working_binary, guided.astype(np.float32), grid, bubble_radius)
             centers, grid_fit_debug = self._refit_digit_grid_from_clear_points(
                 working_binary,
