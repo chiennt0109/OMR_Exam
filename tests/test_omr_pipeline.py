@@ -1211,13 +1211,26 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(editor_res.numeric_answers, batch_res.numeric_answers)
 
     def test_process_batch_reuses_template_instance_for_speed(self):
-        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[])
+        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[], metadata={"batch_workers": 1})
         fake_result = type("FakeResult", (), {"image_path": "x.png"})()
         with patch.object(self.processor, "run_recognition_test", return_value=fake_result) as run_mock:
             self.processor.process_batch(["a.png", "b.png"], template)
         self.assertEqual(run_mock.call_count, 2)
         self.assertIs(run_mock.call_args_list[0].args[1], template)
         self.assertIs(run_mock.call_args_list[1].args[1], template)
+
+    def test_process_batch_parallel_keeps_input_order(self):
+        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[], metadata={"batch_workers": 2})
+
+        class FakeWorker:
+            def run_recognition_test(self, image_path, _template, _context):
+                if str(image_path).endswith("a.png"):
+                    time.sleep(0.02)
+                return type("R", (), {"image_path": str(image_path)})()
+
+        with patch.object(self.processor, "_make_batch_worker", side_effect=[FakeWorker(), FakeWorker()]):
+            out = self.processor.process_batch(["a.png", "b.png"], template)
+        self.assertEqual([getattr(x, "image_path", "") for x in out], ["a.png", "b.png"])
 
     def test_recognize_sheet_keeps_template_dimensions_stable(self):
         template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[])

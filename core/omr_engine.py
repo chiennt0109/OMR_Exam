@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 import time
@@ -225,16 +227,51 @@ class OMRProcessor:
     def process_image(self, image_path: str | Path, template: Template) -> OMRResult:
         return self.recognize_sheet(image_path, template, RecognitionContext())
 
+    def _make_batch_worker(self) -> "OMRProcessor":
+        worker = OMRProcessor(
+            fill_threshold=self.fill_threshold,
+            empty_threshold=self.empty_threshold,
+            certainty_margin=self.certainty_margin,
+            debug_mode=self.debug_mode,
+            debug_dir=self.debug_dir,
+        )
+        worker.alignment_profile = self.alignment_profile
+        worker.standard_width = self.standard_width
+        worker.processing_time_limit_sec = self.processing_time_limit_sec
+        return worker
+
     def process_batch(self, image_paths: list[str], template: Template, progress_callback: Callable[[int, int, str], None] | None = None) -> list[OMRResult]:
         total = len(image_paths)
+        if total == 0:
+            return []
+        configured_workers = int(((template.metadata or {}).get("batch_workers", 0) if getattr(template, "metadata", None) else 0) or 0)
+        default_workers = min(8, max(1, (os.cpu_count() or 1) - 1))
+        worker_count = configured_workers if configured_workers > 0 else default_workers
+        worker_count = max(1, min(worker_count, total))
         results: list[OMRResult] = []
-        for idx, image_path in enumerate(image_paths, start=1):
-            context = RecognitionContext()
-            context.collect_diagnostics = False
-            results.append(self.run_recognition_test(image_path, template, context))
-            if progress_callback:
-                progress_callback(idx, total, image_path)
-        return results
+        if worker_count <= 1:
+            for idx, image_path in enumerate(image_paths, start=1):
+                context = RecognitionContext()
+                context.collect_diagnostics = False
+                results.append(self.run_recognition_test(image_path, template, context))
+                if progress_callback:
+                    progress_callback(idx, total, image_path)
+            return results
+
+        ordered_results: list[OMRResult | None] = [None] * total
+        completed = 0
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            future_map = {
+                pool.submit(self._make_batch_worker().run_recognition_test, image_path, template, RecognitionContext(collect_diagnostics=False)): (idx, image_path)
+                for idx, image_path in enumerate(image_paths)
+            }
+            for fut in as_completed(future_map):
+                idx, image_path = future_map[fut]
+                ordered_results[idx] = fut.result()
+                completed += 1
+                if progress_callback:
+                    progress_callback(completed, total, image_path)
+        return [res for res in ordered_results if res is not None]
 
     def _normalize_to_200_dpi(self, path: str) -> tuple[str, str]:
         dpi = 0
