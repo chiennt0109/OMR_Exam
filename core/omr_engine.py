@@ -2555,8 +2555,12 @@ class OMRProcessor:
                 confs=direct_confs,
                 result=result,
             )
+            direct_conf_mean = float(np.mean(final_confs or [0.0]))
+            fallback_budget_ok = not self._time_budget_exceeded()
+            allow_fallbacks = fallback_budget_ok and not (bool(final_value) and direct_conf_mean >= 0.55)
+            axis_final = ""
             axis_debug: dict[str, object] = {}
-            axis_needed = (not final_value) or (float(np.mean(final_confs or [0.0])) < 0.32)
+            axis_needed = allow_fallbacks and ((not final_value) or (direct_conf_mean < 0.32))
             if axis_needed:
                 axis_value, axis_confs, axis_debug = self._decode_identifier_by_anchor_axis(
                     working_binary,
@@ -2576,6 +2580,8 @@ class OMRProcessor:
                     del result.recognition_errors[error_mark:]
                     final_value, final_confs = axis_final, axis_final_confs
             if (
+                allow_fallbacks
+                and
                 key == "student_id"
                 and not final_value
                 and sid_base_guided is not None
@@ -2633,10 +2639,10 @@ class OMRProcessor:
             zone_debug[zone.id] = digit_debug | grid_fit_debug | direct_debug | axis_debug | {
                 "col_lines": final_col_lines,
                 "col_segments": [],
-                "recognition_path": "axis_projection" if axis_final else "direct",
+                "recognition_path": "axis_projection" if bool(axis_final) else "direct",
             }
             skip_sampling_fallback = key == "exam_code" and exam_digit_model_applied
-            if not final_value and not skip_sampling_fallback:
+            if allow_fallbacks and not final_value and not skip_sampling_fallback:
                 rows, cols = 10, max(1, grid.cols)
                 source_img = self._preprocess_digit_sampling(working_image if working_image is not None else working_binary)
                 bbox = self._digit_zone_bbox(zone, source_img.shape[:2])
