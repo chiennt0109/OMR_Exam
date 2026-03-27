@@ -511,6 +511,15 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertGreater(scores[0], 0.45)
         self.assertLess(scores[1], 0.20)
 
+    def test_digit_zone_component_marks_prefer_compact_bubble_over_tall_stroke(self):
+        binary = np.zeros((140, 160), dtype=np.uint8)
+        cv2.circle(binary, (42, 62), 8, 255, -1)
+        cv2.rectangle(binary, (96, 40), (101, 84), 255, -1)
+        centers = np.array([[40, 60], [100, 60]], dtype=np.float32)
+        scores = self.processor._detect_digit_zone_component_marks(binary, centers, 10)
+        self.assertGreater(scores[0], 0.70)
+        self.assertLess(scores[1], 0.55)
+
     def test_exam_code_recognize_block_uses_multi_probe_digit_signal_for_shifted_mark(self):
         template = Template(
             name="exam_multi_probe",
@@ -539,6 +548,38 @@ class OMRPipelineTests(unittest.TestCase):
             patch.object(self.processor, "_detect_digit_zone_multi_probe_marks", return_value=np.array([0.88, 0.22, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05], dtype=np.float32)):
             self.processor.recognize_block(np.zeros((140, 120), dtype=np.uint8), template.zones[0], template, result_stub)
         self.assertEqual(result_stub.exam_code, "0")
+
+    def test_exam_code_recognize_block_component_signal_suppresses_upper_stroke_bias(self):
+        template = Template(
+            name="exam_component_bias",
+            image_path="",
+            width=120,
+            height=140,
+            anchors=[],
+            zones=[
+                Zone(
+                    id="exam_component_bias",
+                    name="exam",
+                    zone_type=ZoneType.EXAM_CODE_BLOCK,
+                    x=0,
+                    y=0,
+                    width=1,
+                    height=1,
+                    grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(60, 20 + r * 10) for r in range(10)]),
+                    metadata={"bubble_radius": 6},
+                )
+            ],
+        )
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": "", "digit_zone_debug": {}})()
+        with patch.object(self.processor, "_resolve_column_digit_centers", return_value=np.array([[60, 20 + r * 10] for r in range(10)], dtype=np.float32)), \
+            patch.object(self.processor, "detect_bubbles", return_value=np.array([0.56, 0.10, 0.10, 0.10, 0.10, 0.58, 0.10, 0.10, 0.10, 0.10], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=np.array([0.52, 0.12, 0.12, 0.12, 0.12, 0.54, 0.12, 0.12, 0.12, 0.12], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_zone_multi_probe_marks", return_value=np.array([0.54, 0.08, 0.08, 0.08, 0.08, 0.60, 0.08, 0.08, 0.08, 0.08], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_zone_peak_window_marks", return_value=np.array([0.52, 0.07, 0.07, 0.07, 0.07, 0.61, 0.07, 0.07, 0.07, 0.07], dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_zone_component_marks", return_value=np.array([0.22, 0.04, 0.04, 0.04, 0.04, 0.92, 0.04, 0.04, 0.04, 0.04], dtype=np.float32)), \
+            patch.object(self.processor, "_estimate_local_fill_threshold", return_value=0.45):
+            self.processor.recognize_block(np.zeros((140, 120), dtype=np.uint8), template.zones[0], template, result_stub)
+        self.assertEqual(result_stub.exam_code, "5")
 
     def test_exam_code_recognize_block_uses_peak_window_signal_for_off_center_mark(self):
         template = Template(
@@ -1157,7 +1198,7 @@ class OMRPipelineTests(unittest.TestCase):
             img_path = Path(td) / "sheet.png"
             cv2.imwrite(str(img_path), np.zeros((100, 200, 3), dtype=np.uint8))
 
-            with patch.object(self.processor, "_normalize_to_200_dpi", return_value=(str(img_path), "")), \
+            with patch.object(self.processor, "_load_image_normalized_to_200_dpi", return_value=(np.zeros((100, 200, 3), dtype=np.uint8), "")), \
                 patch.object(self.processor, "_correct_rotation", side_effect=lambda x: x), \
                 patch.object(self.processor, "_preprocess", return_value={"binary": np.zeros((100, 200), dtype=np.uint8)}), \
                 patch.object(self.processor, "correct_perspective", return_value=(np.zeros((100, 200, 3), dtype=np.uint8), np.zeros((100, 200), dtype=np.uint8))), \
@@ -1169,6 +1210,121 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(editor_res.true_false_answers, batch_res.true_false_answers)
         self.assertEqual(editor_res.numeric_answers, batch_res.numeric_answers)
 
+    def test_process_batch_reuses_template_instance_for_speed(self):
+        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[], metadata={"batch_workers": 1})
+        fake_result = type("FakeResult", (), {"image_path": "x.png"})()
+        with patch.object(self.processor, "run_recognition_test", return_value=fake_result) as run_mock:
+            self.processor.process_batch(["a.png", "b.png"], template)
+        self.assertEqual(run_mock.call_count, 2)
+        self.assertIs(run_mock.call_args_list[0].args[1], template)
+        self.assertIs(run_mock.call_args_list[1].args[1], template)
+
+    def test_process_batch_defaults_to_single_worker_for_stability(self):
+        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[])
+        fake_result = type("FakeResult", (), {"image_path": "x.png"})()
+        with patch.object(self.processor, "run_recognition_test", return_value=fake_result) as run_mock:
+            self.processor.process_batch(["a.png", "b.png"], template)
+        self.assertEqual(run_mock.call_count, 2)
+
+    def test_process_batch_parallel_keeps_input_order(self):
+        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[], metadata={"batch_workers": 2})
+
+        class FakeWorker:
+            def run_recognition_test(self, image_path, _template, _context):
+                if str(image_path).endswith("a.png"):
+                    time.sleep(0.02)
+                return type("R", (), {"image_path": str(image_path)})()
+
+        with patch.object(self.processor, "_make_batch_worker", side_effect=[FakeWorker(), FakeWorker()]):
+            out = self.processor.process_batch(["a.png", "b.png"], template)
+        self.assertEqual([getattr(x, "image_path", "") for x in out], ["a.png", "b.png"])
+
+    def test_process_batch_parallel_clears_stale_orientation_hint(self):
+        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[], metadata={"batch_workers": 2})
+        self.processor._batch_orientation_hint = 180
+        self.processor._batch_orientation_hint_score = 50.0
+
+        class FakeWorker:
+            def run_recognition_test(self, image_path, _template, _context):
+                return type("R", (), {"image_path": str(image_path)})()
+
+        with patch.object(self.processor, "_make_batch_worker", side_effect=[FakeWorker(), FakeWorker()]):
+            _ = self.processor.process_batch(["a.png", "b.png"], template)
+        self.assertIsNone(self.processor._batch_orientation_hint)
+        self.assertIsNone(self.processor._batch_orientation_hint_score)
+
+    def test_auto_orient_uses_batch_orientation_hint_for_speed(self):
+        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[])
+        img = np.zeros((100, 200, 3), dtype=np.uint8)
+        binary = np.zeros((100, 200), dtype=np.uint8)
+        self.processor._batch_orientation_hint = 0
+        self.processor._batch_orientation_hint_score = 100.0
+        with patch.object(self.processor, "_orientation_score", return_value=90.0) as score_mock:
+            _, _ = self.processor._auto_orient(img, binary, template)
+        self.assertEqual(score_mock.call_count, 1)
+
+    def test_recognize_sheet_keeps_template_dimensions_stable(self):
+        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[])
+        original_size = (template.width, template.height)
+        with patch.object(self.processor, "_load_image_normalized_to_200_dpi", return_value=(np.zeros((100, 200, 3), dtype=np.uint8), "")), \
+            patch.object(self.processor, "_correct_rotation", side_effect=lambda x: x), \
+            patch.object(self.processor, "_preprocess", return_value={"binary": np.zeros((100, 200), dtype=np.uint8)}), \
+            patch.object(self.processor, "correct_perspective", return_value=(np.zeros((100, 200, 3), dtype=np.uint8), np.zeros((100, 200), dtype=np.uint8))), \
+            patch.object(self.processor, "detect_anchors", return_value=[]):
+            self.processor.recognize_sheet("x.png", template)
+        self.assertEqual((template.width, template.height), original_size)
+
+    def test_load_image_normalized_to_200_dpi_does_not_create_extra_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            img_path = Path(td) / "sheet.png"
+            cv2.imwrite(str(img_path), np.zeros((100, 100, 3), dtype=np.uint8))
+
+            class _FakeImage:
+                info = {"dpi": (300, 300)}
+                def __enter__(self):
+                    return self
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+            with patch("PIL.Image.open", return_value=_FakeImage()):
+                loaded, msg = self.processor._load_image_normalized_to_200_dpi(str(img_path))
+
+            self.assertIsNotNone(loaded)
+            self.assertEqual(getattr(loaded, "shape", (0, 0))[1], 66)
+            self.assertIn("Normalized to 200 DPI", msg)
+            self.assertFalse((Path(td) / "sheet_200dpi.png").exists())
+
+    def test_recognition_always_uses_standard_rotation_and_perspective_pipeline(self):
+        template = Template(
+            name="t",
+            image_path="",
+            width=200,
+            height=100,
+            anchors=[],
+            zones=[],
+            metadata={"fast_200dpi_mode": True, "skip_rotation_in_fast_mode": True, "fast_direct_match": True},
+        )
+        with patch.object(self.processor, "_load_image_normalized_to_200_dpi", return_value=(np.zeros((100, 200, 3), dtype=np.uint8), "")), \
+            patch.object(self.processor, "_correct_rotation", side_effect=lambda x: x) as rot_mock, \
+            patch.object(self.processor, "_preprocess", return_value={"binary": np.zeros((100, 200), dtype=np.uint8)}), \
+            patch.object(self.processor, "correct_perspective", return_value=(np.zeros((100, 200, 3), dtype=np.uint8), np.zeros((100, 200), dtype=np.uint8))) as cp_mock, \
+            patch.object(self.processor, "detect_anchors", return_value=[]):
+            self.processor.recognize_sheet("x.png", template)
+        self.assertTrue(rot_mock.called)
+        self.assertTrue(cp_mock.called)
+
+    def test_process_batch_writes_per_file_timing_log(self):
+        with tempfile.TemporaryDirectory() as td:
+            log_path = Path(td) / "timing.tsv"
+            template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[], metadata={"batch_workers": 1, "batch_timing_log_path": str(log_path)})
+            fake_result = type("FakeResult", (), {"image_path": "x.png"})()
+            with patch.object(self.processor, "run_recognition_test", return_value=fake_result):
+                self.processor.process_batch(["a.png", "b.png", "c.png"], template)
+            text = log_path.read_text(encoding="utf-8")
+            self.assertIn("idx\tfile\tseconds", text)
+            self.assertIn("estimated_500_files_seconds", text)
+            self.assertIn("target_under_120_seconds_for_500", text)
+
     def test_batch_context_skips_expensive_diagnostics_collection(self):
         template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[])
         context = RecognitionContext()
@@ -1177,7 +1333,7 @@ class OMRPipelineTests(unittest.TestCase):
             img_path = Path(td) / "sheet.png"
             cv2.imwrite(str(img_path), np.zeros((100, 200, 3), dtype=np.uint8))
 
-            with patch.object(self.processor, "_normalize_to_200_dpi", return_value=(str(img_path), "")), \
+            with patch.object(self.processor, "_load_image_normalized_to_200_dpi", return_value=(np.zeros((100, 200, 3), dtype=np.uint8), "")), \
                 patch.object(self.processor, "_correct_rotation", side_effect=lambda x: x), \
                 patch.object(self.processor, "_preprocess", return_value={"binary": np.zeros((100, 200), dtype=np.uint8)}), \
                 patch.object(self.processor, "correct_perspective", return_value=(np.zeros((100, 200, 3), dtype=np.uint8), np.zeros((100, 200), dtype=np.uint8))), \
@@ -1283,25 +1439,70 @@ class OMRPipelineTests(unittest.TestCase):
         best_idx, confidence, reason = self.processor._pick_best_mcq_option(np.array([0.29, 0.31, 0.56, 0.28], dtype=np.float32), 0.62)
         self.assertEqual(best_idx, 2)
         self.assertGreater(confidence, 0.20)
-        self.assertEqual(reason, "best_fallback")
+        self.assertEqual(reason, "max_pick")
 
     def test_mcq_dominant_fallback_accepts_single_best_answer_even_when_two_choices_cross_threshold(self):
         best_idx, confidence, reason = self.processor._pick_best_mcq_option(np.array([0.14, 0.71, 0.92, 0.15], dtype=np.float32), 0.62)
         self.assertEqual(best_idx, 2)
         self.assertGreater(confidence, 0.18)
-        self.assertEqual(reason, "dominant_fallback")
+        self.assertEqual(reason, "max_pick")
 
     def test_mcq_dominant_fallback_accepts_much_darker_choice_when_second_is_borderline(self):
         best_idx, confidence, reason = self.processor._pick_best_mcq_option(np.array([0.18, 0.63, 0.92, 0.14], dtype=np.float32), 0.62)
         self.assertEqual(best_idx, 2)
         self.assertGreater(confidence, 0.20)
-        self.assertEqual(reason, "dominant_fallback")
+        self.assertEqual(reason, "max_pick")
 
     def test_mcq_best_fallback_rejects_multiple_filled_choices(self):
         best_idx, confidence, reason = self.processor._pick_best_mcq_option(np.array([0.64, 0.66, 0.18, 0.17], dtype=np.float32), 0.62)
+        self.assertEqual(best_idx, 1)
+        self.assertGreater(confidence, 0.0)
+        self.assertEqual(reason, "max_pick")
+
+    def test_mcq_row_max_fallback_ignores_boosted_secondary_noise_without_core_support(self):
+        best_idx, confidence, reason = self.processor._pick_best_mcq_option(
+            np.array([0.18, 0.69, 0.91, 0.16], dtype=np.float32),
+            0.62,
+            row_raw_scores=np.array([0.10, 0.24, 0.86, 0.09], dtype=np.float32),
+            row_core_scores=np.array([0.08, 0.22, 0.88, 0.07], dtype=np.float32),
+            row_eroded_scores=np.array([0.09, 0.26, 0.82, 0.08], dtype=np.float32),
+        )
+        self.assertEqual(best_idx, 2)
+        self.assertGreater(confidence, 0.20)
+        self.assertEqual(reason, "max_pick")
+
+    def test_mcq_row_max_fallback_keeps_darker_choice_when_second_mark_is_not_95_percent_similar(self):
+        best_idx, confidence, reason = self.processor._pick_best_mcq_option(
+            np.array([0.18, 0.74, 0.92, 0.16], dtype=np.float32),
+            0.62,
+            row_raw_scores=np.array([0.10, 0.70, 0.88, 0.09], dtype=np.float32),
+            row_core_scores=np.array([0.08, 0.68, 0.90, 0.07], dtype=np.float32),
+            row_eroded_scores=np.array([0.09, 0.66, 0.84, 0.08], dtype=np.float32),
+        )
+        self.assertEqual(best_idx, 2)
+        self.assertGreater(confidence, 0.15)
+        self.assertEqual(reason, "max_pick")
+
+    def test_mcq_row_max_fallback_still_marks_multiple_when_two_choices_are_95_percent_similar(self):
+        best_idx, confidence, reason = self.processor._pick_best_mcq_option(
+            np.array([0.18, 0.88, 0.91, 0.16], dtype=np.float32),
+            0.62,
+            row_raw_scores=np.array([0.10, 0.84, 0.88, 0.09], dtype=np.float32),
+            row_core_scores=np.array([0.08, 0.85, 0.89, 0.07], dtype=np.float32),
+            row_eroded_scores=np.array([0.09, 0.86, 0.87, 0.08], dtype=np.float32),
+        )
+        self.assertEqual(best_idx, 2)
+        self.assertGreater(confidence, 0.0)
+        self.assertEqual(reason, "max_pick")
+
+    def test_mcq_equal_top_scores_are_treated_as_multiple_equal(self):
+        best_idx, confidence, reason = self.processor._pick_best_mcq_option(
+            np.array([0.20, 0.80, 0.80, 0.10], dtype=np.float32),
+            0.62,
+        )
         self.assertIsNone(best_idx)
         self.assertEqual(confidence, 0.0)
-        self.assertEqual(reason, "multiple")
+        self.assertEqual(reason, "multiple_equal")
 
     def test_legacy_template_absolute_coordinates_are_converted(self):
         raw = {
@@ -1775,6 +1976,188 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(digits, "00")
         self.assertGreaterEqual(min(confs), 0.5)
 
+    def test_identifier_anchor_axis_reads_digits_left_to_right(self):
+        zone = Zone(
+            id="sid_axis",
+            name="sid",
+            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        template = Template(name="sid_axis_tpl", image_path="", width=200, height=160, anchors=[], zones=[zone])
+        centers = np.array([(40.0, 20.0 + (r * 10.0)) for r in range(10)] + [(80.0, 20.0 + (r * 10.0)) for r in range(10)], dtype=np.float32)
+        scores = np.zeros((20,), dtype=np.float32)
+        scores[3] = 0.95
+        scores[10 + 7] = 0.93
+        with patch.object(self.processor, "detect_bubbles", return_value=scores), \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=np.zeros((20,), dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_zone_component_marks", return_value=np.zeros((20,), dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_anchor_ruler", return_value=[(20.0, 10.0), (20.0, 110.0)]):
+            value, _, debug = self.processor._decode_identifier_by_anchor_axis(np.zeros((160, 200), dtype=np.uint8), zone, template, centers, 6)
+        self.assertEqual(value, "37")
+        self.assertEqual(debug.get("axis_mode"), "anchor_ruler")
+
+    def test_identifier_decode_fast_path_skips_heavy_component_and_multi_probe_scoring(self):
+        zone = Zone(
+            id="sid_fast",
+            name="exam",
+            zone_type=ZoneType.EXAM_CODE_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        centers = np.array([(30.0, 20.0 + (r * 8.0)) for r in range(10)] + [(50.0, 20.0 + (r * 8.0)) for r in range(10)], dtype=np.float32)
+        ratios = np.zeros((20,), dtype=np.float32)
+        ratios[2] = 0.95
+        ratios[10 + 7] = 0.93
+        result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
+        with patch.object(self.processor, "_detect_digit_bubble_centers", return_value=centers), \
+            patch.object(self.processor, "detect_bubbles", return_value=ratios), \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=ratios), \
+            patch.object(self.processor, "_detect_digit_zone_multi_probe_marks", side_effect=AssertionError("fast path should skip multi-probe")), \
+            patch.object(self.processor, "_detect_digit_zone_component_marks", side_effect=AssertionError("fast path should skip component")):
+            value, confs, _, _, debug = self.processor._decode_identifier_zone_from_centers(
+                np.zeros((140, 120), dtype=np.uint8),
+                zone,
+                result_stub,
+                centers,
+                5,
+            )
+        self.assertEqual(value, "27")
+        self.assertGreaterEqual(min(confs), 0.55)
+        self.assertTrue(bool(debug.get("fast_path_used")))
+
+    def test_student_id_decode_does_not_use_fast_path(self):
+        zone = Zone(
+            id="sid_no_fast",
+            name="sid",
+            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        centers = np.array([(30.0, 20.0 + (r * 8.0)) for r in range(10)] + [(50.0, 20.0 + (r * 8.0)) for r in range(10)], dtype=np.float32)
+        ratios = np.zeros((20,), dtype=np.float32)
+        ratios[2] = 0.95
+        ratios[10 + 7] = 0.93
+        result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
+        with patch.object(self.processor, "_detect_digit_bubble_centers", return_value=centers), \
+            patch.object(self.processor, "detect_bubbles", return_value=ratios), \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=ratios), \
+            patch.object(self.processor, "_detect_digit_zone_multi_probe_marks", return_value=np.zeros((20,), dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_zone_component_marks", return_value=np.zeros((20,), dtype=np.float32)), \
+            patch.object(self.processor, "_detect_square_mark_density", return_value=np.zeros((20,), dtype=np.float32)), \
+            patch.object(self.processor, "_detect_eroded_mark_density", return_value=np.zeros((20,), dtype=np.float32)), \
+            patch.object(self.processor, "_estimate_local_fill_threshold", return_value=0.45):
+            _, _, _, _, debug = self.processor._decode_identifier_zone_from_centers(
+                np.zeros((140, 120), dtype=np.uint8),
+                zone,
+                result_stub,
+                centers,
+                5,
+            )
+        self.assertFalse(bool(debug.get("fast_path_used")))
+
+    def test_finalize_identifier_enforces_fixed_lengths_for_student_id_and_exam_code(self):
+        sid_zone = Zone(
+            id="sid_len",
+            name="sid",
+            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=12, question_start=1, question_count=12, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        exam_zone = Zone(
+            id="exam_len",
+            name="exam",
+            zone_type=ZoneType.EXAM_CODE_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=12, question_start=1, question_count=12, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        sid_result = type("R", (), {"recognition_errors": []})()
+        sid_value, _ = self.processor._finalize_identifier_value(sid_zone, "student_id", value="123456789012", confs=[1.0] * 12, result=sid_result)
+        self.assertEqual(sid_value, "12345678")
+
+        exam_result = type("R", (), {"recognition_errors": []})()
+        exam_value, _ = self.processor._finalize_identifier_value(exam_zone, "exam_code", value="567890", confs=[1.0] * 6, result=exam_result)
+        self.assertEqual(exam_value, "5678")
+
+        short_result = type("R", (), {"recognition_errors": []})()
+        short_value, _ = self.processor._finalize_identifier_value(sid_zone, "student_id", value="1234", confs=[1.0] * 4, result=short_result)
+        self.assertEqual(short_value, "")
+        self.assertTrue(any("Lỗi SBD" in err for err in short_result.recognition_errors))
+
+    def test_exam_code_model_points_are_adjusted_by_anchor_distance_ratio(self):
+        zone = Zone(
+            id="exam_ratio",
+            name="exam",
+            zone_type=ZoneType.EXAM_CODE_BLOCK,
+            x=120,
+            y=20,
+            width=60,
+            height=100,
+            grid=BubbleGrid(rows=10, cols=4, question_start=1, question_count=4, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        template = Template(name="exam_ratio_tpl", image_path="", width=240, height=160, anchors=[], zones=[zone])
+        modeled_points = np.array([[120.0, 40.0], [150.0, 70.0], [180.0, 100.0]], dtype=np.float32)
+        manual = np.array([(210.0, 20.0), (210.0, 120.0)], dtype=np.float32)
+        detected = np.array([(210.0, 10.0), (210.0, 140.0)], dtype=np.float32)
+        with patch.object(self.processor, "_get_manual_digit_anchor_points", return_value=manual), \
+            patch.object(self.processor, "_detect_digit_anchor_ruler", return_value=detected.tolist()):
+            adjusted, debug = self.processor._adjust_identifier_points_by_anchor_distance(
+                np.zeros((160, 240), dtype=np.uint8),
+                template,
+                zone,
+                modeled_points,
+            )
+        self.assertTrue(bool(debug.get("identifier_anchor_distance_ratio_applied")))
+        self.assertGreater(float(debug.get("identifier_anchor_row_ratio", 0.0)), 1.0)
+        self.assertEqual(adjusted.shape, modeled_points.shape)
+        self.assertFalse(np.allclose(adjusted, modeled_points))
+
+    def test_student_id_recognize_block_applies_anchor_distance_ratio_adjustment(self):
+        centers = np.array([(30.0 + (c * 20.0), 20.0 + (r * 8.0)) for r in range(10) for c in range(8)], dtype=np.float32)
+        zone = Zone(
+            id="sid_ratio",
+            name="sid",
+            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=8, question_start=1, question_count=8, options=[], bubble_positions=[tuple(pt) for pt in centers]),
+            metadata={"bubble_radius": 5},
+        )
+        template = Template(name="sid_ratio_tpl", image_path="", width=220, height=140, anchors=[], zones=[zone])
+        result_stub = type("R", (), {"mcq_answers": {}, "recognition_errors": [], "confidence_scores": {}, "true_false_answers": {}, "numeric_answers": {}, "student_id": "", "exam_code": "", "digit_zone_debug": {}})()
+
+        with patch.object(self.processor, "_digit_zone_guidance", return_value=(centers, {})), \
+            patch.object(self.processor, "_adjust_identifier_points_by_anchor_distance", return_value=(centers, {"identifier_anchor_distance_ratio_applied": True})) as patched_adjust, \
+            patch.object(self.processor, "_resolve_column_digit_centers", return_value=centers), \
+            patch.object(self.processor, "_refit_digit_grid_from_clear_points", return_value=(centers, {})), \
+            patch.object(self.processor, "_decode_identifier_zone_from_centers", return_value=("00012029", [1.0] * 8, centers, np.zeros((10, 8), dtype=np.float32), {})):
+            self.processor.recognize_block(np.zeros((140, 220), dtype=np.uint8), zone, template, result_stub)
+
+        self.assertTrue(patched_adjust.called)
+
     def test_recognize_block_invalidates_student_id_when_any_digit_is_ambiguous(self):
         template = Template(
             name="sid_invalid",
@@ -2061,6 +2444,39 @@ class OMRPipelineTests(unittest.TestCase):
 
         self.assertLess(float(np.mean(distances)), 12.0)
         self.assertIn("affine_refine", self.processor._last_alignment_debug)
+
+    def test_correct_perspective_auto_mode_chooses_best_alignment_candidate(self):
+        template = Template(
+            name="sheet_auto_best",
+            image_path="",
+            width=400,
+            height=600,
+            anchors=[AnchorPoint(0.08, 0.08), AnchorPoint(0.92, 0.08), AnchorPoint(0.92, 0.92), AnchorPoint(0.08, 0.92)],
+            zones=[],
+        )
+        image = np.zeros((600, 400, 3), dtype=np.uint8)
+        binary = np.zeros((600, 400), dtype=np.uint8)
+        result_stub = type("R", (), {"issues": []})()
+        legacy_img = np.full_like(image, 11)
+        border_img = np.full_like(image, 22)
+        hybrid_img = np.full_like(image, 33)
+        legacy_bin = np.full((600, 400), 11, dtype=np.uint8)
+        border_bin = np.full((600, 400), 22, dtype=np.uint8)
+        hybrid_bin = np.full((600, 400), 33, dtype=np.uint8)
+
+        attempts = {
+            "border": (border_img, border_bin),
+            "hybrid": (hybrid_img, hybrid_bin),
+            "legacy": (legacy_img, legacy_bin),
+        }
+        scores = {11: 90.0, 22: 150.0, 33: 120.0}
+        with patch.object(self.processor, "_template_has_one_side_anchor_ruler", return_value=False),             patch.object(self.processor, "_template_has_border_anchors", return_value=True),             patch.object(self.processor, "_try_anchor_alignment", side_effect=lambda _img, _bin, _tpl, candidate: attempts.get(candidate)),             patch.object(self.processor, "_refine_alignment_with_template_anchors", side_effect=lambda img, bin_img, _tpl: (img, bin_img)),             patch.object(self.processor, "_auto_orient", side_effect=lambda img, bin_img, _tpl: (img, bin_img)),             patch.object(self.processor, "_refine_corner_translation", side_effect=lambda img, bin_img, _tpl: (img, bin_img)),             patch.object(self.processor, "_refine_alignment_with_affine_anchors", side_effect=lambda img, bin_img, _tpl: (img, bin_img)),             patch.object(self.processor, "_orientation_score", side_effect=lambda bin_img, _tpl: scores[int(bin_img[0, 0])]):
+            aligned, aligned_binary = self.processor.correct_perspective(image, binary, template, result_stub)
+
+        self.assertEqual(int(aligned[0, 0, 0]), 22)
+        self.assertEqual(int(aligned_binary[0, 0]), 22)
+        self.assertEqual(self.processor._last_alignment_debug["alignment_mode"], "border")
+        self.assertEqual(self.processor._last_alignment_debug["alignment_score"], 150.0)
 
     def test_correct_perspective_fallback_path_does_not_use_uninitialized_alignment(self):
         template = Template(name="sheet", image_path="", width=400, height=600, anchors=[], zones=[])
