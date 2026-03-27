@@ -2065,6 +2065,8 @@ class OMRProcessor:
         tmp_result = _TmpResult()
         quick_value, quick_confs = self._decode_column_digits(quick_mat, zone, zone.grid, tmp_result)
         quick_valid = (
+            zone.zone_type == ZoneType.EXAM_CODE_BLOCK
+            and
             isinstance(quick_value, str)
             and len(quick_value) == cols
             and ("?" not in quick_value)

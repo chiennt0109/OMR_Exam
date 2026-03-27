@@ -1889,8 +1889,8 @@ class OMRPipelineTests(unittest.TestCase):
     def test_identifier_decode_fast_path_skips_heavy_component_and_multi_probe_scoring(self):
         zone = Zone(
             id="sid_fast",
-            name="sid",
-            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            name="exam",
+            zone_type=ZoneType.EXAM_CODE_BLOCK,
             x=0,
             y=0,
             width=1,
@@ -1918,6 +1918,40 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(value, "27")
         self.assertGreaterEqual(min(confs), 0.55)
         self.assertTrue(bool(debug.get("fast_path_used")))
+
+    def test_student_id_decode_does_not_use_fast_path(self):
+        zone = Zone(
+            id="sid_no_fast",
+            name="sid",
+            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        centers = np.array([(30.0, 20.0 + (r * 8.0)) for r in range(10)] + [(50.0, 20.0 + (r * 8.0)) for r in range(10)], dtype=np.float32)
+        ratios = np.zeros((20,), dtype=np.float32)
+        ratios[2] = 0.95
+        ratios[10 + 7] = 0.93
+        result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
+        with patch.object(self.processor, "_detect_digit_bubble_centers", return_value=centers), \
+            patch.object(self.processor, "detect_bubbles", return_value=ratios), \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=ratios), \
+            patch.object(self.processor, "_detect_digit_zone_multi_probe_marks", return_value=np.zeros((20,), dtype=np.float32)), \
+            patch.object(self.processor, "_detect_digit_zone_component_marks", return_value=np.zeros((20,), dtype=np.float32)), \
+            patch.object(self.processor, "_detect_square_mark_density", return_value=np.zeros((20,), dtype=np.float32)), \
+            patch.object(self.processor, "_detect_eroded_mark_density", return_value=np.zeros((20,), dtype=np.float32)), \
+            patch.object(self.processor, "_estimate_local_fill_threshold", return_value=0.45):
+            _, _, _, _, debug = self.processor._decode_identifier_zone_from_centers(
+                np.zeros((140, 120), dtype=np.uint8),
+                zone,
+                result_stub,
+                centers,
+                5,
+            )
+        self.assertFalse(bool(debug.get("fast_path_used")))
 
     def test_finalize_identifier_enforces_fixed_lengths_for_student_id_and_exam_code(self):
         sid_zone = Zone(
