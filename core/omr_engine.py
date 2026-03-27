@@ -114,6 +114,18 @@ class OMRProcessor:
             return (4, str(getattr(zone, "id", "") or ""))
         return (5, str(getattr(zone, "id", "") or ""))
 
+    @staticmethod
+    def _is_fast_200dpi_mode(template: Template) -> bool:
+        meta = getattr(template, "metadata", {}) or {}
+        return bool(meta.get("fast_200dpi_mode", False))
+
+    def _preprocess_fast(self, image: np.ndarray) -> dict[str, np.ndarray]:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (3, 3), 0)
+        _, binary = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        edges = cv2.Canny(blur, 60, 160)
+        return {"gray": gray, "blur": blur, "binary": binary, "edges": edges}
+
     def recognize_sheet(self, image: str | Path | np.ndarray, template: Template, context: RecognitionContext | None = None) -> OMRResult:
         started = time.perf_counter()
         image_path = str(image) if isinstance(image, (str, Path)) else "<in-memory>"
@@ -134,23 +146,30 @@ class OMRProcessor:
         self._processing_deadline_monotonic = context.deadline_monotonic
 
         try:
+            fast_mode = self._is_fast_200dpi_mode(template)
             if isinstance(image, np.ndarray):
                 src = image.copy()
             else:
-                src, dpi_msg = self._load_image_normalized_to_200_dpi(str(image))
-                if dpi_msg:
-                    result.issues.append(OMRIssue("DPI", dpi_msg))
+                if fast_mode:
+                    src = cv2.imread(str(image))
+                else:
+                    src, dpi_msg = self._load_image_normalized_to_200_dpi(str(image))
+                    if dpi_msg:
+                        result.issues.append(OMRIssue("DPI", dpi_msg))
                 if src is None:
                     result.issues.append(OMRIssue("FILE", "Unable to load image"))
                     result.sync_legacy_aliases()
                     return result
 
-            rotated = self._correct_rotation(src)
-            prepared = self._preprocess(rotated)
+            if fast_mode and bool((template.metadata or {}).get("skip_rotation_in_fast_mode", True)):
+                rotated = src
+            else:
+                rotated = self._correct_rotation(src)
+            prepared = self._preprocess_fast(rotated) if fast_mode else self._preprocess(rotated)
 
             aligned, aligned_binary = self.correct_perspective(rotated, prepared["binary"], template, result)
             if aligned_binary is None:
-                aligned_binary = self._preprocess(aligned)["binary"]
+                aligned_binary = (self._preprocess_fast(aligned) if fast_mode else self._preprocess(aligned))["binary"]
 
             debug_overlay = aligned.copy() if self.debug_mode else None
             if debug_overlay is not None:
