@@ -1198,7 +1198,7 @@ class OMRPipelineTests(unittest.TestCase):
             img_path = Path(td) / "sheet.png"
             cv2.imwrite(str(img_path), np.zeros((100, 200, 3), dtype=np.uint8))
 
-            with patch.object(self.processor, "_normalize_to_200_dpi", return_value=(str(img_path), "")), \
+            with patch.object(self.processor, "_load_image_normalized_to_200_dpi", return_value=(np.zeros((100, 200, 3), dtype=np.uint8), "")), \
                 patch.object(self.processor, "_correct_rotation", side_effect=lambda x: x), \
                 patch.object(self.processor, "_preprocess", return_value={"binary": np.zeros((100, 200), dtype=np.uint8)}), \
                 patch.object(self.processor, "correct_perspective", return_value=(np.zeros((100, 200, 3), dtype=np.uint8), np.zeros((100, 200), dtype=np.uint8))), \
@@ -1235,14 +1235,33 @@ class OMRPipelineTests(unittest.TestCase):
     def test_recognize_sheet_keeps_template_dimensions_stable(self):
         template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[])
         original_size = (template.width, template.height)
-        with patch.object(self.processor, "_normalize_to_200_dpi", return_value=("x.png", "")), \
-            patch("cv2.imread", return_value=np.zeros((100, 200, 3), dtype=np.uint8)), \
+        with patch.object(self.processor, "_load_image_normalized_to_200_dpi", return_value=(np.zeros((100, 200, 3), dtype=np.uint8), "")), \
             patch.object(self.processor, "_correct_rotation", side_effect=lambda x: x), \
             patch.object(self.processor, "_preprocess", return_value={"binary": np.zeros((100, 200), dtype=np.uint8)}), \
             patch.object(self.processor, "correct_perspective", return_value=(np.zeros((100, 200, 3), dtype=np.uint8), np.zeros((100, 200), dtype=np.uint8))), \
             patch.object(self.processor, "detect_anchors", return_value=[]):
             self.processor.recognize_sheet("x.png", template)
         self.assertEqual((template.width, template.height), original_size)
+
+    def test_load_image_normalized_to_200_dpi_does_not_create_extra_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            img_path = Path(td) / "sheet.png"
+            cv2.imwrite(str(img_path), np.zeros((100, 100, 3), dtype=np.uint8))
+
+            class _FakeImage:
+                info = {"dpi": (300, 300)}
+                def __enter__(self):
+                    return self
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+            with patch("PIL.Image.open", return_value=_FakeImage()):
+                loaded, msg = self.processor._load_image_normalized_to_200_dpi(str(img_path))
+
+            self.assertIsNotNone(loaded)
+            self.assertEqual(getattr(loaded, "shape", (0, 0))[1], 66)
+            self.assertIn("Normalized to 200 DPI", msg)
+            self.assertFalse((Path(td) / "sheet_200dpi.png").exists())
 
     def test_batch_context_skips_expensive_diagnostics_collection(self):
         template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[])
@@ -1252,7 +1271,7 @@ class OMRPipelineTests(unittest.TestCase):
             img_path = Path(td) / "sheet.png"
             cv2.imwrite(str(img_path), np.zeros((100, 200, 3), dtype=np.uint8))
 
-            with patch.object(self.processor, "_normalize_to_200_dpi", return_value=(str(img_path), "")), \
+            with patch.object(self.processor, "_load_image_normalized_to_200_dpi", return_value=(np.zeros((100, 200, 3), dtype=np.uint8), "")), \
                 patch.object(self.processor, "_correct_rotation", side_effect=lambda x: x), \
                 patch.object(self.processor, "_preprocess", return_value={"binary": np.zeros((100, 200), dtype=np.uint8)}), \
                 patch.object(self.processor, "correct_perspective", return_value=(np.zeros((100, 200, 3), dtype=np.uint8), np.zeros((100, 200), dtype=np.uint8))), \

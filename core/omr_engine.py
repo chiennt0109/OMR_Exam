@@ -4,6 +4,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
+import threading
 import time
 from typing import Callable
 
@@ -92,6 +93,7 @@ class OMRProcessor:
         self._last_alignment_debug: dict[str, object] = {}
         self.processing_time_limit_sec: float = 8.0
         self._processing_deadline_monotonic: float | None = None
+        self._batch_worker_local = threading.local()
 
     def _time_budget_exceeded(self) -> bool:
         deadline = self._processing_deadline_monotonic
@@ -135,10 +137,9 @@ class OMRProcessor:
             if isinstance(image, np.ndarray):
                 src = image.copy()
             else:
-                norm_path, dpi_msg = self._normalize_to_200_dpi(str(image))
+                src, dpi_msg = self._load_image_normalized_to_200_dpi(str(image))
                 if dpi_msg:
                     result.issues.append(OMRIssue("DPI", dpi_msg))
-                src = cv2.imread(norm_path)
                 if src is None:
                     result.issues.append(OMRIssue("FILE", "Unable to load image"))
                     result.sync_legacy_aliases()
@@ -240,6 +241,17 @@ class OMRProcessor:
         worker.processing_time_limit_sec = self.processing_time_limit_sec
         return worker
 
+    def _get_thread_batch_worker(self) -> "OMRProcessor":
+        worker = getattr(self._batch_worker_local, "worker", None)
+        if worker is None:
+            worker = self._make_batch_worker()
+            self._batch_worker_local.worker = worker
+        return worker
+
+    def _run_batch_item(self, image_path: str, template: Template):
+        worker = self._get_thread_batch_worker()
+        return worker.run_recognition_test(image_path, template, RecognitionContext(collect_diagnostics=False))
+
     def process_batch(self, image_paths: list[str], template: Template, progress_callback: Callable[[int, int, str], None] | None = None) -> list[OMRResult]:
         total = len(image_paths)
         if total == 0:
@@ -260,9 +272,10 @@ class OMRProcessor:
 
         ordered_results: list[OMRResult | None] = [None] * total
         completed = 0
+        self._batch_worker_local = threading.local()
         with ThreadPoolExecutor(max_workers=worker_count) as pool:
             future_map = {
-                pool.submit(self._make_batch_worker().run_recognition_test, image_path, template, RecognitionContext(collect_diagnostics=False)): (idx, image_path)
+                pool.submit(self._run_batch_item, image_path, template): (idx, image_path)
                 for idx, image_path in enumerate(image_paths)
             }
             for fut in as_completed(future_map):
@@ -273,7 +286,7 @@ class OMRProcessor:
                     progress_callback(completed, total, image_path)
         return [res for res in ordered_results if res is not None]
 
-    def _normalize_to_200_dpi(self, path: str) -> tuple[str, str]:
+    def _load_image_normalized_to_200_dpi(self, path: str) -> tuple[np.ndarray | None, str]:
         dpi = 0
         try:
             with Image.open(path) as im_meta:
@@ -282,18 +295,16 @@ class OMRProcessor:
                     dpi = int(round(float(dpi_info[0])))
         except Exception:
             dpi = 0
-        if dpi == 200:
-            return path, ""
-        if dpi <= 0:
-            return path, "Image DPI metadata missing; expected 200 DPI."
         img = cv2.imread(path)
         if img is None:
-            return path, ""
+            return None, ""
+        if dpi == 200:
+            return img, ""
+        if dpi <= 0:
+            return img, "Image DPI metadata missing; expected 200 DPI."
         scale = 200.0 / dpi
-        out = cv2.resize(img, (int(img.shape[1] * scale), int(img.shape[0] * scale)), interpolation=cv2.INTER_LINEAR)
-        out_path = str(Path(path).with_name(f"{Path(path).stem}_200dpi.png"))
-        cv2.imwrite(out_path, out)
-        return out_path, f"Input DPI={dpi}. Normalized to 200 DPI scale."
+        out = cv2.resize(img, (max(1, int(img.shape[1] * scale)), max(1, int(img.shape[0] * scale))), interpolation=cv2.INTER_LINEAR)
+        return out, f"Input DPI={dpi}. Normalized to 200 DPI scale."
 
     def _resize_for_processing(self, image: np.ndarray) -> tuple[np.ndarray, float]:
         h, w = image.shape[:2]
