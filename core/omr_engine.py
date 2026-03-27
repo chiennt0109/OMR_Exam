@@ -2376,6 +2376,72 @@ class OMRProcessor:
         }
         return np.array(points, dtype=np.float32), debug
 
+    def _adjust_exam_code_points_by_anchor_distance(
+        self,
+        binary: np.ndarray,
+        template: Template,
+        zone: Zone,
+        points: np.ndarray,
+    ) -> tuple[np.ndarray, dict[str, object]]:
+        if points.size == 0:
+            return points, {"exam_anchor_distance_ratio_applied": False, "reason": "empty_points"}
+        manual = np.array(self._get_manual_digit_anchor_points(template, zone), dtype=np.float32)
+        detected = np.array(self._detect_digit_anchor_ruler(binary, template, zone), dtype=np.float32)
+        if len(manual) < 2 or len(detected) < 2:
+            return points, {
+                "exam_anchor_distance_ratio_applied": False,
+                "manual_anchor_count": int(len(manual)),
+                "detected_anchor_count": int(len(detected)),
+            }
+
+        manual_order = np.argsort(manual[:, 1])
+        detected_order = np.argsort(detected[:, 1])
+        manual_start, manual_end = manual[manual_order[0]], manual[manual_order[-1]]
+        detected_start, detected_end = detected[detected_order[0]], detected[detected_order[-1]]
+
+        manual_axis = (manual_end - manual_start).astype(np.float32)
+        detected_axis = (detected_end - detected_start).astype(np.float32)
+        manual_len = float(np.linalg.norm(manual_axis))
+        detected_len = float(np.linalg.norm(detected_axis))
+        if manual_len <= 1e-6 or detected_len <= 1e-6:
+            return points, {"exam_anchor_distance_ratio_applied": False, "reason": "degenerate_axis"}
+
+        row_ratio = float(np.clip(detected_len / manual_len, 0.75, 1.35))
+        row_unit_manual = manual_axis / manual_len
+        row_unit_detected = detected_axis / detected_len
+        col_unit_manual = np.array([-row_unit_manual[1], row_unit_manual[0]], dtype=np.float32)
+        col_unit_detected = np.array([-row_unit_detected[1], row_unit_detected[0]], dtype=np.float32)
+
+        zone_x = float(zone.x * template.width if zone.x <= 1.0 else zone.x)
+        zone_y = float(zone.y * template.height if zone.y <= 1.0 else zone.y)
+        zone_w = float(zone.width * template.width if zone.width <= 1.0 else zone.width)
+        zone_h = float(zone.height * template.height if zone.height <= 1.0 else zone.height)
+        zone_center = np.array([zone_x + (0.5 * zone_w), zone_y + (0.5 * zone_h)], dtype=np.float32)
+        manual_dist = float(np.mean(np.linalg.norm(manual - zone_center, axis=1)))
+        detected_dist = float(np.mean(np.linalg.norm(detected - zone_center, axis=1)))
+        distance_ratio = float(np.clip((detected_dist / max(manual_dist, 1e-6)), 0.75, 1.35))
+
+        origin_manual = np.mean(manual, axis=0).astype(np.float32)
+        origin_detected = np.mean(detected, axis=0).astype(np.float32)
+        adjusted: list[np.ndarray] = []
+        for pt in points.astype(np.float32):
+            delta = pt - origin_manual
+            row_comp = float(np.dot(delta, row_unit_manual))
+            col_comp = float(np.dot(delta, col_unit_manual))
+            adj = origin_detected + ((row_comp * row_ratio) * row_unit_detected) + ((col_comp * distance_ratio) * col_unit_detected)
+            adjusted.append(adj.astype(np.float32))
+
+        debug = {
+            "exam_anchor_distance_ratio_applied": True,
+            "exam_anchor_row_ratio": row_ratio,
+            "exam_anchor_distance_ratio": distance_ratio,
+            "manual_anchor_distance_mean": manual_dist,
+            "detected_anchor_distance_mean": detected_dist,
+            "manual_anchor_count": int(len(manual)),
+            "detected_anchor_count": int(len(detected)),
+        }
+        return np.array(adjusted, dtype=np.float32), debug
+
     def _should_retry_exam_code_with_sampling(
         self,
         recognition_errors: list[str],
@@ -2447,7 +2513,13 @@ class OMRProcessor:
             if zone.zone_type == ZoneType.EXAM_CODE_BLOCK:
                 modeled_expected, model_debug = self._digit_model_expected_points(template, zone)
                 if len(modeled_expected) == len(expected):
-                    guided, digit_debug = modeled_expected, model_debug
+                    adjusted_expected, ratio_debug = self._adjust_exam_code_points_by_anchor_distance(
+                        working_binary,
+                        template,
+                        zone,
+                        modeled_expected.astype(np.float32),
+                    )
+                    guided, digit_debug = adjusted_expected, (model_debug | ratio_debug)
                     exam_digit_model_applied = True
                 else:
                     guided, digit_debug = self._digit_zone_guidance(working_binary, expected, zone, template)

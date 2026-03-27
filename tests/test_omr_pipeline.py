@@ -1913,6 +1913,35 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(short_value, "")
         self.assertTrue(any("Lỗi SBD" in err for err in short_result.recognition_errors))
 
+    def test_exam_code_model_points_are_adjusted_by_anchor_distance_ratio(self):
+        zone = Zone(
+            id="exam_ratio",
+            name="exam",
+            zone_type=ZoneType.EXAM_CODE_BLOCK,
+            x=120,
+            y=20,
+            width=60,
+            height=100,
+            grid=BubbleGrid(rows=10, cols=4, question_start=1, question_count=4, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        template = Template(name="exam_ratio_tpl", image_path="", width=240, height=160, anchors=[], zones=[zone])
+        modeled_points = np.array([[120.0, 40.0], [150.0, 70.0], [180.0, 100.0]], dtype=np.float32)
+        manual = np.array([(210.0, 20.0), (210.0, 120.0)], dtype=np.float32)
+        detected = np.array([(210.0, 10.0), (210.0, 140.0)], dtype=np.float32)
+        with patch.object(self.processor, "_get_manual_digit_anchor_points", return_value=manual), \
+            patch.object(self.processor, "_detect_digit_anchor_ruler", return_value=detected.tolist()):
+            adjusted, debug = self.processor._adjust_exam_code_points_by_anchor_distance(
+                np.zeros((160, 240), dtype=np.uint8),
+                template,
+                zone,
+                modeled_points,
+            )
+        self.assertTrue(bool(debug.get("exam_anchor_distance_ratio_applied")))
+        self.assertGreater(float(debug.get("exam_anchor_row_ratio", 0.0)), 1.0)
+        self.assertEqual(adjusted.shape, modeled_points.shape)
+        self.assertFalse(np.allclose(adjusted, modeled_points))
+
     def test_recognize_block_invalidates_student_id_when_any_digit_is_ambiguous(self):
         template = Template(
             name="sid_invalid",
