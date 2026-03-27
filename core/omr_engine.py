@@ -150,37 +150,20 @@ class OMRProcessor:
             if isinstance(image, np.ndarray):
                 src = image.copy()
             else:
-                if fast_mode:
-                    src = cv2.imread(str(image))
-                else:
-                    src, dpi_msg = self._load_image_normalized_to_200_dpi(str(image))
-                    if dpi_msg:
-                        result.issues.append(OMRIssue("DPI", dpi_msg))
+                src, dpi_msg = self._load_image_normalized_to_200_dpi(str(image))
+                if dpi_msg:
+                    result.issues.append(OMRIssue("DPI", dpi_msg))
                 if src is None:
                     result.issues.append(OMRIssue("FILE", "Unable to load image"))
                     result.sync_legacy_aliases()
                     return result
 
-            if fast_mode and bool((template.metadata or {}).get("skip_rotation_in_fast_mode", False)):
-                rotated = src
-            else:
-                rotated = self._correct_rotation(src)
-            prepared = self._preprocess_fast(rotated) if fast_mode else self._preprocess(rotated)
+            rotated = self._correct_rotation(src)
+            prepared = self._preprocess(rotated)
 
-            direct_match = fast_mode and bool((template.metadata or {}).get("fast_direct_match", False))
-            if direct_match:
-                target_size = (int(template.width), int(template.height))
-                if rotated.shape[1] == target_size[0] and rotated.shape[0] == target_size[1]:
-                    aligned = rotated
-                    aligned_binary = prepared["binary"]
-                else:
-                    aligned = cv2.resize(rotated, target_size, interpolation=cv2.INTER_LINEAR)
-                    aligned_binary = cv2.resize(prepared["binary"], target_size, interpolation=cv2.INTER_NEAREST)
-                self._last_alignment_debug = {"mode": "fast_direct_match", "alignment_score": 1.0}
-            else:
-                aligned, aligned_binary = self.correct_perspective(rotated, prepared["binary"], template, result)
-                if aligned_binary is None:
-                    aligned_binary = (self._preprocess_fast(aligned) if fast_mode else self._preprocess(aligned))["binary"]
+            aligned, aligned_binary = self.correct_perspective(rotated, prepared["binary"], template, result)
+            if aligned_binary is None:
+                aligned_binary = self._preprocess(aligned)["binary"]
 
             debug_overlay = aligned.copy() if self.debug_mode else None
             if debug_overlay is not None:
