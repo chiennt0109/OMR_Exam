@@ -590,6 +590,7 @@ class OMRProcessor:
 
         base_image = aligned if aligned is not None else image
         base_binary = aligned_binary if aligned_binary is not None else binary
+        best_attempt: tuple[float, str, np.ndarray, np.ndarray] | None = None
 
         for candidate in candidates:
             if self._time_budget_exceeded():
@@ -597,22 +598,24 @@ class OMRProcessor:
             if candidate == "one_side":
                 coarse_img, coarse_bin = self._fallback_align_page_contour(image, template, conservative=True)
                 refined_img, refined_bin = self._refine_alignment_with_one_side_anchors(coarse_img, coarse_bin, template)
-                oriented_img, oriented_bin = self._auto_orient(refined_img, refined_bin, template)
-                shifted_img, shifted_bin = self._refine_corner_translation(oriented_img, oriented_bin, template)
-                affine_img, affine_bin = self._refine_alignment_with_affine_anchors(shifted_img, shifted_bin, template)
-                self._last_alignment_debug["alignment_mode"] = "one_side"
-                return affine_img, affine_bin
-
-            attempt = self._try_anchor_alignment(base_image, base_binary, template, candidate)
-            if attempt is None:
-                continue
-            coarse_img, coarse_bin = attempt
-            refined_img, refined_bin = (coarse_img, coarse_bin) if candidate == "legacy" else self._refine_alignment_with_template_anchors(coarse_img, coarse_bin, template)
+            else:
+                attempt = self._try_anchor_alignment(base_image, base_binary, template, candidate)
+                if attempt is None:
+                    continue
+                coarse_img, coarse_bin = attempt
+                refined_img, refined_bin = (coarse_img, coarse_bin) if candidate == "legacy" else self._refine_alignment_with_template_anchors(coarse_img, coarse_bin, template)
             oriented_img, oriented_bin = self._auto_orient(refined_img, refined_bin, template)
             shifted_img, shifted_bin = self._refine_corner_translation(oriented_img, oriented_bin, template)
             affine_img, affine_bin = self._refine_alignment_with_affine_anchors(shifted_img, shifted_bin, template)
+            candidate_score = self._orientation_score(affine_bin, template)
+            if best_attempt is None or candidate_score > best_attempt[0]:
+                best_attempt = (candidate_score, candidate, affine_img, affine_bin)
+
+        if best_attempt is not None:
+            score, candidate, best_img, best_bin = best_attempt
             self._last_alignment_debug["alignment_mode"] = candidate
-            return affine_img, affine_bin
+            self._last_alignment_debug["alignment_score"] = float(score)
+            return best_img, best_bin
 
         result.issues.append(OMRIssue("MISSING_ANCHORS", "Anchor detection failed; using page contour fallback"))
         aligned, aligned_binary = self._fallback_align_page_contour(image, template)
@@ -621,6 +624,7 @@ class OMRProcessor:
         shifted_img, shifted_bin = self._refine_corner_translation(oriented_img, oriented_bin, template)
         affine_img, affine_bin = self._refine_alignment_with_affine_anchors(shifted_img, shifted_bin, template)
         self._last_alignment_debug.setdefault("alignment_mode", "page_contour")
+        self._last_alignment_debug["alignment_score"] = float(self._orientation_score(affine_bin, template))
         return affine_img, affine_bin
 
     def _auto_orient(self, aligned: np.ndarray, aligned_binary: np.ndarray, template: Template) -> tuple[np.ndarray, np.ndarray]:
@@ -1521,7 +1525,7 @@ class OMRProcessor:
         refined_centers = refined.astype(np.float32)
         return refined_centers
 
-    def _find_local_component_offset(
+    def _find_local_component(
         self,
         binary: np.ndarray,
         center: np.ndarray,
@@ -1529,7 +1533,7 @@ class OMRProcessor:
         min_area: float,
         max_area: float,
         max_dist: float,
-    ) -> np.ndarray | None:
+    ) -> dict[str, float] | None:
         h, w = binary.shape[:2]
         exp_x, exp_y = float(center[0]), float(center[1])
         x0 = int(max(0, exp_x - search_pad))
@@ -1540,7 +1544,7 @@ class OMRProcessor:
         if roi.size == 0:
             return None
         num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(roi, connectivity=8)
-        best_offset: np.ndarray | None = None
+        best: dict[str, float] | None = None
         best_score = float("inf")
         for idx in range(1, num_labels):
             area = float(stats[idx, cv2.CC_STAT_AREA])
@@ -1552,10 +1556,62 @@ class OMRProcessor:
             dist = float(np.linalg.norm(offset))
             if dist > max_dist:
                 continue
-            if dist < best_score:
-                best_score = dist
-                best_offset = offset
-        return best_offset
+            bw = max(1.0, float(stats[idx, cv2.CC_STAT_WIDTH]))
+            bh = max(1.0, float(stats[idx, cv2.CC_STAT_HEIGHT]))
+            extent = float(area / max(1.0, bw * bh))
+            aspect = float(min(bw, bh) / max(bw, bh))
+            score = dist + (0.35 * search_pad * max(0.0, 0.45 - (aspect * extent)))
+            if score < best_score:
+                best_score = score
+                best = {
+                    "offset_x": float(offset[0]),
+                    "offset_y": float(offset[1]),
+                    "distance": dist,
+                    "area": area,
+                    "width": bw,
+                    "height": bh,
+                    "extent": extent,
+                    "aspect": aspect,
+                }
+        return best
+
+    def _find_local_component_offset(
+        self,
+        binary: np.ndarray,
+        center: np.ndarray,
+        search_pad: int,
+        min_area: float,
+        max_area: float,
+        max_dist: float,
+    ) -> np.ndarray | None:
+        component = self._find_local_component(binary, center, search_pad, min_area, max_area, max_dist)
+        if component is None:
+            return None
+        return np.array([component["offset_x"], component["offset_y"]], dtype=np.float32)
+
+    def _detect_digit_zone_component_marks(
+        self,
+        binary: np.ndarray,
+        centers: np.ndarray,
+        bubble_radius: int,
+    ) -> np.ndarray:
+        detected = np.zeros(len(centers), dtype=np.float32)
+        if len(centers) == 0:
+            return detected
+        min_area = max(5.0, 0.14 * np.pi * (bubble_radius ** 2))
+        max_area = max(min_area * 6.0, 6.0 * np.pi * (bubble_radius ** 2))
+        search_pad = max(10, int(round(bubble_radius * 2.6)))
+        max_dist = max(8.0, bubble_radius * 2.2)
+        target_area = max(min_area, 0.65 * np.pi * (bubble_radius ** 2))
+        for idx, center in enumerate(np.asarray(centers, dtype=np.float32)):
+            component = self._find_local_component(binary, center, search_pad, min_area, max_area, max_dist)
+            if component is None:
+                continue
+            dist_score = float(np.clip(1.0 - (component["distance"] / max(max_dist, 1e-6)), 0.0, 1.0))
+            shape_score = float(np.clip((component["aspect"] ** 0.5) * (component["extent"] / 0.45), 0.0, 1.0))
+            area_score = float(np.clip(component["area"] / max(target_area, 1.0), 0.0, 1.0))
+            detected[idx] = float(np.clip((0.45 * dist_score) + (0.35 * shape_score) + (0.20 * area_score), 0.0, 1.0))
+        return detected
 
     def _refit_digit_grid_from_clear_points(
         self,
@@ -2002,15 +2058,16 @@ class OMRProcessor:
         core_ratios = self._detect_center_core_marks(binary, refined_centers, radius)
         multi_probe_ratios = self._detect_digit_zone_multi_probe_marks(binary, refined_centers, radius)
         peak_window_ratios = np.zeros_like(ratios)
+        component_ratios = self._detect_digit_zone_component_marks(binary, refined_centers, radius)
         if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
             square_ratios = self._detect_square_mark_density(binary, refined_centers, radius)
             eroded_ratios = self._detect_eroded_mark_density(binary, refined_centers, radius)
-            legacy_ratios = np.clip((0.15 * ratios) + (0.30 * core_ratios) + (0.30 * square_ratios) + (0.25 * eroded_ratios), 0.0, 1.0)
-            widened_ratios = np.clip((0.08 * ratios) + (0.18 * core_ratios) + (0.20 * square_ratios) + (0.16 * eroded_ratios) + (0.20 * multi_probe_ratios) + (0.18 * peak_window_ratios), 0.0, 1.0)
+            legacy_ratios = np.clip((0.12 * ratios) + (0.24 * core_ratios) + (0.24 * square_ratios) + (0.20 * eroded_ratios) + (0.20 * component_ratios), 0.0, 1.0)
+            widened_ratios = np.clip((0.06 * ratios) + (0.14 * core_ratios) + (0.16 * square_ratios) + (0.14 * eroded_ratios) + (0.18 * multi_probe_ratios) + (0.14 * peak_window_ratios) + (0.18 * component_ratios), 0.0, 1.0)
             ratios = np.maximum(legacy_ratios, widened_ratios)
         else:
-            legacy_ratios = np.clip((0.55 * ratios) + (0.45 * core_ratios), 0.0, 1.0)
-            widened_ratios = np.clip((0.24 * ratios) + (0.22 * core_ratios) + (0.30 * multi_probe_ratios) + (0.24 * peak_window_ratios), 0.0, 1.0)
+            legacy_ratios = np.clip((0.42 * ratios) + (0.28 * core_ratios) + (0.30 * component_ratios), 0.0, 1.0)
+            widened_ratios = np.clip((0.18 * ratios) + (0.16 * core_ratios) + (0.22 * multi_probe_ratios) + (0.18 * peak_window_ratios) + (0.26 * component_ratios), 0.0, 1.0)
             ratios = np.maximum(legacy_ratios, widened_ratios)
         weak_mask = ratios < max(self.empty_threshold + 0.16, min(self.fill_threshold * 0.82, 0.44))
         if np.any(weak_mask):
@@ -2040,8 +2097,121 @@ class OMRProcessor:
             "direct_local_fill": local_fill.tolist(),
             "direct_radius": int(radius),
             "peak_window_scores": peak_window_ratios.tolist(),
+            "component_scores": component_ratios.tolist(),
         }
         return value, confs, refined_centers, mat, debug
+
+    @staticmethod
+    def _identifier_expected_len(key: str, zone: Zone) -> int:
+        if key == "student_id":
+            return 8
+        if key == "exam_code":
+            return 4
+        return max(1, int(getattr(zone.grid, "cols", 1) or 1))
+
+    def _decode_identifier_by_anchor_axis(
+        self,
+        binary: np.ndarray,
+        zone: Zone,
+        template: Template,
+        centers: np.ndarray,
+        radius: int,
+    ) -> tuple[str, list[float], dict[str, object]]:
+        rows = 10
+        cols = max(1, int(zone.grid.cols or 1))
+        if centers.size == 0:
+            return "", [], {"axis_mode": "empty_centers"}
+
+        scores = self.detect_bubbles(binary, centers, radius)
+        core_scores = self._detect_center_core_marks(binary, centers, radius)
+        component_scores = self._detect_digit_zone_component_marks(binary, centers, radius)
+        mark_scores = np.clip((0.30 * scores) + (0.30 * core_scores) + (0.40 * component_scores), 0.0, 1.0)
+
+        detected_anchors = np.array(self._detect_digit_anchor_ruler(binary, template, zone), dtype=np.float32)
+        if len(detected_anchors) < 2:
+            detected_anchors = np.array(self._get_manual_digit_anchor_points(template, zone), dtype=np.float32)
+
+        axis_mode = "anchor_ruler"
+        if len(detected_anchors) >= 2:
+            order = np.argsort(detected_anchors[:, 1])
+            axis_start = detected_anchors[order[0]]
+            axis_end = detected_anchors[order[-1]]
+        else:
+            axis_mode = "pca_fallback"
+            pts = centers.astype(np.float32)
+            mean_pt = np.mean(pts, axis=0)
+            cov = np.cov((pts - mean_pt).T) if len(pts) >= 2 else np.eye(2, dtype=np.float32)
+            eig_vals, eig_vecs = np.linalg.eigh(cov)
+            vec = eig_vecs[:, int(np.argmax(eig_vals))]
+            if float(abs(vec[1])) < float(abs(vec[0])):
+                vec = np.array([0.0, 1.0], dtype=np.float32)
+            if vec[1] < 0:
+                vec = -vec
+            axis_start = mean_pt - (120.0 * vec)
+            axis_end = mean_pt + (120.0 * vec)
+
+        axis_vec = (axis_end - axis_start).astype(np.float32)
+        axis_norm = float(np.linalg.norm(axis_vec))
+        if axis_norm <= 1e-6:
+            return "", [], {"axis_mode": "degenerate_axis"}
+        axis_y = axis_vec / axis_norm
+        axis_x = np.array([axis_y[1], -axis_y[0]], dtype=np.float32)
+        rel = centers.astype(np.float32) - axis_start
+        proj_y = rel @ axis_y
+        proj_x = rel @ axis_x
+
+        x_order = np.argsort(proj_x)
+        x_chunks = np.array_split(proj_x[x_order], cols)
+        col_centers = np.array([float(np.median(ch)) if len(ch) else 0.0 for ch in x_chunks], dtype=np.float32)
+        col_indices = np.array([int(np.argmin(np.abs(col_centers - px))) for px in proj_x], dtype=np.int32)
+
+        if len(detected_anchors) >= 2:
+            anchor_proj = np.sort(((detected_anchors - axis_start) @ axis_y).astype(np.float32))
+            if len(anchor_proj) >= rows + 1:
+                pick = np.linspace(0, len(anchor_proj) - 1, rows + 1).round().astype(int)
+                anchor_proj = anchor_proj[pick]
+                row_proj = 0.5 * (anchor_proj[:-1] + anchor_proj[1:])
+            else:
+                lo, hi = float(np.min(anchor_proj)), float(np.max(anchor_proj))
+                step = (hi - lo) / float(max(rows, 1))
+                row_proj = np.array([lo + ((idx + 0.5) * step) for idx in range(rows)], dtype=np.float32)
+        else:
+            y_order = np.argsort(proj_y)
+            y_chunks = np.array_split(proj_y[y_order], rows)
+            row_proj = np.array([float(np.median(ch)) if len(ch) else 0.0 for ch in y_chunks], dtype=np.float32)
+
+        mat = np.zeros((rows, cols), dtype=np.float32)
+        for idx, score in enumerate(mark_scores):
+            c_idx = int(col_indices[idx])
+            r_idx = int(np.argmin(np.abs(row_proj - proj_y[idx])))
+            if 0 <= r_idx < rows and 0 <= c_idx < cols:
+                mat[r_idx, c_idx] = max(float(mat[r_idx, c_idx]), float(score))
+
+        digit_map = zone.metadata.get("digit_map", list(range(rows)))
+        digits: list[str] = []
+        confs: list[float] = []
+        threshold = max(0.22, float(self.fill_threshold) * 0.72)
+        for c_idx in range(cols):
+            col = mat[:, c_idx]
+            top_idx = int(np.argmax(col))
+            top = float(col[top_idx])
+            second = float(np.partition(col, -2)[-2]) if len(col) > 1 else 0.0
+            if top < threshold or (second >= top * 0.92):
+                digits.append("?")
+                confs.append(max(0.0, top - second))
+                continue
+            mapped = digit_map[top_idx] if top_idx < len(digit_map) else top_idx
+            digits.append(str(mapped))
+            confs.append(max(0.0, top - second))
+
+        debug = {
+            "axis_mode": axis_mode,
+            "axis_line": [(float(axis_start[0]), float(axis_start[1])), (float(axis_end[0]), float(axis_end[1]))],
+            "axis_col_centers": [float(x) for x in col_centers],
+            "axis_row_centers": [float(y) for y in row_proj],
+            "axis_scores": mat.tolist(),
+        }
+        return "".join(digits), confs, debug
 
     def _finalize_identifier_value(
         self,
@@ -2069,7 +2239,9 @@ class OMRProcessor:
         else:
             final_value = value or ""
             conf_list = list(confs or [])
-            expected_len = max(1, int(zone.grid.cols))
+            expected_len = self._identifier_expected_len(key, zone)
+            if len(final_value) > expected_len:
+                final_value = final_value[:expected_len]
             missing_digits = final_value.count("?")
             is_valid = len(final_value) == expected_len and missing_digits == 0
             global_score = float(expected_len - missing_digits) / float(expected_len or 1)
@@ -2077,6 +2249,10 @@ class OMRProcessor:
                 result.recognition_errors.append(f"{zone.zone_type.value}: LOW_CONFIDENCE")
                 if not is_valid:
                     result.recognition_errors.append(f"{zone.zone_type.value}: invalid length or ambiguous digit sequence")
+                    if key == "student_id":
+                        result.recognition_errors.append(f"{zone.zone_type.value}: Lỗi SBD")
+                    elif key == "exam_code":
+                        result.recognition_errors.append(f"{zone.zone_type.value}: Lỗi Mã đề")
                 final_value = ""
         if key == "student_id" and final_value and final_value != "-":
             longest_run = 1
@@ -2200,6 +2376,73 @@ class OMRProcessor:
         }
         return np.array(points, dtype=np.float32), debug
 
+    def _adjust_identifier_points_by_anchor_distance(
+        self,
+        binary: np.ndarray,
+        template: Template,
+        zone: Zone,
+        points: np.ndarray,
+    ) -> tuple[np.ndarray, dict[str, object]]:
+        if points.size == 0:
+            return points, {"identifier_anchor_distance_ratio_applied": False, "reason": "empty_points"}
+        manual = np.array(self._get_manual_digit_anchor_points(template, zone), dtype=np.float32)
+        detected = np.array(self._detect_digit_anchor_ruler(binary, template, zone), dtype=np.float32)
+        if len(manual) < 2 or len(detected) < 2:
+            return points, {
+                "identifier_anchor_distance_ratio_applied": False,
+                "manual_anchor_count": int(len(manual)),
+                "detected_anchor_count": int(len(detected)),
+            }
+
+        manual_order = np.argsort(manual[:, 1])
+        detected_order = np.argsort(detected[:, 1])
+        manual_start, manual_end = manual[manual_order[0]], manual[manual_order[-1]]
+        detected_start, detected_end = detected[detected_order[0]], detected[detected_order[-1]]
+
+        manual_axis = (manual_end - manual_start).astype(np.float32)
+        detected_axis = (detected_end - detected_start).astype(np.float32)
+        manual_len = float(np.linalg.norm(manual_axis))
+        detected_len = float(np.linalg.norm(detected_axis))
+        if manual_len <= 1e-6 or detected_len <= 1e-6:
+            return points, {"identifier_anchor_distance_ratio_applied": False, "reason": "degenerate_axis"}
+
+        row_ratio = float(np.clip(detected_len / manual_len, 0.75, 1.35))
+        row_unit_manual = manual_axis / manual_len
+        row_unit_detected = detected_axis / detected_len
+        col_unit_manual = np.array([-row_unit_manual[1], row_unit_manual[0]], dtype=np.float32)
+        col_unit_detected = np.array([-row_unit_detected[1], row_unit_detected[0]], dtype=np.float32)
+
+        zone_x = float(zone.x * template.width if zone.x <= 1.0 else zone.x)
+        zone_y = float(zone.y * template.height if zone.y <= 1.0 else zone.y)
+        zone_w = float(zone.width * template.width if zone.width <= 1.0 else zone.width)
+        zone_h = float(zone.height * template.height if zone.height <= 1.0 else zone.height)
+        zone_center = np.array([zone_x + (0.5 * zone_w), zone_y + (0.5 * zone_h)], dtype=np.float32)
+        manual_dist = float(np.mean(np.linalg.norm(manual - zone_center, axis=1)))
+        detected_dist = float(np.mean(np.linalg.norm(detected - zone_center, axis=1)))
+        distance_ratio = float(np.clip((detected_dist / max(manual_dist, 1e-6)), 0.75, 1.35))
+
+        origin_manual = np.mean(manual, axis=0).astype(np.float32)
+        origin_detected = np.mean(detected, axis=0).astype(np.float32)
+        adjusted: list[np.ndarray] = []
+        for pt in points.astype(np.float32):
+            delta = pt - origin_manual
+            row_comp = float(np.dot(delta, row_unit_manual))
+            col_comp = float(np.dot(delta, col_unit_manual))
+            adj = origin_detected + ((row_comp * row_ratio) * row_unit_detected) + ((col_comp * distance_ratio) * col_unit_detected)
+            adjusted.append(adj.astype(np.float32))
+
+        debug = {
+            "identifier_anchor_distance_ratio_applied": True,
+            "identifier_anchor_row_ratio": row_ratio,
+            "identifier_anchor_distance_ratio": distance_ratio,
+            "identifier_anchor_zone": str(getattr(zone.zone_type, "value", "") or ""),
+            "manual_anchor_distance_mean": manual_dist,
+            "detected_anchor_distance_mean": detected_dist,
+            "manual_anchor_count": int(len(manual)),
+            "detected_anchor_count": int(len(detected)),
+        }
+        return np.array(adjusted, dtype=np.float32), debug
+
     def _should_retry_exam_code_with_sampling(
         self,
         recognition_errors: list[str],
@@ -2218,6 +2461,9 @@ class OMRProcessor:
         self,
         row_scores: np.ndarray,
         row_threshold: float,
+        row_raw_scores: np.ndarray | None = None,
+        row_core_scores: np.ndarray | None = None,
+        row_eroded_scores: np.ndarray | None = None,
     ) -> tuple[int | None, float, str | None]:
         scores = np.asarray(row_scores, dtype=np.float32)
         if scores.size == 0:
@@ -2230,10 +2476,17 @@ class OMRProcessor:
         filled = np.where(scores > row_threshold)[0]
         margin = top - second
         if len(filled) > 1:
-            dominant_margin = max(self.certainty_margin * 1.10, 0.10)
-            dominant_ratio = second <= 1e-6 or top >= (1.25 * second)
-            if top >= row_threshold and margin >= dominant_margin and dominant_ratio:
-                return top_i, margin, "dominant_fallback"
+            top_support = top
+            second_support = second
+            if row_raw_scores is not None and row_core_scores is not None:
+                raw_scores = np.asarray(row_raw_scores, dtype=np.float32)
+                core_scores = np.asarray(row_core_scores, dtype=np.float32)
+                eroded_scores = np.asarray(row_eroded_scores if row_eroded_scores is not None else raw_scores, dtype=np.float32)
+                top_support = max(float(raw_scores[top_i]), float(core_scores[top_i]), float(eroded_scores[top_i]))
+                second_support = max(float(raw_scores[second_i]), float(core_scores[second_i]), float(eroded_scores[second_i]))
+            support_similarity = second_support / max(top_support, 1e-6)
+            if top >= row_threshold and support_similarity < 0.95:
+                return top_i, max(margin, top_support - second_support), "row_max_fallback"
             return None, 0.0, "multiple"
         if top > row_threshold and margin > self.certainty_margin:
             return top_i, margin, None
@@ -2261,12 +2514,26 @@ class OMRProcessor:
             if zone.zone_type == ZoneType.EXAM_CODE_BLOCK:
                 modeled_expected, model_debug = self._digit_model_expected_points(template, zone)
                 if len(modeled_expected) == len(expected):
-                    guided, digit_debug = modeled_expected, model_debug
+                    adjusted_expected, ratio_debug = self._adjust_identifier_points_by_anchor_distance(
+                        working_binary,
+                        template,
+                        zone,
+                        modeled_expected.astype(np.float32),
+                    )
+                    guided, digit_debug = adjusted_expected, (model_debug | ratio_debug)
                     exam_digit_model_applied = True
                 else:
                     guided, digit_debug = self._digit_zone_guidance(working_binary, expected, zone, template)
             else:
                 guided, digit_debug = self._digit_zone_guidance(working_binary, expected, zone, template)
+            if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
+                guided, sid_ratio_debug = self._adjust_identifier_points_by_anchor_distance(
+                    working_binary,
+                    template,
+                    zone,
+                    guided.astype(np.float32),
+                )
+                digit_debug = dict(digit_debug) | sid_ratio_debug
             column_guided = self._resolve_column_digit_centers(working_binary, guided.astype(np.float32), grid, bubble_radius)
             centers, grid_fit_debug = self._refit_digit_grid_from_clear_points(
                 working_binary,
@@ -2290,13 +2557,30 @@ class OMRProcessor:
                 confs=direct_confs,
                 result=result,
             )
+            axis_value, axis_confs, axis_debug = self._decode_identifier_by_anchor_axis(
+                working_binary,
+                zone,
+                template,
+                direct_centers,
+                int(round(bubble_radius)),
+            )
+            axis_final, axis_final_confs = self._finalize_identifier_value(
+                zone,
+                key,
+                value=axis_value,
+                confs=axis_confs,
+                result=None,
+            )
+            if axis_final and (not final_value or float(np.mean(axis_final_confs or [0.0])) >= float(np.mean(final_confs or [0.0]))):
+                del result.recognition_errors[error_mark:]
+                final_value, final_confs = axis_final, axis_final_confs
             used_sampling = False
             zone_debug = dict(getattr(result, "digit_zone_debug", {}) or {})
             final_col_lines = [float(np.median(direct_centers[c::grid.cols, 0])) for c in range(grid.cols)] if grid.cols > 0 else []
-            zone_debug[zone.id] = digit_debug | grid_fit_debug | direct_debug | {
+            zone_debug[zone.id] = digit_debug | grid_fit_debug | direct_debug | axis_debug | {
                 "col_lines": final_col_lines,
                 "col_segments": [],
-                "recognition_path": "direct",
+                "recognition_path": "axis_projection" if axis_final else "direct",
             }
             skip_sampling_fallback = key == "exam_code" and exam_digit_model_applied
             if not final_value and not skip_sampling_fallback:
@@ -2375,6 +2659,7 @@ class OMRProcessor:
             centers = self._detect_digit_bubble_centers(working_binary, centers, float(radius))
         ratios = self.detect_bubbles(working_binary, centers, radius)
         if zone.zone_type == ZoneType.MCQ_BLOCK:
+            raw_mcq_ratios = np.asarray(ratios, dtype=np.float32).copy()
             core_ratios = self._detect_center_core_marks(working_binary, centers, radius)
             eroded_ratios = self._detect_eroded_mark_density(working_binary, centers, radius)
             core_boosted = np.clip((0.62 * ratios) + (0.38 * core_ratios), 0.0, 1.0)
@@ -2407,6 +2692,9 @@ class OMRProcessor:
         else:
             mat = ratios[:need].reshape(rows, cols)
             local_fill = dynamic_thresholds[:need].reshape(rows, cols)
+            raw_mcq_mat = np.asarray(raw_mcq_ratios[:need], dtype=np.float32).reshape(rows, cols) if zone.zone_type == ZoneType.MCQ_BLOCK else None
+            core_mcq_mat = np.asarray(core_ratios[:need], dtype=np.float32).reshape(rows, cols) if zone.zone_type == ZoneType.MCQ_BLOCK else None
+            eroded_mcq_mat = np.asarray(eroded_ratios[:need], dtype=np.float32).reshape(rows, cols) if zone.zone_type == ZoneType.MCQ_BLOCK else None
 
         orig_fill = self.fill_threshold
         self.fill_threshold = float(np.clip(np.median(local_fill), orig_fill - 0.08, orig_fill + 0.08))
@@ -2455,7 +2743,13 @@ class OMRProcessor:
                     qno = grid.question_start + r
                     row_scores = mat[r, :]
                     row_threshold = float(np.median(local_fill[r, :])) if local_fill.shape[1] else self.fill_threshold
-                    best_idx, confidence, reason = self._pick_best_mcq_option(row_scores, row_threshold)
+                    best_idx, confidence, reason = self._pick_best_mcq_option(
+                        row_scores,
+                        row_threshold,
+                        row_raw_scores=raw_mcq_mat[r, :] if raw_mcq_mat is not None else None,
+                        row_core_scores=core_mcq_mat[r, :] if core_mcq_mat is not None else None,
+                        row_eroded_scores=eroded_mcq_mat[r, :] if eroded_mcq_mat is not None else None,
+                    )
                     if best_idx is None:
                         if reason == "multiple":
                             result.recognition_errors.append(f"MCQ Q{qno}: multiple answer")
