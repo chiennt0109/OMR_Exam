@@ -1226,6 +1226,30 @@ class OMRPipelineTests(unittest.TestCase):
             self.processor.process_batch(["a.png", "b.png"], template)
         self.assertEqual(run_mock.call_count, 2)
 
+    def test_process_batch_auto_parallel_for_large_batches(self):
+        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[])
+
+        class FakeWorker:
+            def run_recognition_test(self, image_path, _template, _context):
+                return type("R", (), {"image_path": str(image_path)})()
+
+        image_paths = [f"{i:03d}.png" for i in range(10)]
+        with patch("core.omr_engine.os.cpu_count", return_value=8), \
+            patch.object(self.processor, "_make_batch_worker", return_value=FakeWorker()) as mk_mock:
+            out = self.processor.process_batch(image_paths, template)
+        self.assertEqual(len(out), len(image_paths))
+        self.assertGreater(mk_mock.call_count, 0)
+
+    def test_process_batch_can_disable_auto_parallel(self):
+        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[], metadata={"batch_auto_parallel": False})
+        fake_result = type("FakeResult", (), {"image_path": "x.png"})()
+        image_paths = [f"{i:03d}.png" for i in range(10)]
+        with patch("core.omr_engine.os.cpu_count", return_value=8), \
+            patch.object(self.processor, "run_recognition_test", return_value=fake_result) as run_mock:
+            out = self.processor.process_batch(image_paths, template)
+        self.assertEqual(len(out), len(image_paths))
+        self.assertEqual(run_mock.call_count, len(image_paths))
+
     def test_process_batch_parallel_keeps_input_order(self):
         template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[], metadata={"batch_workers": 2})
 

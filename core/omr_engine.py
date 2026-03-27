@@ -290,6 +290,20 @@ class OMRProcessor:
         return res, float(time.perf_counter() - started)
 
     @staticmethod
+    def _auto_batch_worker_count(total: int, template: Template) -> int:
+        meta = (getattr(template, "metadata", None) or {})
+        auto_parallel = bool(meta.get("batch_auto_parallel", True))
+        if not auto_parallel:
+            return 1
+        min_items = int(meta.get("batch_auto_parallel_min_items", 8) or 8)
+        if total < max(2, min_items):
+            return 1
+        cpu_count = max(1, int(os.cpu_count() or 1))
+        target = max(2, cpu_count // 2)
+        max_auto = int(meta.get("batch_auto_parallel_max_workers", 6) or 6)
+        return max(1, min(total, target, max_auto))
+
+    @staticmethod
     def _write_batch_timing_log(log_path: Path, rows: list[tuple[int, str, float]], total_count: int) -> None:
         try:
             log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -343,7 +357,7 @@ class OMRProcessor:
         self._batch_orientation_hint_score = None
         timing_rows: list[tuple[int, str, float]] = []
         configured_workers = int(((template.metadata or {}).get("batch_workers", 0) if getattr(template, "metadata", None) else 0) or 0)
-        default_workers = 1
+        default_workers = self._auto_batch_worker_count(total, template)
         worker_count = configured_workers if configured_workers > 0 else default_workers
         worker_count = max(1, min(worker_count, total))
         log_path_text = str((template.metadata or {}).get("batch_timing_log_path", "") or "")
