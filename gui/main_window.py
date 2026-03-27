@@ -15186,6 +15186,18 @@ class MainWindow(QMainWindow):
         if not self.answer_keys:
             QMessageBox.warning(self, "Missing data", "Không tìm thấy đáp án cho môn đã chọn. Vui lòng kiểm tra cấu hình môn.")
             return []
+        all_subject_keys: list[SubjectKey] = []
+        if self.answer_keys is not None:
+            for key_obj in self.answer_keys.keys.values():
+                if isinstance(key_obj, SubjectKey) and str(getattr(key_obj, "subject", "") or "").strip() == subject:
+                    all_subject_keys.append(key_obj)
+        fetched_keys = self.database.fetch_answer_keys_for_subject(subject)
+        for exam_code, key_obj in (fetched_keys or {}).items():
+            if not isinstance(key_obj, SubjectKey):
+                continue
+            if any(str(k.exam_code or "").strip() == str(exam_code or "").strip() for k in all_subject_keys):
+                continue
+            all_subject_keys.append(key_obj)
         subject_cfg = self._subject_config_by_subject_key(subject) or {}
         self._apply_subject_section_visibility(subject)
         mode_text = (mode or "Tính lại toàn bộ").strip()
@@ -15193,6 +15205,7 @@ class MainWindow(QMainWindow):
         rows = []
         missing = 0
         failed_scans: list[dict[str, str]] = []
+        smart_scored_scans: list[dict[str, str]] = []
         for scan in subject_scans:
             sid = (scan.student_id or "").strip()
             profile = self._student_profile_by_id(sid)
@@ -15204,6 +15217,30 @@ class MainWindow(QMainWindow):
                 continue
             key = self.answer_keys.get_flexible(subject, scan.exam_code)
             if not key:
+                best_row = None
+                best_key_code = ""
+                for candidate_key in all_subject_keys:
+                    try:
+                        cand_row = self.scoring_engine.score(
+                            scan,
+                            candidate_key,
+                            student_name=str(getattr(scan, "full_name", "") or ""),
+                            subject_config=subject_cfg,
+                        )
+                    except Exception:
+                        continue
+                    if best_row is None or float(getattr(cand_row, "score", 0.0) or 0.0) > float(getattr(best_row, "score", 0.0) or 0.0):
+                        best_row = cand_row
+                        best_key_code = str(getattr(candidate_key, "exam_code", "") or "").strip()
+                if best_row is not None:
+                    setattr(best_row, "scoring_note", "Chấm thông minh")
+                    rows.append(best_row)
+                    smart_scored_scans.append({
+                        "file": str(getattr(scan, "image_path", "") or "-"),
+                        "student_id": sid or "-",
+                        "picked_exam_code": best_key_code or "-",
+                    })
+                    continue
                 missing += 1
                 failed_scans.append({
                     "file": str(getattr(scan, "image_path", "") or "-"),
@@ -15255,6 +15292,8 @@ class MainWindow(QMainWindow):
             "failed_count": len(failed_scans),
             "success_count": len(rows),
             "failed_scans": list(failed_scans),
+            "smart_scoring_count": len(smart_scored_scans),
+            "smart_scored_scans": list(smart_scored_scans),
             "note": note,
         }
         phase_marker = f"{phase['timestamp']}::{subject}::{mode_text}"
@@ -15280,6 +15319,7 @@ class MainWindow(QMainWindow):
                     "phase": phase_marker,
                     "phase_timestamp": phase["timestamp"],
                     "phase_mode": mode_text,
+                    "note": str(getattr(r, "scoring_note", "") or ""),
                 }
         self.scoring_results_by_subject[subject] = subject_scores
         phase["phase_marker"] = phase_marker
@@ -15311,6 +15351,8 @@ class MainWindow(QMainWindow):
             f"Đã chấm xong môn '{subject}'.\n"
             f"Tổng file: {total_scans} | Thành công: {success_count} | Thất bại: {fail_count}."
         )
+        if smart_scored_scans:
+            base_msg = f"{base_msg}\nChấm thông minh: {len(smart_scored_scans)} bài (mã đề lỗi nhưng đã chấm theo mã tốt nhất)."
         if formula_text:
             base_msg = f"{base_msg}\n\n{formula_text}"
         if failed_scans:
@@ -15320,6 +15362,15 @@ class MainWindow(QMainWindow):
             if len(failed_scans) > 30:
                 details.append(f"... và {len(failed_scans)-30} file khác")
             base_msg = f"{base_msg}\n\nFile thất bại:\n" + "\n".join(details)
+        if smart_scored_scans:
+            smart_details = []
+            for item in smart_scored_scans[:30]:
+                smart_details.append(
+                    f"- {Path(str(item.get('file', '-') or '-')).name}: SBD {str(item.get('student_id', '-') or '-')}, mã đề chọn {str(item.get('picked_exam_code', '-') or '-')}"
+                )
+            if len(smart_scored_scans) > 30:
+                smart_details.append(f"... và {len(smart_scored_scans)-30} file khác")
+            base_msg = f"{base_msg}\n\nDanh sách Chấm thông minh:\n" + "\n".join(smart_details)
         QMessageBox.information(self, "Scoring preview", base_msg)
         return rows
 

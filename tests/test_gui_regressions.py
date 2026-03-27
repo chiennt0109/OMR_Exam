@@ -161,6 +161,14 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('self.score_rows = list(loaded_rows)', source)
         self.assertIn('loaded_rows.sort(key=lambda row: str(row.student_id or ""))', source)
 
+    def test_scoring_supports_smart_fallback_when_exam_code_is_invalid(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('smart_scored_scans: list[dict[str, str]] = []', source)
+        self.assertIn('setattr(best_row, "scoring_note", "Chấm thông minh")', source)
+        self.assertIn('"smart_scoring_count": len(smart_scored_scans),', source)
+        self.assertIn('"note": str(getattr(r, "scoring_note", "") or ""),', source)
+        self.assertIn('Danh sách Chấm thông minh:', source)
+
 
 if __name__ == '__main__':
     unittest.main()
