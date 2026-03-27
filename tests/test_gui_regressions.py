@@ -153,6 +153,13 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('self.database.log_change(', block)
         self.assertIn('return changed', block)
 
+    def test_scoring_view_restores_cached_subject_results_without_recalculate(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('def _load_cached_scoring_results_for_subject(self, subject_key: str) -> None:', source)
+        self.assertIn('self._load_cached_scoring_results_for_subject(subject_key)', source)
+        self.assertIn('self._load_cached_scoring_results_for_subject(selected_subject)', source)
+        self.assertIn('self.score_rows = list(loaded_rows)', source)
+        self.assertIn('loaded_rows.sort(key=lambda row: str(row.student_id or ""))', source)
 
 
 if __name__ == '__main__':

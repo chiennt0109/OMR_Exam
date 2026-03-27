@@ -48,7 +48,7 @@ from PySide6.QtWidgets import (
 
 from core.answer_key_importer import ImportedAnswerKey, ImportedAnswerKeyPackage, import_answer_key
 from core.omr_engine import OMRProcessor, OMRResult
-from core.scoring_engine import ScoringEngine
+from core.scoring_engine import ScoreResult, ScoringEngine
 from editor.template_editor import TemplateEditorWindow
 from gui.import_answer_key_dialog import ImportAnswerKeyDialog
 from models.answer_key import AnswerKeyRepository, SubjectKey
@@ -3390,10 +3390,63 @@ class MainWindow(QMainWindow):
             self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
             self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
 
+    def _load_cached_scoring_results_for_subject(self, subject_key: str) -> None:
+        subject = str(subject_key or "").strip()
+        if not subject or not hasattr(self, "score_preview_table"):
+            return
+        cached_rows = (self.scoring_results_by_subject.get(subject, {}) or {})
+        loaded_rows = []
+        for sid, payload in cached_rows.items():
+            if not isinstance(payload, dict):
+                continue
+            loaded_rows.append(
+                ScoreResult(
+                    student_id=str(payload.get("student_id", sid) or sid),
+                    name=str(payload.get("name", "") or ""),
+                    subject=str(payload.get("subject", subject) or subject),
+                    exam_code=str(payload.get("exam_code", "") or ""),
+                    correct=int(payload.get("correct", 0) or 0),
+                    wrong=int(payload.get("wrong", 0) or 0),
+                    blank=int(payload.get("blank", 0) or 0),
+                    score=float(payload.get("score", 0.0) or 0.0),
+                    mcq_correct=int(payload.get("mcq_correct", 0) or 0),
+                    tf_correct=int(payload.get("tf_correct", 0) or 0),
+                    numeric_correct=int(payload.get("numeric_correct", 0) or 0),
+                    bonus_full_credit_count=int(payload.get("bonus_full_credit_count", 0) or 0),
+                    bonus_full_credit_points=float(payload.get("bonus_full_credit_points", 0.0) or 0.0),
+                    mcq_compare=str(payload.get("mcq_compare", "") or ""),
+                    tf_compare=str(payload.get("tf_compare", "") or ""),
+                    numeric_compare=str(payload.get("numeric_compare", "") or ""),
+                )
+            )
+
+        loaded_rows.sort(key=lambda row: str(row.student_id or ""))
+        self.score_rows = list(loaded_rows)
+        self.score_preview_table.setRowCount(0)
+        for i, r in enumerate(loaded_rows):
+            self.score_preview_table.insertRow(i)
+            self.score_preview_table.setItem(i, 0, QTableWidgetItem(r.student_id or "-"))
+            self.score_preview_table.setItem(i, 1, QTableWidgetItem(r.name or "-"))
+            self.score_preview_table.setItem(i, 2, QTableWidgetItem(r.subject))
+            self.score_preview_table.setItem(i, 3, QTableWidgetItem(r.exam_code))
+            self.score_preview_table.setItem(i, 4, QTableWidgetItem(str(getattr(r, "mcq_correct", 0))))
+            self.score_preview_table.setItem(i, 5, QTableWidgetItem(str(getattr(r, "tf_correct", 0))))
+            self.score_preview_table.setItem(i, 6, QTableWidgetItem(str(getattr(r, "numeric_correct", 0))))
+            self.score_preview_table.setItem(i, 7, QTableWidgetItem(str(r.correct)))
+            self.score_preview_table.setItem(i, 8, QTableWidgetItem(str(r.wrong)))
+            self.score_preview_table.setItem(i, 9, QTableWidgetItem(str(r.blank)))
+            self.score_preview_table.setItem(i, 10, QTableWidgetItem(str(getattr(r, "bonus_full_credit_count", 0))))
+            self.score_preview_table.setItem(i, 11, QTableWidgetItem(str(getattr(r, "bonus_full_credit_points", 0.0))))
+            self.score_preview_table.setItem(i, 12, QTableWidgetItem(str(r.score)))
+            self.score_preview_table.setItem(i, 13, QTableWidgetItem(str(getattr(r, "mcq_compare", ""))))
+            self.score_preview_table.setItem(i, 14, QTableWidgetItem(str(getattr(r, "tf_compare", ""))))
+            self.score_preview_table.setItem(i, 15, QTableWidgetItem(str(getattr(r, "numeric_compare", ""))))
+
     def _handle_scoring_subject_changed(self, _index: int) -> None:
         subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
         if subject_key:
             self._apply_subject_section_visibility(subject_key)
+            self._load_cached_scoring_results_for_subject(subject_key)
             self._refresh_dashboard_summary_from_db(subject_key)
 
     def _run_scoring_from_panel(self) -> None:
@@ -3814,8 +3867,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
             return
         self.stack.setCurrentIndex(1)
-        self._populate_scoring_subjects(self._resolve_preferred_scoring_subject())
+        selected_subject = self._resolve_preferred_scoring_subject()
+        self._populate_scoring_subjects(selected_subject)
         self._refresh_scoring_phase_table()
+        self._load_cached_scoring_results_for_subject(selected_subject)
+        self._refresh_dashboard_summary_from_db(selected_subject)
         self._show_scoring_panel()
 
     def _refresh_scoring_phase_table(self) -> None:
@@ -4253,8 +4309,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
             return
         self.stack.setCurrentIndex(1)
-        self._populate_scoring_subjects(self._resolve_preferred_scoring_subject())
+        selected_subject = self._resolve_preferred_scoring_subject()
+        self._populate_scoring_subjects(selected_subject)
         self._refresh_scoring_phase_table()
+        self._load_cached_scoring_results_for_subject(selected_subject)
+        self._refresh_dashboard_summary_from_db(selected_subject)
         self._show_scoring_panel()
 
     def _refresh_scoring_phase_table(self) -> None:
@@ -9856,8 +9915,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
             return
         self.stack.setCurrentIndex(1)
-        self._populate_scoring_subjects(self._resolve_preferred_scoring_subject())
+        selected_subject = self._resolve_preferred_scoring_subject()
+        self._populate_scoring_subjects(selected_subject)
         self._refresh_scoring_phase_table()
+        self._load_cached_scoring_results_for_subject(selected_subject)
+        self._refresh_dashboard_summary_from_db(selected_subject)
         self._show_scoring_panel()
 
     def _refresh_scoring_phase_table(self) -> None:
