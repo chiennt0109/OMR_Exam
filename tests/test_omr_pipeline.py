@@ -1264,7 +1264,15 @@ class OMRPipelineTests(unittest.TestCase):
             self.assertFalse((Path(td) / "sheet_200dpi.png").exists())
 
     def test_fast_200dpi_mode_skips_dpi_normalization_and_rotation(self):
-        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[], metadata={"fast_200dpi_mode": True})
+        template = Template(
+            name="t",
+            image_path="",
+            width=200,
+            height=100,
+            anchors=[],
+            zones=[],
+            metadata={"fast_200dpi_mode": True, "skip_rotation_in_fast_mode": True},
+        )
         with patch("cv2.imread", return_value=np.zeros((100, 200, 3), dtype=np.uint8)), \
             patch.object(self.processor, "_load_image_normalized_to_200_dpi", side_effect=AssertionError("fast mode should bypass DPI normalization")), \
             patch.object(self.processor, "_correct_rotation", side_effect=AssertionError("fast mode should skip rotation by default")), \
@@ -1272,6 +1280,17 @@ class OMRPipelineTests(unittest.TestCase):
             patch.object(self.processor, "correct_perspective", return_value=(np.zeros((100, 200, 3), dtype=np.uint8), np.zeros((100, 200), dtype=np.uint8))), \
             patch.object(self.processor, "detect_anchors", return_value=[]):
             self.processor.recognize_sheet("x.png", template)
+
+    def test_fast_200dpi_mode_defaults_to_safe_rotation_and_perspective(self):
+        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[], metadata={"fast_200dpi_mode": True})
+        with patch("cv2.imread", return_value=np.zeros((100, 200, 3), dtype=np.uint8)), \
+            patch.object(self.processor, "_correct_rotation", side_effect=lambda x: x) as rot_mock, \
+            patch.object(self.processor, "_preprocess_fast", return_value={"binary": np.zeros((100, 200), dtype=np.uint8)}), \
+            patch.object(self.processor, "correct_perspective", return_value=(np.zeros((100, 200, 3), dtype=np.uint8), np.zeros((100, 200), dtype=np.uint8))) as cp_mock, \
+            patch.object(self.processor, "detect_anchors", return_value=[]):
+            self.processor.recognize_sheet("x.png", template)
+        self.assertTrue(rot_mock.called)
+        self.assertTrue(cp_mock.called)
 
     def test_fast_200dpi_mode_can_reenable_rotation(self):
         template = Template(

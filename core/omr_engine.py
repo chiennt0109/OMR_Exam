@@ -161,13 +161,13 @@ class OMRProcessor:
                     result.sync_legacy_aliases()
                     return result
 
-            if fast_mode and bool((template.metadata or {}).get("skip_rotation_in_fast_mode", True)):
+            if fast_mode and bool((template.metadata or {}).get("skip_rotation_in_fast_mode", False)):
                 rotated = src
             else:
                 rotated = self._correct_rotation(src)
             prepared = self._preprocess_fast(rotated) if fast_mode else self._preprocess(rotated)
 
-            direct_match = fast_mode and bool((template.metadata or {}).get("fast_direct_match", True))
+            direct_match = fast_mode and bool((template.metadata or {}).get("fast_direct_match", False))
             if direct_match:
                 target_size = (int(template.width), int(template.height))
                 if rotated.shape[1] == target_size[0] and rotated.shape[0] == target_size[1]:
