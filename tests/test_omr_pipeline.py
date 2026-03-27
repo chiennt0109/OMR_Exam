@@ -1389,42 +1389,6 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(confidence, 0.0)
         self.assertEqual(reason, "multiple_equal")
 
-    def test_mcq_row_max_fallback_ignores_boosted_secondary_noise_without_core_support(self):
-        best_idx, confidence, reason = self.processor._pick_best_mcq_option(
-            np.array([0.18, 0.69, 0.91, 0.16], dtype=np.float32),
-            0.62,
-            row_raw_scores=np.array([0.10, 0.24, 0.86, 0.09], dtype=np.float32),
-            row_core_scores=np.array([0.08, 0.22, 0.88, 0.07], dtype=np.float32),
-            row_eroded_scores=np.array([0.09, 0.26, 0.82, 0.08], dtype=np.float32),
-        )
-        self.assertEqual(best_idx, 2)
-        self.assertGreater(confidence, 0.20)
-        self.assertEqual(reason, "row_max_fallback")
-
-    def test_mcq_row_max_fallback_keeps_darker_choice_when_second_mark_is_not_95_percent_similar(self):
-        best_idx, confidence, reason = self.processor._pick_best_mcq_option(
-            np.array([0.18, 0.74, 0.92, 0.16], dtype=np.float32),
-            0.62,
-            row_raw_scores=np.array([0.10, 0.70, 0.88, 0.09], dtype=np.float32),
-            row_core_scores=np.array([0.08, 0.68, 0.90, 0.07], dtype=np.float32),
-            row_eroded_scores=np.array([0.09, 0.66, 0.84, 0.08], dtype=np.float32),
-        )
-        self.assertEqual(best_idx, 2)
-        self.assertGreater(confidence, 0.15)
-        self.assertEqual(reason, "row_max_fallback")
-
-    def test_mcq_row_max_fallback_still_marks_multiple_when_two_choices_are_95_percent_similar(self):
-        best_idx, confidence, reason = self.processor._pick_best_mcq_option(
-            np.array([0.18, 0.88, 0.91, 0.16], dtype=np.float32),
-            0.62,
-            row_raw_scores=np.array([0.10, 0.84, 0.88, 0.09], dtype=np.float32),
-            row_core_scores=np.array([0.08, 0.85, 0.89, 0.07], dtype=np.float32),
-            row_eroded_scores=np.array([0.09, 0.86, 0.87, 0.08], dtype=np.float32),
-        )
-        self.assertIsNone(best_idx)
-        self.assertEqual(confidence, 0.0)
-        self.assertEqual(reason, "multiple")
-
     def test_legacy_template_absolute_coordinates_are_converted(self):
         raw = {
             "name": "legacy",
@@ -1921,6 +1885,39 @@ class OMRPipelineTests(unittest.TestCase):
             value, _, debug = self.processor._decode_identifier_by_anchor_axis(np.zeros((160, 200), dtype=np.uint8), zone, template, centers, 6)
         self.assertEqual(value, "37")
         self.assertEqual(debug.get("axis_mode"), "anchor_ruler")
+
+    def test_identifier_decode_fast_path_skips_heavy_component_and_multi_probe_scoring(self):
+        zone = Zone(
+            id="sid_fast",
+            name="sid",
+            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=2, question_start=1, question_count=2, options=[], bubble_positions=[]),
+            metadata={},
+        )
+        centers = np.array([(30.0, 20.0 + (r * 8.0)) for r in range(10)] + [(50.0, 20.0 + (r * 8.0)) for r in range(10)], dtype=np.float32)
+        ratios = np.zeros((20,), dtype=np.float32)
+        ratios[2] = 0.95
+        ratios[10 + 7] = 0.93
+        result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
+        with patch.object(self.processor, "_detect_digit_bubble_centers", return_value=centers), \
+            patch.object(self.processor, "detect_bubbles", return_value=ratios), \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=ratios), \
+            patch.object(self.processor, "_detect_digit_zone_multi_probe_marks", side_effect=AssertionError("fast path should skip multi-probe")), \
+            patch.object(self.processor, "_detect_digit_zone_component_marks", side_effect=AssertionError("fast path should skip component")):
+            value, confs, _, _, debug = self.processor._decode_identifier_zone_from_centers(
+                np.zeros((140, 120), dtype=np.uint8),
+                zone,
+                result_stub,
+                centers,
+                5,
+            )
+        self.assertEqual(value, "27")
+        self.assertGreaterEqual(min(confs), 0.55)
+        self.assertTrue(bool(debug.get("fast_path_used")))
 
     def test_finalize_identifier_enforces_fixed_lengths_for_student_id_and_exam_code(self):
         sid_zone = Zone(

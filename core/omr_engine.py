@@ -2056,6 +2056,31 @@ class OMRProcessor:
         refined_centers = self._detect_digit_bubble_centers(binary, centers, float(radius))
         ratios = self.detect_bubbles(binary, refined_centers, radius)
         core_ratios = self._detect_center_core_marks(binary, refined_centers, radius)
+        quick_ratios = np.clip((0.55 * ratios) + (0.45 * core_ratios), 0.0, 1.0)
+        quick_mat = self._cluster_digit_columns(refined_centers, quick_ratios, rows, cols, 0.0)
+        class _TmpResult:
+            def __init__(self):
+                self.recognition_errors: list[str] = []
+                self.confidence_scores: dict[str, float] = {}
+        tmp_result = _TmpResult()
+        quick_value, quick_confs = self._decode_column_digits(quick_mat, zone, zone.grid, tmp_result)
+        quick_valid = (
+            isinstance(quick_value, str)
+            and len(quick_value) == cols
+            and ("?" not in quick_value)
+            and (float(np.mean(quick_confs or [0.0])) >= 0.55)
+        )
+        if quick_valid:
+            debug = {
+                "centers": [(float(x), float(y)) for x, y in refined_centers],
+                "direct_scores": quick_mat.tolist(),
+                "direct_local_fill": [],
+                "direct_radius": int(radius),
+                "peak_window_scores": [],
+                "component_scores": [],
+                "fast_path_used": True,
+            }
+            return quick_value, quick_confs, refined_centers, quick_mat, debug
         multi_probe_ratios = self._detect_digit_zone_multi_probe_marks(binary, refined_centers, radius)
         peak_window_ratios = np.zeros_like(ratios)
         component_ratios = self._detect_digit_zone_component_marks(binary, refined_centers, radius)
@@ -2098,6 +2123,7 @@ class OMRProcessor:
             "direct_radius": int(radius),
             "peak_window_scores": peak_window_ratios.tolist(),
             "component_scores": component_ratios.tolist(),
+            "fast_path_used": False,
         }
         return value, confs, refined_centers, mat, debug
 
