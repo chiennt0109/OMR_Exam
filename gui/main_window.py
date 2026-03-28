@@ -11550,16 +11550,17 @@ class MainWindow(QMainWindow):
     def _normalize_mapping_key(text: str) -> str:
         return str(text or "").strip().lower().replace(" ", "").replace("_", "")
 
-    def _load_api_mapping_rows(self, path: Path) -> list[dict[str, str]]:
+    def _load_api_mapping_rows(self, path: Path) -> tuple[list[str], list[dict[str, str]]]:
         ext = path.suffix.lower()
         rows: list[dict[str, str]] = []
         if ext in {".csv", ".txt", ".tsv"}:
             raw = path.read_text(encoding="utf-8-sig", errors="ignore")
             dialect = csv.Sniffer().sniff(raw[:2048]) if raw.strip() else csv.excel
             reader = csv.DictReader(raw.splitlines(), dialect=dialect)
+            headers = [str(x or "") for x in (reader.fieldnames or []) if str(x or "").strip()]
             for row in reader:
                 rows.append({str(k): str(v or "") for k, v in (row or {}).items()})
-            return rows
+            return headers, rows
         if ext == ".xlsx":
             try:
                 from openpyxl import load_workbook  # type: ignore
@@ -11569,14 +11570,14 @@ class MainWindow(QMainWindow):
             ws = wb.active
             values = list(ws.values)
             if not values:
-                return []
+                return [], []
             headers = [str(x or "") for x in values[0]]
             for data in values[1:]:
                 row = {}
                 for idx, key in enumerate(headers):
                     row[str(key)] = str(data[idx] if idx < len(data) and data[idx] is not None else "")
                 rows.append(row)
-            return rows
+            return [str(h or "") for h in headers if str(h or "").strip()], rows
         raise RuntimeError("Chỉ hỗ trợ .csv/.txt/.tsv/.xlsx")
 
     def _expected_answer_string_length_for_subject(self, subject_key: str) -> int:
@@ -11599,37 +11600,72 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "API bài thi", "Chưa cấu hình Thư mục bài thi môn.")
             return
         try:
-            mapping_rows = self._load_api_mapping_rows(Path(api_file))
+            headers, mapping_rows = self._load_api_mapping_rows(Path(api_file))
         except Exception as exc:
             QMessageBox.warning(self, "API bài thi", f"Không đọc được file mapping:\n{exc}")
             return
         if not mapping_rows:
             QMessageBox.warning(self, "API bài thi", "File mapping không có dữ liệu.")
             return
+        if not headers:
+            QMessageBox.warning(self, "API bài thi", "Không tìm thấy tiêu đề cột trong file mapping.")
+            return
 
         expected_len = self._expected_answer_string_length_for_subject(subject_key_for_results)
-        key_aliases = {
-            "filename": {"filename", "file", "image", "tenfile"},
-            "student_id": {"sdb", "studentid", "student_id", "sobaodanh"},
-            "exam_code": {"made", "examcode", "exam_code", "ma_de"},
-            "answer": {"bailam", "answer", "answers", "answerstring"},
-        }
+        pick = QDialog(self)
+        pick.setWindowTitle("Chọn cột API bài thi")
+        pick_lay = QVBoxLayout(pick)
+        pick_form = QFormLayout()
+        file_col = QComboBox(); file_col.addItems(headers)
+        sid_col = QComboBox(); sid_col.addItems(["[Không dùng]"] + headers)
+        exam_col = QComboBox(); exam_col.addItems(["[Không dùng]"] + headers)
+        answer_col = QComboBox(); answer_col.addItems(["[Không dùng]"] + headers)
+
+        def _find_idx(alias: set[str], combo: QComboBox) -> int:
+            for i in range(combo.count()):
+                if self._normalize_mapping_key(combo.itemText(i)) in alias:
+                    return i
+            return 0
+
+        file_col.setCurrentIndex(_find_idx({"filename", "file", "image", "tenfile"}, file_col))
+        sid_col.setCurrentIndex(_find_idx({"sdb", "studentid", "student_id", "sobaodanh"}, sid_col))
+        exam_col.setCurrentIndex(_find_idx({"made", "examcode", "exam_code", "ma_de"}, exam_col))
+        answer_col.setCurrentIndex(_find_idx({"bailam", "answer", "answers", "answerstring"}, answer_col))
+
+        pick_form.addRow("Cột FileName (bắt buộc)", file_col)
+        pick_form.addRow("Cột SBD", sid_col)
+        pick_form.addRow("Cột mã đề", exam_col)
+        pick_form.addRow("Cột bài làm", answer_col)
+        pick_lay.addLayout(pick_form)
+        pick_buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        pick_buttons.accepted.connect(pick.accept)
+        pick_buttons.rejected.connect(pick.reject)
+        pick_lay.addWidget(pick_buttons)
+        if pick.exec() != QDialog.Accepted:
+            return
+
+        selected_file_col = file_col.currentText().strip()
+        selected_sid_col = sid_col.currentText().strip()
+        selected_exam_col = exam_col.currentText().strip()
+        selected_answer_col = answer_col.currentText().strip()
+        if not selected_file_col or selected_file_col == "[Không dùng]":
+            QMessageBox.warning(self, "API bài thi", "Bắt buộc chọn cột FileName.")
+            return
 
         out: list[OMRResult] = []
         for row in mapping_rows:
-            norm = {self._normalize_mapping_key(k): str(v or "").strip() for k, v in row.items()}
-            def _pick(alias_set: set[str]) -> str:
-                for k, v in norm.items():
-                    if k in alias_set:
-                        return v
-                return ""
-            fname = _pick(key_aliases["filename"])
+            def _pick(col_name: str) -> str:
+                if not col_name or col_name == "[Không dùng]":
+                    return ""
+                return str(row.get(col_name, "") or "").strip()
+
+            fname = _pick(selected_file_col)
             if not fname:
                 continue
             result = OMRResult(image_path=str(Path(scan_folder) / fname))
-            result.student_id = _pick(key_aliases["student_id"])
-            result.exam_code = _pick(key_aliases["exam_code"])
-            answer_text = _pick(key_aliases["answer"]).replace(" ", "")
+            result.student_id = _pick(selected_sid_col)
+            result.exam_code = _pick(selected_exam_col)
+            answer_text = _pick(selected_answer_col).replace(" ", "")
             if expected_len > 0:
                 answer_text = answer_text[:expected_len]
             result.answer_string = answer_text
