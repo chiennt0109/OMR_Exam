@@ -11707,10 +11707,10 @@ class MainWindow(QMainWindow):
             numeric_layout = [(x, 0) for x in range(next_q + 1, next_q + numeric_count + 1)]
         tf_true_chars = {"Đ", "đ", "D", "d", "T", "t", "1", "Y", "y"}
 
-        def _numeric_widths_from_subject_cfg(exam_code_text: str) -> dict[int, int]:
+        def _section_layout_from_subject_cfg(exam_code_text: str) -> tuple[list[int], list[int], list[tuple[int, int]]]:
             imported = self._subject_imported_answer_keys_for_main(subject_cfg or {})
             if not imported:
-                return {}
+                return [], [], []
             exam_text = str(exam_code_text or "").strip()
             payload = imported.get(exam_text)
             if payload is None:
@@ -11720,16 +11720,29 @@ class MainWindow(QMainWindow):
                         payload = v
                         break
             if not isinstance(payload, dict):
-                return {}
-            numeric_map = payload.get("numeric_answers", {}) if isinstance(payload.get("numeric_answers", {}), dict) else {}
-            widths: dict[int, int] = {}
-            for q_raw, ans in numeric_map.items():
+                return [], [], []
+            mcq_payload = payload.get("mcq_answers", {}) if isinstance(payload.get("mcq_answers", {}), dict) else {}
+            tf_payload = payload.get("true_false_answers", {}) if isinstance(payload.get("true_false_answers", {}), dict) else {}
+            numeric_payload = payload.get("numeric_answers", {}) if isinstance(payload.get("numeric_answers", {}), dict) else {}
+            mcq_q: list[int] = []
+            tf_q: list[int] = []
+            numeric_layout: list[tuple[int, int]] = []
+            for q_raw in mcq_payload.keys():
                 try:
-                    q_no = int(q_raw)
+                    mcq_q.append(int(q_raw))
                 except Exception:
-                    continue
-                widths[q_no] = len(str(ans or ""))
-            return widths
+                    pass
+            for q_raw in tf_payload.keys():
+                try:
+                    tf_q.append(int(q_raw))
+                except Exception:
+                    pass
+            for q_raw, ans in numeric_payload.items():
+                try:
+                    numeric_layout.append((int(q_raw), len(str(ans or ""))))
+                except Exception:
+                    pass
+            return sorted(set(mcq_q)), sorted(set(tf_q)), sorted(numeric_layout, key=lambda x: int(x[0]))
 
         def _parse_answer_string(
             raw_answer: str,
@@ -11828,12 +11841,13 @@ class MainWindow(QMainWindow):
             row_mcq_questions = list(mcq_questions)
             row_tf_questions = list(tf_questions)
             row_numeric_layout = list(numeric_layout)
-            numeric_widths = _numeric_widths_from_subject_cfg(result.exam_code)
-            if numeric_widths:
-                if row_numeric_layout:
-                    row_numeric_layout = [(q_no, numeric_widths.get(int(q_no), int(width))) for q_no, width in row_numeric_layout]
-                else:
-                    row_numeric_layout = [(q_no, int(width)) for q_no, width in sorted(numeric_widths.items(), key=lambda x: int(x[0]))]
+            cfg_mcq_q, cfg_tf_q, cfg_num_layout = _section_layout_from_subject_cfg(result.exam_code)
+            if cfg_mcq_q:
+                row_mcq_questions = list(cfg_mcq_q)
+            if cfg_tf_q:
+                row_tf_questions = list(cfg_tf_q)
+            if cfg_num_layout:
+                row_numeric_layout = list(cfg_num_layout)
             mcq_map, tf_map, numeric_map, rebuilt_answer = _parse_answer_string(raw_answer, row_mcq_questions, row_tf_questions, row_numeric_layout)
             result.mcq_answers = mcq_map
             result.true_false_answers = tf_map
