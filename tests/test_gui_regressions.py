@@ -64,6 +64,9 @@ class GuiRegressionTests(unittest.TestCase):
 
     def test_batch_scan_replaces_recognition_mechanism_with_api_exam_source(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('self.ribbon_recheck_action = toolbar.addAction(style.standardIcon(QStyle.SP_BrowserReload), "Phúc tra", self.action_open_recheck)', source)
+        self.assertIn('def action_open_recheck(self) -> None:', source)
+        self.assertIn('dlg.setWindowTitle(f"Phúc tra - {subject_key}")', source)
         self.assertIn('batch_form.addRow("API bài thi", api_row)', source)
         self.assertIn('self.batch_recognition_mode_combo.setVisible(False)', source)
         self.assertIn('self.btn_pick_batch_api_file = QPushButton("Chọn file API")', source)

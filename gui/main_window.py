@@ -2470,6 +2470,7 @@ class MainWindow(QMainWindow):
         # Workflow actions
         self.ribbon_batch_scan_action = toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Nhận dạng", self.action_run_batch_scan)
         self.ribbon_scoring_action = toolbar.addAction(style.standardIcon(QStyle.SP_CommandLink), "Tính điểm", self.action_calculate_scores)
+        self.ribbon_recheck_action = toolbar.addAction(style.standardIcon(QStyle.SP_BrowserReload), "Phúc tra", self.action_open_recheck)
         self.ribbon_export_action = toolbar.addAction(style.standardIcon(QStyle.SP_DriveNetIcon), "Xuất KQ", self.action_export_results)
         toolbar.addSeparator()
         self.ribbon_add_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogNewFolder), "Add Subject", self._subject_management_add)
@@ -15916,6 +15917,124 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Scoring", "Không thể tự động lưu kết quả chấm điểm. Vui lòng dùng nút Lưu kỳ thi.")
         self._refresh_scoring_phase_table()
         self._refresh_dashboard_summary_from_db(subject)
+
+    def action_open_recheck(self) -> None:
+        subject_cfgs = [cfg for cfg in self._effective_subject_configs_for_batch() if isinstance(cfg, dict)]
+        subject_keys = [self._subject_key_from_cfg(cfg) for cfg in subject_cfgs if self._subject_key_from_cfg(cfg)]
+        if not subject_keys:
+            QMessageBox.warning(self, "Phúc tra", "Chưa có môn để phúc tra.")
+            return
+        subject_key, ok = QInputDialog.getItem(self, "Phúc tra", "Chọn môn:", subject_keys, 0, False)
+        if not ok or not subject_key:
+            return
+
+        path, _ = QFileDialog.getOpenFileName(self, "Chọn file SBD phúc tra", "", "Data files (*.xlsx *.csv *.txt *.tsv);;All files (*.*)")
+        if not path:
+            return
+        try:
+            headers, rows = self._load_api_mapping_rows(Path(path))
+        except Exception as exc:
+            QMessageBox.warning(self, "Phúc tra", f"Không đọc được file SBD:\n{exc}")
+            return
+        if not rows:
+            QMessageBox.warning(self, "Phúc tra", "File SBD rỗng.")
+            return
+
+        sid_col, ok = QInputDialog.getItem(self, "Phúc tra", "Chọn cột SBD:", headers, 0, False)
+        if not ok or not sid_col:
+            return
+        sid_set = {
+            self._normalized_student_id_for_match(str((row or {}).get(sid_col, "") or ""))
+            for row in rows
+            if self._normalized_student_id_for_match(str((row or {}).get(sid_col, "") or ""))
+        }
+        if not sid_set:
+            QMessageBox.warning(self, "Phúc tra", "Không có SBD hợp lệ trong file.")
+            return
+
+        result_rows = self.database.fetch_scan_results_for_subject(subject_key) or []
+        scans = [self._deserialize_omr_result(x) for x in result_rows]
+        filtered = [x for x in scans if self._normalized_student_id_for_match(str(getattr(x, "student_id", "") or "")) in sid_set]
+        if not filtered:
+            QMessageBox.information(self, "Phúc tra", "Không tìm thấy bài nào khớp danh sách SBD.")
+            return
+
+        score_map = self.scoring_results_by_subject.get(subject_key, {}) or {}
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Phúc tra - {subject_key}")
+        dlg.resize(1400, 860)
+        root = QVBoxLayout(dlg)
+        split = QSplitter(Qt.Horizontal)
+        root.addWidget(split)
+
+        left = QWidget()
+        left_l = QVBoxLayout(left)
+        tbl = QTableWidget(0, 7)
+        tbl.setHorizontalHeaderLabels(["STT", "SBD", "Họ tên", "Lớp", "Phòng thi", "Mã đề", "Điểm"])
+        tbl.verticalHeader().setVisible(False)
+        tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
+        tbl.setSelectionMode(QAbstractItemView.SingleSelection)
+        left_l.addWidget(tbl)
+        split.addWidget(left)
+
+        right = QWidget()
+        right_l = QVBoxLayout(right)
+        img_scroll = QScrollArea()
+        img_scroll.setWidgetResizable(True)
+        img_lbl = QLabel("-")
+        img_lbl.setAlignment(Qt.AlignCenter)
+        img_scroll.setWidget(img_lbl)
+        right_l.addWidget(img_scroll, 4)
+        detail = QTextEdit()
+        detail.setReadOnly(True)
+        right_l.addWidget(detail, 3)
+        split.addWidget(right)
+        split.setStretchFactor(0, 5)
+        split.setStretchFactor(1, 7)
+
+        for idx, res in enumerate(filtered, start=1):
+            sid = str(getattr(res, "student_id", "") or "").strip()
+            prof = self._student_profile_by_id(sid)
+            score_payload = score_map.get(sid, {}) if isinstance(score_map.get(sid, {}), dict) else {}
+            score_text = str(score_payload.get("score", "-") if score_payload else "-")
+            row = tbl.rowCount()
+            tbl.insertRow(row)
+            tbl.setItem(row, 0, QTableWidgetItem(str(idx)))
+            sid_item = QTableWidgetItem(sid or "-")
+            sid_item.setData(Qt.UserRole, str(getattr(res, "image_path", "") or ""))
+            sid_item.setData(Qt.UserRole + 1, row)
+            tbl.setItem(row, 1, sid_item)
+            tbl.setItem(row, 2, QTableWidgetItem(str(prof.get("name", "") or "-")))
+            tbl.setItem(row, 3, QTableWidgetItem(str(prof.get("class_name", "") or "-")))
+            tbl.setItem(row, 4, QTableWidgetItem(str(prof.get("exam_room", "") or "-")))
+            tbl.setItem(row, 5, QTableWidgetItem(str(getattr(res, "exam_code", "") or "-")))
+            tbl.setItem(row, 6, QTableWidgetItem(score_text))
+
+        def _on_pick() -> None:
+            r = tbl.currentRow()
+            if r < 0 or r >= len(filtered):
+                return
+            res = filtered[r]
+            img_path = str(getattr(res, "image_path", "") or "")
+            pix = QPixmap(img_path)
+            if pix.isNull():
+                img_lbl.setText(f"Không đọc được ảnh: {Path(img_path).name}")
+            else:
+                img_lbl.setPixmap(pix.scaledToWidth(max(200, int(img_scroll.viewport().width() * 0.9)), Qt.SmoothTransformation))
+            detail.setPlainText(
+                f"SBD: {str(getattr(res, 'student_id', '') or '-')}\n"
+                f"Mã đề: {str(getattr(res, 'exam_code', '') or '-')}\n"
+                f"MCQ: {self._format_mcq_answers(getattr(res, 'mcq_answers', {}) or {})}\n"
+                f"TF: {self._format_tf_answers(getattr(res, 'true_false_answers', {}) or {})}\n"
+                f"NUM: {self._format_numeric_answers(getattr(res, 'numeric_answers', {}) or {})}\n"
+                f"Điểm hiện tại: {tbl.item(r, 6).text() if tbl.item(r, 6) else '-'}"
+            )
+
+        tbl.itemSelectionChanged.connect(_on_pick)
+        if tbl.rowCount() > 0:
+            tbl.setCurrentCell(0, 0)
+            _on_pick()
+        dlg.exec()
 
         formula_text = ""
         if rows:
