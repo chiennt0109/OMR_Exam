@@ -67,6 +67,37 @@ class OMRPipelineTests(unittest.TestCase):
 
         self.assertTrue(np.allclose(out, expected, atol=1e-4))
 
+    def test_identifier_decode_uses_stable_digit_path_by_default(self):
+        zone = Zone(
+            id="sid",
+            name="sid",
+            zone_type=ZoneType.STUDENT_ID_BLOCK,
+            x=0,
+            y=0,
+            width=1,
+            height=1,
+            grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(20, 10 + i * 10) for i in range(10)]),
+            metadata={"bubble_radius": 5},
+        )
+        template = Template(name="t", image_path="", width=100, height=120, anchors=[], zones=[zone], metadata={})
+        binary = np.zeros((120, 100), dtype=np.uint8)
+        centers = np.array(zone.grid.bubble_positions, dtype=np.float32)
+        result_stub = type("R", (), {"recognition_errors": [], "confidence_scores": {}})()
+
+        with patch.object(self.processor, "_detect_digit_bubble_centers", return_value=centers), \
+            patch.object(self.processor, "detect_bubbles", return_value=np.full((10,), 0.6, dtype=np.float32)), \
+            patch.object(self.processor, "_detect_center_core_marks", return_value=np.full((10,), 0.6, dtype=np.float32)), \
+            patch.object(self.processor, "_cluster_digit_columns", return_value=np.full((10, 1), 0.6, dtype=np.float32)), \
+            patch.object(self.processor, "_decode_column_digits", return_value=("0", [0.8])), \
+            patch.object(self.processor, "_detect_digit_zone_multi_probe_marks", side_effect=AssertionError("advanced path should be disabled by default")), \
+            patch.object(self.processor, "_detect_digit_zone_component_marks", side_effect=AssertionError("advanced path should be disabled by default")), \
+            patch.object(self.processor, "_detect_digit_zone_peak_window_marks", side_effect=AssertionError("advanced path should be disabled by default")):
+            value, confs, _, _, debug = self.processor._decode_identifier_zone_from_centers(binary, zone, template, result_stub, centers, 5)
+
+        self.assertEqual(value, "0")
+        self.assertEqual(confs, [0.8])
+        self.assertEqual(debug.get("fast_path_used"), False)
+
     def test_detect_anchors_square_markers(self):
         img = np.zeros((400, 300), dtype=np.uint8)
         cv2.rectangle(img, (20, 20), (45, 45), 255, -1)

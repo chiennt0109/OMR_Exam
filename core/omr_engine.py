@@ -2253,6 +2253,7 @@ class OMRProcessor:
         self,
         binary: np.ndarray,
         zone: Zone,
+        template: Template,
         result: OMRResult,
         centers: np.ndarray,
         radius: int,
@@ -2290,21 +2291,22 @@ class OMRProcessor:
                 "fast_path_used": True,
             }
             return quick_value, quick_confs, refined_centers, quick_mat, debug
-        multi_probe_ratios = self._detect_digit_zone_multi_probe_marks(binary, refined_centers, radius)
+        advanced_mode = bool(((template.metadata or {}).get("digit_advanced_mode", False) if getattr(template, "metadata", None) else False))
+        multi_probe_ratios = self._detect_digit_zone_multi_probe_marks(binary, refined_centers, radius) if advanced_mode else np.zeros_like(ratios)
         peak_window_ratios = np.zeros_like(ratios)
-        component_ratios = self._detect_digit_zone_component_marks(binary, refined_centers, radius)
+        component_ratios = self._detect_digit_zone_component_marks(binary, refined_centers, radius) if advanced_mode else np.zeros_like(ratios)
         if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
             square_ratios = self._detect_square_mark_density(binary, refined_centers, radius)
             eroded_ratios = self._detect_eroded_mark_density(binary, refined_centers, radius)
-            legacy_ratios = np.clip((0.12 * ratios) + (0.24 * core_ratios) + (0.24 * square_ratios) + (0.20 * eroded_ratios) + (0.20 * component_ratios), 0.0, 1.0)
-            widened_ratios = np.clip((0.06 * ratios) + (0.14 * core_ratios) + (0.16 * square_ratios) + (0.14 * eroded_ratios) + (0.18 * multi_probe_ratios) + (0.14 * peak_window_ratios) + (0.18 * component_ratios), 0.0, 1.0)
+            legacy_ratios = np.clip((0.20 * ratios) + (0.32 * core_ratios) + (0.26 * square_ratios) + (0.22 * eroded_ratios), 0.0, 1.0)
+            widened_ratios = np.clip((0.06 * ratios) + (0.14 * core_ratios) + (0.16 * square_ratios) + (0.14 * eroded_ratios) + (0.18 * multi_probe_ratios) + (0.14 * peak_window_ratios) + (0.18 * component_ratios), 0.0, 1.0) if advanced_mode else legacy_ratios
             ratios = np.maximum(legacy_ratios, widened_ratios)
         else:
-            legacy_ratios = np.clip((0.42 * ratios) + (0.28 * core_ratios) + (0.30 * component_ratios), 0.0, 1.0)
-            widened_ratios = np.clip((0.18 * ratios) + (0.16 * core_ratios) + (0.22 * multi_probe_ratios) + (0.18 * peak_window_ratios) + (0.26 * component_ratios), 0.0, 1.0)
+            legacy_ratios = np.clip((0.58 * ratios) + (0.42 * core_ratios), 0.0, 1.0)
+            widened_ratios = np.clip((0.18 * ratios) + (0.16 * core_ratios) + (0.22 * multi_probe_ratios) + (0.18 * peak_window_ratios) + (0.26 * component_ratios), 0.0, 1.0) if advanced_mode else legacy_ratios
             ratios = np.maximum(legacy_ratios, widened_ratios)
-        weak_mask = ratios < max(self.empty_threshold + 0.16, min(self.fill_threshold * 0.82, 0.44))
-        if np.any(weak_mask):
+        weak_mask = ratios < max(self.empty_threshold + 0.16, min(self.fill_threshold * 0.82, 0.44)) if advanced_mode else np.zeros_like(ratios, dtype=bool)
+        if advanced_mode and np.any(weak_mask):
             peak_window_ratios = self._detect_digit_zone_peak_window_marks(binary, refined_centers, radius)
             rescue_scores = np.clip((0.55 * ratios) + (0.45 * peak_window_ratios), 0.0, 1.0)
             ratios = np.where(weak_mask, np.maximum(ratios, rescue_scores), ratios)
@@ -2767,6 +2769,7 @@ class OMRProcessor:
             direct_value, direct_confs, direct_centers, direct_mat, direct_debug = self._decode_identifier_zone_from_centers(
                 working_binary,
                 zone,
+                template,
                 result,
                 centers,
                 int(round(bubble_radius)),
@@ -2832,6 +2835,7 @@ class OMRProcessor:
                     retry_value, retry_confs, retry_direct_centers, retry_mat, retry_direct_debug = self._decode_identifier_zone_from_centers(
                         working_binary,
                         zone,
+                        template,
                         result,
                         retry_centers,
                         int(round(bubble_radius)),
@@ -2949,16 +2953,17 @@ class OMRProcessor:
             ratios = np.maximum(ratios, np.maximum(core_boosted, xmark_boosted))
         elif zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
             core_ratios = self._detect_center_core_marks(working_binary, centers, radius)
-            multi_probe_ratios = self._detect_digit_zone_multi_probe_marks(working_binary, centers, radius)
+            advanced_mode = bool(((template.metadata or {}).get("digit_advanced_mode", False) if getattr(template, "metadata", None) else False))
+            multi_probe_ratios = self._detect_digit_zone_multi_probe_marks(working_binary, centers, radius) if advanced_mode else np.zeros_like(ratios)
             if zone.zone_type == ZoneType.STUDENT_ID_BLOCK:
                 square_ratios = self._detect_square_mark_density(working_binary, centers, radius)
                 eroded_ratios = self._detect_eroded_mark_density(working_binary, centers, radius)
-                legacy_ratios = np.clip((0.15 * ratios) + (0.30 * core_ratios) + (0.30 * square_ratios) + (0.25 * eroded_ratios), 0.0, 1.0)
-                widened_ratios = np.clip((0.10 * ratios) + (0.22 * core_ratios) + (0.22 * square_ratios) + (0.18 * eroded_ratios) + (0.28 * multi_probe_ratios), 0.0, 1.0)
+                legacy_ratios = np.clip((0.20 * ratios) + (0.34 * core_ratios) + (0.26 * square_ratios) + (0.20 * eroded_ratios), 0.0, 1.0)
+                widened_ratios = np.clip((0.10 * ratios) + (0.22 * core_ratios) + (0.22 * square_ratios) + (0.18 * eroded_ratios) + (0.28 * multi_probe_ratios), 0.0, 1.0) if advanced_mode else legacy_ratios
                 ratios = np.maximum(legacy_ratios, widened_ratios)
             else:
-                legacy_ratios = np.clip((0.55 * ratios) + (0.45 * core_ratios), 0.0, 1.0)
-                widened_ratios = np.clip((0.30 * ratios) + (0.28 * core_ratios) + (0.42 * multi_probe_ratios), 0.0, 1.0)
+                legacy_ratios = np.clip((0.60 * ratios) + (0.40 * core_ratios), 0.0, 1.0)
+                widened_ratios = np.clip((0.30 * ratios) + (0.28 * core_ratios) + (0.42 * multi_probe_ratios), 0.0, 1.0) if advanced_mode else legacy_ratios
                 ratios = np.maximum(legacy_ratios, widened_ratios)
         dynamic_thresholds = np.array([self._estimate_local_fill_threshold(working_binary, center, radius, self.fill_threshold) for center in centers], dtype=np.float32)
 
