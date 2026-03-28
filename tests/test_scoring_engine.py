@@ -239,6 +239,29 @@ class ScoringEngineTests(unittest.TestCase):
         self.assertEqual(row.blank, 0)
         self.assertAlmostEqual(row.score, 4.0, places=4)
 
+    def test_existing_answer_string_is_rebuilt_from_maps_when_maps_are_present(self):
+        key = SubjectKey(
+            subject="Hoa_hoc_11",
+            exam_code="0212A",
+            answers={1: "A", 2: "B"},
+            true_false_answers={3: "ĐĐĐS"},
+            numeric_answers={4: "12,5"},
+        )
+        omr = OMRResult(
+            image_path="x.png",
+            answer_string="ZZZZ",
+            mcq_answers={1: "A", 2: "B"},
+            true_false_answers={3: {"a": True, "b": True, "c": True, "d": False}},
+            numeric_answers={4: "12,5"},
+        )
+
+        row = self.engine.score(omr, key)
+        self.assertEqual(omr.answer_string, "ABĐĐĐS12,5")
+        self.assertEqual(row.correct, 4)
+        self.assertEqual(row.wrong, 0)
+        self.assertEqual(row.blank, 0)
+        self.assertAlmostEqual(row.score, 4.0, places=4)
+
 
     def test_g_answer_is_auto_correct(self):
         key = SubjectKey(
