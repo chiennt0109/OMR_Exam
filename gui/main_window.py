@@ -15939,7 +15939,6 @@ class MainWindow(QMainWindow):
         if not rows:
             QMessageBox.warning(self, "Phúc tra", "File SBD rỗng.")
             return
-
         sid_col, ok = QInputDialog.getItem(self, "Phúc tra", "Chọn cột SBD:", headers, 0, False)
         if not ok or not sid_col:
             return
@@ -15959,10 +15958,71 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Phúc tra", "Không tìm thấy bài nào khớp danh sách SBD.")
             return
 
-        score_map = self.scoring_results_by_subject.get(subject_key, {}) or {}
+        exam_codes = sorted(
+            {
+                str(code or "").strip()
+                for code in (self.database.fetch_answer_keys_for_subject(subject_key) or {}).keys()
+                if str(code or "").strip()
+            }
+        )
+        sid_options: list[str] = []
+        sid_to_display: dict[str, str] = {}
+        for st in (self.session.students or []) if self.session else []:
+            sid_val = str(getattr(st, "student_id", "") or "").strip()
+            if not sid_val:
+                continue
+            display = f"{sid_val} - {str(getattr(st, 'name', '') or '').strip()}"
+            sid_options.append(display)
+            sid_to_display[sid_val] = display
+
+        def _parse_pairs(raw: str, upper: bool = False) -> dict[int, str]:
+            out: dict[int, str] = {}
+            tokens = [x.strip() for x in str(raw or "").replace("\n", ",").split(",") if x.strip()]
+            for token in tokens:
+                if ":" not in token:
+                    continue
+                left, right = token.split(":", 1)
+                q_text = "".join(ch for ch in left if ch.isdigit() or ch == "-").strip()
+                if not q_text.lstrip("-").isdigit():
+                    continue
+                q_no = int(q_text)
+                value = str(right or "").strip()
+                out[q_no] = value.upper() if upper else value
+            return out
+
+        def _tf_to_display(tf_map: dict[int, dict[str, bool]]) -> str:
+            return self._format_tf_answers(tf_map or {})
+
+        def _parse_tf_display(raw: str) -> dict[int, dict[str, bool]]:
+            out: dict[int, dict[str, bool]] = {}
+            pairs = _parse_pairs(raw, upper=True)
+            for q_no, text in pairs.items():
+                marks: dict[str, bool] = {}
+                for idx, ch in enumerate(text[:4]):
+                    if ch in {"Đ", "D", "T", "1"}:
+                        marks[["a", "b", "c", "d"][idx]] = True
+                    elif ch in {"S", "F", "0"}:
+                        marks[["a", "b", "c", "d"][idx]] = False
+                if marks:
+                    out[q_no] = marks
+            return out
+
+        def _current_score_for_result(res: OMRResult) -> float:
+            self._ensure_answer_keys_for_subject(subject_key)
+            key = self.answer_keys.get_flexible(subject_key, str(getattr(res, "exam_code", "") or "").strip()) if self.answer_keys else None
+            if not key:
+                return 0.0
+            cfg = self._subject_config_by_subject_key(subject_key) or {}
+            try:
+                return float(self.scoring_engine.score(res, key, student_name=str(getattr(res, "full_name", "") or ""), subject_config=cfg).score or 0.0)
+            except Exception:
+                return 0.0
+
+        history_all = self.database.fetch_recheck_history(str(self.current_session_id or ""), subject_key=subject_key)
+
         dlg = QDialog(self)
         dlg.setWindowTitle(f"Phúc tra - {subject_key}")
-        dlg.resize(1400, 860)
+        dlg.resize(1460, 900)
         root = QVBoxLayout(dlg)
         split = QSplitter(Qt.Horizontal)
         root.addWidget(split)
@@ -15975,19 +16035,44 @@ class MainWindow(QMainWindow):
         tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
         tbl.setSelectionMode(QAbstractItemView.SingleSelection)
         left_l.addWidget(tbl)
+        btn_export = QPushButton("Xuất Excel phúc tra")
+        left_l.addWidget(btn_export, alignment=Qt.AlignRight)
         split.addWidget(left)
 
         right = QWidget()
         right_l = QVBoxLayout(right)
+        form = QFormLayout()
+        inp_sid = QComboBox(); inp_sid.setEditable(True); inp_sid.addItems(sid_options)
+        sid_completer = QCompleter(sid_options, inp_sid)
+        sid_completer.setCaseSensitivity(Qt.CaseInsensitive)
+        sid_completer.setFilterMode(Qt.MatchContains)
+        inp_sid.setCompleter(sid_completer)
+        inp_exam = QComboBox(); inp_exam.setEditable(True); inp_exam.addItems(exam_codes)
+        txt_mcq = QLineEdit()
+        cbo_tf = QComboBox(); cbo_tf.setEditable(True)
+        txt_numeric = QLineEdit()
+        lbl_score = QLabel("-")
+        form.addRow("SBD (có tìm kiếm)", inp_sid)
+        form.addRow("Mã đề", inp_exam)
+        form.addRow("MCQ (text)", txt_mcq)
+        form.addRow("TF (combo)", cbo_tf)
+        form.addRow("NUMERIC (text)", txt_numeric)
+        form.addRow("Điểm hiện tại", lbl_score)
+        right_l.addLayout(form)
         img_scroll = QScrollArea()
         img_scroll.setWidgetResizable(True)
         img_lbl = QLabel("-")
         img_lbl.setAlignment(Qt.AlignCenter)
         img_scroll.setWidget(img_lbl)
         right_l.addWidget(img_scroll, 4)
-        detail = QTextEdit()
-        detail.setReadOnly(True)
-        right_l.addWidget(detail, 3)
+        history_txt = QTextEdit()
+        history_txt.setReadOnly(True)
+        right_l.addWidget(history_txt, 3)
+        action_row = QHBoxLayout()
+        btn_save = QPushButton("Lưu phúc tra + tính lại")
+        action_row.addStretch(1)
+        action_row.addWidget(btn_save)
+        right_l.addLayout(action_row)
         split.addWidget(right)
         split.setStretchFactor(0, 5)
         split.setStretchFactor(1, 7)
@@ -15995,83 +16080,166 @@ class MainWindow(QMainWindow):
         for idx, res in enumerate(filtered, start=1):
             sid = str(getattr(res, "student_id", "") or "").strip()
             prof = self._student_profile_by_id(sid)
-            score_payload = score_map.get(sid, {}) if isinstance(score_map.get(sid, {}), dict) else {}
-            score_text = str(score_payload.get("score", "-") if score_payload else "-")
+            score_text = str(_current_score_for_result(res))
             row = tbl.rowCount()
             tbl.insertRow(row)
             tbl.setItem(row, 0, QTableWidgetItem(str(idx)))
-            sid_item = QTableWidgetItem(sid or "-")
-            sid_item.setData(Qt.UserRole, str(getattr(res, "image_path", "") or ""))
-            sid_item.setData(Qt.UserRole + 1, row)
-            tbl.setItem(row, 1, sid_item)
+            tbl.setItem(row, 1, QTableWidgetItem(sid or "-"))
             tbl.setItem(row, 2, QTableWidgetItem(str(prof.get("name", "") or "-")))
             tbl.setItem(row, 3, QTableWidgetItem(str(prof.get("class_name", "") or "-")))
             tbl.setItem(row, 4, QTableWidgetItem(str(prof.get("exam_room", "") or "-")))
             tbl.setItem(row, 5, QTableWidgetItem(str(getattr(res, "exam_code", "") or "-")))
             tbl.setItem(row, 6, QTableWidgetItem(score_text))
 
+        updating_form = {"busy": False}
+
+        def _refresh_history_for_sid(sid: str) -> None:
+            rows_local = [x for x in history_all if str(x.get("student_code", "") or "").strip() == str(sid or "").strip()]
+            if not rows_local:
+                history_txt.setPlainText("Chưa có lịch sử phúc tra.")
+                return
+            lines = [
+                f"[{str(item.get('created_at', '') or '-')}] {str(item.get('change_text', '') or '-')}"
+                for item in rows_local
+            ]
+            history_txt.setPlainText("\n".join(lines))
+
         def _on_pick() -> None:
             r = tbl.currentRow()
             if r < 0 or r >= len(filtered):
                 return
+            updating_form["busy"] = True
             res = filtered[r]
+            sid = str(getattr(res, "student_id", "") or "").strip()
+            inp_sid.setEditText(sid_to_display.get(sid, sid))
+            inp_exam.setEditText(str(getattr(res, "exam_code", "") or ""))
+            txt_mcq.setText(self._format_mcq_answers(getattr(res, "mcq_answers", {}) or {}))
+            tf_disp = _tf_to_display(getattr(res, "true_false_answers", {}) or {})
+            if cbo_tf.findText(tf_disp) < 0:
+                cbo_tf.addItem(tf_disp)
+            cbo_tf.setEditText(tf_disp)
+            txt_numeric.setText(self._format_numeric_answers(getattr(res, "numeric_answers", {}) or {}))
+            score_here = _current_score_for_result(res)
+            lbl_score.setText(f"{score_here:g}")
+            prof = self._student_profile_by_id(sid)
+            if tbl.item(r, 2):
+                tbl.item(r, 2).setText(str(prof.get("name", "") or "-"))
+            if tbl.item(r, 4):
+                tbl.item(r, 4).setText(str(prof.get("exam_room", "") or "-"))
+            _refresh_history_for_sid(sid)
             img_path = str(getattr(res, "image_path", "") or "")
             pix = QPixmap(img_path)
             if pix.isNull():
                 img_lbl.setText(f"Không đọc được ảnh: {Path(img_path).name}")
+                img_lbl.setPixmap(QPixmap())
             else:
+                img_lbl.setText("")
                 img_lbl.setPixmap(pix.scaledToWidth(max(200, int(img_scroll.viewport().width() * 0.9)), Qt.SmoothTransformation))
-            detail.setPlainText(
-                f"SBD: {str(getattr(res, 'student_id', '') or '-')}\n"
-                f"Mã đề: {str(getattr(res, 'exam_code', '') or '-')}\n"
-                f"MCQ: {self._format_mcq_answers(getattr(res, 'mcq_answers', {}) or {})}\n"
-                f"TF: {self._format_tf_answers(getattr(res, 'true_false_answers', {}) or {})}\n"
-                f"NUM: {self._format_numeric_answers(getattr(res, 'numeric_answers', {}) or {})}\n"
-                f"Điểm hiện tại: {tbl.item(r, 6).text() if tbl.item(r, 6) else '-'}"
-            )
+            updating_form["busy"] = False
+
+        def _selected_sid_value() -> str:
+            text = str(inp_sid.currentText() or "").strip()
+            if " - " in text:
+                return text.split(" - ", 1)[0].strip()
+            return text
+
+        def _save_current() -> None:
+            r = tbl.currentRow()
+            if r < 0 or r >= len(filtered):
+                return
+            if updating_form["busy"]:
+                return
+            res = filtered[r]
+            old_sid = str(getattr(res, "student_id", "") or "").strip()
+            old_exam = str(getattr(res, "exam_code", "") or "").strip()
+            old_score = _current_score_for_result(res)
+            new_sid = _selected_sid_value().strip()
+            new_exam = str(inp_exam.currentText() or "").strip()
+            new_mcq = _parse_pairs(txt_mcq.text(), upper=True)
+            new_tf = _parse_tf_display(cbo_tf.currentText())
+            new_numeric = _parse_pairs(txt_numeric.text(), upper=False)
+            if new_sid:
+                res.student_id = new_sid
+            res.exam_code = new_exam
+            res.mcq_answers = {int(k): str(v or "").strip().upper()[:1] for k, v in (new_mcq or {}).items()}
+            res.true_false_answers = {int(k): dict(v or {}) for k, v in (new_tf or {}).items()}
+            res.numeric_answers = {int(k): str(v or "").strip() for k, v in (new_numeric or {}).items()}
+            res.answer_string = ""
+            self._persist_single_scan_result_to_db(res, note="recheck_edit")
+            new_score = _current_score_for_result(res)
+            changes: list[str] = []
+            if old_sid != str(getattr(res, "student_id", "") or "").strip():
+                changes.append(f"Lỗi SBD -> sửa từ {old_sid or '-'} thành {str(getattr(res, 'student_id', '') or '-')}")
+            if old_exam != str(getattr(res, "exam_code", "") or "").strip():
+                changes.append(f"Lỗi mã đề -> sửa từ {old_exam or '-'} thành {str(getattr(res, 'exam_code', '') or '-')}")
+            if abs(new_score - old_score) > 1e-9:
+                changes.append(f"Lỗi nhận dạng bài thi ->thay đổi điểm từ {old_score:g} lên {new_score:g}")
+            if not changes:
+                changes.append("Cập nhật dữ liệu phúc tra.")
+            for message in changes:
+                payload = {"image_path": str(getattr(res, "image_path", "") or ""), "subject_key": subject_key}
+                self.database.add_recheck_history(
+                    session_id=str(self.current_session_id or ""),
+                    exam_name=str(getattr(self.session, "exam_name", "") or ""),
+                    subject_key=subject_key,
+                    student_code=str(getattr(res, "student_id", "") or ""),
+                    exam_code=str(getattr(res, "exam_code", "") or ""),
+                    change_text=message,
+                    old_score=float(old_score),
+                    new_score=float(new_score),
+                    payload=payload,
+                )
+            history_all[:] = self.database.fetch_recheck_history(str(self.current_session_id or ""), subject_key=subject_key)
+            self.calculate_scores(subject_key=subject_key, mode="Tính lại toàn bộ", note="recheck_edit")
+            sid = str(getattr(res, "student_id", "") or "").strip()
+            prof = self._student_profile_by_id(sid)
+            tbl.setItem(r, 1, QTableWidgetItem(sid or "-"))
+            tbl.setItem(r, 2, QTableWidgetItem(str(prof.get("name", "") or "-")))
+            tbl.setItem(r, 3, QTableWidgetItem(str(prof.get("class_name", "") or "-")))
+            tbl.setItem(r, 4, QTableWidgetItem(str(prof.get("exam_room", "") or "-")))
+            tbl.setItem(r, 5, QTableWidgetItem(str(getattr(res, "exam_code", "") or "-")))
+            tbl.setItem(r, 6, QTableWidgetItem(f"{new_score:g}"))
+            lbl_score.setText(f"{new_score:g}")
+            _refresh_history_for_sid(sid)
+            QMessageBox.information(dlg, "Phúc tra", "Đã lưu chỉnh sửa, ghi lịch sử và tính lại điểm.")
+
+        def _export_recheck_excel() -> None:
+            path, _ = QFileDialog.getSaveFileName(dlg, "Xuất Excel phúc tra", "", "Excel (*.xlsx)")
+            if not path:
+                return
+            from openpyxl import Workbook
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "recheck"
+            ws.append(["SBD", "Họ tên", "Ngày sinh", "Lớp", "Điểm cuối cùng", "Lịch sử phúc tra"])
+            for i, res in enumerate(filtered):
+                sid = str(getattr(res, "student_id", "") or "").strip()
+                prof = self._student_profile_by_id(sid)
+                score_value = tbl.item(i, 6).text() if tbl.item(i, 6) else "-"
+                h_items = [x for x in history_all if str(x.get("student_code", "") or "").strip() == sid]
+                h_text = "\n".join(f"[{str(x.get('created_at', '') or '-')}] {str(x.get('change_text', '') or '-')}" for x in h_items) or "-"
+                ws.append([
+                    sid or "-",
+                    str(prof.get("name", "") or "-"),
+                    str(prof.get("birth_date", "") or "-"),
+                    str(prof.get("class_name", "") or "-"),
+                    str(score_value or "-"),
+                    h_text,
+                ])
+            for col in ws.columns:
+                width = max(len(str(cell.value or "")) for cell in col)
+                ws.column_dimensions[col[0].column_letter].width = min(80, max(12, width + 2))
+            wb.save(Path(path))
+            QMessageBox.information(dlg, "Phúc tra", f"Đã xuất Excel:\n{path}")
 
         tbl.itemSelectionChanged.connect(_on_pick)
+        btn_save.clicked.connect(_save_current)
+        btn_export.clicked.connect(_export_recheck_excel)
         if tbl.rowCount() > 0:
             tbl.setCurrentCell(0, 0)
             _on_pick()
         dlg.exec()
         return
-
-        formula_text = ""
-        if rows:
-            first_scan = subject_scans[0] if subject_scans else None
-            first_key = self.answer_keys.get_flexible(subject, first_scan.exam_code) if first_scan and self.answer_keys else None
-            if first_key:
-                formula_text = self.scoring_engine.describe_formula(first_key, subject_cfg)
-        total_scans = len(subject_scans)
-        fail_count = len(failed_scans)
-        success_count = len(rows)
-        base_msg = (
-            f"Đã chấm xong môn '{subject}'.\n"
-            f"Tổng file: {total_scans} | Thành công: {success_count} | Thất bại: {fail_count}."
-        )
-        if smart_scored_scans:
-            base_msg = f"{base_msg}\nChấm thông minh: {len(smart_scored_scans)} bài (mã đề lỗi nhưng đã chấm theo mã tốt nhất)."
-        if formula_text:
-            base_msg = f"{base_msg}\n\n{formula_text}"
-        if failed_scans:
-            details = []
-            for item in failed_scans[:30]:
-                details.append(f"- {Path(str(item.get('file', '-') or '-')).name}: {str(item.get('reason', '') or '-')}")
-            if len(failed_scans) > 30:
-                details.append(f"... và {len(failed_scans)-30} file khác")
-            base_msg = f"{base_msg}\n\nFile thất bại:\n" + "\n".join(details)
-        if smart_scored_scans:
-            smart_details = []
-            for item in smart_scored_scans[:30]:
-                smart_details.append(
-                    f"- {Path(str(item.get('file', '-') or '-')).name}: SBD {str(item.get('student_id', '-') or '-')}, mã đề chọn {str(item.get('picked_exam_code', '-') or '-')}"
-                )
-            if len(smart_scored_scans) > 30:
-                smart_details.append(f"... và {len(smart_scored_scans)-30} file khác")
-            base_msg = f"{base_msg}\n\nDanh sách Chấm thông minh:\n" + "\n".join(smart_details)
-        QMessageBox.information(self, "Scoring preview", base_msg)
-        return rows
 
     def _export_student_subject_matrix_excel(self, output_path: Path) -> None:
         from openpyxl import Workbook
