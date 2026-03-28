@@ -299,6 +299,13 @@ class SubjectConfigDialog(QDialog):
         self.exam_room_sbd_mapping = QTextEdit(str(data.get("exam_room_sbd_mapping", "") or ""))
         self.exam_room_sbd_mapping.setPlaceholderText("Nhập danh sách SBD của phòng thi, phân tách bằng dấu phẩy hoặc xuống dòng")
         self.exam_room_sbd_mapping.setMaximumHeight(90)
+        self.btn_import_exam_room_mapping = QPushButton("Import mapping SBD/phòng từ Excel")
+        self.btn_import_exam_room_mapping.clicked.connect(self._import_exam_room_mapping_from_file)
+        room_map_wrap = QWidget()
+        room_map_lay = QVBoxLayout(room_map_wrap)
+        room_map_lay.setContentsMargins(0, 0, 0, 0)
+        room_map_lay.addWidget(self.exam_room_sbd_mapping)
+        room_map_lay.addWidget(self.btn_import_exam_room_mapping, alignment=Qt.AlignLeft)
         self.answer_codes = QLineEdit(", ".join(sorted((data.get("imported_answer_keys") or {}).keys()))); self.answer_codes.setReadOnly(True)
         self.answer_summary = QTextEdit()
         self.answer_summary.setReadOnly(True)
@@ -347,7 +354,7 @@ class SubjectConfigDialog(QDialog):
         form.addRow("Đáp án môn", row_key)
         form.addRow("Mã đáp án môn_khối", self.answer_key_key)
         form.addRow("Phòng thi môn", self.exam_room_name)
-        form.addRow("Mapping SBD phòng thi", self.exam_room_sbd_mapping)
+        form.addRow("Mapping SBD phòng thi", room_map_wrap)
         form.addRow("Các mã đề của môn", self.answer_codes)
         form.addRow("Tóm tắt đáp án", self.answer_summary)
         form.addRow("Số phần giấy thi", self.paper_part_label)
@@ -638,6 +645,77 @@ class SubjectConfigDialog(QDialog):
         self._refresh_answer_key_summary()
         self._update_total_score()
         QMessageBox.information(self, "Đáp án môn", "Đã cập nhật đáp án hiện tại. Bạn có thể tiếp tục sửa hoặc thay đáp án khác.")
+
+    def _import_exam_room_mapping_from_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import mapping SBD và phòng thi",
+            "",
+            "Data files (*.xlsx *.csv *.txt *.tsv);;All files (*.*)",
+        )
+        if not path:
+            return
+        try:
+            rows = self._load_exam_room_mapping_rows(Path(path))
+        except Exception as exc:
+            QMessageBox.warning(self, "Import mapping phòng thi", f"Không đọc được file:\n{exc}")
+            return
+        if not rows:
+            QMessageBox.warning(self, "Import mapping phòng thi", "Không tìm thấy dữ liệu hợp lệ (cần cột SBD).")
+            return
+        room_name = self.exam_room_name.text().strip()
+        if room_name:
+            rows = [r for r in rows if str(r.get("room", "")).strip() == room_name]
+        elif rows:
+            rooms = sorted({str(r.get("room", "")).strip() for r in rows if str(r.get("room", "")).strip()})
+            if len(rooms) == 1:
+                room_name = rooms[0]
+                self.exam_room_name.setText(room_name)
+                rows = [r for r in rows if str(r.get("room", "")).strip() == room_name]
+        sids = sorted({str(r.get("sid", "")).strip() for r in rows if str(r.get("sid", "")).strip()})
+        self.exam_room_sbd_mapping.setPlainText("\n".join(sids))
+        QMessageBox.information(self, "Import mapping phòng thi", f"Đã nạp {len(sids)} SBD cho phòng thi.")
+
+    @staticmethod
+    def _load_exam_room_mapping_rows(path: Path) -> list[dict[str, str]]:
+        ext = path.suffix.lower()
+        rows: list[dict[str, str]] = []
+        def _norm(k: str) -> str:
+            return str(k or "").strip().lower().replace(" ", "").replace("_", "")
+        def _pick(d: dict[str, str], keys: set[str]) -> str:
+            for k, v in d.items():
+                if _norm(k) in keys:
+                    return str(v or "").strip()
+            return ""
+        if ext in {".csv", ".txt", ".tsv"}:
+            raw = path.read_text(encoding="utf-8-sig", errors="ignore")
+            dialect = csv.Sniffer().sniff(raw[:2048]) if raw.strip() else csv.excel
+            reader = csv.DictReader(raw.splitlines(), dialect=dialect)
+            for row in reader:
+                rec = {str(k): str(v or "") for k, v in (row or {}).items()}
+                sid = _pick(rec, {"sbd", "studentid", "student_id", "sobaodanh"})
+                room = _pick(rec, {"phongthi", "examroom", "exam_room", "room"})
+                if sid:
+                    rows.append({"sid": sid, "room": room})
+            return rows
+        if ext == ".xlsx":
+            from openpyxl import load_workbook  # type: ignore
+            wb = load_workbook(path, read_only=True, data_only=True)
+            ws = wb.active
+            values = list(ws.values)
+            if not values:
+                return rows
+            headers = [str(x or "") for x in values[0]]
+            for data in values[1:]:
+                rec: dict[str, str] = {}
+                for idx, key in enumerate(headers):
+                    rec[str(key)] = str(data[idx] if idx < len(data) and data[idx] is not None else "")
+                sid = _pick(rec, {"sbd", "studentid", "student_id", "sobaodanh"})
+                room = _pick(rec, {"phongthi", "examroom", "exam_room", "room"})
+                if sid:
+                    rows.append({"sid": sid, "room": room})
+            return rows
+        raise RuntimeError("Chỉ hỗ trợ .xlsx/.csv/.txt/.tsv")
 
     def payload(self) -> dict:
         def f(v: str, label: str) -> float:
