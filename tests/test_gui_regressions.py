@@ -77,12 +77,21 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('if not selected_file_col or selected_file_col == "[Không dùng]":', source)
         self.assertIn('def _answer_layout_for_subject(self, subject_key: str) -> tuple[list[int], list[int], list[tuple[int, int]]]:', source)
         self.assertIn('def _parse_answer_string(raw_answer: str) -> tuple[dict[int, str], dict[int, dict[str, bool]], dict[int, str], str]:', source)
+        self.assertIn('mcq_chars = _collect_mcq_chars(len(mcq_questions))', source)
+        self.assertIn('tf_flags = _collect_tf_flags(len(tf_questions) * 4)', source)
+        self.assertIn('numeric_tokens = [tok.strip() for tok in re.split(r"[\\s_,;|]+", numeric_tail) if tok and tok.strip()]', source)
         self.assertIn('mcq_map, tf_map, numeric_map, rebuilt_answer = _parse_answer_string(raw_answer)', source)
         self.assertIn('result.mcq_answers = mcq_map', source)
         self.assertIn('result.true_false_answers = tf_map', source)
         self.assertIn('result.numeric_answers = numeric_map', source)
         self.assertIn('if api_file and api_file != "-":', source)
         self.assertIn('self._run_batch_scan_from_api_file(subject_cfg or {}, file_scope_mode, api_file)', source)
+
+    def test_realtime_status_refreshes_immediately_after_manual_corrections(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('def _schedule_correction_update(self, field_name: str, old_value: object, new_value: object, apply_fn) -> None:', source)
+        self.assertIn('self._refresh_all_statuses()', source)
+        self.assertIn('self.correction_save_timer.start(150)', source)
 
     def test_scoring_uses_lightweight_scan_copies_and_batch_results_drop_large_arrays(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')

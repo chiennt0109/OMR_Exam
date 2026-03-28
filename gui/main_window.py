@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import csv
 import json
+import re
 from datetime import date, datetime
 from pathlib import Path
 import time
@@ -10433,6 +10434,7 @@ class MainWindow(QMainWindow):
         if self.correction_ui_loading or old_value == new_value:
             return
         apply_fn()
+        self._refresh_all_statuses()
         self.correction_pending_payload[field_name] = {
             "old": old_value,
             "new": new_value,
@@ -11670,35 +11672,73 @@ class MainWindow(QMainWindow):
         tf_true_chars = {"Đ", "đ", "D", "d", "T", "t", "1", "Y", "y"}
 
         def _parse_answer_string(raw_answer: str) -> tuple[dict[int, str], dict[int, dict[str, bool]], dict[int, str], str]:
-            compact = "".join(str(raw_answer or "").split())
+            raw_text = str(raw_answer or "")
+            separators = set(" \t\r\n_|;")
             cursor = 0
 
-            mcq_map: dict[int, str] = {}
-            for q_no in mcq_questions:
-                if cursor >= len(compact):
-                    break
-                mcq_map[int(q_no)] = compact[cursor]
-                cursor += 1
+            def _collect_mcq_chars(count: int) -> list[str]:
+                nonlocal cursor
+                chars: list[str] = []
+                while cursor < len(raw_text) and len(chars) < count:
+                    ch = raw_text[cursor]
+                    cursor += 1
+                    up = ch.upper()
+                    if up in {"A", "B", "C", "D", "E"}:
+                        chars.append(up)
+                        continue
+                    if ch in separators:
+                        continue
+                return chars
 
-            tf_map: dict[int, dict[str, bool]] = {}
-            for q_no in tf_questions:
-                chunk = compact[cursor:cursor + 4]
-                if not chunk:
-                    break
-                tf_map[int(q_no)] = {
-                    "a": len(chunk) > 0 and chunk[0] in tf_true_chars,
-                    "b": len(chunk) > 1 and chunk[1] in tf_true_chars,
-                    "c": len(chunk) > 2 and chunk[2] in tf_true_chars,
-                    "d": len(chunk) > 3 and chunk[3] in tf_true_chars,
-                }
-                cursor += min(4, len(chunk))
+            def _collect_tf_flags(count: int) -> list[bool]:
+                nonlocal cursor
+                flags: list[bool] = []
+                while cursor < len(raw_text) and len(flags) < count:
+                    ch = raw_text[cursor]
+                    cursor += 1
+                    if ch in tf_true_chars or ch in {"S", "s", "0", "N", "n"}:
+                        flags.append(ch in tf_true_chars)
+                        continue
+                    if ch in separators:
+                        continue
+                return flags
+
+            mcq_chars = _collect_mcq_chars(len(mcq_questions))
+            tf_flags = _collect_tf_flags(len(tf_questions) * 4)
 
             numeric_map: dict[int, str] = {}
-            for q_no, expected_len in numeric_layout:
-                if expected_len <= 0 or cursor >= len(compact):
+            numeric_tail = raw_text[cursor:]
+            numeric_tokens = [tok.strip() for tok in re.split(r"[\s_,;|]+", numeric_tail) if tok and tok.strip()]
+            if len(numeric_tokens) >= len(numeric_layout) and numeric_layout:
+                for idx_layout, (q_no, expected_len) in enumerate(numeric_layout):
+                    token = str(numeric_tokens[idx_layout]) if idx_layout < len(numeric_tokens) else ""
+                    numeric_map[int(q_no)] = token[: max(0, int(expected_len))]
+            else:
+                compact_numeric = "".join(ch for ch in numeric_tail if ch not in separators and ch not in {","})
+                pos = 0
+                for q_no, expected_len in numeric_layout:
+                    if expected_len <= 0 or pos >= len(compact_numeric):
+                        continue
+                    numeric_map[int(q_no)] = compact_numeric[pos:pos + int(expected_len)]
+                    pos += int(expected_len)
+
+            mcq_map: dict[int, str] = {}
+            for idx_q, q_no in enumerate(mcq_questions):
+                if idx_q < len(mcq_chars):
+                    mcq_map[int(q_no)] = mcq_chars[idx_q]
+
+            tf_map: dict[int, dict[str, bool]] = {}
+            for idx_q, q_no in enumerate(tf_questions):
+                base = idx_q * 4
+                chunk = tf_flags[base:base + 4]
+                if not chunk:
                     continue
-                numeric_map[int(q_no)] = compact[cursor:cursor + int(expected_len)]
-                cursor += int(expected_len)
+                tf_map[int(q_no)] = {
+                    "a": len(chunk) > 0 and bool(chunk[0]),
+                    "b": len(chunk) > 1 and bool(chunk[1]),
+                    "c": len(chunk) > 2 and bool(chunk[2]),
+                    "d": len(chunk) > 3 and bool(chunk[3]),
+                }
 
             rebuilt = OMRProcessor.build_answer_string(mcq_map, tf_map, numeric_map)
             return mcq_map, tf_map, numeric_map, rebuilt
