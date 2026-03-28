@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import copy
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -97,6 +96,7 @@ class OMRProcessor:
         self._batch_worker_local = threading.local()
         self._batch_orientation_hint: int | None = None
         self._batch_orientation_hint_score: float | None = None
+        self._template_anchor_cache: dict[tuple[int, int, int, int], np.ndarray] = {}
 
     def _time_budget_exceeded(self) -> bool:
         deadline = self._processing_deadline_monotonic
@@ -289,18 +289,25 @@ class OMRProcessor:
 
     def _run_batch_item(self, image_path: str, template: Template):
         worker = self._get_thread_batch_worker()
-        cache = getattr(worker, "_thread_template_cache", None)
-        if cache is None:
-            cache = {}
-            setattr(worker, "_thread_template_cache", cache)
-        key = id(template)
-        thread_template = cache.get(key)
-        if thread_template is None:
-            thread_template = copy.deepcopy(template)
-            cache[key] = thread_template
         started = time.perf_counter()
-        res = worker.run_recognition_test(image_path, thread_template, RecognitionContext(collect_diagnostics=False))
+        res = worker.run_recognition_test(image_path, template, RecognitionContext(collect_diagnostics=False))
         return res, float(time.perf_counter() - started)
+
+    def _template_anchor_points_px(self, template: Template) -> np.ndarray:
+        anchors = list(template.anchors or [])
+        key = (id(template), int(template.width), int(template.height), len(anchors))
+        cached = self._template_anchor_cache.get(key)
+        if cached is not None:
+            return cached
+        pts = np.array(
+            [
+                (a.x * template.width, a.y * template.height) if a.x <= 1.0 and a.y <= 1.0 else (a.x, a.y)
+                for a in anchors
+            ],
+            dtype=np.float32,
+        )
+        self._template_anchor_cache[key] = pts
+        return pts
 
     @staticmethod
     def _auto_batch_worker_count(total: int, template: Template) -> int:
@@ -677,7 +684,7 @@ class OMRProcessor:
 
     def _try_anchor_alignment(self, image: np.ndarray, binary: np.ndarray, template: Template, profile: str) -> tuple[np.ndarray, np.ndarray] | None:
         detected = self._detect_anchors_by_profile(binary, profile)
-        template_pts = np.array([(a.x * template.width, a.y * template.height) if a.x <= 1.0 and a.y <= 1.0 else (a.x, a.y) for a in template.anchors], dtype=np.float32)
+        template_pts = self._template_anchor_points_px(template)
         if len(detected) < 4 or len(template_pts) < 4:
             return None
         src_pts, dst_pts = self._match_anchor_sets(np.array(detected, dtype=np.float32), template_pts)
@@ -859,7 +866,7 @@ class OMRProcessor:
         score = 0.0
         anchors = np.array(self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True, max_points=80), dtype=np.float32)
         if len(anchors) >= 4 and len(template.anchors) >= 4:
-            tpl = np.array([(a.x * template.width, a.y * template.height) if a.x <= 1.0 and a.y <= 1.0 else (a.x, a.y) for a in template.anchors], dtype=np.float32)
+            tpl = self._template_anchor_points_px(template)
             tpl = self._pick_corner_like_points(tpl)
             total = 0.0
             for pt in tpl:
@@ -879,7 +886,7 @@ class OMRProcessor:
     def _refine_corner_translation(self, aligned: np.ndarray, aligned_binary: np.ndarray, template: Template) -> tuple[np.ndarray, np.ndarray]:
         if len(template.anchors) < 4:
             return aligned, aligned_binary
-        template_pts = np.array([(a.x * template.width, a.y * template.height) if a.x <= 1.0 and a.y <= 1.0 else (a.x, a.y) for a in template.anchors], dtype=np.float32)
+        template_pts = self._template_anchor_points_px(template)
         ordered_template = self._order_points(self._pick_corner_like_points(template_pts))
         detected = np.array(self.detect_anchors(aligned_binary, use_border_padding=True, relaxed_polygon=True, max_points=120), dtype=np.float32)
         if len(detected) < 4:
@@ -899,7 +906,7 @@ class OMRProcessor:
     def _refine_alignment_with_affine_anchors(self, aligned: np.ndarray, aligned_binary: np.ndarray, template: Template) -> tuple[np.ndarray, np.ndarray]:
         if len(template.anchors) < 4:
             return aligned, aligned_binary
-        template_pts = np.array([(a.x * template.width, a.y * template.height) if a.x <= 1.0 and a.y <= 1.0 else (a.x, a.y) for a in template.anchors], dtype=np.float32)
+        template_pts = self._template_anchor_points_px(template)
         detected = np.array(self.detect_anchors(aligned_binary, use_border_padding=True, relaxed_polygon=True, max_points=120), dtype=np.float32)
         if len(detected) < 4:
             return aligned, aligned_binary
@@ -960,7 +967,7 @@ class OMRProcessor:
         if len(detected) < 4:
             return aligned, aligned_binary
 
-        template_pts = np.array([(a.x * template.width, a.y * template.height) if a.x <= 1.0 and a.y <= 1.0 else (a.x, a.y) for a in template.anchors], dtype=np.float32)
+        template_pts = self._template_anchor_points_px(template)
         detected_arr = np.array(detected, dtype=np.float32)
         if len(template_pts) < 4:
             return aligned, aligned_binary

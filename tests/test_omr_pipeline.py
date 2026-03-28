@@ -1248,7 +1248,7 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(len(out), len(image_paths))
         self.assertGreater(mk_mock.call_count, 0)
 
-    def test_process_batch_parallel_worker_uses_template_copy(self):
+    def test_process_batch_parallel_worker_reuses_shared_template_instance(self):
         template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[], metadata={"batch_workers": 2})
         seen_templates = []
 
@@ -1261,7 +1261,7 @@ class OMRPipelineTests(unittest.TestCase):
             _ = self.processor.process_batch(["a.png", "b.png"], template)
 
         self.assertTrue(seen_templates)
-        self.assertTrue(all(tpl is not template for tpl in seen_templates))
+        self.assertTrue(all(tpl is template for tpl in seen_templates))
 
     def test_process_batch_can_disable_auto_parallel(self):
         template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[], metadata={"batch_auto_parallel": False})
