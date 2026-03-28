@@ -10844,6 +10844,13 @@ class MainWindow(QMainWindow):
         return compact.upper()
 
     @staticmethod
+    def _normalized_room_for_match(room_text: str) -> str:
+        room = str(room_text or "").strip().casefold()
+        if room.isdigit():
+            room = room.lstrip("0") or "0"
+        return room
+
+    @staticmethod
     def _normalize_template_path(path_text: str) -> str:
         t = str(path_text or "").strip()
         if not t:
