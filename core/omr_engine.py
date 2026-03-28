@@ -143,8 +143,11 @@ class OMRProcessor:
         prev_profile = self.alignment_profile
         if template_profile in {"auto", "legacy", "border", "hybrid", "one_side"}:
             self.alignment_profile = template_profile
-        timeout_sec = float((template.metadata or {}).get("recognition_timeout_sec", self.processing_time_limit_sec) or self.processing_time_limit_sec)
-        context.deadline_monotonic = time.monotonic() + max(1.0, timeout_sec)
+        timeout_raw = (template.metadata or {}).get("recognition_timeout_sec", None)
+        timeout_sec = float(timeout_raw) if isinstance(timeout_raw, (int, float)) else 0.0
+        if timeout_sec <= 0.0:
+            timeout_sec = 0.0
+        context.deadline_monotonic = (time.monotonic() + max(1.0, timeout_sec)) if timeout_sec > 0.0 else 0.0
         self._processing_deadline_monotonic = context.deadline_monotonic
 
         try:
@@ -292,7 +295,7 @@ class OMRProcessor:
     @staticmethod
     def _auto_batch_worker_count(total: int, template: Template) -> int:
         meta = (getattr(template, "metadata", None) or {})
-        auto_parallel = bool(meta.get("batch_auto_parallel", True))
+        auto_parallel = bool(meta.get("batch_auto_parallel", False))
         if not auto_parallel:
             return 1
         min_items = int(meta.get("batch_auto_parallel_min_items", 8) or 8)

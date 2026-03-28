@@ -1227,7 +1227,7 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(run_mock.call_count, 2)
 
     def test_process_batch_auto_parallel_for_large_batches(self):
-        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[])
+        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[], metadata={"batch_auto_parallel": True})
 
         class FakeWorker:
             def run_recognition_test(self, image_path, _template, _context):
