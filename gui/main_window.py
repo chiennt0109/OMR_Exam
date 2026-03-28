@@ -11759,7 +11759,26 @@ class MainWindow(QMainWindow):
                     "d": len(chunk) > 3 and bool(chunk[3]),
                 }
 
-            rebuilt = OMRProcessor.build_answer_string(mcq_map, tf_map, numeric_map)
+            rebuilt_parts: list[str] = []
+            for q_no in mcq_questions:
+                rebuilt_parts.append(str((mcq_map or {}).get(int(q_no), "") or "_")[:1])
+            for q_no in tf_questions:
+                flags = (tf_map or {}).get(int(q_no), {}) or {}
+                for key in ["a", "b", "c", "d"]:
+                    if key in flags:
+                        rebuilt_parts.append("Đ" if bool(flags.get(key)) else "S")
+                    else:
+                        rebuilt_parts.append("_")
+            for q_no, expected_len in numeric_layout:
+                raw_val = str((numeric_map or {}).get(int(q_no), "") or "")
+                if int(expected_len) > 0:
+                    token = raw_val[: int(expected_len)]
+                    if len(token) < int(expected_len):
+                        token = token + ("_" * (int(expected_len) - len(token)))
+                    rebuilt_parts.append(token)
+                else:
+                    rebuilt_parts.append(raw_val)
+            rebuilt = "".join(rebuilt_parts)
             return mcq_map, tf_map, numeric_map, rebuilt
 
         out: list[OMRResult] = []
