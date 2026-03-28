@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import copy
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -288,22 +289,31 @@ class OMRProcessor:
 
     def _run_batch_item(self, image_path: str, template: Template):
         worker = self._get_thread_batch_worker()
+        cache = getattr(worker, "_thread_template_cache", None)
+        if cache is None:
+            cache = {}
+            setattr(worker, "_thread_template_cache", cache)
+        key = id(template)
+        thread_template = cache.get(key)
+        if thread_template is None:
+            thread_template = copy.deepcopy(template)
+            cache[key] = thread_template
         started = time.perf_counter()
-        res = worker.run_recognition_test(image_path, template, RecognitionContext(collect_diagnostics=False))
+        res = worker.run_recognition_test(image_path, thread_template, RecognitionContext(collect_diagnostics=False))
         return res, float(time.perf_counter() - started)
 
     @staticmethod
     def _auto_batch_worker_count(total: int, template: Template) -> int:
         meta = (getattr(template, "metadata", None) or {})
-        auto_parallel = bool(meta.get("batch_auto_parallel", False))
+        auto_parallel = bool(meta.get("batch_auto_parallel", True))
         if not auto_parallel:
             return 1
-        min_items = int(meta.get("batch_auto_parallel_min_items", 8) or 8)
+        min_items = int(meta.get("batch_auto_parallel_min_items", 24) or 24)
         if total < max(2, min_items):
             return 1
         cpu_count = max(1, int(os.cpu_count() or 1))
         target = max(2, cpu_count // 2)
-        max_auto = int(meta.get("batch_auto_parallel_max_workers", 6) or 6)
+        max_auto = int(meta.get("batch_auto_parallel_max_workers", 4) or 4)
         return max(1, min(total, target, max_auto))
 
     @staticmethod

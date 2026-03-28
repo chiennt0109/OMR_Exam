@@ -1227,7 +1227,15 @@ class OMRPipelineTests(unittest.TestCase):
         self.assertEqual(run_mock.call_count, 2)
 
     def test_process_batch_auto_parallel_for_large_batches(self):
-        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[], metadata={"batch_auto_parallel": True})
+        template = Template(
+            name="t",
+            image_path="",
+            width=200,
+            height=100,
+            anchors=[],
+            zones=[],
+            metadata={"batch_auto_parallel": True, "batch_auto_parallel_min_items": 8},
+        )
 
         class FakeWorker:
             def run_recognition_test(self, image_path, _template, _context):
@@ -1239,6 +1247,21 @@ class OMRPipelineTests(unittest.TestCase):
             out = self.processor.process_batch(image_paths, template)
         self.assertEqual(len(out), len(image_paths))
         self.assertGreater(mk_mock.call_count, 0)
+
+    def test_process_batch_parallel_worker_uses_template_copy(self):
+        template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[], metadata={"batch_workers": 2})
+        seen_templates = []
+
+        class FakeWorker:
+            def run_recognition_test(self, image_path, worker_template, _context):
+                seen_templates.append(worker_template)
+                return type("R", (), {"image_path": str(image_path)})()
+
+        with patch.object(self.processor, "_make_batch_worker", side_effect=[FakeWorker(), FakeWorker()]):
+            _ = self.processor.process_batch(["a.png", "b.png"], template)
+
+        self.assertTrue(seen_templates)
+        self.assertTrue(all(tpl is not template for tpl in seen_templates))
 
     def test_process_batch_can_disable_auto_parallel(self):
         template = Template(name="t", image_path="", width=200, height=100, anchors=[], zones=[], metadata={"batch_auto_parallel": False})
