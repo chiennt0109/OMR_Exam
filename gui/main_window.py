@@ -11707,11 +11707,40 @@ class MainWindow(QMainWindow):
             numeric_layout = [(x, 0) for x in range(next_q + 1, next_q + numeric_count + 1)]
         tf_true_chars = {"Đ", "đ", "D", "d", "T", "t", "1", "Y", "y"}
 
-        def _parse_answer_string(raw_answer: str) -> tuple[dict[int, str], dict[int, dict[str, bool]], dict[int, str], str]:
+        def _numeric_widths_from_subject_cfg(exam_code_text: str) -> dict[int, int]:
+            imported = self._subject_imported_answer_keys_for_main(subject_cfg or {})
+            if not imported:
+                return {}
+            exam_text = str(exam_code_text or "").strip()
+            payload = imported.get(exam_text)
+            if payload is None:
+                exam_norm = self._normalize_exam_code_text(exam_text)
+                for k, v in imported.items():
+                    if self._normalize_exam_code_text(str(k)) == exam_norm:
+                        payload = v
+                        break
+            if not isinstance(payload, dict):
+                return {}
+            numeric_map = payload.get("numeric_answers", {}) if isinstance(payload.get("numeric_answers", {}), dict) else {}
+            widths: dict[int, int] = {}
+            for q_raw, ans in numeric_map.items():
+                try:
+                    q_no = int(q_raw)
+                except Exception:
+                    continue
+                widths[q_no] = len(str(ans or ""))
+            return widths
+
+        def _parse_answer_string(
+            raw_answer: str,
+            row_mcq_questions: list[int],
+            row_tf_questions: list[int],
+            row_numeric_layout: list[tuple[int, int]],
+        ) -> tuple[dict[int, str], dict[int, dict[str, bool]], dict[int, str], str]:
             raw_text = str(raw_answer or "").strip()
             compact = re.sub(r"[\s_]+", "", raw_text)
-            mcq_span = max(0, len(mcq_questions))
-            tf_span = max(0, len(tf_questions) * 4)
+            mcq_span = max(0, len(row_mcq_questions))
+            tf_span = max(0, len(row_tf_questions) * 4)
             mcq_source = compact[:mcq_span]
             tf_source = compact[mcq_span:mcq_span + tf_span]
             numeric_tail = compact[mcq_span + tf_span:]
@@ -11720,18 +11749,18 @@ class MainWindow(QMainWindow):
             tf_flags = [ch in tf_true_chars for ch in tf_source if ch in tf_true_chars or ch in {"S", "s", "0", "N", "n"}]
 
             numeric_map: dict[int, str] = {}
-            has_fixed_numeric_width = bool(numeric_layout) and all(int(expected_len) > 0 for _, expected_len in numeric_layout)
+            has_fixed_numeric_width = bool(row_numeric_layout) and all(int(expected_len) > 0 for _, expected_len in row_numeric_layout)
             if has_fixed_numeric_width:
                 compact_numeric = str(numeric_tail)
                 pos = 0
-                for q_no, expected_len in numeric_layout:
+                for q_no, expected_len in row_numeric_layout:
                     token = compact_numeric[pos:pos + int(expected_len)] if pos < len(compact_numeric) else ""
                     numeric_map[int(q_no)] = token
                     pos += int(expected_len)
             else:
                 numeric_tokens = [tok.strip() for tok in re.split(r"[,;|]+", numeric_tail) if tok and tok.strip()]
-                if len(numeric_tokens) >= len(numeric_layout) and numeric_layout:
-                    for idx_layout, (q_no, expected_len) in enumerate(numeric_layout):
+                if len(numeric_tokens) >= len(row_numeric_layout) and row_numeric_layout:
+                    for idx_layout, (q_no, expected_len) in enumerate(row_numeric_layout):
                         token = str(numeric_tokens[idx_layout]) if idx_layout < len(numeric_tokens) else ""
                         if int(expected_len) > 0:
                             numeric_map[int(q_no)] = token[: max(0, int(expected_len))]
@@ -11739,12 +11768,12 @@ class MainWindow(QMainWindow):
                             numeric_map[int(q_no)] = token
 
             mcq_map: dict[int, str] = {}
-            for idx_q, q_no in enumerate(mcq_questions):
+            for idx_q, q_no in enumerate(row_mcq_questions):
                 if idx_q < len(mcq_chars):
                     mcq_map[int(q_no)] = mcq_chars[idx_q]
 
             tf_map: dict[int, dict[str, bool]] = {}
-            for idx_q, q_no in enumerate(tf_questions):
+            for idx_q, q_no in enumerate(row_tf_questions):
                 base = idx_q * 4
                 chunk = tf_flags[base:base + 4]
                 if not chunk:
@@ -11761,16 +11790,16 @@ class MainWindow(QMainWindow):
                 tf_map[int(q_no)] = tf_row
 
             rebuilt_parts: list[str] = []
-            for q_no in mcq_questions:
+            for q_no in row_mcq_questions:
                 rebuilt_parts.append(str((mcq_map or {}).get(int(q_no), "") or "_")[:1])
-            for q_no in tf_questions:
+            for q_no in row_tf_questions:
                 flags = (tf_map or {}).get(int(q_no), {}) or {}
                 for key in ["a", "b", "c", "d"]:
                     if key in flags:
                         rebuilt_parts.append("Đ" if bool(flags.get(key)) else "S")
                     else:
                         rebuilt_parts.append("_")
-            for q_no, expected_len in numeric_layout:
+            for q_no, expected_len in row_numeric_layout:
                 raw_val = str((numeric_map or {}).get(int(q_no), "") or "")
                 if int(expected_len) > 0:
                     token = raw_val[: int(expected_len)]
@@ -11796,7 +11825,16 @@ class MainWindow(QMainWindow):
             result.student_id = _pick(selected_sid_col)
             result.exam_code = _pick(selected_exam_col)
             raw_answer = _pick(selected_answer_col)
-            mcq_map, tf_map, numeric_map, rebuilt_answer = _parse_answer_string(raw_answer)
+            row_mcq_questions = list(mcq_questions)
+            row_tf_questions = list(tf_questions)
+            row_numeric_layout = list(numeric_layout)
+            numeric_widths = _numeric_widths_from_subject_cfg(result.exam_code)
+            if numeric_widths:
+                if row_numeric_layout:
+                    row_numeric_layout = [(q_no, numeric_widths.get(int(q_no), int(width))) for q_no, width in row_numeric_layout]
+                else:
+                    row_numeric_layout = [(q_no, int(width)) for q_no, width in sorted(numeric_widths.items(), key=lambda x: int(x[0]))]
+            mcq_map, tf_map, numeric_map, rebuilt_answer = _parse_answer_string(raw_answer, row_mcq_questions, row_tf_questions, row_numeric_layout)
             result.mcq_answers = mcq_map
             result.true_false_answers = tf_map
             result.numeric_answers = numeric_map
@@ -11832,7 +11870,7 @@ class MainWindow(QMainWindow):
             return "-"
         chunks: list[str] = []
         for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
-            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
             chunks.append(f"{int(q)}{marks}")
         return "; ".join(chunks)
 
@@ -12154,7 +12192,7 @@ class MainWindow(QMainWindow):
             return "-"
         chunks: list[str] = []
         for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
-            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
             chunks.append(f"{int(q)}{marks}")
         return "; ".join(chunks)
 
@@ -12260,7 +12298,7 @@ class MainWindow(QMainWindow):
             return "-"
         chunks: list[str] = []
         for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
-            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
             chunks.append(f"{int(q)}{marks}")
         return "; ".join(chunks)
 
@@ -12369,7 +12407,7 @@ class MainWindow(QMainWindow):
             return "-"
         chunks: list[str] = []
         for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
-            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
             chunks.append(f"{int(q)}{marks}")
         return "; ".join(chunks)
 
@@ -12478,7 +12516,7 @@ class MainWindow(QMainWindow):
             return "-"
         chunks: list[str] = []
         for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
-            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
             chunks.append(f"{int(q)}{marks}")
         return "; ".join(chunks)
 
@@ -12587,7 +12625,7 @@ class MainWindow(QMainWindow):
             return "-"
         chunks: list[str] = []
         for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
-            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
             chunks.append(f"{int(q)}{marks}")
         return "; ".join(chunks)
 
@@ -12696,7 +12734,7 @@ class MainWindow(QMainWindow):
             return "-"
         chunks: list[str] = []
         for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
-            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
             chunks.append(f"{int(q)}{marks}")
         return "; ".join(chunks)
 
@@ -12805,7 +12843,7 @@ class MainWindow(QMainWindow):
             return "-"
         chunks: list[str] = []
         for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
-            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
             chunks.append(f"{int(q)}{marks}")
         return "; ".join(chunks)
 
@@ -12914,7 +12952,7 @@ class MainWindow(QMainWindow):
             return "-"
         chunks: list[str] = []
         for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
-            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
             chunks.append(f"{int(q)}{marks}")
         return "; ".join(chunks)
 
@@ -13023,7 +13061,7 @@ class MainWindow(QMainWindow):
             return "-"
         chunks: list[str] = []
         for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
-            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
             chunks.append(f"{int(q)}{marks}")
         return "; ".join(chunks)
 
@@ -13132,7 +13170,7 @@ class MainWindow(QMainWindow):
             return "-"
         chunks: list[str] = []
         for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
-            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
             chunks.append(f"{int(q)}{marks}")
         return "; ".join(chunks)
 
@@ -13241,7 +13279,7 @@ class MainWindow(QMainWindow):
             return "-"
         chunks: list[str] = []
         for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
-            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
             chunks.append(f"{int(q)}{marks}")
         return "; ".join(chunks)
 
@@ -13350,7 +13388,7 @@ class MainWindow(QMainWindow):
             return "-"
         chunks: list[str] = []
         for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
-            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
             chunks.append(f"{int(q)}{marks}")
         return "; ".join(chunks)
 
@@ -13459,7 +13497,7 @@ class MainWindow(QMainWindow):
             return "-"
         chunks: list[str] = []
         for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
-            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
             chunks.append(f"{int(q)}{marks}")
         return "; ".join(chunks)
 
@@ -13568,7 +13606,7 @@ class MainWindow(QMainWindow):
             return "-"
         chunks: list[str] = []
         for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
-            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
             chunks.append(f"{int(q)}{marks}")
         return "; ".join(chunks)
 
@@ -13677,7 +13715,7 @@ class MainWindow(QMainWindow):
             return "-"
         chunks: list[str] = []
         for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
-            marks = "".join("Đ" if bool((flags or {}).get(k)) else "S" for k in ["a", "b", "c", "d"])
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
             chunks.append(f"{int(q)}{marks}")
         return "; ".join(chunks)
 
