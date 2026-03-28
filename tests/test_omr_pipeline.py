@@ -33,6 +33,40 @@ class OMRPipelineTests(unittest.TestCase):
 
         self.assertEqual([z.id for z in ordered], ["mcq", "tf", "num", "sid", "exam"])
 
+    def test_detect_bubbles_vectorized_matches_reference_loop(self):
+        binary = np.zeros((120, 160), dtype=np.uint8)
+        cv2.circle(binary, (30, 30), 8, 255, -1)
+        cv2.circle(binary, (80, 60), 8, 255, -1)
+        cv2.circle(binary, (130, 90), 8, 255, 2)
+        centers = np.array([[30, 30], [80, 60], [130, 90], [200, 200]], dtype=np.float32)
+        radius = 8
+
+        out = self.processor.detect_bubbles(binary, centers, radius)
+
+        # Reference loop (pre-vectorized behavior)
+        mask = self.processor._get_x_mask(radius)
+        r = max(3, int(radius))
+        h, w = binary.shape[:2]
+        expected = np.zeros((len(centers),), dtype=np.float32)
+        for i, (x, y) in enumerate(centers.astype(np.int32)):
+            x0, y0 = x - r, y - r
+            x1, y1 = x + r + 1, y + r + 1
+            if x1 <= 0 or y1 <= 0 or x0 >= w or y0 >= h:
+                continue
+            x0c, y0c = max(0, x0), max(0, y0)
+            x1c, y1c = min(w, x1), min(h, y1)
+            roi = binary[y0c:y1c, x0c:x1c]
+            local_mask = mask[(y0c - y0):(y1c - y0), (x0c - x0):(x1c - x0)]
+            den = float(np.count_nonzero(local_mask))
+            if roi.size == 0 or den == 0:
+                continue
+            dark_pixels = cv2.countNonZero(roi[local_mask])
+            fill_ratio = float(dark_pixels) / den
+            mean_density = float(np.count_nonzero(roi)) / float(roi.size)
+            expected[i] = float(np.clip(0.8 * fill_ratio + 0.2 * mean_density, 0.0, 1.0))
+
+        self.assertTrue(np.allclose(out, expected, atol=1e-4))
+
     def test_detect_anchors_square_markers(self):
         img = np.zeros((400, 300), dtype=np.uint8)
         cv2.rectangle(img, (20, 20), (45, 45), 255, -1)

@@ -1121,24 +1121,38 @@ class OMRProcessor:
         r = max(3, int(radius))
         h, w = binary.shape[:2]
         ratios = np.zeros((len(centers),), dtype=np.float32)
+        if len(centers) == 0 or h <= 0 or w <= 0:
+            return ratios
         centers_int = centers.astype(np.int32)
+        valid = (
+            (centers_int[:, 0] >= 0)
+            & (centers_int[:, 0] < w)
+            & (centers_int[:, 1] >= 0)
+            & (centers_int[:, 1] < h)
+        )
+        if not np.any(valid):
+            return ratios
 
-        for i, (x, y) in enumerate(centers_int):
-            x0, y0 = x - r, y - r
-            x1, y1 = x + r + 1, y + r + 1
-            if x1 <= 0 or y1 <= 0 or x0 >= w or y0 >= h:
-                continue
-            x0c, y0c = max(0, x0), max(0, y0)
-            x1c, y1c = min(w, x1), min(h, y1)
-            roi = binary[y0c:y1c, x0c:x1c]
-            local_mask = mask[(y0c - y0):(y1c - y0), (x0c - x0):(x1c - x0)]
-            den = float(np.count_nonzero(local_mask))
-            if roi.size == 0 or den == 0:
-                continue
-            dark_pixels = cv2.countNonZero(roi[local_mask])
-            fill_ratio = float(dark_pixels) / den
-            mean_density = float(np.count_nonzero(roi)) / float(roi.size)
-            ratios[i] = float(np.clip(0.8 * fill_ratio + 0.2 * mean_density, 0.0, 1.0))
+        bin01 = (binary > 0).astype(np.float32)
+        kernel = mask.astype(np.float32)
+        den = float(np.count_nonzero(mask))
+        if den <= 0.0:
+            return ratios
+        cross_sum = cv2.filter2D(bin01, -1, kernel, borderType=cv2.BORDER_CONSTANT)
+        square_mean = cv2.boxFilter(
+            bin01,
+            ddepth=-1,
+            ksize=((2 * r) + 1, (2 * r) + 1),
+            normalize=True,
+            borderType=cv2.BORDER_CONSTANT,
+        )
+
+        xs = centers_int[valid, 0]
+        ys = centers_int[valid, 1]
+        fill = cross_sum[ys, xs] / den
+        mean = square_mean[ys, xs]
+        merged = np.clip((0.8 * fill) + (0.2 * mean), 0.0, 1.0).astype(np.float32)
+        ratios[np.where(valid)[0]] = merged
         return ratios
 
     def _detect_center_core_marks(self, binary: np.ndarray, centers: np.ndarray, radius: int) -> np.ndarray:
