@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import csv
 import json
 from datetime import date, datetime
 from pathlib import Path
@@ -2817,6 +2818,14 @@ class MainWindow(QMainWindow):
         self.batch_recognition_mode_combo.addItem("Mẫu mới / Anchor sát biên", "border")
         self.batch_recognition_mode_combo.addItem("Anchor 1 phía (ruler theo dòng)", "one_side")
         self.batch_recognition_mode_combo.addItem("Lai (thử nhiều cơ chế)", "hybrid")
+        self.batch_recognition_mode_combo.setCurrentIndex(0)
+        self.batch_recognition_mode_combo.setVisible(False)
+        self.batch_api_file_value = QLineEdit("-"); self.batch_api_file_value.setReadOnly(True)
+        self.btn_pick_batch_api_file = QPushButton("Chọn file API")
+        self.btn_pick_batch_api_file.clicked.connect(self._pick_batch_api_file)
+        api_row = QHBoxLayout()
+        api_row.addWidget(self.batch_api_file_value, 1)
+        api_row.addWidget(self.btn_pick_batch_api_file)
         self.batch_template_value = QLineEdit("-"); self.batch_template_value.setReadOnly(True)
         self.batch_answer_codes_value = QLineEdit("-"); self.batch_answer_codes_value.setReadOnly(True)
         self.batch_student_id_value = QLineEdit("-"); self.batch_student_id_value.setReadOnly(True)
@@ -2844,7 +2853,7 @@ class MainWindow(QMainWindow):
 
         batch_form.addRow("Môn", self.batch_subject_combo)
         batch_form.addRow("Phạm vi", self.batch_file_scope_combo)
-        batch_form.addRow("Cơ chế nhận dạng", self.batch_recognition_mode_combo)
+        batch_form.addRow("API bài thi", api_row)
         batch_form.addRow("Mẫu giấy dùng", self.batch_template_value)
         batch_form.addRow("Mã đề", self.batch_answer_codes_value)
         batch_form.addRow("Vùng STUDENT ID", self.batch_student_id_value)
@@ -11183,6 +11192,10 @@ class MainWindow(QMainWindow):
             mode = str(self.batch_recognition_mode_combo.currentData() or "auto")
             setattr(self.omr_processor, "alignment_profile", mode)
         file_scope_mode = str(self.batch_file_scope_combo.currentData() or "new_only") if hasattr(self, "batch_file_scope_combo") else "new_only"
+        api_file = str(getattr(self, "batch_api_file_value", QLineEdit("-")).text() if hasattr(self, "batch_api_file_value") else "").strip()
+        if api_file and api_file != "-":
+            self._run_batch_scan_from_api_file(subject_cfg or {}, file_scope_mode, api_file)
+            return
 
         # Resolve template, scan folder and answer keys from selected subject config in session.
         subject_template_path = ""
@@ -11378,17 +11391,127 @@ class MainWindow(QMainWindow):
         elapsed_sec = max(0.0, float(time.perf_counter() - batch_started))
         total_items = len(file_paths)
         timing_text = f"{elapsed_sec:.1f}s/{total_items} bài"
-        if hasattr(self, "batch_scan_state_value"):
-            self.batch_scan_state_value.setText(timing_text)
-        if hasattr(self, "progress"):
-            self.progress.setFormat(f"%p% ({timing_text})")
+
+    def _pick_batch_api_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Chọn file API bài thi",
+            "",
+            "Data files (*.csv *.txt *.tsv *.xlsx);;All files (*.*)",
+        )
+        if not path:
+            return
+        if hasattr(self, "batch_api_file_value"):
+            self.batch_api_file_value.setText(path)
+
+    @staticmethod
+    def _normalize_mapping_key(text: str) -> str:
+        return str(text or "").strip().lower().replace(" ", "").replace("_", "")
+
+    def _load_api_mapping_rows(self, path: Path) -> list[dict[str, str]]:
+        ext = path.suffix.lower()
+        rows: list[dict[str, str]] = []
+        if ext in {".csv", ".txt", ".tsv"}:
+            raw = path.read_text(encoding="utf-8-sig", errors="ignore")
+            dialect = csv.Sniffer().sniff(raw[:2048]) if raw.strip() else csv.excel
+            reader = csv.DictReader(raw.splitlines(), dialect=dialect)
+            for row in reader:
+                rows.append({str(k): str(v or "") for k, v in (row or {}).items()})
+            return rows
+        if ext == ".xlsx":
+            try:
+                from openpyxl import load_workbook  # type: ignore
+            except Exception as exc:
+                raise RuntimeError(f"Thiếu openpyxl để đọc .xlsx: {exc}")
+            wb = load_workbook(path, read_only=True, data_only=True)
+            ws = wb.active
+            values = list(ws.values)
+            if not values:
+                return []
+            headers = [str(x or "") for x in values[0]]
+            for data in values[1:]:
+                row = {}
+                for idx, key in enumerate(headers):
+                    row[str(key)] = str(data[idx] if idx < len(data) and data[idx] is not None else "")
+                rows.append(row)
+            return rows
+        raise RuntimeError("Chỉ hỗ trợ .csv/.txt/.tsv/.xlsx")
+
+    def _expected_answer_string_length_for_subject(self, subject_key: str) -> int:
+        fetched = self.database.fetch_answer_keys_for_subject(subject_key) or {}
+        if not fetched:
+            return 0
+        sample = next(iter(fetched.values()))
+        mcq_len = len(getattr(sample, "answers", {}) or {})
+        tf_len = 4 * len(getattr(sample, "true_false_answers", {}) or {})
+        numeric = getattr(sample, "numeric_answers", {}) or {}
+        num_len = sum(len(str(v or "")) for v in numeric.values())
+        return int(mcq_len + tf_len + num_len)
+
+    def _run_batch_scan_from_api_file(self, subject_cfg: dict, file_scope_mode: str, api_file: str) -> None:
+        subject_key_for_results = self._subject_key_from_cfg(subject_cfg) if subject_cfg else self._resolve_preferred_scoring_subject()
+        scan_folder = str((subject_cfg or {}).get("scan_folder", "") or "").strip()
+        if not scan_folder:
+            scan_folder = str(getattr(self, "batch_scan_folder_value", QLineEdit("-")).text() if hasattr(self, "batch_scan_folder_value") else "").strip()
+        if not scan_folder or scan_folder == "-":
+            QMessageBox.warning(self, "API bài thi", "Chưa cấu hình Thư mục bài thi môn.")
+            return
         try:
-            log_path = Path.cwd() / "omr_batch_timing_manual.log"
-            log_line = f"{datetime.now().isoformat(timespec='seconds')}\t{subject_key_for_results}\t{total_items}\t{elapsed_sec:.4f}\t{timing_text}\n"
-            with log_path.open("a", encoding="utf-8") as fh:
-                fh.write(log_line)
-        except Exception:
-            pass
+            mapping_rows = self._load_api_mapping_rows(Path(api_file))
+        except Exception as exc:
+            QMessageBox.warning(self, "API bài thi", f"Không đọc được file mapping:\n{exc}")
+            return
+        if not mapping_rows:
+            QMessageBox.warning(self, "API bài thi", "File mapping không có dữ liệu.")
+            return
+
+        expected_len = self._expected_answer_string_length_for_subject(subject_key_for_results)
+        key_aliases = {
+            "filename": {"filename", "file", "image", "tenfile"},
+            "student_id": {"sdb", "studentid", "student_id", "sobaodanh"},
+            "exam_code": {"made", "examcode", "exam_code", "ma_de"},
+            "answer": {"bailam", "answer", "answers", "answerstring"},
+        }
+
+        out: list[OMRResult] = []
+        for row in mapping_rows:
+            norm = {self._normalize_mapping_key(k): str(v or "").strip() for k, v in row.items()}
+            def _pick(alias_set: set[str]) -> str:
+                for k, v in norm.items():
+                    if k in alias_set:
+                        return v
+                return ""
+            fname = _pick(key_aliases["filename"])
+            if not fname:
+                continue
+            result = OMRResult(image_path=str(Path(scan_folder) / fname))
+            result.student_id = _pick(key_aliases["student_id"])
+            result.exam_code = _pick(key_aliases["exam_code"])
+            answer_text = _pick(key_aliases["answer"]).replace(" ", "")
+            if expected_len > 0:
+                answer_text = answer_text[:expected_len]
+            result.answer_string = answer_text
+            out.append(self._strip_transient_scan_artifacts(result))
+
+        if not out:
+            QMessageBox.warning(self, "API bài thi", "Không có dòng hợp lệ (cần cột FileName).")
+            return
+
+        if file_scope_mode == "all":
+            self.database.delete_scan_results_for_subject(subject_key_for_results)
+            self.scan_results = []
+        else:
+            self.scan_results = list(self._refresh_scan_results_from_db(subject_key_for_results) or [])
+        by_path = {str(getattr(r, "image_path", "") or ""): r for r in self.scan_results}
+        for r in out:
+            by_path[str(r.image_path)] = r
+        self.scan_results = list(by_path.values())
+        self.scan_results_by_subject[subject_key_for_results] = list(self.scan_results)
+        self.database.replace_scan_results_for_subject(subject_key_for_results, [self._serialize_omr_result(x) for x in self.scan_results])
+        self._populate_scan_grid_from_results(self.scan_results)
+        self._finalize_batch_scan_display()
+        self._update_batch_scan_scope_summary()
+        QMessageBox.information(self, "API bài thi", f"Đã nạp {len(out)} dòng từ API bài thi.")
 
     @staticmethod
     def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:

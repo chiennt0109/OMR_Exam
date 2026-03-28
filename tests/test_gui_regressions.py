@@ -50,6 +50,15 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('def _recommended_batch_timeout_sec(template: Template | None) -> float:', source)
         self.assertIn('self.template.metadata["recognition_timeout_sec"] = self._recommended_batch_timeout_sec(self.template)', source)
 
+    def test_batch_scan_replaces_recognition_mechanism_with_api_exam_source(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('batch_form.addRow("API bài thi", api_row)', source)
+        self.assertIn('self.batch_recognition_mode_combo.setVisible(False)', source)
+        self.assertIn('self.btn_pick_batch_api_file = QPushButton("Chọn file API")', source)
+        self.assertIn('def _run_batch_scan_from_api_file(self, subject_cfg: dict, file_scope_mode: str, api_file: str) -> None:', source)
+        self.assertIn('if api_file and api_file != "-":', source)
+        self.assertIn('self._run_batch_scan_from_api_file(subject_cfg or {}, file_scope_mode, api_file)', source)
+
     def test_scoring_uses_lightweight_scan_copies_and_batch_results_drop_large_arrays(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
         self.assertIn('def _strip_transient_scan_artifacts(result: OMRResult) -> OMRResult:', source)
