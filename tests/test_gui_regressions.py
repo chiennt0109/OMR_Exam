@@ -46,7 +46,10 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('self.exam_room_name = QComboBox(); self.exam_room_name.setEditable(True)', source)
         self.assertIn('self.btn_import_exam_room_mapping = QPushButton("Import mapping SBD/phòng từ Excel")', source)
         self.assertIn('def _import_exam_room_mapping_from_file(self) -> None:', source)
-        self.assertIn('def _load_exam_room_mapping_rows(path: Path) -> list[dict[str, str]]:', source)
+        self.assertIn('def _load_exam_room_mapping_rows(path: Path) -> tuple[list[str], list[dict[str, str]]]:', source)
+        self.assertIn('pick.setWindowTitle("Chọn cột mapping SBD/phòng")', source)
+        self.assertIn('pick_l.addRow("Cột SBD", sid_col)', source)
+        self.assertIn('pick_l.addRow("Cột phòng thi", room_col)', source)
         self.assertIn('self.exam_room_mapping_selector = QComboBox()', source)
         self.assertNotIn('self.exam_room_sbd_mapping = QTextEdit', source)
 

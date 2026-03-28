@@ -668,12 +668,44 @@ class SubjectConfigDialog(QDialog):
         if not path:
             return
         try:
-            rows = self._load_exam_room_mapping_rows(Path(path))
+            headers, raw_rows = self._load_exam_room_mapping_rows(Path(path))
         except Exception as exc:
             QMessageBox.warning(self, "Import mapping phòng thi", f"Không đọc được file:\n{exc}")
             return
-        if not rows:
+        if not raw_rows:
             QMessageBox.warning(self, "Import mapping phòng thi", "Không tìm thấy dữ liệu hợp lệ (cần cột SBD).")
+            return
+        pick = QDialog(self)
+        pick.setWindowTitle("Chọn cột mapping SBD/phòng")
+        pick_l = QFormLayout(pick)
+        sid_col = QComboBox(); sid_col.addItems(headers)
+        room_col = QComboBox(); room_col.addItem("[Không dùng]", ""); room_col.addItems(headers)
+        def _find_idx(keys: set[str], combo: QComboBox) -> int:
+            for i in range(combo.count()):
+                text = str(combo.itemText(i) or "").strip().lower().replace(" ", "").replace("_", "")
+                if text in keys:
+                    return i
+            return 0
+        sid_col.setCurrentIndex(_find_idx({"sbd", "studentid", "student_id", "sobaodanh"}, sid_col))
+        room_col.setCurrentIndex(_find_idx({"phongthi", "examroom", "exam_room", "room"}, room_col))
+        pick_l.addRow("Cột SBD", sid_col)
+        pick_l.addRow("Cột phòng thi", room_col)
+        pick_btn = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        pick_btn.accepted.connect(pick.accept)
+        pick_btn.rejected.connect(pick.reject)
+        pick_l.addRow(pick_btn)
+        if pick.exec() != QDialog.Accepted:
+            return
+        sid_key = sid_col.currentText().strip()
+        room_key = str(room_col.currentData() or room_col.currentText() or "").strip()
+        rows: list[dict[str, str]] = []
+        for rec in raw_rows:
+            sid = str(rec.get(sid_key, "")).strip()
+            room = str(rec.get(room_key, "")).strip() if room_key and room_key != "[Không dùng]" else ""
+            if sid:
+                rows.append({"sid": sid, "room": room})
+        if not rows:
+            QMessageBox.warning(self, "Import mapping phòng thi", "Không có dữ liệu hợp lệ sau khi chọn cột.")
             return
         grouped: dict[str, set[str]] = {}
         for r in rows:
@@ -710,44 +742,35 @@ class SubjectConfigDialog(QDialog):
             self.exam_room_mapping_hint.setText(f"Đã chọn mapping phòng '{room}' với {count} SBD.")
 
     @staticmethod
-    def _load_exam_room_mapping_rows(path: Path) -> list[dict[str, str]]:
+    def _load_exam_room_mapping_rows(path: Path) -> tuple[list[str], list[dict[str, str]]]:
         ext = path.suffix.lower()
         rows: list[dict[str, str]] = []
-        def _norm(k: str) -> str:
-            return str(k or "").strip().lower().replace(" ", "").replace("_", "")
-        def _pick(d: dict[str, str], keys: set[str]) -> str:
-            for k, v in d.items():
-                if _norm(k) in keys:
-                    return str(v or "").strip()
-            return ""
+        headers: list[str] = []
         if ext in {".csv", ".txt", ".tsv"}:
             raw = path.read_text(encoding="utf-8-sig", errors="ignore")
             dialect = csv.Sniffer().sniff(raw[:2048]) if raw.strip() else csv.excel
             reader = csv.DictReader(raw.splitlines(), dialect=dialect)
+            headers = [str(h or "") for h in (reader.fieldnames or [])]
             for row in reader:
                 rec = {str(k): str(v or "") for k, v in (row or {}).items()}
-                sid = _pick(rec, {"sbd", "studentid", "student_id", "sobaodanh"})
-                room = _pick(rec, {"phongthi", "examroom", "exam_room", "room"})
-                if sid:
-                    rows.append({"sid": sid, "room": room})
-            return rows
+                if rec:
+                    rows.append(rec)
+            return headers, rows
         if ext == ".xlsx":
             from openpyxl import load_workbook  # type: ignore
             wb = load_workbook(path, read_only=True, data_only=True)
             ws = wb.active
             values = list(ws.values)
             if not values:
-                return rows
+                return headers, rows
             headers = [str(x or "") for x in values[0]]
             for data in values[1:]:
                 rec: dict[str, str] = {}
                 for idx, key in enumerate(headers):
                     rec[str(key)] = str(data[idx] if idx < len(data) and data[idx] is not None else "")
-                sid = _pick(rec, {"sbd", "studentid", "student_id", "sobaodanh"})
-                room = _pick(rec, {"phongthi", "examroom", "exam_room", "room"})
-                if sid:
-                    rows.append({"sid": sid, "room": room})
-            return rows
+                if rec:
+                    rows.append(rec)
+            return headers, rows
         raise RuntimeError("Chỉ hỗ trợ .xlsx/.csv/.txt/.tsv")
 
     def payload(self) -> dict:
