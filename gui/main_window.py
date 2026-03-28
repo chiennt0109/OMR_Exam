@@ -16035,6 +16035,7 @@ class MainWindow(QMainWindow):
             tbl.setCurrentCell(0, 0)
             _on_pick()
         dlg.exec()
+        return
 
         formula_text = ""
         if rows:
