@@ -11694,51 +11694,19 @@ class MainWindow(QMainWindow):
         tf_true_chars = {"Đ", "đ", "D", "d", "T", "t", "1", "Y", "y"}
 
         def _parse_answer_string(raw_answer: str) -> tuple[dict[int, str], dict[int, dict[str, bool]], dict[int, str], str]:
-            raw_text = str(raw_answer or "")
-            separators = set(" \t\r\n_|;")
-            explicit_chunks = [x for x in re.split(r"_+", raw_text) if str(x).strip()]
-            mcq_source = explicit_chunks[0] if explicit_chunks else raw_text
-            tf_source = explicit_chunks[1] if len(explicit_chunks) > 1 else ""
-            numeric_source = "".join(explicit_chunks[2:]) if len(explicit_chunks) > 2 else ""
-            cursor = 0
+            raw_text = str(raw_answer or "").strip()
+            compact = re.sub(r"[\s_]+", "", raw_text)
+            mcq_span = max(0, len(mcq_questions))
+            tf_span = max(0, len(tf_questions) * 4)
+            mcq_source = compact[:mcq_span]
+            tf_source = compact[mcq_span:mcq_span + tf_span]
+            numeric_tail = compact[mcq_span + tf_span:]
 
-            def _collect_mcq_chars(count: int, source_text: str = "") -> list[str]:
-                nonlocal cursor
-                chars: list[str] = []
-                probe = str(source_text or raw_text)
-                while cursor < len(probe) and len(chars) < count:
-                    ch = probe[cursor]
-                    cursor += 1
-                    up = ch.upper()
-                    if up in {"A", "B", "C", "D", "E"}:
-                        chars.append(up)
-                        continue
-                    if ch in separators:
-                        continue
-                return chars
-
-            def _collect_tf_flags(count: int, source_text: str = "") -> list[bool]:
-                nonlocal cursor
-                flags: list[bool] = []
-                probe = str(source_text or raw_text)
-                while cursor < len(probe) and len(flags) < count:
-                    ch = probe[cursor]
-                    cursor += 1
-                    if ch in tf_true_chars or ch in {"S", "s", "0", "N", "n"}:
-                        flags.append(ch in tf_true_chars)
-                        continue
-                    if ch in separators:
-                        continue
-                return flags
-
-            cursor = 0
-            mcq_chars = _collect_mcq_chars(len(mcq_questions), mcq_source)
-            cursor = 0
-            tf_flags = _collect_tf_flags(len(tf_questions) * 4, tf_source)
+            mcq_chars = [str(ch).upper() for ch in mcq_source if str(ch).upper() in {"A", "B", "C", "D", "E"}]
+            tf_flags = [ch in tf_true_chars for ch in tf_source if ch in tf_true_chars or ch in {"S", "s", "0", "N", "n"}]
 
             numeric_map: dict[int, str] = {}
-            numeric_tail = numeric_source if numeric_source else raw_text
-            numeric_tokens = [tok.strip() for tok in re.split(r"[\s_,;|]+", numeric_tail) if tok and tok.strip()]
+            numeric_tokens = [tok.strip() for tok in re.split(r"[,;|]+", numeric_tail) if tok and tok.strip()]
             if len(numeric_tokens) >= len(numeric_layout) and numeric_layout:
                 for idx_layout, (q_no, expected_len) in enumerate(numeric_layout):
                     token = str(numeric_tokens[idx_layout]) if idx_layout < len(numeric_tokens) else ""
@@ -11747,7 +11715,7 @@ class MainWindow(QMainWindow):
                     else:
                         numeric_map[int(q_no)] = token
             else:
-                compact_numeric = "".join(ch for ch in numeric_tail if ch not in separators and ch not in {","})
+                compact_numeric = str(numeric_tail)
                 pos = 0
                 for q_no, expected_len in numeric_layout:
                     if expected_len <= 0:
@@ -14528,7 +14496,8 @@ class MainWindow(QMainWindow):
             parts.append("Trùng SBD")
         else:
             all_sids, room_sids = self._subject_student_room_scope()
-            if sid and all_sids and sid in all_sids and room_sids and sid not in room_sids:
+            sid_norm = self._normalized_student_id_for_match(sid)
+            if sid and all_sids and sid_norm in all_sids and room_sids and sid_norm not in room_sids:
                 parts.append("Sai SBD phòng thi")
         avail_codes = self._available_exam_codes()
         code = (exam_code_text or "").strip()
@@ -14542,21 +14511,21 @@ class MainWindow(QMainWindow):
         for s in (self.session.students if self.session else []):
             sid = str(getattr(s, "student_id", "") or "").strip()
             if sid:
-                all_sids.add(sid)
+                all_sids.add(self._normalized_student_id_for_match(sid))
         cfg = self._selected_batch_subject_config() or {}
         room_name = str(cfg.get("exam_room_name", "") or "").strip()
         mapping_text = str(cfg.get("exam_room_sbd_mapping", "") or "").strip()
         room_sids: set[str] = set()
         if mapping_text:
             chunks = [x.strip() for x in mapping_text.replace(";", ",").replace("\n", ",").split(",")]
-            room_sids = {x for x in chunks if x}
+            room_sids = {self._normalized_student_id_for_match(x) for x in chunks if x}
         elif room_name:
             for s in (self.session.students if self.session else []):
                 sid = str(getattr(s, "student_id", "") or "").strip()
                 extra = getattr(s, "extra", {}) or {}
                 exam_room = str(extra.get("exam_room", "") or "").strip()
                 if sid and exam_room and exam_room == room_name:
-                    room_sids.add(sid)
+                    room_sids.add(self._normalized_student_id_for_match(sid))
         return all_sids, room_sids
 
     @staticmethod

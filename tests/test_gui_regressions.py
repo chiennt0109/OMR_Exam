@@ -80,10 +80,11 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('q_counts = (subject_cfg or {}).get("question_counts", {}) if isinstance(subject_cfg or {}, dict) else {}', source)
         self.assertIn('q_counts = self._template_question_counts(tpl_path)', source)
         self.assertIn('def _parse_answer_string(raw_answer: str) -> tuple[dict[int, str], dict[int, dict[str, bool]], dict[int, str], str]:', source)
-        self.assertIn('explicit_chunks = [x for x in re.split(r"_+", raw_text) if str(x).strip()]', source)
-        self.assertIn('mcq_chars = _collect_mcq_chars(len(mcq_questions), mcq_source)', source)
-        self.assertIn('tf_flags = _collect_tf_flags(len(tf_questions) * 4, tf_source)', source)
-        self.assertIn('numeric_tokens = [tok.strip() for tok in re.split(r"[\\s_,;|]+", numeric_tail) if tok and tok.strip()]', source)
+        self.assertIn('compact = re.sub(r"[\\s_]+", "", raw_text)', source)
+        self.assertIn('mcq_source = compact[:mcq_span]', source)
+        self.assertIn('tf_source = compact[mcq_span:mcq_span + tf_span]', source)
+        self.assertIn('numeric_tail = compact[mcq_span + tf_span:]', source)
+        self.assertIn('numeric_tokens = [tok.strip() for tok in re.split(r"[,;|]+", numeric_tail) if tok and tok.strip()]', source)
         self.assertIn('if int(expected_len) > 0:', source)
         self.assertIn('numeric_map[int(q_no)] = token', source)
         self.assertIn('rebuilt_parts: list[str] = []', source)
@@ -101,6 +102,13 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('def _schedule_correction_update(self, field_name: str, old_value: object, new_value: object, apply_fn) -> None:', source)
         self.assertIn('self._refresh_all_statuses()', source)
         self.assertIn('self.correction_save_timer.start(150)', source)
+
+    def test_room_scope_status_uses_normalized_student_id_matching(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('sid_norm = self._normalized_student_id_for_match(sid)', source)
+        self.assertIn('sid_norm in all_sids and room_sids and sid_norm not in room_sids', source)
+        self.assertIn('all_sids.add(self._normalized_student_id_for_match(sid))', source)
+        self.assertIn('room_sids = {self._normalized_student_id_for_match(x) for x in chunks if x}', source)
 
     def test_recognition_content_includes_parsed_api_sections_for_debug(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
