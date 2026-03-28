@@ -43,10 +43,12 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('parts.append("Sai SBD phòng thi")', source)
         self.assertIn('def _subject_student_room_scope(self) -> tuple[set[str], set[str]]:', source)
         self.assertIn('exam_room_sbd_mapping', source)
-        self.assertIn('exam_room_name', source)
+        self.assertIn('self.exam_room_name = QComboBox(); self.exam_room_name.setEditable(True)', source)
         self.assertIn('self.btn_import_exam_room_mapping = QPushButton("Import mapping SBD/phòng từ Excel")', source)
         self.assertIn('def _import_exam_room_mapping_from_file(self) -> None:', source)
         self.assertIn('def _load_exam_room_mapping_rows(path: Path) -> list[dict[str, str]]:', source)
+        self.assertIn('self.exam_room_mapping_selector = QComboBox()', source)
+        self.assertNotIn('self.exam_room_sbd_mapping = QTextEdit', source)
 
     def test_batch_scan_supports_new_only_and_all_modes(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')

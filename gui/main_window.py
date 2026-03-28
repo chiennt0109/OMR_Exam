@@ -295,16 +295,22 @@ class SubjectConfigDialog(QDialog):
         self.scan_folder = QLineEdit(str(data.get("scan_folder", "")))
         self.answer_key = QLineEdit(str(data.get("answer_key_path", "")))
         self.answer_key_key = QLineEdit(str(data.get("answer_key_key", ""))); self.answer_key_key.setReadOnly(True)
-        self.exam_room_name = QLineEdit(str(data.get("exam_room_name", "") or ""))
-        self.exam_room_sbd_mapping = QTextEdit(str(data.get("exam_room_sbd_mapping", "") or ""))
-        self.exam_room_sbd_mapping.setPlaceholderText("Nhập danh sách SBD của phòng thi, phân tách bằng dấu phẩy hoặc xuống dòng")
-        self.exam_room_sbd_mapping.setMaximumHeight(90)
+        self._exam_room_mapping_cache: dict[str, list[str]] = {}
+        self.exam_room_name = QComboBox(); self.exam_room_name.setEditable(True)
+        seed_room = str(data.get("exam_room_name", "") or "").strip()
+        if seed_room:
+            self.exam_room_name.addItem(seed_room)
+            self.exam_room_name.setCurrentText(seed_room)
+        self.exam_room_mapping_selector = QComboBox()
+        self.exam_room_mapping_selector.currentIndexChanged.connect(self._on_exam_room_mapping_selected)
         self.btn_import_exam_room_mapping = QPushButton("Import mapping SBD/phòng từ Excel")
         self.btn_import_exam_room_mapping.clicked.connect(self._import_exam_room_mapping_from_file)
+        self.exam_room_mapping_hint = QLabel("Chưa nạp mapping SBD/phòng.")
         room_map_wrap = QWidget()
         room_map_lay = QVBoxLayout(room_map_wrap)
         room_map_lay.setContentsMargins(0, 0, 0, 0)
-        room_map_lay.addWidget(self.exam_room_sbd_mapping)
+        room_map_lay.addWidget(self.exam_room_mapping_selector)
+        room_map_lay.addWidget(self.exam_room_mapping_hint)
         room_map_lay.addWidget(self.btn_import_exam_room_mapping, alignment=Qt.AlignLeft)
         self.answer_codes = QLineEdit(", ".join(sorted((data.get("imported_answer_keys") or {}).keys()))); self.answer_codes.setReadOnly(True)
         self.answer_summary = QTextEdit()
@@ -537,6 +543,12 @@ class SubjectConfigDialog(QDialog):
         self.answer_codes.setText(", ".join(sorted(self.answer_key_data.keys())))
         self.answer_key.setText(path)
         self._refresh_answer_key_summary()
+        mapping_seed = str(data.get("exam_room_sbd_mapping", "") or "").strip()
+        if mapping_seed:
+            seed_sids = [x.strip() for x in mapping_seed.replace(";", ",").replace("\n", ",").split(",") if x.strip()]
+            key = seed_room or "[Không rõ phòng]"
+            self._exam_room_mapping_cache[key] = sorted(set(seed_sids))
+            self._refresh_exam_room_mapping_selector()
         self._update_total_score()
         QMessageBox.information(self, "Import đáp án", "Đã gắn toàn bộ mã đề của file đáp án cho môn đang cấu hình.")
 
@@ -663,18 +675,39 @@ class SubjectConfigDialog(QDialog):
         if not rows:
             QMessageBox.warning(self, "Import mapping phòng thi", "Không tìm thấy dữ liệu hợp lệ (cần cột SBD).")
             return
-        room_name = self.exam_room_name.text().strip()
-        if room_name:
-            rows = [r for r in rows if str(r.get("room", "")).strip() == room_name]
-        elif rows:
-            rooms = sorted({str(r.get("room", "")).strip() for r in rows if str(r.get("room", "")).strip()})
-            if len(rooms) == 1:
-                room_name = rooms[0]
-                self.exam_room_name.setText(room_name)
-                rows = [r for r in rows if str(r.get("room", "")).strip() == room_name]
-        sids = sorted({str(r.get("sid", "")).strip() for r in rows if str(r.get("sid", "")).strip()})
-        self.exam_room_sbd_mapping.setPlainText("\n".join(sids))
-        QMessageBox.information(self, "Import mapping phòng thi", f"Đã nạp {len(sids)} SBD cho phòng thi.")
+        grouped: dict[str, set[str]] = {}
+        for r in rows:
+            sid = str(r.get("sid", "")).strip()
+            room = str(r.get("room", "")).strip() or "[Không rõ phòng]"
+            if not sid:
+                continue
+            grouped.setdefault(room, set()).add(sid)
+        self._exam_room_mapping_cache = {k: sorted(v) for k, v in grouped.items()}
+        self._refresh_exam_room_mapping_selector()
+        QMessageBox.information(self, "Import mapping phòng thi", f"Đã nạp mapping cho {len(self._exam_room_mapping_cache)} phòng thi.")
+
+    def _refresh_exam_room_mapping_selector(self) -> None:
+        self.exam_room_mapping_selector.clear()
+        if not self._exam_room_mapping_cache:
+            self.exam_room_mapping_selector.addItem("[Chưa có mapping]", "")
+            self.exam_room_mapping_hint.setText("Chưa nạp mapping SBD/phòng.")
+            return
+        for room in sorted(self._exam_room_mapping_cache.keys()):
+            cnt = len(self._exam_room_mapping_cache.get(room, []))
+            self.exam_room_mapping_selector.addItem(f"{room} ({cnt} SBD)", room)
+        current_room = self.exam_room_name.currentText().strip()
+        if current_room:
+            idx = self.exam_room_mapping_selector.findData(current_room)
+            if idx >= 0:
+                self.exam_room_mapping_selector.setCurrentIndex(idx)
+        self._on_exam_room_mapping_selected(self.exam_room_mapping_selector.currentIndex())
+
+    def _on_exam_room_mapping_selected(self, _index: int) -> None:
+        room = str(self.exam_room_mapping_selector.currentData() or "").strip()
+        if room:
+            self.exam_room_name.setCurrentText(room)
+            count = len(self._exam_room_mapping_cache.get(room, []))
+            self.exam_room_mapping_hint.setText(f"Đã chọn mapping phòng '{room}' với {count} SBD.")
 
     @staticmethod
     def _load_exam_room_mapping_rows(path: Path) -> list[dict[str, str]]:
@@ -755,8 +788,8 @@ class SubjectConfigDialog(QDialog):
             "scan_folder": self.scan_folder.text().strip(),
             "answer_key_path": self.answer_key.text().strip(),
             "answer_key_key": self.answer_key_key.text().strip(),
-            "exam_room_name": self.exam_room_name.text().strip(),
-            "exam_room_sbd_mapping": self.exam_room_sbd_mapping.toPlainText().strip(),
+            "exam_room_name": self.exam_room_name.currentText().strip(),
+            "exam_room_sbd_mapping": ",".join(self._exam_room_mapping_cache.get(self.exam_room_name.currentText().strip(), [])),
             "imported_answer_keys": self.answer_key_data,
             "score_mode": self.score_mode.currentText(),
             "section_scores": section_scores,
