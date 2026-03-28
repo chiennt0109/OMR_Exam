@@ -152,6 +152,7 @@ class OMRProcessor:
         self._processing_deadline_monotonic = context.deadline_monotonic
 
         try:
+            fast_mode = self._is_fast_200dpi_mode(template)
             if isinstance(image, np.ndarray):
                 src = image.copy()
             else:
