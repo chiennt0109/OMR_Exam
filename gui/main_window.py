@@ -935,6 +935,13 @@ class NewExamDialog(QDialog):
             compact = compact.lstrip("0") or "0"
         return compact.upper()
 
+    @staticmethod
+    def _normalized_room_for_match(room_text: str) -> str:
+        room = str(room_text or "").strip().casefold()
+        if room.isdigit():
+            room = room.lstrip("0") or "0"
+        return room
+
     def _browse_common_template(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Chọn giấy thi dùng chung", "", "JSON (*.json)")
         if path:
@@ -11706,24 +11713,23 @@ class MainWindow(QMainWindow):
             tf_flags = [ch in tf_true_chars for ch in tf_source if ch in tf_true_chars or ch in {"S", "s", "0", "N", "n"}]
 
             numeric_map: dict[int, str] = {}
-            numeric_tokens = [tok.strip() for tok in re.split(r"[,;|]+", numeric_tail) if tok and tok.strip()]
-            if len(numeric_tokens) >= len(numeric_layout) and numeric_layout:
-                for idx_layout, (q_no, expected_len) in enumerate(numeric_layout):
-                    token = str(numeric_tokens[idx_layout]) if idx_layout < len(numeric_tokens) else ""
-                    if int(expected_len) > 0:
-                        numeric_map[int(q_no)] = token[: max(0, int(expected_len))]
-                    else:
-                        numeric_map[int(q_no)] = token
-            else:
+            has_fixed_numeric_width = bool(numeric_layout) and all(int(expected_len) > 0 for _, expected_len in numeric_layout)
+            if has_fixed_numeric_width:
                 compact_numeric = str(numeric_tail)
                 pos = 0
                 for q_no, expected_len in numeric_layout:
-                    if expected_len <= 0:
-                        continue
-                    if pos >= len(compact_numeric):
-                        continue
-                    numeric_map[int(q_no)] = compact_numeric[pos:pos + int(expected_len)]
+                    token = compact_numeric[pos:pos + int(expected_len)] if pos < len(compact_numeric) else ""
+                    numeric_map[int(q_no)] = token
                     pos += int(expected_len)
+            else:
+                numeric_tokens = [tok.strip() for tok in re.split(r"[,;|]+", numeric_tail) if tok and tok.strip()]
+                if len(numeric_tokens) >= len(numeric_layout) and numeric_layout:
+                    for idx_layout, (q_no, expected_len) in enumerate(numeric_layout):
+                        token = str(numeric_tokens[idx_layout]) if idx_layout < len(numeric_tokens) else ""
+                        if int(expected_len) > 0:
+                            numeric_map[int(q_no)] = token[: max(0, int(expected_len))]
+                        else:
+                            numeric_map[int(q_no)] = token
 
             mcq_map: dict[int, str] = {}
             for idx_q, q_no in enumerate(mcq_questions):
@@ -11736,12 +11742,16 @@ class MainWindow(QMainWindow):
                 chunk = tf_flags[base:base + 4]
                 if not chunk:
                     continue
-                tf_map[int(q_no)] = {
-                    "a": len(chunk) > 0 and bool(chunk[0]),
-                    "b": len(chunk) > 1 and bool(chunk[1]),
-                    "c": len(chunk) > 2 and bool(chunk[2]),
-                    "d": len(chunk) > 3 and bool(chunk[3]),
-                }
+                tf_row: dict[str, bool] = {}
+                if len(chunk) > 0:
+                    tf_row["a"] = bool(chunk[0])
+                if len(chunk) > 1:
+                    tf_row["b"] = bool(chunk[1])
+                if len(chunk) > 2:
+                    tf_row["c"] = bool(chunk[2])
+                if len(chunk) > 3:
+                    tf_row["d"] = bool(chunk[3])
+                tf_map[int(q_no)] = tf_row
 
             rebuilt_parts: list[str] = []
             for q_no in mcq_questions:
@@ -14514,6 +14524,7 @@ class MainWindow(QMainWindow):
                 all_sids.add(self._normalized_student_id_for_match(sid))
         cfg = self._selected_batch_subject_config() or {}
         room_name = str(cfg.get("exam_room_name", "") or "").strip()
+        room_name_norm = self._normalized_room_for_match(room_name)
         mapping_text = str(cfg.get("exam_room_sbd_mapping", "") or "").strip()
         room_sids: set[str] = set()
         if mapping_text:
@@ -14524,7 +14535,7 @@ class MainWindow(QMainWindow):
                 sid = str(getattr(s, "student_id", "") or "").strip()
                 extra = getattr(s, "extra", {}) or {}
                 exam_room = str(extra.get("exam_room", "") or "").strip()
-                if sid and exam_room and exam_room == room_name:
+                if sid and exam_room and self._normalized_room_for_match(exam_room) == room_name_norm:
                     room_sids.add(self._normalized_student_id_for_match(sid))
         return all_sids, room_sids
 

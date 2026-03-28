@@ -84,9 +84,10 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('mcq_source = compact[:mcq_span]', source)
         self.assertIn('tf_source = compact[mcq_span:mcq_span + tf_span]', source)
         self.assertIn('numeric_tail = compact[mcq_span + tf_span:]', source)
+        self.assertIn('has_fixed_numeric_width = bool(numeric_layout) and all(int(expected_len) > 0 for _, expected_len in numeric_layout)', source)
+        self.assertIn('token = compact_numeric[pos:pos + int(expected_len)] if pos < len(compact_numeric) else ""', source)
         self.assertIn('numeric_tokens = [tok.strip() for tok in re.split(r"[,;|]+", numeric_tail) if tok and tok.strip()]', source)
-        self.assertIn('if int(expected_len) > 0:', source)
-        self.assertIn('numeric_map[int(q_no)] = token', source)
+        self.assertIn('tf_row: dict[str, bool] = {}', source)
         self.assertIn('rebuilt_parts: list[str] = []', source)
         self.assertIn('rebuilt = "".join(rebuilt_parts)', source)
         self.assertNotIn('OMRProcessor.build_answer_string(mcq_map, tf_map, numeric_map)', source)
@@ -109,6 +110,9 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('sid_norm in all_sids and room_sids and sid_norm not in room_sids', source)
         self.assertIn('all_sids.add(self._normalized_student_id_for_match(sid))', source)
         self.assertIn('room_sids = {self._normalized_student_id_for_match(x) for x in chunks if x}', source)
+        self.assertIn('def _normalized_room_for_match(room_text: str) -> str:', source)
+        self.assertIn('room_name_norm = self._normalized_room_for_match(room_name)', source)
+        self.assertIn('self._normalized_room_for_match(exam_room) == room_name_norm', source)
 
     def test_recognition_content_includes_parsed_api_sections_for_debug(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
