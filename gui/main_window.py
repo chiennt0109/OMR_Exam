@@ -295,6 +295,10 @@ class SubjectConfigDialog(QDialog):
         self.scan_folder = QLineEdit(str(data.get("scan_folder", "")))
         self.answer_key = QLineEdit(str(data.get("answer_key_path", "")))
         self.answer_key_key = QLineEdit(str(data.get("answer_key_key", ""))); self.answer_key_key.setReadOnly(True)
+        self.exam_room_name = QLineEdit(str(data.get("exam_room_name", "") or ""))
+        self.exam_room_sbd_mapping = QTextEdit(str(data.get("exam_room_sbd_mapping", "") or ""))
+        self.exam_room_sbd_mapping.setPlaceholderText("Nhập danh sách SBD của phòng thi, phân tách bằng dấu phẩy hoặc xuống dòng")
+        self.exam_room_sbd_mapping.setMaximumHeight(90)
         self.answer_codes = QLineEdit(", ".join(sorted((data.get("imported_answer_keys") or {}).keys()))); self.answer_codes.setReadOnly(True)
         self.answer_summary = QTextEdit()
         self.answer_summary.setReadOnly(True)
@@ -342,6 +346,8 @@ class SubjectConfigDialog(QDialog):
         form.addRow("Thư mục bài thi môn", row_scan)
         form.addRow("Đáp án môn", row_key)
         form.addRow("Mã đáp án môn_khối", self.answer_key_key)
+        form.addRow("Phòng thi môn", self.exam_room_name)
+        form.addRow("Mapping SBD phòng thi", self.exam_room_sbd_mapping)
         form.addRow("Các mã đề của môn", self.answer_codes)
         form.addRow("Tóm tắt đáp án", self.answer_summary)
         form.addRow("Số phần giấy thi", self.paper_part_label)
@@ -671,6 +677,8 @@ class SubjectConfigDialog(QDialog):
             "scan_folder": self.scan_folder.text().strip(),
             "answer_key_path": self.answer_key.text().strip(),
             "answer_key_key": self.answer_key_key.text().strip(),
+            "exam_room_name": self.exam_room_name.text().strip(),
+            "exam_room_sbd_mapping": self.exam_room_sbd_mapping.toPlainText().strip(),
             "imported_answer_keys": self.answer_key_data,
             "score_mode": self.score_mode.currentText(),
             "section_scores": section_scores,
@@ -14186,12 +14194,38 @@ class MainWindow(QMainWindow):
             parts.append("Lỗi SBD")
         elif sid and duplicate_count > 1:
             parts.append("Trùng SBD")
+        else:
+            all_sids, room_sids = self._subject_student_room_scope()
+            if sid and all_sids and sid in all_sids and room_sids and sid not in room_sids:
+                parts.append("Sai SBD phòng thi")
         avail_codes = self._available_exam_codes()
         code = (exam_code_text or "").strip()
         norm_code = self._normalize_exam_code_text(code)
         if not code or "?" in code or (avail_codes and (code not in avail_codes and norm_code not in avail_codes)):
             parts.append("Lỗi mã đề")
         return parts
+
+    def _subject_student_room_scope(self) -> tuple[set[str], set[str]]:
+        all_sids: set[str] = set()
+        for s in (self.session.students if self.session else []):
+            sid = str(getattr(s, "student_id", "") or "").strip()
+            if sid:
+                all_sids.add(sid)
+        cfg = self._selected_batch_subject_config() or {}
+        room_name = str(cfg.get("exam_room_name", "") or "").strip()
+        mapping_text = str(cfg.get("exam_room_sbd_mapping", "") or "").strip()
+        room_sids: set[str] = set()
+        if mapping_text:
+            chunks = [x.strip() for x in mapping_text.replace(";", ",").replace("\n", ",").split(",")]
+            room_sids = {x for x in chunks if x}
+        elif room_name:
+            for s in (self.session.students if self.session else []):
+                sid = str(getattr(s, "student_id", "") or "").strip()
+                extra = getattr(s, "extra", {}) or {}
+                exam_room = str(extra.get("exam_room", "") or "").strip()
+                if sid and exam_room and exam_room == room_name:
+                    room_sids.add(sid)
+        return all_sids, room_sids
 
     @staticmethod
     def _student_id_has_recognition_error(student_id: str) -> bool:

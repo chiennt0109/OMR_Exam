@@ -40,6 +40,10 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('parts.append("Lỗi SBD")', source)
         self.assertIn('elif sid and duplicate_count > 1:', source)
         self.assertIn('if not self._student_id_has_recognition_error(sid):', source)
+        self.assertIn('parts.append("Sai SBD phòng thi")', source)
+        self.assertIn('def _subject_student_room_scope(self) -> tuple[set[str], set[str]]:', source)
+        self.assertIn('exam_room_sbd_mapping', source)
+        self.assertIn('exam_room_name', source)
 
     def test_batch_scan_supports_new_only_and_all_modes(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
