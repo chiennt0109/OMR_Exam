@@ -118,6 +118,8 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('def _normalized_room_for_match(room_text: str) -> str:', source)
         self.assertIn('room_name_norm = self._normalized_room_for_match(room_name)', source)
         self.assertIn('self._normalized_room_for_match(exam_room) == room_name_norm', source)
+        self.assertIn('"exam_room_sbd_mapping_by_room": {str(k): list(v) for k, v in (self._exam_room_mapping_cache or {}).items()}', source)
+        self.assertIn('mapping_by_room = cfg.get("exam_room_sbd_mapping_by_room", {})', source)
 
     def test_recognition_content_includes_parsed_api_sections_for_debug(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')

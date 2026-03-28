@@ -544,12 +544,30 @@ class SubjectConfigDialog(QDialog):
         self.answer_codes.setText(", ".join(sorted(self.answer_key_data.keys())))
         self.answer_key.setText(path)
         self._refresh_answer_key_summary()
-        mapping_seed = str(data.get("exam_room_sbd_mapping", "") or "").strip()
-        if mapping_seed:
-            seed_sids = [x.strip() for x in mapping_seed.replace(";", ",").replace("\n", ",").split(",") if x.strip()]
-            key = seed_room or "[Không rõ phòng]"
-            self._exam_room_mapping_cache[key] = sorted(set(seed_sids))
-            self._refresh_exam_room_mapping_selector()
+        mapping_by_room_seed = data.get("exam_room_sbd_mapping_by_room", {})
+        if isinstance(mapping_by_room_seed, dict) and mapping_by_room_seed:
+            rebuilt: dict[str, list[str]] = {}
+            for room_key, vals in mapping_by_room_seed.items():
+                room_text = str(room_key or "").strip()
+                if not room_text:
+                    continue
+                chunks: list[str] = []
+                if isinstance(vals, (list, tuple, set)):
+                    chunks = [str(x).strip() for x in vals if str(x).strip()]
+                elif isinstance(vals, str):
+                    chunks = [x.strip() for x in vals.replace(";", ",").replace("\n", ",").split(",") if x.strip()]
+                if chunks:
+                    rebuilt[room_text] = sorted(set(chunks))
+            if rebuilt:
+                self._exam_room_mapping_cache = rebuilt
+                self._refresh_exam_room_mapping_selector()
+        else:
+            mapping_seed = str(data.get("exam_room_sbd_mapping", "") or "").strip()
+            if mapping_seed:
+                seed_sids = [x.strip() for x in mapping_seed.replace(";", ",").replace("\n", ",").split(",") if x.strip()]
+                key = seed_room or "[Không rõ phòng]"
+                self._exam_room_mapping_cache[key] = sorted(set(seed_sids))
+                self._refresh_exam_room_mapping_selector()
         self._update_total_score()
         QMessageBox.information(self, "Import đáp án", "Đã gắn toàn bộ mã đề của file đáp án cho môn đang cấu hình.")
 
@@ -814,6 +832,7 @@ class SubjectConfigDialog(QDialog):
             "answer_key_key": self.answer_key_key.text().strip(),
             "exam_room_name": self.exam_room_name.currentText().strip(),
             "exam_room_sbd_mapping": ",".join(self._exam_room_mapping_cache.get(self.exam_room_name.currentText().strip(), [])),
+            "exam_room_sbd_mapping_by_room": {str(k): list(v) for k, v in (self._exam_room_mapping_cache or {}).items()},
             "imported_answer_keys": self.answer_key_data,
             "score_mode": self.score_mode.currentText(),
             "section_scores": section_scores,
@@ -14585,8 +14604,19 @@ class MainWindow(QMainWindow):
         room_name = str(cfg.get("exam_room_name", "") or "").strip()
         room_name_norm = self._normalized_room_for_match(room_name)
         mapping_text = str(cfg.get("exam_room_sbd_mapping", "") or "").strip()
+        mapping_by_room = cfg.get("exam_room_sbd_mapping_by_room", {}) if isinstance(cfg.get("exam_room_sbd_mapping_by_room", {}), dict) else {}
         room_sids: set[str] = set()
-        if mapping_text:
+        if mapping_by_room and room_name:
+            selected_vals: list[str] = []
+            for room_key, vals in mapping_by_room.items():
+                if self._normalized_room_for_match(str(room_key or "")) != room_name_norm:
+                    continue
+                if isinstance(vals, (list, tuple, set)):
+                    selected_vals.extend(str(x).strip() for x in vals if str(x).strip())
+                elif isinstance(vals, str):
+                    selected_vals.extend(x.strip() for x in vals.replace(";", ",").replace("\n", ",").split(",") if x.strip())
+            room_sids = {self._normalized_student_id_for_match(x) for x in selected_vals if x}
+        elif mapping_text:
             chunks = [x.strip() for x in mapping_text.replace(";", ",").replace("\n", ",").split(",")]
             room_sids = {self._normalized_student_id_for_match(x) for x in chunks if x}
         elif room_name:
