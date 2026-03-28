@@ -11591,6 +11591,20 @@ class MainWindow(QMainWindow):
         num_len = sum(len(str(v or "")) for v in numeric.values())
         return int(mcq_len + tf_len + num_len)
 
+    def _answer_layout_for_subject(self, subject_key: str) -> tuple[list[int], list[int], list[tuple[int, int]]]:
+        fetched = self.database.fetch_answer_keys_for_subject(subject_key) or {}
+        if not fetched:
+            return [], [], []
+        sample = next(iter(fetched.values()))
+        mcq_questions = sorted(set(int(q) for q in (getattr(sample, "answers", {}) or {}).keys()))
+        tf_questions = sorted(set(int(q) for q in (getattr(sample, "true_false_answers", {}) or {}).keys()))
+        numeric_questions = sorted(set(int(q) for q in (getattr(sample, "numeric_answers", {}) or {}).keys()))
+        numeric_layout = [
+            (q, len(str((getattr(sample, "numeric_answers", {}) or {}).get(q, "") or "")))
+            for q in numeric_questions
+        ]
+        return mcq_questions, tf_questions, numeric_layout
+
     def _run_batch_scan_from_api_file(self, subject_cfg: dict, file_scope_mode: str, api_file: str) -> None:
         subject_key_for_results = self._subject_key_from_cfg(subject_cfg) if subject_cfg else self._resolve_preferred_scoring_subject()
         scan_folder = str((subject_cfg or {}).get("scan_folder", "") or "").strip()
@@ -11652,6 +11666,43 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "API bài thi", "Bắt buộc chọn cột FileName.")
             return
 
+        mcq_questions, tf_questions, numeric_layout = self._answer_layout_for_subject(subject_key_for_results)
+        tf_true_chars = {"Đ", "đ", "D", "d", "T", "t", "1", "Y", "y"}
+
+        def _parse_answer_string(raw_answer: str) -> tuple[dict[int, str], dict[int, dict[str, bool]], dict[int, str], str]:
+            compact = "".join(str(raw_answer or "").split())
+            cursor = 0
+
+            mcq_map: dict[int, str] = {}
+            for q_no in mcq_questions:
+                if cursor >= len(compact):
+                    break
+                mcq_map[int(q_no)] = compact[cursor]
+                cursor += 1
+
+            tf_map: dict[int, dict[str, bool]] = {}
+            for q_no in tf_questions:
+                chunk = compact[cursor:cursor + 4]
+                if not chunk:
+                    break
+                tf_map[int(q_no)] = {
+                    "a": len(chunk) > 0 and chunk[0] in tf_true_chars,
+                    "b": len(chunk) > 1 and chunk[1] in tf_true_chars,
+                    "c": len(chunk) > 2 and chunk[2] in tf_true_chars,
+                    "d": len(chunk) > 3 and chunk[3] in tf_true_chars,
+                }
+                cursor += min(4, len(chunk))
+
+            numeric_map: dict[int, str] = {}
+            for q_no, expected_len in numeric_layout:
+                if expected_len <= 0 or cursor >= len(compact):
+                    continue
+                numeric_map[int(q_no)] = compact[cursor:cursor + int(expected_len)]
+                cursor += int(expected_len)
+
+            rebuilt = OMRProcessor.build_answer_string(mcq_map, tf_map, numeric_map)
+            return mcq_map, tf_map, numeric_map, rebuilt
+
         out: list[OMRResult] = []
         for row in mapping_rows:
             def _pick(col_name: str) -> str:
@@ -11665,10 +11716,15 @@ class MainWindow(QMainWindow):
             result = OMRResult(image_path=str(Path(scan_folder) / fname))
             result.student_id = _pick(selected_sid_col)
             result.exam_code = _pick(selected_exam_col)
-            answer_text = _pick(selected_answer_col).replace(" ", "")
+            raw_answer = _pick(selected_answer_col)
+            mcq_map, tf_map, numeric_map, rebuilt_answer = _parse_answer_string(raw_answer)
+            result.mcq_answers = mcq_map
+            result.true_false_answers = tf_map
+            result.numeric_answers = numeric_map
             if expected_len > 0:
-                answer_text = answer_text[:expected_len]
-            result.answer_string = answer_text
+                result.answer_string = rebuilt_answer[:expected_len]
+            else:
+                result.answer_string = rebuilt_answer
             out.append(self._strip_transient_scan_artifacts(result))
 
         if not out:

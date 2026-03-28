@@ -75,6 +75,12 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('pick_form.addRow("Cột mã đề", exam_col)', source)
         self.assertIn('pick_form.addRow("Cột bài làm", answer_col)', source)
         self.assertIn('if not selected_file_col or selected_file_col == "[Không dùng]":', source)
+        self.assertIn('def _answer_layout_for_subject(self, subject_key: str) -> tuple[list[int], list[int], list[tuple[int, int]]]:', source)
+        self.assertIn('def _parse_answer_string(raw_answer: str) -> tuple[dict[int, str], dict[int, dict[str, bool]], dict[int, str], str]:', source)
+        self.assertIn('mcq_map, tf_map, numeric_map, rebuilt_answer = _parse_answer_string(raw_answer)', source)
+        self.assertIn('result.mcq_answers = mcq_map', source)
+        self.assertIn('result.true_false_answers = tf_map', source)
+        self.assertIn('result.numeric_answers = numeric_map', source)
         self.assertIn('if api_file and api_file != "-":', source)
         self.assertIn('self._run_batch_scan_from_api_file(subject_cfg or {}, file_scope_mode, api_file)', source)
 
