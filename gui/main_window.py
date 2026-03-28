@@ -11557,7 +11557,13 @@ class MainWindow(QMainWindow):
         rows: list[dict[str, str]] = []
         if ext in {".csv", ".txt", ".tsv"}:
             raw = path.read_text(encoding="utf-8-sig", errors="ignore")
-            dialect = csv.Sniffer().sniff(raw[:2048]) if raw.strip() else csv.excel
+            if raw.strip():
+                try:
+                    dialect = csv.Sniffer().sniff(raw[:2048])
+                except Exception:
+                    dialect = csv.excel_tab if "\t" in raw.splitlines()[0] else csv.excel
+            else:
+                dialect = csv.excel
             reader = csv.DictReader(raw.splitlines(), dialect=dialect)
             headers = [str(x or "") for x in (reader.fieldnames or []) if str(x or "").strip()]
             for row in reader:
@@ -11669,6 +11675,14 @@ class MainWindow(QMainWindow):
             return
 
         mcq_questions, tf_questions, numeric_layout = self._answer_layout_for_subject(subject_key_for_results)
+        if not mcq_questions and not tf_questions and not numeric_layout:
+            q_counts = (subject_cfg or {}).get("question_counts", {}) if isinstance(subject_cfg or {}, dict) else {}
+            mcq_count = max(0, int((q_counts or {}).get("MCQ", 0) or 0))
+            tf_count = max(0, int((q_counts or {}).get("TF", 0) or 0))
+            numeric_count = max(0, int((q_counts or {}).get("NUMERIC", 0) or 0))
+            mcq_questions = [x for x in range(1, mcq_count + 1)]
+            tf_questions = [x for x in range(mcq_count + 1, mcq_count + tf_count + 1)]
+            numeric_layout = [(x, 0) for x in range(mcq_count + tf_count + 1, mcq_count + tf_count + numeric_count + 1)]
         tf_true_chars = {"Đ", "đ", "D", "d", "T", "t", "1", "Y", "y"}
 
         def _parse_answer_string(raw_answer: str) -> tuple[dict[int, str], dict[int, dict[str, bool]], dict[int, str], str]:
@@ -11712,12 +11726,17 @@ class MainWindow(QMainWindow):
             if len(numeric_tokens) >= len(numeric_layout) and numeric_layout:
                 for idx_layout, (q_no, expected_len) in enumerate(numeric_layout):
                     token = str(numeric_tokens[idx_layout]) if idx_layout < len(numeric_tokens) else ""
-                    numeric_map[int(q_no)] = token[: max(0, int(expected_len))]
+                    if int(expected_len) > 0:
+                        numeric_map[int(q_no)] = token[: max(0, int(expected_len))]
+                    else:
+                        numeric_map[int(q_no)] = token
             else:
                 compact_numeric = "".join(ch for ch in numeric_tail if ch not in separators and ch not in {","})
                 pos = 0
                 for q_no, expected_len in numeric_layout:
-                    if expected_len <= 0 or pos >= len(compact_numeric):
+                    if expected_len <= 0:
+                        continue
+                    if pos >= len(compact_numeric):
                         continue
                     numeric_map[int(q_no)] = compact_numeric[pos:pos + int(expected_len)]
                     pos += int(expected_len)
