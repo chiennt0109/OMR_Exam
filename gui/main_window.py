@@ -11675,26 +11675,39 @@ class MainWindow(QMainWindow):
             return
 
         mcq_questions, tf_questions, numeric_layout = self._answer_layout_for_subject(subject_key_for_results)
-        if not mcq_questions and not tf_questions and not numeric_layout:
-            q_counts = (subject_cfg or {}).get("question_counts", {}) if isinstance(subject_cfg or {}, dict) else {}
-            mcq_count = max(0, int((q_counts or {}).get("MCQ", 0) or 0))
-            tf_count = max(0, int((q_counts or {}).get("TF", 0) or 0))
-            numeric_count = max(0, int((q_counts or {}).get("NUMERIC", 0) or 0))
+        q_counts = (subject_cfg or {}).get("question_counts", {}) if isinstance(subject_cfg or {}, dict) else {}
+        if not any(int((q_counts or {}).get(k, 0) or 0) > 0 for k in ["MCQ", "TF", "NUMERIC"]):
+            tpl_path = str((subject_cfg or {}).get("template", "") or "").strip()
+            if tpl_path:
+                q_counts = self._template_question_counts(tpl_path)
+        mcq_count = max(0, int((q_counts or {}).get("MCQ", 0) or 0))
+        tf_count = max(0, int((q_counts or {}).get("TF", 0) or 0))
+        numeric_count = max(0, int((q_counts or {}).get("NUMERIC", 0) or 0))
+        if not mcq_questions and mcq_count > 0:
             mcq_questions = [x for x in range(1, mcq_count + 1)]
-            tf_questions = [x for x in range(mcq_count + 1, mcq_count + tf_count + 1)]
-            numeric_layout = [(x, 0) for x in range(mcq_count + tf_count + 1, mcq_count + tf_count + numeric_count + 1)]
+        next_q = max(mcq_questions) if mcq_questions else 0
+        if not tf_questions and tf_count > 0:
+            tf_questions = [x for x in range(next_q + 1, next_q + tf_count + 1)]
+        next_q = max(tf_questions) if tf_questions else next_q
+        if not numeric_layout and numeric_count > 0:
+            numeric_layout = [(x, 0) for x in range(next_q + 1, next_q + numeric_count + 1)]
         tf_true_chars = {"Đ", "đ", "D", "d", "T", "t", "1", "Y", "y"}
 
         def _parse_answer_string(raw_answer: str) -> tuple[dict[int, str], dict[int, dict[str, bool]], dict[int, str], str]:
             raw_text = str(raw_answer or "")
             separators = set(" \t\r\n_|;")
+            explicit_chunks = [x for x in re.split(r"_+", raw_text) if str(x).strip()]
+            mcq_source = explicit_chunks[0] if explicit_chunks else raw_text
+            tf_source = explicit_chunks[1] if len(explicit_chunks) > 1 else ""
+            numeric_source = "".join(explicit_chunks[2:]) if len(explicit_chunks) > 2 else ""
             cursor = 0
 
-            def _collect_mcq_chars(count: int) -> list[str]:
+            def _collect_mcq_chars(count: int, source_text: str = "") -> list[str]:
                 nonlocal cursor
                 chars: list[str] = []
-                while cursor < len(raw_text) and len(chars) < count:
-                    ch = raw_text[cursor]
+                probe = str(source_text or raw_text)
+                while cursor < len(probe) and len(chars) < count:
+                    ch = probe[cursor]
                     cursor += 1
                     up = ch.upper()
                     if up in {"A", "B", "C", "D", "E"}:
@@ -11704,11 +11717,12 @@ class MainWindow(QMainWindow):
                         continue
                 return chars
 
-            def _collect_tf_flags(count: int) -> list[bool]:
+            def _collect_tf_flags(count: int, source_text: str = "") -> list[bool]:
                 nonlocal cursor
                 flags: list[bool] = []
-                while cursor < len(raw_text) and len(flags) < count:
-                    ch = raw_text[cursor]
+                probe = str(source_text or raw_text)
+                while cursor < len(probe) and len(flags) < count:
+                    ch = probe[cursor]
                     cursor += 1
                     if ch in tf_true_chars or ch in {"S", "s", "0", "N", "n"}:
                         flags.append(ch in tf_true_chars)
@@ -11717,11 +11731,13 @@ class MainWindow(QMainWindow):
                         continue
                 return flags
 
-            mcq_chars = _collect_mcq_chars(len(mcq_questions))
-            tf_flags = _collect_tf_flags(len(tf_questions) * 4)
+            cursor = 0
+            mcq_chars = _collect_mcq_chars(len(mcq_questions), mcq_source)
+            cursor = 0
+            tf_flags = _collect_tf_flags(len(tf_questions) * 4, tf_source)
 
             numeric_map: dict[int, str] = {}
-            numeric_tail = raw_text[cursor:]
+            numeric_tail = numeric_source if numeric_source else raw_text
             numeric_tokens = [tok.strip() for tok in re.split(r"[\s_,;|]+", numeric_tail) if tok and tok.strip()]
             if len(numeric_tokens) >= len(numeric_layout) and numeric_layout:
                 for idx_layout, (q_no, expected_len) in enumerate(numeric_layout):
