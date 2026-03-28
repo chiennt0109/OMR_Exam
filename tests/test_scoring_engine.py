@@ -59,7 +59,68 @@ class ScoringEngineTests(unittest.TestCase):
         self.assertEqual(row.tf_correct, 0)
         self.assertEqual(row.correct, 0)
         self.assertEqual(row.wrong, 1)
-        self.assertAlmostEqual(row.score, 0.75, places=4)
+        self.assertAlmostEqual(row.score, 0.5, places=4)
+
+    def test_section_mode_distributes_mcq_numeric_and_applies_tf_rule(self):
+        key = SubjectKey(
+            subject="Hoa_hoc_11",
+            exam_code="0215",
+            answers={1: "A", 2: "B"},
+            true_false_answers={3: "ĐĐĐS"},
+            numeric_answers={4: "12", 5: "34"},
+        )
+        omr = OMRResult(
+            image_path="x.png",
+            mcq_answers={1: "A", 2: "C"},
+            true_false_answers={3: "ĐSĐS"},
+            numeric_answers={4: "12", 5: "99"},
+        )
+        cfg = {
+            "score_mode": "Điểm theo phần",
+            "section_scores": {
+                "MCQ": {"total_points": 4.0, "distribution": "auto_by_question_count"},
+                "TF": {"total_points": 2.0, "rule_per_question": {"1": 0.2, "2": 0.4, "3": 0.8, "4": 1.6}},
+                "NUMERIC": {"total_points": 2.0, "distribution": "auto_by_question_count"},
+            },
+        }
+
+        row = self.engine.score(omr, key, subject_config=cfg)
+        # MCQ: 1/2 đúng => 2.0
+        # TF: đúng 3 ý => 0.8
+        # NUMERIC: 1/2 đúng => 1.0
+        self.assertAlmostEqual(row.score, 3.8, places=4)
+
+    def test_describe_formula_reflects_score_mode(self):
+        key = SubjectKey(
+            subject="Hoa_hoc_11",
+            exam_code="0216",
+            answers={1: "A", 2: "B"},
+            true_false_answers={3: "ĐĐĐS"},
+            numeric_answers={4: "12"},
+        )
+        section_cfg = {
+            "score_mode": "Điểm theo phần",
+            "section_scores": {
+                "MCQ": {"total_points": 3.0},
+                "TF": {"total_points": 2.0, "rule_per_question": {"1": 0.1, "2": 0.25, "3": 0.5, "4": 1.0}},
+                "NUMERIC": {"total_points": 1.0},
+            },
+        }
+        question_cfg = {
+            "score_mode": "Điểm theo câu",
+            "question_scores": {
+                "MCQ": {"per_question": 0.5},
+                "TF": {"1": 0.1, "2": 0.2, "3": 0.3, "4": 0.4},
+                "NUMERIC": {"per_question": 1.0},
+            },
+        }
+
+        section_text = self.engine.describe_formula(key, section_cfg)
+        question_text = self.engine.describe_formula(key, question_cfg)
+        self.assertIn("Điểm theo phần", section_text)
+        self.assertIn("MCQ tổng = 3", section_text)
+        self.assertIn("Điểm theo câu", question_text)
+        self.assertIn("MCQ đúng = 0.5", question_text)
 
     def test_numeric_string_matching_normalized_separator_only(self):
         key = SubjectKey(

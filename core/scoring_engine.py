@@ -32,6 +32,13 @@ class ScoreResult:
 
 class ScoringEngine:
     @staticmethod
+    def _score_mode(subject_config: dict | None = None) -> str:
+        cfg = subject_config or {}
+        if not isinstance(cfg, dict):
+            return "Điểm theo câu"
+        return str(cfg.get("score_mode", "Điểm theo câu") or "Điểm theo câu")
+
+    @staticmethod
     def _aligned_marked_answers(key_answers: dict, marked_answers: dict) -> dict[int, object]:
         key_numbers = [int(q) for q in key_answers.keys() if str(q).strip().lstrip("-").isdigit()]
         marked_numbers = [int(q) for q in marked_answers.keys() if str(q).strip().lstrip("-").isdigit()]
@@ -132,6 +139,15 @@ class ScoringEngine:
     @staticmethod
     def _question_score(section: str, q_no: int, subject_key: SubjectKey, subject_config: dict | None = None) -> float:
         cfg = subject_config or {}
+        if ScoringEngine._score_mode(subject_config) == "Điểm theo phần":
+            sec_scores = (cfg.get("section_scores", {}) or {}).get(section, {}) if isinstance(cfg, dict) else {}
+            sec_total = ScoringEngine._to_float((sec_scores or {}).get("total_points"), 0.0)
+            if section == "TF":
+                tf_rule = (sec_scores or {}).get("rule_per_question", {})
+                vals = [ScoringEngine._to_float(v, 0.0) for v in (tf_rule or {}).values()]
+                if vals:
+                    return max(0.0, max(vals))
+            return max(0.0, sec_total)
         q_scores = (cfg.get("question_scores", {}) or {}).get(section, {}) if isinstance(cfg, dict) else {}
         if section in {"MCQ", "NUMERIC"}:
             if isinstance(q_scores, dict) and "per_question" in q_scores:
@@ -269,16 +285,45 @@ class ScoringEngine:
         return "".join(chars)
 
     def describe_formula(self, subject_key: SubjectKey, subject_config: dict | None = None) -> str:
+        defs = self._question_definitions(subject_key)
+        cfg = subject_config or {}
+        mode = self._score_mode(subject_config)
+        if mode == "Điểm theo phần":
+            sec_scores = (cfg.get("section_scores", {}) or {}) if isinstance(cfg, dict) else {}
+            mcq_total = self._to_float(((sec_scores.get("MCQ") or {}).get("total_points")), 0.0)
+            tf_total = self._to_float(((sec_scores.get("TF") or {}).get("total_points")), 0.0)
+            num_total = self._to_float(((sec_scores.get("NUMERIC") or {}).get("total_points")), 0.0)
+            mcq_count = sum(1 for item in defs["MCQ"] if self._is_countable_mcq_key(item.get("display")))
+            num_count = sum(1 for item in defs["NUMERIC"] if self._is_countable_numeric_key(item.get("display")))
+            mcq_pp = (mcq_total / float(mcq_count)) if mcq_count > 0 else 0.0
+            num_pp = (num_total / float(num_count)) if num_count > 0 else 0.0
+            tf_rule_cfg = ((sec_scores.get("TF") or {}).get("rule_per_question") or {})
+            tf_rule = {
+                1: self._to_float(tf_rule_cfg.get("1"), tf_total / 10.0 if tf_total else 0.1),
+                2: self._to_float(tf_rule_cfg.get("2"), tf_total / 4.0 if tf_total else 0.25),
+                3: self._to_float(tf_rule_cfg.get("3"), tf_total / 2.0 if tf_total else 0.5),
+                4: self._to_float(tf_rule_cfg.get("4"), tf_total if tf_total else 1.0),
+            }
+            return (
+                "Chấm theo cấu hình Điểm theo phần: "
+                f"MCQ tổng = {mcq_total:g} ({mcq_pp:g} điểm/câu theo {mcq_count} câu); "
+                f"TF tổng = {tf_total:g}, đúng 1/2/3/4 ý = {tf_rule[1]:g}/{tf_rule[2]:g}/{tf_rule[3]:g}/{tf_rule[4]:g}; "
+                f"NUMERIC tổng = {num_total:g} ({num_pp:g} điểm/câu theo {num_count} câu); đáp án 'G' = tự động đúng."
+            )
+
         mcq_points = self._question_score("MCQ", self._sorted_numeric_keys(subject_key.answers)[0], subject_key, subject_config) if self._sorted_numeric_keys(subject_key.answers) else 0.0
         num_points = self._question_score("NUMERIC", self._sorted_numeric_keys(subject_key.numeric_answers)[0], subject_key, subject_config) if self._sorted_numeric_keys(subject_key.numeric_answers) else 0.0
-        tf_full = 0.0
-        tf_keys = self._sorted_numeric_keys(subject_key.true_false_answers)
-        if tf_keys:
-            tf_full = self._question_score("TF", tf_keys[0], subject_key, subject_config)
+        tf_cfg = ((cfg.get("question_scores", {}) or {}).get("TF", {}) if isinstance(cfg, dict) else {}) or {}
+        tf_rule = {
+            1: self._to_float(tf_cfg.get("1"), 0.1),
+            2: self._to_float(tf_cfg.get("2"), 0.25),
+            3: self._to_float(tf_cfg.get("3"), 0.5),
+            4: self._to_float(tf_cfg.get("4"), self._question_score("TF", self._sorted_numeric_keys(subject_key.true_false_answers)[0], subject_key, subject_config) if self._sorted_numeric_keys(subject_key.true_false_answers) else 1.0),
+        }
         return (
-            "Chấm theo đáp án đã cấu hình: "
+            "Chấm theo cấu hình Điểm theo câu: "
             f"MCQ đúng = {mcq_points:g} điểm/câu; "
-            f"TF = {tf_full:g} điểm/câu, chia đều 4 ký tự ({(tf_full/4.0 if tf_full else 0.0):g} điểm/ký tự); "
+            f"TF đúng 1/2/3/4 ý = {tf_rule[1]:g}/{tf_rule[2]:g}/{tf_rule[3]:g}/{tf_rule[4]:g}; "
             f"NUMERIC đúng = {num_points:g} điểm/câu; đáp án 'G' = tự động đúng."
         )
 
@@ -301,6 +346,36 @@ class ScoringEngine:
             "NUMERIC": {int(x) for x in (subject_key.full_credit_questions or {}).get("NUMERIC", []) if str(x).strip().lstrip("-").isdigit()},
         }
 
+        mode = self._score_mode(subject_config)
+        cfg = subject_config or {}
+        sec_scores = (cfg.get("section_scores", {}) or {}) if isinstance(cfg, dict) else {}
+        q_scores = (cfg.get("question_scores", {}) or {}) if isinstance(cfg, dict) else {}
+
+        mcq_countable = [item for item in defs["MCQ"] if self._is_countable_mcq_key(item.get("display"))]
+        num_countable = [item for item in defs["NUMERIC"] if self._is_countable_numeric_key(item.get("display"))]
+        if mode == "Điểm theo phần":
+            mcq_pp = self._to_float(((sec_scores.get("MCQ") or {}).get("total_points")), 0.0) / float(len(mcq_countable) or 1)
+            num_pp = self._to_float(((sec_scores.get("NUMERIC") or {}).get("total_points")), 0.0) / float(len(num_countable) or 1)
+            tf_rule_cfg = ((sec_scores.get("TF") or {}).get("rule_per_question") or {})
+            tf_rule_points = {
+                0: 0.0,
+                1: max(0.0, self._to_float(tf_rule_cfg.get("1"), 0.1)),
+                2: max(0.0, self._to_float(tf_rule_cfg.get("2"), 0.25)),
+                3: max(0.0, self._to_float(tf_rule_cfg.get("3"), 0.5)),
+                4: max(0.0, self._to_float(tf_rule_cfg.get("4"), self._to_float(((sec_scores.get("TF") or {}).get("total_points")), 0.0))),
+            }
+        else:
+            mcq_pp = 0.0
+            num_pp = 0.0
+            tf_rule_cfg = (q_scores.get("TF") or {})
+            tf_rule_points = {
+                0: 0.0,
+                1: max(0.0, self._to_float(tf_rule_cfg.get("1"), 0.1)),
+                2: max(0.0, self._to_float(tf_rule_cfg.get("2"), 0.25)),
+                3: max(0.0, self._to_float(tf_rule_cfg.get("3"), 0.5)),
+                4: max(0.0, self._to_float(tf_rule_cfg.get("4"), self._question_score("TF", self._sorted_numeric_keys(subject_key.true_false_answers)[0], subject_key, subject_config) if self._sorted_numeric_keys(subject_key.true_false_answers) else 1.0)),
+            }
+
         for item in defs["MCQ"]:
             q_no = int(item["q_no"])
             key_display = str(item["display"] or "-")
@@ -310,7 +385,10 @@ class ScoringEngine:
             cursor += width
             student = raw_student.replace("_", "").strip().upper()
             mcq_compare_items.append(self._build_mcq_compare_text(key_display, student, q_no))
-            q_points = self._question_score("MCQ", q_no, subject_key, subject_config)
+            if mode == "Điểm theo phần":
+                q_points = mcq_pp if self._is_countable_mcq_key(key_display) else 0.0
+            else:
+                q_points = self._question_score("MCQ", q_no, subject_key, subject_config)
             auto_full = bool(item["auto_full"]) or q_no in full_credit_map["MCQ"] or key_match == "G"
             if auto_full:
                 correct += 1
@@ -348,12 +426,11 @@ class ScoringEngine:
             if raw_student == "_" * width:
                 blank += 1
                 continue
-            char_points = q_points / float(width or 1)
             matched = 0
             for expected, actual in zip(key_match[:width], student_tf[:width]):
                 if expected == actual or expected == "G":
                     matched += 1
-            score += matched * char_points
+            score += tf_rule_points.get(matched, 0.0)
             if matched == width:
                 correct += 1
                 tf_correct += 1
@@ -369,7 +446,10 @@ class ScoringEngine:
             cursor += width
             student = self._normalize_numeric_text(raw_student.replace("_", ""))
             numeric_compare_items.append(self._build_numeric_compare_text(key_display, student, q_no))
-            q_points = self._question_score("NUMERIC", q_no, subject_key, subject_config)
+            if mode == "Điểm theo phần":
+                q_points = num_pp if self._is_countable_numeric_key(key_display) else 0.0
+            else:
+                q_points = self._question_score("NUMERIC", q_no, subject_key, subject_config)
             auto_full = bool(item["auto_full"]) or q_no in full_credit_map["NUMERIC"] or str(key_display).strip().upper() == "G"
             if auto_full:
                 correct += 1
