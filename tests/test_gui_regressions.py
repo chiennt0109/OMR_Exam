@@ -28,12 +28,30 @@ class GuiRegressionTests(unittest.TestCase):
         return 2''', source)
         self.assertIn('self._student_sort_token(str(item["sid"]))', source)
 
+    def test_student_sort_token_uses_consistent_tuple_shape_to_avoid_mixed_type_sort_errors(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('def _student_sort_token(student_id: str) -> tuple[int, int, object]:', source)
+        self.assertIn('return (0, 0, int(sid))', source)
+        self.assertIn('return (0, 1, sid.casefold())', source)
+
     def test_student_id_error_status_is_not_treated_as_duplicate(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
         self.assertIn('def _student_id_has_recognition_error(student_id: str) -> bool:', source)
         self.assertIn('parts.append("Lỗi SBD")', source)
         self.assertIn('elif sid and duplicate_count > 1:', source)
         self.assertIn('if not self._student_id_has_recognition_error(sid):', source)
+        self.assertIn('parts.append("Sai SBD phòng thi")', source)
+        self.assertIn('def _subject_student_room_scope(self) -> tuple[set[str], set[str]]:', source)
+        self.assertIn('exam_room_sbd_mapping', source)
+        self.assertIn('self.exam_room_name = QComboBox(); self.exam_room_name.setEditable(True)', source)
+        self.assertIn('self.btn_import_exam_room_mapping = QPushButton("Import mapping SBD/phòng từ Excel")', source)
+        self.assertIn('def _import_exam_room_mapping_from_file(self) -> None:', source)
+        self.assertIn('def _load_exam_room_mapping_rows(path: Path) -> tuple[list[str], list[dict[str, str]]]:', source)
+        self.assertIn('pick.setWindowTitle("Chọn cột mapping SBD/phòng")', source)
+        self.assertIn('pick_l.addRow("Cột SBD", sid_col)', source)
+        self.assertIn('pick_l.addRow("Cột phòng thi", room_col)', source)
+        self.assertIn('self.exam_room_mapping_selector = QComboBox()', source)
+        self.assertNotIn('self.exam_room_sbd_mapping = QTextEdit', source)
 
     def test_batch_scan_supports_new_only_and_all_modes(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
@@ -43,6 +61,72 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('if file_scope_mode == "new_only":', source)
         self.assertIn('def _recommended_batch_timeout_sec(template: Template | None) -> float:', source)
         self.assertIn('self.template.metadata["recognition_timeout_sec"] = self._recommended_batch_timeout_sec(self.template)', source)
+
+    def test_batch_scan_replaces_recognition_mechanism_with_api_exam_source(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('batch_form.addRow("API bài thi", api_row)', source)
+        self.assertIn('self.batch_recognition_mode_combo.setVisible(False)', source)
+        self.assertIn('self.btn_pick_batch_api_file = QPushButton("Chọn file API")', source)
+        self.assertIn('def _load_api_mapping_rows(self, path: Path) -> tuple[list[str], list[dict[str, str]]]:', source)
+        self.assertIn('def _run_batch_scan_from_api_file(self, subject_cfg: dict, file_scope_mode: str, api_file: str) -> None:', source)
+        self.assertIn('pick.setWindowTitle("Chọn cột API bài thi")', source)
+        self.assertIn('pick_form.addRow("Cột FileName (bắt buộc)", file_col)', source)
+        self.assertIn('pick_form.addRow("Cột SBD", sid_col)', source)
+        self.assertIn('pick_form.addRow("Cột mã đề", exam_col)', source)
+        self.assertIn('pick_form.addRow("Cột bài làm", answer_col)', source)
+        self.assertIn('if not selected_file_col or selected_file_col == "[Không dùng]":', source)
+        self.assertIn('def _answer_layout_for_subject(self, subject_key: str) -> tuple[list[int], list[int], list[tuple[int, int]]]:', source)
+        self.assertIn('if not any(int((q_counts or {}).get(k, 0) or 0) > 0 for k in ["MCQ", "TF", "NUMERIC"]):', source)
+        self.assertIn('q_counts = (subject_cfg or {}).get("question_counts", {}) if isinstance(subject_cfg or {}, dict) else {}', source)
+        self.assertIn('q_counts = self._template_question_counts(tpl_path)', source)
+        self.assertIn('def _section_layout_from_subject_cfg(exam_code_text: str) -> tuple[list[int], list[int], list[tuple[int, int]]]:', source)
+        self.assertIn('def _parse_answer_string(', source)
+        self.assertIn('row_numeric_layout: list[tuple[int, int]],', source)
+        self.assertIn('compact = re.sub(r"[\\s_]+", "", raw_text)', source)
+        self.assertIn('mcq_source = compact[:mcq_span]', source)
+        self.assertIn('tf_source = compact[mcq_span:mcq_span + tf_span]', source)
+        self.assertIn('numeric_tail = compact[mcq_span + tf_span:]', source)
+        self.assertIn('has_fixed_numeric_width = bool(row_numeric_layout) and all(int(expected_len) > 0 for _, expected_len in row_numeric_layout)', source)
+        self.assertIn('token = compact_numeric[pos:pos + int(expected_len)] if pos < len(compact_numeric) else ""', source)
+        self.assertIn('numeric_tokens = [tok.strip() for tok in re.split(r"[,;|]+", numeric_tail) if tok and tok.strip()]', source)
+        self.assertIn('tf_row: dict[str, bool] = {}', source)
+        self.assertIn('rebuilt_parts: list[str] = []', source)
+        self.assertIn('rebuilt = "".join(rebuilt_parts)', source)
+        self.assertNotIn('OMRProcessor.build_answer_string(mcq_map, tf_map, numeric_map)', source)
+        self.assertIn('mcq_map, tf_map, numeric_map, rebuilt_answer = _parse_answer_string(raw_answer, row_mcq_questions, row_tf_questions, row_numeric_layout)', source)
+        self.assertIn('cfg_mcq_q, cfg_tf_q, cfg_num_layout = _section_layout_from_subject_cfg(result.exam_code)', source)
+        self.assertIn('if cfg_tf_q:', source)
+        self.assertIn('if cfg_num_layout:', source)
+        self.assertIn('result.mcq_answers = mcq_map', source)
+        self.assertIn('result.true_false_answers = tf_map', source)
+        self.assertIn('result.numeric_answers = numeric_map', source)
+        self.assertIn('if api_file and api_file != "-":', source)
+        self.assertIn('self._run_batch_scan_from_api_file(subject_cfg or {}, file_scope_mode, api_file)', source)
+
+    def test_realtime_status_refreshes_immediately_after_manual_corrections(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('def _schedule_correction_update(self, field_name: str, old_value: object, new_value: object, apply_fn) -> None:', source)
+        self.assertIn('self._refresh_all_statuses()', source)
+        self.assertIn('self.correction_save_timer.start(150)', source)
+
+    def test_room_scope_status_uses_normalized_student_id_matching(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('sid_norm = self._normalized_student_id_for_match(sid)', source)
+        self.assertIn('sid_norm in all_sids and room_sids and sid_norm not in room_sids', source)
+        self.assertIn('all_sids.add(self._normalized_student_id_for_match(sid))', source)
+        self.assertIn('room_sids = {self._normalized_student_id_for_match(x) for x in chunks if x}', source)
+        self.assertIn('def _normalized_room_for_match(room_text: str) -> str:', source)
+        self.assertIn('room_name_norm = self._normalized_room_for_match(room_name)', source)
+        self.assertIn('self._normalized_room_for_match(exam_room) == room_name_norm', source)
+
+    def test_recognition_content_includes_parsed_api_sections_for_debug(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('parsed_parts: list[str] = []', source)
+        self.assertIn('parsed_parts.append(f"MCQ: {mcq}")', source)
+        self.assertIn('parsed_parts.append(f"TF: {tf}")', source)
+        self.assertIn('parsed_parts.append(f"NUM: {num}")', source)
+        self.assertIn('merged = parsed_parts + blank_parts', source)
+        self.assertIn('return " | ".join(merged) if merged else "-"', source)
 
     def test_scoring_uses_lightweight_scan_copies_and_batch_results_drop_large_arrays(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
@@ -66,12 +150,112 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('preview_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)', source)
         self.assertIn('def _valid_student_ids() -> list[str]:', source)
         self.assertIn('return None', source)
-        self.assertIn('sorted(set(int(q) for q in (key.answers or {}).keys())) or fallback_snapshot["MCQ"]', source)
+        self.assertIn('sorted(set(int(q) for q in (key.answers or {}).keys())) or list(default_by_config["MCQ"])', source)
         self.assertIn('expected_by_section[sec] = []', source)
         self.assertIn('self._build_recognition_content_text(scoped, blank_map)', source)
         self.assertIn('self._short_recognition_text_for_result(scoped)', source)
         self.assertIn("Student ID '{student_id_text}' không có trong danh sách học sinh hợp lệ của ca thi.", source)
         self.assertIn("Exam code '{exam_code_text}' không có đáp án hợp lệ cho môn hiện tại.", source)
+
+    def test_exam_code_combo_only_uses_subject_answer_keys(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        start = source.rfind('        def _valid_exam_codes(subject_key: str, current_code: str = "") -> list[str]:')
+        end = source.find('        def _populate_exam_code_combo(combo: QComboBox, subject_key: str, current_code: str) -> None:', start)
+        block = source[start:end]
+        self.assertIn("if not subject:\n                return []", block)
+        self.assertNotIn('codes.update(str(x).strip() for x in (self.imported_exam_codes or []) if str(x).strip())', block)
+        self.assertNotIn("if current_code and current_code != \"-\":\n                codes.add(str(current_code).strip())", block)
+    def test_scoring_syncs_current_batch_snapshot_before_scoring(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('def _sync_current_batch_subject_snapshot(self, persist_to_db: bool = True) -> tuple[str, list[OMRResult]]:', source)
+        self.assertIn('self.database.upsert_scan_result(subject_key, self._serialize_omr_result(result))', source)
+        self.assertIn('self._sync_current_batch_subject_snapshot(persist_to_db=True)', source)
+        self.assertIn('current_subject, current_results = self._sync_current_batch_subject_snapshot(persist_to_db=True)', source)
+
+    def test_batch_scan_db_refresh_migrates_config_cache_once_and_reloads_from_db(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('cached_results = self._cached_subject_scans_from_config(subject)', source)
+        self.assertIn('self.database.replace_scan_results_for_subject(subject, [self._serialize_omr_result(x) for x in cached_results])', source)
+        self.assertIn('rows = self.database.fetch_scan_results_for_subject(subject)', source)
+
+    def test_batch_scan_grid_uses_db_refresh_as_single_shared_source(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('existing_results = list(self._refresh_scan_results_from_db(subject_key_for_results) or [])', source)
+        self.assertIn('self.scan_results = self._refresh_scan_results_from_db(subject_key)', source)
+        self.assertIn('Đã nạp kết quả Batch Scan từ nguồn dữ liệu chuẩn trong cơ sở dữ liệu cho môn này', source)
+
+    def test_batch_scan_initial_load_finalizes_display_and_selects_first_row(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('def _finalize_batch_scan_display(self, refresh_statuses: bool = True) -> None:', source)
+        self.assertIn('self.scan_list.setCurrentCell(target_row, 0)', source)
+        self.assertIn('self.scan_list.selectRow(target_row)', source)
+        self.assertIn('self._on_scan_selected()', source)
+
+    def test_batch_subject_change_preloads_template_answer_keys_and_finalizes_grid(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn("if tpl_for_view:\n            self.template = tpl_for_view", source)
+        self.assertIn('self._ensure_answer_keys_for_subject(subject_key)', source)
+        self.assertIn('self._finalize_batch_scan_display(refresh_statuses=False)', source)
+
+    def test_batch_subject_change_uses_cached_db_display_without_status_recompute(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('def _finalize_batch_scan_display(self, refresh_statuses: bool = True) -> None:', source)
+        self.assertIn('if refresh_statuses:\n            self._refresh_all_statuses()', source)
+        self.assertIn('cached_blank_map = getattr(result, "cached_blank_summary", None)', source)
+        self.assertIn('status = str(getattr(result, "cached_status", "") or "OK")', source)
+        self.assertIn('"cached_status": str(getattr(result, "cached_status", "") or "")', source)
+        self.assertIn('setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))', source)
+
+    def test_exam_code_change_keeps_existing_tf_and_numeric_rows(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('tf_data = data_snapshot.get("true_false_answers", {}) or {}', source)
+        self.assertIn('set(int(q) for q in tf_data.keys())', source)
+        self.assertIn('table_tf = _build_tf_table(tf_questions, tf_data)', source)
+        self.assertIn('numeric_data = data_snapshot.get("numeric_answers", {}) or {}', source)
+        self.assertIn('set(int(q) for q in numeric_data.keys())', source)
+        self.assertIn('table_num = _build_pair_table(numeric_questions, numeric_data, "Ví dụ: -12.5")', source)
+
+    def test_edit_dialog_question_numbers_follow_configured_answer_counts(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('default_by_config = {', source)
+        self.assertIn('list(range(1, max(0, int(configured_counts.get(sec, 0) or 0)) + 1))', source)
+        self.assertIn('"MCQ": list(default_by_config["MCQ"]),', source)
+
+
+    def test_invalidate_scoring_no_undefined_rows_loop_and_lightweight_path(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        start = source.find('    def _invalidate_scoring_for_student_ids(self, student_ids: list[str], subject_key: str = "", reason: str = "") -> int:')
+        end = source.find('    def _record_adjustment(self, idx: int, details: list[str], source: str) -> None:', start)
+        block = source[start:end]
+        self.assertNotIn('for row in rows:', block)
+        self.assertIn('self.database.log_change(', block)
+        self.assertIn('return changed', block)
+
+    def test_scoring_view_restores_cached_subject_results_without_recalculate(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('def _load_cached_scoring_results_for_subject(self, subject_key: str) -> None:', source)
+        self.assertIn('self._load_cached_scoring_results_for_subject(subject_key)', source)
+        self.assertIn('self._load_cached_scoring_results_for_subject(selected_subject)', source)
+        self.assertIn('self.score_rows = list(loaded_rows)', source)
+        self.assertIn('loaded_rows.sort(key=lambda row: str(row.student_id or ""))', source)
+
+    def test_scoring_supports_smart_fallback_when_exam_code_is_invalid(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('smart_scored_scans: list[dict[str, str]] = []', source)
+        self.assertIn('setattr(best_row, "scoring_note", "Chấm thông minh")', source)
+        self.assertIn('"smart_scoring_count": len(smart_scored_scans),', source)
+        self.assertIn('"note": str(getattr(r, "scoring_note", "") or ""),', source)
+        self.assertIn('Danh sách Chấm thông minh:', source)
+
+    def test_batch_scan_uses_shared_process_batch_flow_instead_of_per_file_deepcopy(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('new_results = self.omr_processor.process_batch(file_paths, self.template, on_progress)', source)
+        self.assertNotIn('self.omr_processor.run_recognition_test(image_path, copy.deepcopy(self.template), None)', source)
+        self.assertIn('self.database.replace_scan_results_for_subject(', source)
+        self.assertNotIn('self.database.upsert_scan_result(subject_key_for_results, self._serialize_omr_result(result))', source)
+        self.assertIn('timing_text = f"{elapsed_sec:.1f}s/{total_items} bài"', source)
+        self.assertIn('self.progress.setFormat(f"%p% ({timing_text})")', source)
+        self.assertIn('omr_batch_timing_manual.log', source)
 
 
 if __name__ == '__main__':
