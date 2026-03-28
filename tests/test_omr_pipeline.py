@@ -33,6 +33,33 @@ class OMRPipelineTests(unittest.TestCase):
 
         self.assertEqual([z.id for z in ordered], ["mcq", "tf", "num", "sid", "exam"])
 
+    def test_recognize_sheet_skips_identifier_zones_by_default_for_speed_debug(self):
+        mcq_zone = Zone(id="mcq", name="mcq", zone_type=ZoneType.MCQ_BLOCK, x=0, y=0, width=1, height=1, grid=BubbleGrid(rows=1, cols=1, question_start=1, question_count=1, options=["A"], bubble_positions=[(20, 20)]))
+        sid_zone = Zone(id="sid", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0, y=0, width=1, height=1, grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(20, 10 + i * 10) for i in range(10)]))
+        exam_zone = Zone(id="exam", name="exam", zone_type=ZoneType.EXAM_CODE_BLOCK, x=0, y=0, width=1, height=1, grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(30, 10 + i * 10) for i in range(10)]))
+        template = Template(name="t", image_path="", width=120, height=120, anchors=[], zones=[sid_zone, exam_zone, mcq_zone], metadata={})
+
+        with patch.object(self.processor, "_load_image_normalized_to_200_dpi", return_value=(np.zeros((120, 120, 3), dtype=np.uint8), "")), \
+            patch.object(self.processor, "_correct_rotation", side_effect=lambda x: x), \
+            patch.object(self.processor, "_preprocess", return_value={"binary": np.zeros((120, 120), dtype=np.uint8)}), \
+            patch.object(self.processor, "correct_perspective", return_value=(np.zeros((120, 120, 3), dtype=np.uint8), np.zeros((120, 120), dtype=np.uint8))), \
+            patch.object(self.processor, "recognize_block") as rec_mock:
+            self.processor.recognize_sheet("x.png", template)
+
+        called_zone_types = [call.args[1].zone_type for call in rec_mock.call_args_list]
+        self.assertEqual(called_zone_types, [ZoneType.MCQ_BLOCK])
+
+    def test_recognize_sheet_can_enable_identifier_zones_via_metadata(self):
+        sid_zone = Zone(id="sid", name="sid", zone_type=ZoneType.STUDENT_ID_BLOCK, x=0, y=0, width=1, height=1, grid=BubbleGrid(rows=10, cols=1, question_start=1, question_count=1, options=[], bubble_positions=[(20, 10 + i * 10) for i in range(10)]))
+        template = Template(name="t", image_path="", width=120, height=120, anchors=[], zones=[sid_zone], metadata={"enable_identifier_recognition": True})
+        with patch.object(self.processor, "_load_image_normalized_to_200_dpi", return_value=(np.zeros((120, 120, 3), dtype=np.uint8), "")), \
+            patch.object(self.processor, "_correct_rotation", side_effect=lambda x: x), \
+            patch.object(self.processor, "_preprocess", return_value={"binary": np.zeros((120, 120), dtype=np.uint8)}), \
+            patch.object(self.processor, "correct_perspective", return_value=(np.zeros((120, 120, 3), dtype=np.uint8), np.zeros((120, 120), dtype=np.uint8))), \
+            patch.object(self.processor, "recognize_block") as rec_mock:
+            self.processor.recognize_sheet("x.png", template)
+        self.assertEqual(len(rec_mock.call_args_list), 1)
+
     def test_detect_bubbles_vectorized_matches_reference_loop(self):
         binary = np.zeros((120, 160), dtype=np.uint8)
         cv2.circle(binary, (30, 30), 8, 255, -1)

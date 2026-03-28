@@ -118,6 +118,11 @@ class OMRProcessor:
         return (5, str(getattr(zone, "id", "") or ""))
 
     @staticmethod
+    def _identifier_recognition_enabled(template: Template) -> bool:
+        meta = getattr(template, "metadata", {}) or {}
+        return bool(meta.get("enable_identifier_recognition", False))
+
+    @staticmethod
     def _is_fast_200dpi_mode(template: Template) -> bool:
         meta = getattr(template, "metadata", {}) or {}
         return bool(meta.get("fast_200dpi_mode", False))
@@ -200,6 +205,11 @@ class OMRProcessor:
                     result.issues.append(OMRIssue("TIMEOUT", "Recognition time budget exceeded; skipped remaining zones"))
                     break
                 if zone.zone_type == ZoneType.ANCHOR:
+                    continue
+                if (
+                    zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK)
+                    and not self._identifier_recognition_enabled(template)
+                ):
                     continue
                 if zone.grid is not None:
                     context.semantic_grids[zone.id] = zone.grid
