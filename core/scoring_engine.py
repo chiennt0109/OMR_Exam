@@ -171,51 +171,38 @@ class ScoringEngine:
 
     def _answer_string_for_scoring(self, omr: OMRResult, subject_key: SubjectKey) -> str:
         existing = str(getattr(omr, "answer_string", "") or "")
-        if existing:
+        has_recognized_maps = bool((omr.mcq_answers or {}) or (omr.true_false_answers or {}) or (omr.numeric_answers or {}))
+        if existing and not has_recognized_maps:
             return existing
 
         defs = self._question_definitions(subject_key)
         parts: list[str] = []
+        mcq_aligned = self._aligned_marked_answers({int(item["q_no"]): "" for item in defs["MCQ"]}, omr.mcq_answers or {})
+        tf_aligned = self._aligned_marked_answers({int(item["q_no"]): "" for item in defs["TF"]}, omr.true_false_answers or {})
+        numeric_aligned = self._aligned_marked_answers({int(item["q_no"]): "" for item in defs["NUMERIC"]}, omr.numeric_answers or {})
 
-        mcq_items = self._sorted_numeric_keys(omr.mcq_answers)
-        mcq_idx = 0
         for item in defs["MCQ"]:
             q_no = int(item["q_no"])
             value = self._exact_answer_lookup(omr.mcq_answers, q_no)
-            if value == "" and mcq_idx < len(mcq_items):
-                value = (omr.mcq_answers or {}).get(mcq_items[mcq_idx], "")
-                mcq_idx += 1
-            elif value != "":
-                mcq_idx += 1
+            if value == "":
+                value = mcq_aligned.get(q_no, "")
             token = str(value or "").strip().upper()[:1]
             parts.append(token or "_")
-
-        tf_items = self._sorted_numeric_keys(omr.true_false_answers)
-        tf_idx = 0
         for item in defs["TF"]:
             q_no = int(item["q_no"])
             value = self._exact_answer_lookup(omr.true_false_answers, q_no)
-            if value == "" and tf_idx < len(tf_items):
-                value = (omr.true_false_answers or {}).get(tf_items[tf_idx], "")
-                tf_idx += 1
-            elif value != "":
-                tf_idx += 1
+            if value == "":
+                value = tf_aligned.get(q_no, "")
             canonical = self._tf_to_canonical_string(value)[:4]
             if len(canonical) < 4:
                 canonical = canonical + ("_" * (4 - len(canonical)))
             parts.append(canonical)
-
-        num_items = self._sorted_numeric_keys(omr.numeric_answers)
-        num_idx = 0
         for item in defs["NUMERIC"]:
             q_no = int(item["q_no"])
             width = int(item["width"])
             value = self._exact_answer_lookup(omr.numeric_answers, q_no)
-            if value == "" and num_idx < len(num_items):
-                value = (omr.numeric_answers or {}).get(num_items[num_idx], "")
-                num_idx += 1
-            elif value != "":
-                num_idx += 1
+            if value == "":
+                value = numeric_aligned.get(q_no, "")
             student = self._normalize_numeric_text(value)
             if len(student) < width:
                 student = student + ("_" * (width - len(student)))
