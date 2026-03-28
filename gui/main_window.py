@@ -11823,12 +11823,24 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        parsed_parts: list[str] = []
+        mcq = self._format_mcq_answers(getattr(result, "mcq_answers", {}) or {})
+        tf = self._format_tf_answers(getattr(result, "true_false_answers", {}) or {})
+        num = self._format_numeric_answers(getattr(result, "numeric_answers", {}) or {})
+        if mcq and mcq != "-":
+            parsed_parts.append(f"MCQ: {mcq}")
+        if tf and tf != "-":
+            parsed_parts.append(f"TF: {tf}")
+        if num and num != "-":
+            parsed_parts.append(f"NUM: {num}")
+
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
-        return " | ".join(blank_parts) if blank_parts else ""
+        merged = parsed_parts + blank_parts
+        return " | ".join(merged) if merged else "-"
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
         expected = self._expected_questions_by_section(result)

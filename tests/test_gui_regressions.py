@@ -97,6 +97,15 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('self._refresh_all_statuses()', source)
         self.assertIn('self.correction_save_timer.start(150)', source)
 
+    def test_recognition_content_includes_parsed_api_sections_for_debug(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('parsed_parts: list[str] = []', source)
+        self.assertIn('parsed_parts.append(f"MCQ: {mcq}")', source)
+        self.assertIn('parsed_parts.append(f"TF: {tf}")', source)
+        self.assertIn('parsed_parts.append(f"NUM: {num}")', source)
+        self.assertIn('merged = parsed_parts + blank_parts', source)
+        self.assertIn('return " | ".join(merged) if merged else "-"', source)
+
     def test_scoring_uses_lightweight_scan_copies_and_batch_results_drop_large_arrays(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
         self.assertIn('def _strip_transient_scan_artifacts(result: OMRResult) -> OMRResult:', source)
