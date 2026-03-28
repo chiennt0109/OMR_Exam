@@ -14617,6 +14617,15 @@ class MainWindow(QMainWindow):
                 elif isinstance(vals, str):
                     selected_vals.extend(x.strip() for x in vals.replace(";", ",").replace("\n", ",").split(",") if x.strip())
             room_sids = {self._normalized_student_id_for_match(x) for x in selected_vals if x}
+            # Fallback when cấu hình phòng thi môn bị lệch: nếu không tìm được room đúng tên
+            # trong mapping_by_room thì lấy theo phòng của danh sách thí sinh.
+            if not room_sids:
+                for s in (self.session.students if self.session else []):
+                    sid = str(getattr(s, "student_id", "") or "").strip()
+                    extra = getattr(s, "extra", {}) or {}
+                    exam_room = str(extra.get("exam_room", "") or "").strip()
+                    if sid and exam_room and self._normalized_room_for_match(exam_room) == room_name_norm:
+                        room_sids.add(self._normalized_student_id_for_match(sid))
         elif mapping_text:
             chunks = [x.strip() for x in mapping_text.replace(";", ",").replace("\n", ",").split(",")]
             room_sids = {self._normalized_student_id_for_match(x) for x in chunks if x}
@@ -15942,21 +15951,35 @@ class MainWindow(QMainWindow):
         sid_col, ok = QInputDialog.getItem(self, "Phúc tra", "Chọn cột SBD:", headers, 0, False)
         if not ok or not sid_col:
             return
-        sid_set = {
-            self._normalized_student_id_for_match(str((row or {}).get(sid_col, "") or ""))
-            for row in rows
-            if self._normalized_student_id_for_match(str((row or {}).get(sid_col, "") or ""))
-        }
-        if not sid_set:
+        requested_sids: list[str] = []
+        requested_norms: list[str] = []
+        for row_obj in rows:
+            raw_sid = str((row_obj or {}).get(sid_col, "") or "").strip()
+            norm_sid = self._normalized_student_id_for_match(raw_sid)
+            if not norm_sid:
+                continue
+            requested_sids.append(raw_sid or norm_sid)
+            requested_norms.append(norm_sid)
+        if not requested_norms:
             QMessageBox.warning(self, "Phúc tra", "Không có SBD hợp lệ trong file.")
             return
 
         result_rows = self.database.fetch_scan_results_for_subject(subject_key) or []
         scans = [self._deserialize_omr_result(x) for x in result_rows]
-        filtered = [x for x in scans if self._normalized_student_id_for_match(str(getattr(x, "student_id", "") or "")) in sid_set]
-        if not filtered:
-            QMessageBox.information(self, "Phúc tra", "Không tìm thấy bài nào khớp danh sách SBD.")
-            return
+        scan_by_sid_norm: dict[str, OMRResult] = {}
+        for scan_item in scans:
+            norm_sid = self._normalized_student_id_for_match(str(getattr(scan_item, "student_id", "") or ""))
+            if norm_sid and norm_sid not in scan_by_sid_norm:
+                scan_by_sid_norm[norm_sid] = scan_item
+        recheck_entries: list[dict[str, object]] = []
+        for raw_sid, sid_norm in zip(requested_sids, requested_norms):
+            recheck_entries.append(
+                {
+                    "requested_sid": raw_sid,
+                    "sid_norm": sid_norm,
+                    "result": scan_by_sid_norm.get(sid_norm),
+                }
+            )
 
         exam_codes = sorted(
             {
@@ -16077,18 +16100,42 @@ class MainWindow(QMainWindow):
         split.setStretchFactor(0, 5)
         split.setStretchFactor(1, 7)
 
-        for idx, res in enumerate(filtered, start=1):
-            sid = str(getattr(res, "student_id", "") or "").strip()
+        def _subject_room_for_sid(sid: str) -> str:
+            sid_norm = self._normalized_student_id_for_match(sid)
+            cfg = self._subject_config_by_subject_key(subject_key) or {}
+            room_name = str(cfg.get("exam_room_name", "") or "").strip()
+            mapping_by_room = cfg.get("exam_room_sbd_mapping_by_room", {}) if isinstance(cfg.get("exam_room_sbd_mapping_by_room", {}), dict) else {}
+            if sid_norm and mapping_by_room:
+                for room_key, vals in mapping_by_room.items():
+                    value_list: list[str] = []
+                    if isinstance(vals, (list, tuple, set)):
+                        value_list.extend(str(x).strip() for x in vals if str(x).strip())
+                    elif isinstance(vals, str):
+                        value_list.extend(x.strip() for x in vals.replace(";", ",").replace("\n", ",").split(",") if x.strip())
+                    normalized = {self._normalized_student_id_for_match(x) for x in value_list if x}
+                    if sid_norm in normalized:
+                        return str(room_key or "").strip()
+            mapping_text = str(cfg.get("exam_room_sbd_mapping", "") or "").strip()
+            if sid_norm and room_name and mapping_text:
+                chunks = [x.strip() for x in mapping_text.replace(";", ",").replace("\n", ",").split(",") if x.strip()]
+                if sid_norm in {self._normalized_student_id_for_match(x) for x in chunks if x}:
+                    return room_name
             prof = self._student_profile_by_id(sid)
-            score_text = str(_current_score_for_result(res))
+            return str(prof.get("exam_room", "") or "")
+
+        for idx, entry in enumerate(recheck_entries, start=1):
+            res = entry.get("result")
+            sid = str(getattr(res, "student_id", "") or "").strip() if isinstance(res, OMRResult) else str(entry.get("requested_sid", "") or "").strip()
+            prof = self._student_profile_by_id(sid)
+            score_text = str(_current_score_for_result(res)) if isinstance(res, OMRResult) else "Không tìm thấy bài thi"
             row = tbl.rowCount()
             tbl.insertRow(row)
             tbl.setItem(row, 0, QTableWidgetItem(str(idx)))
             tbl.setItem(row, 1, QTableWidgetItem(sid or "-"))
             tbl.setItem(row, 2, QTableWidgetItem(str(prof.get("name", "") or "-")))
             tbl.setItem(row, 3, QTableWidgetItem(str(prof.get("class_name", "") or "-")))
-            tbl.setItem(row, 4, QTableWidgetItem(str(prof.get("exam_room", "") or "-")))
-            tbl.setItem(row, 5, QTableWidgetItem(str(getattr(res, "exam_code", "") or "-")))
+            tbl.setItem(row, 4, QTableWidgetItem(_subject_room_for_sid(sid) or "-"))
+            tbl.setItem(row, 5, QTableWidgetItem(str(getattr(res, "exam_code", "") or "-") if isinstance(res, OMRResult) else "-"))
             tbl.setItem(row, 6, QTableWidgetItem(score_text))
 
         updating_form = {"busy": False}
@@ -16106,10 +16153,23 @@ class MainWindow(QMainWindow):
 
         def _on_pick() -> None:
             r = tbl.currentRow()
-            if r < 0 or r >= len(filtered):
+            if r < 0 or r >= len(recheck_entries):
                 return
             updating_form["busy"] = True
-            res = filtered[r]
+            res = recheck_entries[r].get("result")
+            if not isinstance(res, OMRResult):
+                sid_text = str(recheck_entries[r].get("requested_sid", "") or "").strip()
+                inp_sid.setEditText(sid_text)
+                inp_exam.setEditText("")
+                txt_mcq.setText("")
+                cbo_tf.setEditText("")
+                txt_numeric.setText("")
+                lbl_score.setText("Không tìm thấy bài thi")
+                _refresh_history_for_sid(sid_text)
+                img_lbl.setText("Không tìm thấy bài thi")
+                img_lbl.setPixmap(QPixmap())
+                updating_form["busy"] = False
+                return
             sid = str(getattr(res, "student_id", "") or "").strip()
             inp_sid.setEditText(sid_to_display.get(sid, sid))
             inp_exam.setEditText(str(getattr(res, "exam_code", "") or ""))
@@ -16125,7 +16185,7 @@ class MainWindow(QMainWindow):
             if tbl.item(r, 2):
                 tbl.item(r, 2).setText(str(prof.get("name", "") or "-"))
             if tbl.item(r, 4):
-                tbl.item(r, 4).setText(str(prof.get("exam_room", "") or "-"))
+                tbl.item(r, 4).setText(_subject_room_for_sid(sid) or "-")
             _refresh_history_for_sid(sid)
             img_path = str(getattr(res, "image_path", "") or "")
             pix = QPixmap(img_path)
@@ -16145,11 +16205,14 @@ class MainWindow(QMainWindow):
 
         def _save_current() -> None:
             r = tbl.currentRow()
-            if r < 0 or r >= len(filtered):
+            if r < 0 or r >= len(recheck_entries):
                 return
             if updating_form["busy"]:
                 return
-            res = filtered[r]
+            res = recheck_entries[r].get("result")
+            if not isinstance(res, OMRResult):
+                QMessageBox.information(dlg, "Phúc tra", "SBD này không có bài thi tham chiếu để lưu chỉnh sửa.")
+                return
             old_sid = str(getattr(res, "student_id", "") or "").strip()
             old_exam = str(getattr(res, "exam_code", "") or "").strip()
             old_score = _current_score_for_result(res)
@@ -16196,7 +16259,7 @@ class MainWindow(QMainWindow):
             tbl.setItem(r, 1, QTableWidgetItem(sid or "-"))
             tbl.setItem(r, 2, QTableWidgetItem(str(prof.get("name", "") or "-")))
             tbl.setItem(r, 3, QTableWidgetItem(str(prof.get("class_name", "") or "-")))
-            tbl.setItem(r, 4, QTableWidgetItem(str(prof.get("exam_room", "") or "-")))
+            tbl.setItem(r, 4, QTableWidgetItem(_subject_room_for_sid(sid) or "-"))
             tbl.setItem(r, 5, QTableWidgetItem(str(getattr(res, "exam_code", "") or "-")))
             tbl.setItem(r, 6, QTableWidgetItem(f"{new_score:g}"))
             lbl_score.setText(f"{new_score:g}")
@@ -16212,8 +16275,9 @@ class MainWindow(QMainWindow):
             ws = wb.active
             ws.title = "recheck"
             ws.append(["SBD", "Họ tên", "Ngày sinh", "Lớp", "Điểm cuối cùng", "Lịch sử phúc tra"])
-            for i, res in enumerate(filtered):
-                sid = str(getattr(res, "student_id", "") or "").strip()
+            for i, entry in enumerate(recheck_entries):
+                res = entry.get("result")
+                sid = str(getattr(res, "student_id", "") or "").strip() if isinstance(res, OMRResult) else str(entry.get("requested_sid", "") or "").strip()
                 prof = self._student_profile_by_id(sid)
                 score_value = tbl.item(i, 6).text() if tbl.item(i, 6) else "-"
                 h_items = [x for x in history_all if str(x.get("student_code", "") or "").strip() == sid]
