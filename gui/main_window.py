@@ -11775,15 +11775,12 @@ class MainWindow(QMainWindow):
             row_numeric_layout: list[tuple[int, int]],
         ) -> tuple[dict[int, str], dict[int, dict[str, bool]], dict[int, str], str]:
             raw_text = str(raw_answer or "").strip()
-            compact = re.sub(r"[\s_]+", "", raw_text)
+            compact = re.sub(r"\s+", "", raw_text)
             mcq_span = max(0, len(row_mcq_questions))
             tf_span = max(0, len(row_tf_questions) * 4)
             mcq_source = compact[:mcq_span]
             tf_source = compact[mcq_span:mcq_span + tf_span]
             numeric_tail = compact[mcq_span + tf_span:]
-
-            mcq_chars = [str(ch).upper() for ch in mcq_source if str(ch).upper() in {"A", "B", "C", "D", "E"}]
-            tf_flags = [ch in tf_true_chars for ch in tf_source if ch in tf_true_chars or ch in {"S", "s", "0", "N", "n"}]
 
             numeric_map: dict[int, str] = {}
             has_fixed_numeric_width = bool(row_numeric_layout) and all(int(expected_len) > 0 for _, expected_len in row_numeric_layout)
@@ -11792,7 +11789,7 @@ class MainWindow(QMainWindow):
                 pos = 0
                 for q_no, expected_len in row_numeric_layout:
                     token = compact_numeric[pos:pos + int(expected_len)] if pos < len(compact_numeric) else ""
-                    numeric_map[int(q_no)] = token
+                    numeric_map[int(q_no)] = token.replace("_", "")
                     pos += int(expected_len)
             else:
                 numeric_tokens = [tok.strip() for tok in re.split(r"[,;|]+", numeric_tail) if tok and tok.strip()]
@@ -11800,30 +11797,25 @@ class MainWindow(QMainWindow):
                     for idx_layout, (q_no, expected_len) in enumerate(row_numeric_layout):
                         token = str(numeric_tokens[idx_layout]) if idx_layout < len(numeric_tokens) else ""
                         if int(expected_len) > 0:
-                            numeric_map[int(q_no)] = token[: max(0, int(expected_len))]
+                            numeric_map[int(q_no)] = token[: max(0, int(expected_len))].replace("_", "")
                         else:
-                            numeric_map[int(q_no)] = token
+                            numeric_map[int(q_no)] = token.replace("_", "")
 
             mcq_map: dict[int, str] = {}
             for idx_q, q_no in enumerate(row_mcq_questions):
-                if idx_q < len(mcq_chars):
-                    mcq_map[int(q_no)] = mcq_chars[idx_q]
+                raw_ch = str(mcq_source[idx_q]).upper() if idx_q < len(mcq_source) else ""
+                mcq_map[int(q_no)] = raw_ch if raw_ch in {"A", "B", "C", "D", "E"} else ""
 
             tf_map: dict[int, dict[str, bool]] = {}
             for idx_q, q_no in enumerate(row_tf_questions):
                 base = idx_q * 4
-                chunk = tf_flags[base:base + 4]
-                if not chunk:
-                    continue
                 tf_row: dict[str, bool] = {}
-                if len(chunk) > 0:
-                    tf_row["a"] = bool(chunk[0])
-                if len(chunk) > 1:
-                    tf_row["b"] = bool(chunk[1])
-                if len(chunk) > 2:
-                    tf_row["c"] = bool(chunk[2])
-                if len(chunk) > 3:
-                    tf_row["d"] = bool(chunk[3])
+                for idx_stmt, key in enumerate(["a", "b", "c", "d"]):
+                    ch = tf_source[base + idx_stmt] if (base + idx_stmt) < len(tf_source) else ""
+                    if ch in tf_true_chars:
+                        tf_row[key] = True
+                    elif ch in {"S", "s", "0", "N", "n"}:
+                        tf_row[key] = False
                 tf_map[int(q_no)] = tf_row
 
             rebuilt_parts: list[str] = []
