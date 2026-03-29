@@ -16511,9 +16511,12 @@ class MainWindow(QMainWindow):
         inp_sid.setCompleter(sid_completer)
         inp_exam = QComboBox(); inp_exam.setEditable(True); inp_exam.addItems(exam_codes)
         lbl_score = QLabel("-")
+        lbl_recheck_info = QLabel("-")
+        lbl_recheck_info.setWordWrap(True)
         form.addRow("SBD (có tìm kiếm)", inp_sid)
         form.addRow("Mã đề", inp_exam)
         form.addRow("Điểm hiện tại", lbl_score)
+        form.addRow("Nội dung phúc tra", lbl_recheck_info)
         right_l.addLayout(form)
 
         mcq_editor_wrap = QWidget()
@@ -16630,12 +16633,41 @@ class MainWindow(QMainWindow):
 
         subject_score_map = self.scoring_results_by_subject.get(subject_key, {}) or {}
 
+        def _score_display_for_sid(sid: str, res_obj: OMRResult | None) -> str:
+            row_payload = (subject_score_map.get(str(sid or "").strip(), {}) or {}) if isinstance(subject_score_map, dict) else {}
+            recheck_val = row_payload.get("recheck_score", "") if isinstance(row_payload, dict) else ""
+            if recheck_val not in {"", None}:
+                try:
+                    return f"{float(recheck_val):g}"
+                except Exception:
+                    return str(recheck_val)
+            if isinstance(res_obj, OMRResult):
+                return f"{_current_score_for_result(res_obj):g}"
+            return "Không tìm thấy bài thi"
+
+        def _recheck_content_for_sid(sid: str, res_obj: OMRResult | None) -> str:
+            sid_key = str(sid or "").strip()
+            row_payload = (subject_score_map.get(sid_key, {}) or {}) if isinstance(subject_score_map, dict) else {}
+            if isinstance(row_payload, dict):
+                full = str(row_payload.get("baithiphuctra", "") or "").strip()
+                if full:
+                    return full
+                base = str(row_payload.get("bailam", "") or "").strip()
+                if base:
+                    return base
+            if isinstance(res_obj, OMRResult):
+                return (
+                    f"MCQ:{self._format_mcq_answers(getattr(res_obj, 'mcq_answers', {}) or {})} | "
+                    f"TF:{self._format_tf_answers(getattr(res_obj, 'true_false_answers', {}) or {})} | "
+                    f"NUM:{self._format_numeric_answers(getattr(res_obj, 'numeric_answers', {}) or {})}"
+                )
+            return "-"
+
         for idx, entry in enumerate(recheck_entries, start=1):
             res = entry.get("result")
             sid = str(getattr(res, "student_id", "") or "").strip() if isinstance(res, OMRResult) else str(entry.get("requested_sid", "") or "").strip()
             prof = self._student_profile_by_id(sid)
-            cached_score = (subject_score_map.get(sid, {}) or {}).get("recheck_score", "") if isinstance(subject_score_map, dict) else ""
-            score_text = str(cached_score if cached_score not in {"", None} else _current_score_for_result(res)) if isinstance(res, OMRResult) else "Không tìm thấy bài thi"
+            score_text = _score_display_for_sid(sid, res if isinstance(res, OMRResult) else None)
             row = tbl.rowCount()
             tbl.insertRow(row)
             tbl.setItem(row, 0, QTableWidgetItem(str(idx)))
@@ -16678,6 +16710,7 @@ class MainWindow(QMainWindow):
                 editor_refs["tf"] = _build_editors(tf_editor_grid, [], {}, max_len=4)
                 editor_refs["num"] = _build_editors(num_editor_grid, [], {}, max_len=8)
                 lbl_score.setText("Không tìm thấy bài thi")
+                lbl_recheck_info.setText(f"SBD: {sid_text or '-'} | Mã đề: - | Điểm: -\nNội dung: Không tìm thấy bài thi")
                 _refresh_history_for_sid(sid_text)
                 img_lbl.setText("Không tìm thấy bài thi")
                 img_lbl.setPixmap(QPixmap())
@@ -16696,8 +16729,13 @@ class MainWindow(QMainWindow):
             editor_refs["mcq"] = _build_editors(mcq_editor_grid, expected.get("MCQ", []), mcq_map, max_len=1)
             editor_refs["tf"] = _build_editors(tf_editor_grid, expected.get("TF", []), tf_map, max_len=4)
             editor_refs["num"] = _build_editors(num_editor_grid, expected.get("NUMERIC", []), num_map, max_len=8)
-            score_here = _current_score_for_result(res)
-            lbl_score.setText(f"{score_here:g}")
+            score_here = _score_display_for_sid(sid, res)
+            lbl_score.setText(str(score_here))
+            detail_content = _recheck_content_for_sid(sid, res)
+            lbl_recheck_info.setText(
+                f"SBD: {sid or '-'} | Mã đề: {str(getattr(res, 'exam_code', '') or '-')} | Điểm: {score_here}\n"
+                f"Nội dung: {detail_content or '-'}"
+            )
             prof = self._student_profile_by_id(sid)
             if tbl.item(r, 2):
                 tbl.item(r, 2).setText(str(prof.get("name", "") or "-"))
@@ -16795,8 +16833,13 @@ class MainWindow(QMainWindow):
             tbl.setItem(r, 3, QTableWidgetItem(str(prof.get("class_name", "") or "-")))
             tbl.setItem(r, 4, QTableWidgetItem(_subject_room_for_sid(sid) or "-"))
             tbl.setItem(r, 5, QTableWidgetItem(str(getattr(res, "exam_code", "") or "-")))
-            tbl.setItem(r, 6, QTableWidgetItem(f"{new_score:g}"))
-            lbl_score.setText(f"{new_score:g}")
+            final_score_text = _score_display_for_sid(sid, res)
+            tbl.setItem(r, 6, QTableWidgetItem(str(final_score_text)))
+            lbl_score.setText(str(final_score_text))
+            lbl_recheck_info.setText(
+                f"SBD: {sid or '-'} | Mã đề: {str(getattr(res, 'exam_code', '') or '-')} | Điểm: {final_score_text}\n"
+                f"Nội dung: {_recheck_content_for_sid(sid, res) or '-'}"
+            )
             _refresh_history_for_sid(sid)
             QMessageBox.information(dlg, "Phúc tra", "Đã lưu chỉnh sửa, ghi lịch sử và tính lại điểm.")
 
