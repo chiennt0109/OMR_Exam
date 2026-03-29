@@ -15915,6 +15915,7 @@ class MainWindow(QMainWindow):
                     "blank": r.blank,
                     "score": r.score,
                     "recheck_score": (prev_subject_scores.get(sid_key, {}) or {}).get("recheck_score", ""),
+                    "baithiphuctra": (prev_subject_scores.get(sid_key, {}) or {}).get("baithiphuctra", ""),
                     "phase": phase_marker,
                     "phase_timestamp": phase["timestamp"],
                     "phase_mode": mode_text,
@@ -16114,8 +16115,8 @@ class MainWindow(QMainWindow):
 
         left = QWidget()
         left_l = QVBoxLayout(left)
-        tbl = QTableWidget(0, 7)
-        tbl.setHorizontalHeaderLabels(["STT", "SBD", "Họ tên", "Lớp", "Phòng thi", "Mã đề", "Điểm"])
+        tbl = QTableWidget(0, 8)
+        tbl.setHorizontalHeaderLabels(["STT", "SBD", "Họ tên", "Lớp", "Phòng thi", "Mã đề", "Bài làm", "Điểm"])
         tbl.verticalHeader().setVisible(False)
         tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
         tbl.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -16248,11 +16249,27 @@ class MainWindow(QMainWindow):
             prof = self._student_profile_by_id(sid)
             return str(prof.get("exam_room", "") or "")
 
+        subject_score_map = self.scoring_results_by_subject.get(subject_key, {}) or {}
+
+        def _bailam_text(res: OMRResult | None, sid: str = "") -> str:
+            sid_key = str(sid or "").strip()
+            cached = subject_score_map.get(sid_key, {}) if isinstance(subject_score_map, dict) else {}
+            if isinstance(cached, dict) and str(cached.get("baithiphuctra", "") or "").strip():
+                return str(cached.get("baithiphuctra", "") or "")
+            if not isinstance(res, OMRResult):
+                return "Không tìm thấy bài thi"
+            return (
+                f"MCQ:{self._format_mcq_answers(getattr(res, 'mcq_answers', {}) or {})} | "
+                f"TF:{self._format_tf_answers(getattr(res, 'true_false_answers', {}) or {})} | "
+                f"NUM:{self._format_numeric_answers(getattr(res, 'numeric_answers', {}) or {})}"
+            )
+
         for idx, entry in enumerate(recheck_entries, start=1):
             res = entry.get("result")
             sid = str(getattr(res, "student_id", "") or "").strip() if isinstance(res, OMRResult) else str(entry.get("requested_sid", "") or "").strip()
             prof = self._student_profile_by_id(sid)
-            score_text = str(_current_score_for_result(res)) if isinstance(res, OMRResult) else "Không tìm thấy bài thi"
+            cached_score = (subject_score_map.get(sid, {}) or {}).get("recheck_score", "") if isinstance(subject_score_map, dict) else ""
+            score_text = str(cached_score if cached_score not in {"", None} else _current_score_for_result(res)) if isinstance(res, OMRResult) else "Không tìm thấy bài thi"
             row = tbl.rowCount()
             tbl.insertRow(row)
             tbl.setItem(row, 0, QTableWidgetItem(str(idx)))
@@ -16261,7 +16278,8 @@ class MainWindow(QMainWindow):
             tbl.setItem(row, 3, QTableWidgetItem(str(prof.get("class_name", "") or "-")))
             tbl.setItem(row, 4, QTableWidgetItem(_subject_room_for_sid(sid) or "-"))
             tbl.setItem(row, 5, QTableWidgetItem(str(getattr(res, "exam_code", "") or "-") if isinstance(res, OMRResult) else "-"))
-            tbl.setItem(row, 6, QTableWidgetItem(score_text))
+            tbl.setItem(row, 6, QTableWidgetItem(_bailam_text(res if isinstance(res, OMRResult) else None, sid)))
+            tbl.setItem(row, 7, QTableWidgetItem(score_text))
             if any(str(x.get("student_code", "") or "").strip() == sid for x in history_all):
                 for c in range(tbl.columnCount()):
                     item = tbl.item(row, c)
@@ -16338,6 +16356,7 @@ class MainWindow(QMainWindow):
             return text
 
         def _save_current() -> None:
+            nonlocal subject_score_map
             r = tbl.currentRow()
             if r < 0 or r >= len(recheck_entries):
                 return
@@ -16395,8 +16414,14 @@ class MainWindow(QMainWindow):
                 row_payload["recheck_score"] = float(new_score)
                 row_payload["score"] = row_payload.get("score", float(new_score))
                 row_payload["final_score"] = float(new_score)
+                row_payload["baithiphuctra"] = (
+                    f"MCQ:{self._format_mcq_answers(getattr(res, 'mcq_answers', {}) or {})} | "
+                    f"TF:{self._format_tf_answers(getattr(res, 'true_false_answers', {}) or {})} | "
+                    f"NUM:{self._format_numeric_answers(getattr(res, 'numeric_answers', {}) or {})}"
+                )
                 subject_scores_map[sid_key_new] = row_payload
                 self.scoring_results_by_subject[subject_key] = subject_scores_map
+                subject_score_map = self.scoring_results_by_subject.get(subject_key, {}) or {}
             self.calculate_scores(subject_key=subject_key, mode="Tính lại toàn bộ", note="recheck_edit")
             sid = str(getattr(res, "student_id", "") or "").strip()
             prof = self._student_profile_by_id(sid)
@@ -16405,7 +16430,8 @@ class MainWindow(QMainWindow):
             tbl.setItem(r, 3, QTableWidgetItem(str(prof.get("class_name", "") or "-")))
             tbl.setItem(r, 4, QTableWidgetItem(_subject_room_for_sid(sid) or "-"))
             tbl.setItem(r, 5, QTableWidgetItem(str(getattr(res, "exam_code", "") or "-")))
-            tbl.setItem(r, 6, QTableWidgetItem(f"{new_score:g}"))
+            tbl.setItem(r, 6, QTableWidgetItem(_bailam_text(res, sid)))
+            tbl.setItem(r, 7, QTableWidgetItem(f"{new_score:g}"))
             lbl_score.setText(f"{new_score:g}")
             _refresh_history_for_sid(sid)
             QMessageBox.information(dlg, "Phúc tra", "Đã lưu chỉnh sửa, ghi lịch sử và tính lại điểm.")
@@ -16452,7 +16478,7 @@ class MainWindow(QMainWindow):
                 res = entry.get("result")
                 sid = str(getattr(res, "student_id", "") or "").strip() if isinstance(res, OMRResult) else str(entry.get("requested_sid", "") or "").strip()
                 prof = self._student_profile_by_id(sid)
-                score_value = tbl.item(i, 6).text() if tbl.item(i, 6) else "-"
+                score_value = tbl.item(i, 7).text() if tbl.item(i, 7) else "-"
                 h_items = [x for x in history_all if str(x.get("student_code", "") or "").strip() == sid]
                 h_text = "\n".join(f"[{str(x.get('created_at', '') or '-')}] {str(x.get('change_text', '') or '-')}" for x in h_items) or "-"
                 ws.append([
