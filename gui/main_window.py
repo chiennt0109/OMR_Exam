@@ -16132,17 +16132,33 @@ class MainWindow(QMainWindow):
         sid_completer.setFilterMode(Qt.MatchContains)
         inp_sid.setCompleter(sid_completer)
         inp_exam = QComboBox(); inp_exam.setEditable(True); inp_exam.addItems(exam_codes)
-        txt_mcq = QLineEdit()
         cbo_tf = QComboBox(); cbo_tf.setEditable(True)
-        txt_numeric = QLineEdit()
         lbl_score = QLabel("-")
         form.addRow("SBD (có tìm kiếm)", inp_sid)
         form.addRow("Mã đề", inp_exam)
-        form.addRow("MCQ (text)", txt_mcq)
         form.addRow("TF (combo)", cbo_tf)
-        form.addRow("NUMERIC (text)", txt_numeric)
         form.addRow("Điểm hiện tại", lbl_score)
         right_l.addLayout(form)
+        txt_mcq_full = QTextEdit(); txt_mcq_full.setReadOnly(True); txt_mcq_full.setMaximumHeight(64)
+        txt_tf_full = QTextEdit(); txt_tf_full.setReadOnly(True); txt_tf_full.setMaximumHeight(64)
+        txt_num_full = QTextEdit(); txt_num_full.setReadOnly(True); txt_num_full.setMaximumHeight(64)
+        right_l.addWidget(QLabel("Chuỗi MCQ đầy đủ"))
+        right_l.addWidget(txt_mcq_full)
+        right_l.addWidget(QLabel("Chuỗi TF đầy đủ"))
+        right_l.addWidget(txt_tf_full)
+        right_l.addWidget(QLabel("Chuỗi NUMERIC đầy đủ"))
+        right_l.addWidget(txt_num_full)
+
+        mcq_editor_wrap = QWidget()
+        mcq_editor_grid = QGridLayout(mcq_editor_wrap)
+        mcq_editor_grid.setContentsMargins(0, 0, 0, 0)
+        num_editor_wrap = QWidget()
+        num_editor_grid = QGridLayout(num_editor_wrap)
+        num_editor_grid.setContentsMargins(0, 0, 0, 0)
+        right_l.addWidget(QLabel("MCQ theo câu (mỗi câu 1 ô)"))
+        right_l.addWidget(mcq_editor_wrap)
+        right_l.addWidget(QLabel("NUMERIC theo câu (mỗi câu 1 ô)"))
+        right_l.addWidget(num_editor_wrap)
         img_scroll = QScrollArea()
         img_scroll.setWidgetResizable(True)
         img_lbl = QLabel("-")
@@ -16160,6 +16176,51 @@ class MainWindow(QMainWindow):
         split.addWidget(right)
         split.setStretchFactor(0, 5)
         split.setStretchFactor(1, 7)
+        editor_refs: dict[str, dict[int, QLineEdit]] = {"mcq": {}, "num": {}}
+
+        def _answer_key_for_exam(exam_code_text: str):
+            code = str(exam_code_text or "").strip()
+            key_obj = self.answer_keys.get_flexible(subject_key, code) if self.answer_keys else None
+            if isinstance(key_obj, SubjectKey):
+                return key_obj
+            raw = (self.database.fetch_answer_keys_for_subject(subject_key) or {}).get(code)
+            if isinstance(raw, dict):
+                return SubjectKey(
+                    subject=subject_key,
+                    exam_code=code,
+                    answers={int(k): str(v) for k, v in ((raw.get("mcq_answers", {}) or {}).items() if isinstance(raw.get("mcq_answers", {}), dict) else [])},
+                    true_false_answers={int(k): dict(v or {}) for k, v in ((raw.get("true_false_answers", {}) or {}).items() if isinstance(raw.get("true_false_answers", {}), dict) else [])},
+                    numeric_answers={int(k): str(v) for k, v in ((raw.get("numeric_answers", {}) or {}).items() if isinstance(raw.get("numeric_answers", {}), dict) else [])},
+                )
+            return None
+
+        def _expected_questions(exam_code_text: str) -> dict[str, list[int]]:
+            key_obj = _answer_key_for_exam(exam_code_text)
+            if not key_obj:
+                return {"MCQ": [], "NUMERIC": []}
+            mcq_qs = sorted(int(q) for q in (key_obj.answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
+            num_qs = sorted(int(q) for q in (key_obj.numeric_answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
+            return {"MCQ": mcq_qs, "NUMERIC": num_qs}
+
+        def _build_editors(container_grid: QGridLayout, question_numbers: list[int], values: dict[int, str], max_len: int = 1) -> dict[int, QLineEdit]:
+            while container_grid.count():
+                item = container_grid.takeAt(0)
+                if item and item.widget():
+                    item.widget().deleteLater()
+            edits: dict[int, QLineEdit] = {}
+            if not question_numbers:
+                container_grid.addWidget(QLabel("(Không có câu theo đáp án)"), 0, 0)
+                return edits
+            for idx, q_no in enumerate(question_numbers):
+                row = idx // 8
+                col = (idx % 8) * 2
+                container_grid.addWidget(QLabel(f"C{q_no}"), row, col)
+                e = QLineEdit(str(values.get(int(q_no), "") or ""))
+                e.setMaxLength(max_len)
+                e.setMaximumWidth(72)
+                container_grid.addWidget(e, row, col + 1)
+                edits[int(q_no)] = e
+            return edits
 
         def _subject_room_for_sid(sid: str) -> str:
             sid_norm = self._normalized_student_id_for_match(sid)
@@ -16222,9 +16283,12 @@ class MainWindow(QMainWindow):
                 sid_text = str(recheck_entries[r].get("requested_sid", "") or "").strip()
                 inp_sid.setEditText(sid_text)
                 inp_exam.setEditText("")
-                txt_mcq.setText("")
                 cbo_tf.setEditText("")
-                txt_numeric.setText("")
+                txt_mcq_full.setPlainText("")
+                txt_tf_full.setPlainText("")
+                txt_num_full.setPlainText("")
+                editor_refs["mcq"] = _build_editors(mcq_editor_grid, [], {}, max_len=1)
+                editor_refs["num"] = _build_editors(num_editor_grid, [], {}, max_len=8)
                 lbl_score.setText("Không tìm thấy bài thi")
                 _refresh_history_for_sid(sid_text)
                 img_lbl.setText("Không tìm thấy bài thi")
@@ -16234,12 +16298,18 @@ class MainWindow(QMainWindow):
             sid = str(getattr(res, "student_id", "") or "").strip()
             inp_sid.setEditText(sid_to_display.get(sid, sid))
             inp_exam.setEditText(str(getattr(res, "exam_code", "") or ""))
-            txt_mcq.setText(self._format_mcq_answers(getattr(res, "mcq_answers", {}) or {}))
+            expected = _expected_questions(str(getattr(res, "exam_code", "") or ""))
+            mcq_map = {int(k): str(v or "").strip().upper()[:1] for k, v in ((getattr(res, "mcq_answers", {}) or {}).items() if isinstance(getattr(res, "mcq_answers", {}), dict) else [])}
+            num_map = {int(k): str(v or "").strip() for k, v in ((getattr(res, "numeric_answers", {}) or {}).items() if isinstance(getattr(res, "numeric_answers", {}), dict) else [])}
+            editor_refs["mcq"] = _build_editors(mcq_editor_grid, expected.get("MCQ", []), mcq_map, max_len=1)
+            editor_refs["num"] = _build_editors(num_editor_grid, expected.get("NUMERIC", []), num_map, max_len=8)
             tf_disp = _tf_to_display(getattr(res, "true_false_answers", {}) or {})
             if cbo_tf.findText(tf_disp) < 0:
                 cbo_tf.addItem(tf_disp)
             cbo_tf.setEditText(tf_disp)
-            txt_numeric.setText(self._format_numeric_answers(getattr(res, "numeric_answers", {}) or {}))
+            txt_mcq_full.setPlainText(self._format_mcq_answers(getattr(res, "mcq_answers", {}) or {}))
+            txt_tf_full.setPlainText(self._format_tf_answers(getattr(res, "true_false_answers", {}) or {}))
+            txt_num_full.setPlainText(self._format_numeric_answers(getattr(res, "numeric_answers", {}) or {}))
             score_here = _current_score_for_result(res)
             lbl_score.setText(f"{score_here:g}")
             prof = self._student_profile_by_id(sid)
@@ -16279,15 +16349,15 @@ class MainWindow(QMainWindow):
             old_score = _current_score_for_result(res)
             new_sid = _selected_sid_value().strip()
             new_exam = str(inp_exam.currentText() or "").strip()
-            new_mcq = _parse_pairs(txt_mcq.text(), upper=True)
+            new_mcq = {int(q): str(edit.text() if edit else "").strip().upper()[:1] for q, edit in (editor_refs.get("mcq", {}) or {}).items()}
             new_tf = _parse_tf_display(cbo_tf.currentText())
-            new_numeric = _parse_pairs(txt_numeric.text(), upper=False)
+            new_numeric = {int(q): str(edit.text() if edit else "").strip() for q, edit in (editor_refs.get("num", {}) or {}).items()}
             if new_sid:
                 res.student_id = new_sid
             res.exam_code = new_exam
-            res.mcq_answers = {int(k): str(v or "").strip().upper()[:1] for k, v in (new_mcq or {}).items()}
+            res.mcq_answers = {int(k): str(v or "").strip().upper()[:1] for k, v in (new_mcq or {}).items() if str(v or "").strip()}
             res.true_false_answers = {int(k): dict(v or {}) for k, v in (new_tf or {}).items()}
-            res.numeric_answers = {int(k): str(v or "").strip() for k, v in (new_numeric or {}).items()}
+            res.numeric_answers = {int(k): str(v or "").strip() for k, v in (new_numeric or {}).items() if str(v or "").strip()}
             res.answer_string = ""
             self._persist_single_scan_result_to_db(res, note="recheck_edit")
             new_score = _current_score_for_result(res)
