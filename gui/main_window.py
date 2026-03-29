@@ -15971,7 +15971,11 @@ class MainWindow(QMainWindow):
 
         session_cfg = dict(self.session.config or {}) if self.session else {}
         recheck_sid_lists = session_cfg.get("recheck_sid_lists", {}) if isinstance(session_cfg.get("recheck_sid_lists", {}), dict) else {}
-        cached_sid_list = [str(x).strip() for x in (recheck_sid_lists.get(subject_key, []) or []) if str(x).strip()]
+        sid_cache_key = f"recheck_sid_list::{str(self.current_session_id or '')}::{subject_key}"
+        flag_key = f"recheck_flag::{str(self.current_session_id or '')}::{subject_key}"
+        cached_sid_list = [str(x).strip() for x in (self.database.get_app_state(sid_cache_key, []) or []) if str(x).strip()]
+        if not cached_sid_list:
+            cached_sid_list = [str(x).strip() for x in (recheck_sid_lists.get(subject_key, []) or []) if str(x).strip()]
         requested_sids = list(cached_sid_list) if cached_sid_list else _load_sid_list_from_file()
         requested_norms = [self._normalized_student_id_for_match(x) for x in requested_sids if self._normalized_student_id_for_match(x)]
         if not requested_norms:
@@ -15985,6 +15989,8 @@ class MainWindow(QMainWindow):
             self.session.config = cfg
             self.session_dirty = True
             self._persist_session_quietly()
+        self.database.set_app_state(sid_cache_key, list(requested_sids))
+        self.database.set_app_state(flag_key, True)
 
         result_rows = self.database.fetch_scan_results_for_subject(subject_key) or []
         scans = [self._deserialize_omr_result(x) for x in result_rows]
@@ -16113,6 +16119,7 @@ class MainWindow(QMainWindow):
         tbl.verticalHeader().setVisible(False)
         tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
         tbl.setSelectionMode(QAbstractItemView.SingleSelection)
+        tbl.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         left_l.addWidget(tbl)
         btn_add_list = QPushButton("Thêm danh sách")
         btn_export = QPushButton("Xuất Excel phúc tra")
@@ -16132,31 +16139,25 @@ class MainWindow(QMainWindow):
         sid_completer.setFilterMode(Qt.MatchContains)
         inp_sid.setCompleter(sid_completer)
         inp_exam = QComboBox(); inp_exam.setEditable(True); inp_exam.addItems(exam_codes)
-        cbo_tf = QComboBox(); cbo_tf.setEditable(True)
         lbl_score = QLabel("-")
         form.addRow("SBD (có tìm kiếm)", inp_sid)
         form.addRow("Mã đề", inp_exam)
-        form.addRow("TF (combo)", cbo_tf)
         form.addRow("Điểm hiện tại", lbl_score)
         right_l.addLayout(form)
-        txt_mcq_full = QTextEdit(); txt_mcq_full.setReadOnly(True); txt_mcq_full.setMaximumHeight(64)
-        txt_tf_full = QTextEdit(); txt_tf_full.setReadOnly(True); txt_tf_full.setMaximumHeight(64)
-        txt_num_full = QTextEdit(); txt_num_full.setReadOnly(True); txt_num_full.setMaximumHeight(64)
-        right_l.addWidget(QLabel("Chuỗi MCQ đầy đủ"))
-        right_l.addWidget(txt_mcq_full)
-        right_l.addWidget(QLabel("Chuỗi TF đầy đủ"))
-        right_l.addWidget(txt_tf_full)
-        right_l.addWidget(QLabel("Chuỗi NUMERIC đầy đủ"))
-        right_l.addWidget(txt_num_full)
 
         mcq_editor_wrap = QWidget()
         mcq_editor_grid = QGridLayout(mcq_editor_wrap)
         mcq_editor_grid.setContentsMargins(0, 0, 0, 0)
+        tf_editor_wrap = QWidget()
+        tf_editor_grid = QGridLayout(tf_editor_wrap)
+        tf_editor_grid.setContentsMargins(0, 0, 0, 0)
         num_editor_wrap = QWidget()
         num_editor_grid = QGridLayout(num_editor_wrap)
         num_editor_grid.setContentsMargins(0, 0, 0, 0)
         right_l.addWidget(QLabel("MCQ theo câu (mỗi câu 1 ô)"))
         right_l.addWidget(mcq_editor_wrap)
+        right_l.addWidget(QLabel("TF theo câu (mỗi câu 1 ô, nhập 4 ký tự Đ/S)"))
+        right_l.addWidget(tf_editor_wrap)
         right_l.addWidget(QLabel("NUMERIC theo câu (mỗi câu 1 ô)"))
         right_l.addWidget(num_editor_wrap)
         img_scroll = QScrollArea()
@@ -16174,9 +16175,10 @@ class MainWindow(QMainWindow):
         action_row.addWidget(btn_save)
         right_l.addLayout(action_row)
         split.addWidget(right)
-        split.setStretchFactor(0, 5)
-        split.setStretchFactor(1, 7)
-        editor_refs: dict[str, dict[int, QLineEdit]] = {"mcq": {}, "num": {}}
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 1)
+        split.setSizes([730, 730])
+        editor_refs: dict[str, dict[int, QLineEdit]] = {"mcq": {}, "tf": {}, "num": {}}
 
         def _answer_key_for_exam(exam_code_text: str):
             code = str(exam_code_text or "").strip()
@@ -16197,10 +16199,11 @@ class MainWindow(QMainWindow):
         def _expected_questions(exam_code_text: str) -> dict[str, list[int]]:
             key_obj = _answer_key_for_exam(exam_code_text)
             if not key_obj:
-                return {"MCQ": [], "NUMERIC": []}
+                return {"MCQ": [], "TF": [], "NUMERIC": []}
             mcq_qs = sorted(int(q) for q in (key_obj.answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
+            tf_qs = sorted(int(q) for q in (key_obj.true_false_answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
             num_qs = sorted(int(q) for q in (key_obj.numeric_answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
-            return {"MCQ": mcq_qs, "NUMERIC": num_qs}
+            return {"MCQ": mcq_qs, "TF": tf_qs, "NUMERIC": num_qs}
 
         def _build_editors(container_grid: QGridLayout, question_numbers: list[int], values: dict[int, str], max_len: int = 1) -> dict[int, QLineEdit]:
             while container_grid.count():
@@ -16259,6 +16262,11 @@ class MainWindow(QMainWindow):
             tbl.setItem(row, 4, QTableWidgetItem(_subject_room_for_sid(sid) or "-"))
             tbl.setItem(row, 5, QTableWidgetItem(str(getattr(res, "exam_code", "") or "-") if isinstance(res, OMRResult) else "-"))
             tbl.setItem(row, 6, QTableWidgetItem(score_text))
+            if any(str(x.get("student_code", "") or "").strip() == sid for x in history_all):
+                for c in range(tbl.columnCount()):
+                    item = tbl.item(row, c)
+                    if item is not None:
+                        item.setBackground(Qt.yellow)
 
         updating_form = {"busy": False}
 
@@ -16283,11 +16291,8 @@ class MainWindow(QMainWindow):
                 sid_text = str(recheck_entries[r].get("requested_sid", "") or "").strip()
                 inp_sid.setEditText(sid_text)
                 inp_exam.setEditText("")
-                cbo_tf.setEditText("")
-                txt_mcq_full.setPlainText("")
-                txt_tf_full.setPlainText("")
-                txt_num_full.setPlainText("")
                 editor_refs["mcq"] = _build_editors(mcq_editor_grid, [], {}, max_len=1)
+                editor_refs["tf"] = _build_editors(tf_editor_grid, [], {}, max_len=4)
                 editor_refs["num"] = _build_editors(num_editor_grid, [], {}, max_len=8)
                 lbl_score.setText("Không tìm thấy bài thi")
                 _refresh_history_for_sid(sid_text)
@@ -16300,16 +16305,14 @@ class MainWindow(QMainWindow):
             inp_exam.setEditText(str(getattr(res, "exam_code", "") or ""))
             expected = _expected_questions(str(getattr(res, "exam_code", "") or ""))
             mcq_map = {int(k): str(v or "").strip().upper()[:1] for k, v in ((getattr(res, "mcq_answers", {}) or {}).items() if isinstance(getattr(res, "mcq_answers", {}), dict) else [])}
+            tf_map = {
+                int(k): self.scoring_engine._tf_to_canonical_string(v)
+                for k, v in ((getattr(res, "true_false_answers", {}) or {}).items() if isinstance(getattr(res, "true_false_answers", {}), dict) else [])
+            }
             num_map = {int(k): str(v or "").strip() for k, v in ((getattr(res, "numeric_answers", {}) or {}).items() if isinstance(getattr(res, "numeric_answers", {}), dict) else [])}
             editor_refs["mcq"] = _build_editors(mcq_editor_grid, expected.get("MCQ", []), mcq_map, max_len=1)
+            editor_refs["tf"] = _build_editors(tf_editor_grid, expected.get("TF", []), tf_map, max_len=4)
             editor_refs["num"] = _build_editors(num_editor_grid, expected.get("NUMERIC", []), num_map, max_len=8)
-            tf_disp = _tf_to_display(getattr(res, "true_false_answers", {}) or {})
-            if cbo_tf.findText(tf_disp) < 0:
-                cbo_tf.addItem(tf_disp)
-            cbo_tf.setEditText(tf_disp)
-            txt_mcq_full.setPlainText(self._format_mcq_answers(getattr(res, "mcq_answers", {}) or {}))
-            txt_tf_full.setPlainText(self._format_tf_answers(getattr(res, "true_false_answers", {}) or {}))
-            txt_num_full.setPlainText(self._format_numeric_answers(getattr(res, "numeric_answers", {}) or {}))
             score_here = _current_score_for_result(res)
             lbl_score.setText(f"{score_here:g}")
             prof = self._student_profile_by_id(sid)
@@ -16350,7 +16353,8 @@ class MainWindow(QMainWindow):
             new_sid = _selected_sid_value().strip()
             new_exam = str(inp_exam.currentText() or "").strip()
             new_mcq = {int(q): str(edit.text() if edit else "").strip().upper()[:1] for q, edit in (editor_refs.get("mcq", {}) or {}).items()}
-            new_tf = _parse_tf_display(cbo_tf.currentText())
+            tf_raw = {int(q): str(edit.text() if edit else "").strip().upper()[:4] for q, edit in (editor_refs.get("tf", {}) or {}).items()}
+            new_tf = _parse_tf_display(", ".join(f"{q}:{v}" for q, v in tf_raw.items() if v))
             new_numeric = {int(q): str(edit.text() if edit else "").strip() for q, edit in (editor_refs.get("num", {}) or {}).items()}
             if new_sid:
                 res.student_id = new_sid
@@ -16429,6 +16433,8 @@ class MainWindow(QMainWindow):
                 self.session.config = cfg
                 self.session_dirty = True
                 self._persist_session_quietly()
+            self.database.set_app_state(sid_cache_key, list(merged))
+            self.database.set_app_state(flag_key, True)
             QMessageBox.information(dlg, "Thêm danh sách", "Đã cập nhật danh sách phúc tra. Cửa sổ sẽ mở lại theo danh sách mới.")
             dlg.accept()
             QTimer.singleShot(0, self.action_open_recheck)
