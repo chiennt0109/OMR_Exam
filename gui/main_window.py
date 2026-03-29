@@ -16485,8 +16485,8 @@ class MainWindow(QMainWindow):
 
         left = QWidget()
         left_l = QVBoxLayout(left)
-        tbl = QTableWidget(0, 8)
-        tbl.setHorizontalHeaderLabels(["STT", "SBD", "Họ tên", "Lớp", "Phòng thi", "Mã đề", "Bài làm", "Điểm"])
+        tbl = QTableWidget(0, 7)
+        tbl.setHorizontalHeaderLabels(["STT", "SBD", "Họ tên", "Lớp", "Phòng thi", "Mã đề", "Điểm"])
         tbl.verticalHeader().setVisible(False)
         tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
         tbl.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -16567,14 +16567,19 @@ class MainWindow(QMainWindow):
                 )
             return None
 
-        def _expected_questions(exam_code_text: str) -> dict[str, list[int]]:
+        def _expected_questions(exam_code_text: str, res_obj: OMRResult | None = None) -> dict[str, list[int]]:
             key_obj = _answer_key_for_exam(exam_code_text)
-            if not key_obj:
-                return {"MCQ": [], "TF": [], "NUMERIC": []}
-            mcq_qs = sorted(int(q) for q in (key_obj.answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
-            tf_qs = sorted(int(q) for q in (key_obj.true_false_answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
-            num_qs = sorted(int(q) for q in (key_obj.numeric_answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
-            return {"MCQ": mcq_qs, "TF": tf_qs, "NUMERIC": num_qs}
+            if key_obj:
+                mcq_qs = sorted(int(q) for q in (key_obj.answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
+                tf_qs = sorted(int(q) for q in (key_obj.true_false_answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
+                num_qs = sorted(int(q) for q in (key_obj.numeric_answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
+                return {"MCQ": mcq_qs, "TF": tf_qs, "NUMERIC": num_qs}
+            if isinstance(res_obj, OMRResult):
+                mcq_qs = sorted(int(q) for q in ((getattr(res_obj, "mcq_answers", {}) or {}).keys()) if str(q).strip().lstrip("-").isdigit())
+                tf_qs = sorted(int(q) for q in ((getattr(res_obj, "true_false_answers", {}) or {}).keys()) if str(q).strip().lstrip("-").isdigit())
+                num_qs = sorted(int(q) for q in ((getattr(res_obj, "numeric_answers", {}) or {}).keys()) if str(q).strip().lstrip("-").isdigit())
+                return {"MCQ": mcq_qs, "TF": tf_qs, "NUMERIC": num_qs}
+            return {"MCQ": [], "TF": [], "NUMERIC": []}
 
         def _build_editors(container_grid: QGridLayout, question_numbers: list[int], values: dict[int, str], max_len: int = 1) -> dict[int, QLineEdit]:
             while container_grid.count():
@@ -16602,19 +16607,6 @@ class MainWindow(QMainWindow):
 
         subject_score_map = self.scoring_results_by_subject.get(subject_key, {}) or {}
 
-        def _bailam_text(res: OMRResult | None, sid: str = "") -> str:
-            sid_key = str(sid or "").strip()
-            cached = subject_score_map.get(sid_key, {}) if isinstance(subject_score_map, dict) else {}
-            if isinstance(cached, dict) and str(cached.get("baithiphuctra", "") or "").strip():
-                return str(cached.get("baithiphuctra", "") or "")
-            if not isinstance(res, OMRResult):
-                return "Không tìm thấy bài thi"
-            return (
-                f"MCQ:{self._format_mcq_answers(getattr(res, 'mcq_answers', {}) or {})} | "
-                f"TF:{self._format_tf_answers(getattr(res, 'true_false_answers', {}) or {})} | "
-                f"NUM:{self._format_numeric_answers(getattr(res, 'numeric_answers', {}) or {})}"
-            )
-
         for idx, entry in enumerate(recheck_entries, start=1):
             res = entry.get("result")
             sid = str(getattr(res, "student_id", "") or "").strip() if isinstance(res, OMRResult) else str(entry.get("requested_sid", "") or "").strip()
@@ -16629,8 +16621,7 @@ class MainWindow(QMainWindow):
             tbl.setItem(row, 3, QTableWidgetItem(str(prof.get("class_name", "") or "-")))
             tbl.setItem(row, 4, QTableWidgetItem(_subject_room_for_sid(sid) or "-"))
             tbl.setItem(row, 5, QTableWidgetItem(str(getattr(res, "exam_code", "") or "-") if isinstance(res, OMRResult) else "-"))
-            tbl.setItem(row, 6, QTableWidgetItem(_bailam_text(res if isinstance(res, OMRResult) else None, sid)))
-            tbl.setItem(row, 7, QTableWidgetItem(score_text))
+            tbl.setItem(row, 6, QTableWidgetItem(score_text))
             if any(str(x.get("student_code", "") or "").strip() == sid for x in history_all):
                 for c in range(tbl.columnCount()):
                     item = tbl.item(row, c)
@@ -16672,7 +16663,7 @@ class MainWindow(QMainWindow):
             sid = str(getattr(res, "student_id", "") or "").strip()
             inp_sid.setEditText(sid_to_display.get(sid, sid))
             inp_exam.setEditText(str(getattr(res, "exam_code", "") or ""))
-            expected = _expected_questions(str(getattr(res, "exam_code", "") or ""))
+            expected = _expected_questions(str(getattr(res, "exam_code", "") or ""), res)
             mcq_map = {int(k): str(v or "").strip().upper()[:1] for k, v in ((getattr(res, "mcq_answers", {}) or {}).items() if isinstance(getattr(res, "mcq_answers", {}), dict) else [])}
             tf_map = {
                 int(k): self.scoring_engine._tf_to_canonical_string(v)
@@ -16781,8 +16772,7 @@ class MainWindow(QMainWindow):
             tbl.setItem(r, 3, QTableWidgetItem(str(prof.get("class_name", "") or "-")))
             tbl.setItem(r, 4, QTableWidgetItem(_subject_room_for_sid(sid) or "-"))
             tbl.setItem(r, 5, QTableWidgetItem(str(getattr(res, "exam_code", "") or "-")))
-            tbl.setItem(r, 6, QTableWidgetItem(_bailam_text(res, sid)))
-            tbl.setItem(r, 7, QTableWidgetItem(f"{new_score:g}"))
+            tbl.setItem(r, 6, QTableWidgetItem(f"{new_score:g}"))
             lbl_score.setText(f"{new_score:g}")
             _refresh_history_for_sid(sid)
             QMessageBox.information(dlg, "Phúc tra", "Đã lưu chỉnh sửa, ghi lịch sử và tính lại điểm.")
