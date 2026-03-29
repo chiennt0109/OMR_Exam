@@ -112,6 +112,21 @@ SCHEMA = [
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS recheck_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL DEFAULT '',
+        exam_name TEXT NOT NULL DEFAULT '',
+        subject_key TEXT NOT NULL DEFAULT '',
+        student_code TEXT NOT NULL DEFAULT '',
+        exam_code TEXT NOT NULL DEFAULT '',
+        change_text TEXT NOT NULL DEFAULT '',
+        old_score REAL NOT NULL DEFAULT 0,
+        new_score REAL NOT NULL DEFAULT 0,
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
 ]
 
 INDEXES = [
@@ -124,6 +139,7 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_scan_results_exam_code ON scan_results(exam_code_text)",
     "CREATE INDEX IF NOT EXISTS idx_scores_subject_student ON scores(subject_key, student_code)",
     "CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity_type, entity_id)",
+    "CREATE INDEX IF NOT EXISTS idx_recheck_history_subject_student ON recheck_history(session_id, subject_key, student_code)",
 ]
 
 
@@ -525,6 +541,77 @@ class OMRDatabase:
             "top_students": [{"student_code": str(r[0]), "score": float(r[1] or 0)} for r in top_rows],
             "distribution": [{"bucket": int(r[0] or 0), "count": int(r[1] or 0)} for r in distribution],
         }
+
+    def add_recheck_history(
+        self,
+        session_id: str,
+        exam_name: str,
+        subject_key: str,
+        student_code: str,
+        exam_code: str,
+        change_text: str,
+        old_score: float,
+        new_score: float,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO recheck_history(
+                session_id, exam_name, subject_key, student_code, exam_code,
+                change_text, old_score, new_score, payload_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(session_id or ""),
+                str(exam_name or ""),
+                str(subject_key or ""),
+                str(student_code or ""),
+                str(exam_code or ""),
+                str(change_text or ""),
+                float(old_score or 0.0),
+                float(new_score or 0.0),
+                json.dumps(payload or {}, ensure_ascii=False),
+            ),
+        )
+        self.conn.commit()
+
+    def fetch_recheck_history(self, session_id: str, subject_key: str = "", student_code: str = "") -> list[dict[str, Any]]:
+        where = ["session_id = ?"]
+        params: list[Any] = [str(session_id or "")]
+        if str(subject_key or "").strip():
+            where.append("subject_key = ?")
+            params.append(str(subject_key).strip())
+        if str(student_code or "").strip():
+            where.append("student_code = ?")
+            params.append(str(student_code).strip())
+        sql = (
+            "SELECT exam_name, subject_key, student_code, exam_code, change_text, old_score, new_score, payload_json, created_at "
+            "FROM recheck_history "
+            f"WHERE {' AND '.join(where)} "
+            "ORDER BY id ASC"
+        )
+        rows = self.conn.execute(sql, tuple(params)).fetchall()
+        out: list[dict[str, Any]] = []
+        for exam_name, subject, student, exam_code, change_text, old_score, new_score, payload_json, created_at in rows:
+            try:
+                payload = json.loads(payload_json or "{}") if payload_json else {}
+            except Exception:
+                payload = {}
+            out.append(
+                {
+                    "exam_name": str(exam_name or ""),
+                    "subject_key": str(subject or ""),
+                    "student_code": str(student or ""),
+                    "exam_code": str(exam_code or ""),
+                    "change_text": str(change_text or ""),
+                    "old_score": float(old_score or 0.0),
+                    "new_score": float(new_score or 0.0),
+                    "payload": payload if isinstance(payload, dict) else {},
+                    "created_at": str(created_at or ""),
+                }
+            )
+        return out
 
 
 def bootstrap_application_db(path: str | Path | None = None, key: str | None = None) -> Path:
