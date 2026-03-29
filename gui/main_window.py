@@ -11595,17 +11595,28 @@ class MainWindow(QMainWindow):
         rows: list[dict[str, str]] = []
         if ext in {".csv", ".txt", ".tsv"}:
             raw = path.read_text(encoding="utf-8-sig", errors="ignore")
+            non_empty_lines = [ln for ln in raw.splitlines() if str(ln).strip()]
+            first_line = non_empty_lines[0] if non_empty_lines else ""
             if raw.strip():
-                try:
-                    dialect = csv.Sniffer().sniff(raw[:2048])
-                except Exception:
-                    dialect = csv.excel_tab if "\t" in raw.splitlines()[0] else csv.excel
+                force_tab = ext in {".tsv", ".txt"} and ("\t" in first_line)
+                if force_tab:
+                    dialect = csv.excel_tab
+                else:
+                    try:
+                        dialect = csv.Sniffer().sniff(raw[:2048])
+                    except Exception:
+                        dialect = csv.excel_tab if "\t" in first_line else csv.excel
             else:
                 dialect = csv.excel
             reader = csv.DictReader(raw.splitlines(), dialect=dialect)
-            headers = [str(x or "") for x in (reader.fieldnames or []) if str(x or "").strip()]
+            headers = [str(x or "").strip("\ufeff") for x in (reader.fieldnames or []) if str(x or "").strip()]
+            # Fallback: if sniffer chose wrong delimiter and collapsed header into one column,
+            # try tab-separated parsing explicitly.
+            if len(headers) <= 1 and "\t" in first_line:
+                reader = csv.DictReader(raw.splitlines(), dialect=csv.excel_tab)
+                headers = [str(x or "").strip("\ufeff") for x in (reader.fieldnames or []) if str(x or "").strip()]
             for row in reader:
-                rows.append({str(k): str(v or "") for k, v in (row or {}).items()})
+                rows.append({str(k).strip("\ufeff"): str(v or "") for k, v in (row or {}).items()})
             return headers, rows
         if ext == ".xlsx":
             try:
