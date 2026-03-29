@@ -3126,18 +3126,18 @@ class MainWindow(QMainWindow):
         # on some PySide6 builds (preventing "Internal C++ object ... already deleted").
         self.scoring_panel = QWidget(w)
 
-        self.score_preview_table = QTableWidget(0, 16, self.scoring_panel)
+        self.score_preview_table = QTableWidget(0, 17, self.scoring_panel)
         self.score_preview_table.setHorizontalHeaderLabels([
-            "Student ID", "Name", "Subject", "Exam Code", "MCQ đúng", "TF đúng", "NUM đúng", "Correct", "Wrong", "Blank", "Số câu FULL", "Điểm FULL", "Score", "MCQ đáp án|bài làm", "TF đáp án|bài làm", "NUM đáp án|bài làm"
+            "Student ID", "Name", "Subject", "Exam Code", "MCQ đúng", "TF đúng", "NUM đúng", "Correct", "Wrong", "Blank", "Số câu FULL", "Điểm FULL", "Score", "Điểm phúc tra", "MCQ đáp án|bài làm", "TF đáp án|bài làm", "NUM đáp án|bài làm"
         ])
         self.score_preview_table.verticalHeader().setVisible(False)
         self.score_preview_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.score_preview_table.horizontalHeader().setSectionResizeMode(13, QHeaderView.Stretch)
         self.score_preview_table.horizontalHeader().setSectionResizeMode(14, QHeaderView.Stretch)
         self.score_preview_table.horizontalHeader().setSectionResizeMode(15, QHeaderView.Stretch)
-        self.score_preview_table.setColumnWidth(13, 280)
+        self.score_preview_table.horizontalHeader().setSectionResizeMode(16, QHeaderView.Stretch)
         self.score_preview_table.setColumnWidth(14, 280)
-        self.score_preview_table.setColumnWidth(15, 320)
+        self.score_preview_table.setColumnWidth(15, 280)
+        self.score_preview_table.setColumnWidth(16, 320)
 
         self.scoring_subject_combo = QComboBox()
         self.scoring_subject_combo.currentIndexChanged.connect(self._handle_scoring_subject_changed)
@@ -3604,6 +3604,9 @@ class MainWindow(QMainWindow):
         self.score_rows = list(loaded_rows)
         self.score_preview_table.setRowCount(0)
         for i, r in enumerate(loaded_rows):
+            payload = cached_rows.get(str(r.student_id or "").strip(), {}) if isinstance(cached_rows, dict) else {}
+            recheck_score = payload.get("recheck_score", "") if isinstance(payload, dict) else ""
+            final_score_display = recheck_score if recheck_score not in {"", None} else r.score
             self.score_preview_table.insertRow(i)
             self.score_preview_table.setItem(i, 0, QTableWidgetItem(r.student_id or "-"))
             self.score_preview_table.setItem(i, 1, QTableWidgetItem(r.name or "-"))
@@ -3617,10 +3620,11 @@ class MainWindow(QMainWindow):
             self.score_preview_table.setItem(i, 9, QTableWidgetItem(str(r.blank)))
             self.score_preview_table.setItem(i, 10, QTableWidgetItem(str(getattr(r, "bonus_full_credit_count", 0))))
             self.score_preview_table.setItem(i, 11, QTableWidgetItem(str(getattr(r, "bonus_full_credit_points", 0.0))))
-            self.score_preview_table.setItem(i, 12, QTableWidgetItem(str(r.score)))
-            self.score_preview_table.setItem(i, 13, QTableWidgetItem(str(getattr(r, "mcq_compare", ""))))
-            self.score_preview_table.setItem(i, 14, QTableWidgetItem(str(getattr(r, "tf_compare", ""))))
-            self.score_preview_table.setItem(i, 15, QTableWidgetItem(str(getattr(r, "numeric_compare", ""))))
+            self.score_preview_table.setItem(i, 12, QTableWidgetItem(str(final_score_display)))
+            self.score_preview_table.setItem(i, 13, QTableWidgetItem(str(recheck_score if recheck_score != "" else "-")))
+            self.score_preview_table.setItem(i, 14, QTableWidgetItem(str(getattr(r, "mcq_compare", ""))))
+            self.score_preview_table.setItem(i, 15, QTableWidgetItem(str(getattr(r, "tf_compare", ""))))
+            self.score_preview_table.setItem(i, 16, QTableWidgetItem(str(getattr(r, "numeric_compare", ""))))
 
     def _handle_scoring_subject_changed(self, _index: int) -> None:
         subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
@@ -10979,9 +10983,9 @@ class MainWindow(QMainWindow):
             4: counts.get("MCQ", 0) > 0,
             5: counts.get("TF", 0) > 0,
             6: counts.get("NUMERIC", 0) > 0,
-            13: counts.get("MCQ", 0) > 0,
-            14: counts.get("TF", 0) > 0,
-            15: counts.get("NUMERIC", 0) > 0,
+            14: counts.get("MCQ", 0) > 0,
+            15: counts.get("TF", 0) > 0,
+            16: counts.get("NUMERIC", 0) > 0,
         }
         for col, is_visible in visibility.items():
             self.score_preview_table.setColumnHidden(col, not is_visible)
@@ -15854,6 +15858,10 @@ class MainWindow(QMainWindow):
         self.score_rows = rows
         self.score_preview_table.setRowCount(0)
         for i, r in enumerate(rows):
+            sid_key = str(r.student_id or "").strip()
+            existing_payload = prev_subject_scores.get(sid_key, {}) if sid_key else {}
+            recheck_score = existing_payload.get("recheck_score", "") if isinstance(existing_payload, dict) else ""
+            final_score_display = recheck_score if recheck_score not in {"", None} else r.score
             self.score_preview_table.insertRow(i)
             self.score_preview_table.setItem(i, 0, QTableWidgetItem(r.student_id or "-"))
             self.score_preview_table.setItem(i, 1, QTableWidgetItem(r.name or "-"))
@@ -15867,10 +15875,11 @@ class MainWindow(QMainWindow):
             self.score_preview_table.setItem(i, 9, QTableWidgetItem(str(r.blank)))
             self.score_preview_table.setItem(i, 10, QTableWidgetItem(str(getattr(r, "bonus_full_credit_count", 0))))
             self.score_preview_table.setItem(i, 11, QTableWidgetItem(str(getattr(r, "bonus_full_credit_points", 0.0))))
-            self.score_preview_table.setItem(i, 12, QTableWidgetItem(str(r.score)))
-            self.score_preview_table.setItem(i, 13, QTableWidgetItem(str(getattr(r, "mcq_compare", ""))))
-            self.score_preview_table.setItem(i, 14, QTableWidgetItem(str(getattr(r, "tf_compare", ""))))
-            self.score_preview_table.setItem(i, 15, QTableWidgetItem(str(getattr(r, "numeric_compare", ""))))
+            self.score_preview_table.setItem(i, 12, QTableWidgetItem(str(final_score_display)))
+            self.score_preview_table.setItem(i, 13, QTableWidgetItem(str(recheck_score if recheck_score not in {"", None} else "-")))
+            self.score_preview_table.setItem(i, 14, QTableWidgetItem(str(getattr(r, "mcq_compare", ""))))
+            self.score_preview_table.setItem(i, 15, QTableWidgetItem(str(getattr(r, "tf_compare", ""))))
+            self.score_preview_table.setItem(i, 16, QTableWidgetItem(str(getattr(r, "numeric_compare", ""))))
 
         phase = {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -15905,6 +15914,7 @@ class MainWindow(QMainWindow):
                     "wrong": r.wrong,
                     "blank": r.blank,
                     "score": r.score,
+                    "recheck_score": (prev_subject_scores.get(sid_key, {}) or {}).get("recheck_score", ""),
                     "phase": phase_marker,
                     "phase_timestamp": phase["timestamp"],
                     "phase_mode": mode_text,
@@ -15937,32 +15947,44 @@ class MainWindow(QMainWindow):
         if not ok or not subject_key:
             return
 
-        path, _ = QFileDialog.getOpenFileName(self, "Chọn file SBD phúc tra", "", "Data files (*.xlsx *.csv *.txt *.tsv);;All files (*.*)")
-        if not path:
-            return
-        try:
-            headers, rows = self._load_api_mapping_rows(Path(path))
-        except Exception as exc:
-            QMessageBox.warning(self, "Phúc tra", f"Không đọc được file SBD:\n{exc}")
-            return
-        if not rows:
-            QMessageBox.warning(self, "Phúc tra", "File SBD rỗng.")
-            return
-        sid_col, ok = QInputDialog.getItem(self, "Phúc tra", "Chọn cột SBD:", headers, 0, False)
-        if not ok or not sid_col:
-            return
-        requested_sids: list[str] = []
-        requested_norms: list[str] = []
-        for row_obj in rows:
-            raw_sid = str((row_obj or {}).get(sid_col, "") or "").strip()
-            norm_sid = self._normalized_student_id_for_match(raw_sid)
-            if not norm_sid:
-                continue
-            requested_sids.append(raw_sid or norm_sid)
-            requested_norms.append(norm_sid)
+        def _load_sid_list_from_file() -> list[str]:
+            path, _ = QFileDialog.getOpenFileName(self, "Chọn file SBD phúc tra", "", "Data files (*.xlsx *.csv *.txt *.tsv);;All files (*.*)")
+            if not path:
+                return []
+            try:
+                headers, data_rows = self._load_api_mapping_rows(Path(path))
+            except Exception as exc:
+                QMessageBox.warning(self, "Phúc tra", f"Không đọc được file SBD:\n{exc}")
+                return []
+            if not data_rows:
+                QMessageBox.warning(self, "Phúc tra", "File SBD rỗng.")
+                return []
+            sid_col_name, ok_pick = QInputDialog.getItem(self, "Phúc tra", "Chọn cột SBD:", headers, 0, False)
+            if not ok_pick or not sid_col_name:
+                return []
+            out: list[str] = []
+            for row_obj in data_rows:
+                raw_sid = str((row_obj or {}).get(sid_col_name, "") or "").strip()
+                if self._normalized_student_id_for_match(raw_sid):
+                    out.append(raw_sid)
+            return out
+
+        session_cfg = dict(self.session.config or {}) if self.session else {}
+        recheck_sid_lists = session_cfg.get("recheck_sid_lists", {}) if isinstance(session_cfg.get("recheck_sid_lists", {}), dict) else {}
+        cached_sid_list = [str(x).strip() for x in (recheck_sid_lists.get(subject_key, []) or []) if str(x).strip()]
+        requested_sids = list(cached_sid_list) if cached_sid_list else _load_sid_list_from_file()
+        requested_norms = [self._normalized_student_id_for_match(x) for x in requested_sids if self._normalized_student_id_for_match(x)]
         if not requested_norms:
-            QMessageBox.warning(self, "Phúc tra", "Không có SBD hợp lệ trong file.")
+            QMessageBox.warning(self, "Phúc tra", "Không có SBD hợp lệ để phúc tra.")
             return
+        if self.session:
+            cfg = dict(self.session.config or {})
+            sid_cache = cfg.get("recheck_sid_lists", {}) if isinstance(cfg.get("recheck_sid_lists", {}), dict) else {}
+            sid_cache[str(subject_key)] = list(requested_sids)
+            cfg["recheck_sid_lists"] = sid_cache
+            self.session.config = cfg
+            self.session_dirty = True
+            self._persist_session_quietly()
 
         result_rows = self.database.fetch_scan_results_for_subject(subject_key) or []
         scans = [self._deserialize_omr_result(x) for x in result_rows]
@@ -16032,12 +16054,28 @@ class MainWindow(QMainWindow):
 
         def _current_score_for_result(res: OMRResult) -> float:
             self._ensure_answer_keys_for_subject(subject_key)
-            key = self.answer_keys.get_flexible(subject_key, str(getattr(res, "exam_code", "") or "").strip()) if self.answer_keys else None
-            if not key:
-                return 0.0
             cfg = self._subject_config_by_subject_key(subject_key) or {}
+            all_subject_keys: list[SubjectKey] = []
+            if self.answer_keys is not None:
+                for key_obj in self.answer_keys.keys.values():
+                    if isinstance(key_obj, SubjectKey) and str(getattr(key_obj, "subject", "") or "").strip() == subject_key:
+                        all_subject_keys.append(key_obj)
+            fetched_keys = self.database.fetch_answer_keys_for_subject(subject_key)
+            for exam_code, key_obj in (fetched_keys or {}).items():
+                if not isinstance(key_obj, SubjectKey):
+                    continue
+                if any(str(k.exam_code or "").strip() == str(exam_code or "").strip() for k in all_subject_keys):
+                    continue
+                all_subject_keys.append(key_obj)
+            key = self.answer_keys.get_flexible(subject_key, str(getattr(res, "exam_code", "") or "").strip()) if self.answer_keys else None
             try:
-                return float(self.scoring_engine.score(res, key, student_name=str(getattr(res, "full_name", "") or ""), subject_config=cfg).score or 0.0)
+                if key:
+                    return float(self.scoring_engine.score(res, key, student_name=str(getattr(res, "full_name", "") or ""), subject_config=cfg).score or 0.0)
+                best = 0.0
+                for candidate in all_subject_keys:
+                    row = self.scoring_engine.score(res, candidate, student_name=str(getattr(res, "full_name", "") or ""), subject_config=cfg)
+                    best = max(best, float(getattr(row, "score", 0.0) or 0.0))
+                return best
             except Exception:
                 return 0.0
 
@@ -16058,8 +16096,13 @@ class MainWindow(QMainWindow):
         tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
         tbl.setSelectionMode(QAbstractItemView.SingleSelection)
         left_l.addWidget(tbl)
+        btn_add_list = QPushButton("Thêm danh sách")
         btn_export = QPushButton("Xuất Excel phúc tra")
-        left_l.addWidget(btn_export, alignment=Qt.AlignRight)
+        left_actions = QHBoxLayout()
+        left_actions.addWidget(btn_add_list)
+        left_actions.addStretch(1)
+        left_actions.addWidget(btn_export)
+        left_l.addLayout(left_actions)
         split.addWidget(left)
 
         right = QWidget()
@@ -16253,6 +16296,15 @@ class MainWindow(QMainWindow):
                     payload=payload,
                 )
             history_all[:] = self.database.fetch_recheck_history(str(self.current_session_id or ""), subject_key=subject_key)
+            subject_scores_map = self.scoring_results_by_subject.get(subject_key, {}) or {}
+            sid_key_new = str(getattr(res, "student_id", "") or "").strip()
+            if sid_key_new:
+                row_payload = dict(subject_scores_map.get(sid_key_new, {}) or {})
+                row_payload["recheck_score"] = float(new_score)
+                row_payload["score"] = row_payload.get("score", float(new_score))
+                row_payload["final_score"] = float(new_score)
+                subject_scores_map[sid_key_new] = row_payload
+                self.scoring_results_by_subject[subject_key] = subject_scores_map
             self.calculate_scores(subject_key=subject_key, mode="Tính lại toàn bộ", note="recheck_edit")
             sid = str(getattr(res, "student_id", "") or "").strip()
             prof = self._student_profile_by_id(sid)
@@ -16265,6 +16317,33 @@ class MainWindow(QMainWindow):
             lbl_score.setText(f"{new_score:g}")
             _refresh_history_for_sid(sid)
             QMessageBox.information(dlg, "Phúc tra", "Đã lưu chỉnh sửa, ghi lịch sử và tính lại điểm.")
+
+        def _add_sid_list() -> None:
+            fresh = _load_sid_list_from_file()
+            if not fresh:
+                return
+            decision = QMessageBox.question(
+                dlg,
+                "Thêm danh sách",
+                "Bạn muốn mở rộng danh sách hiện tại?\nYes = Mở rộng, No = Ghi đè, Cancel = Huỷ.",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                QMessageBox.Yes,
+            )
+            if decision == QMessageBox.Cancel:
+                return
+            current = list(requested_sids)
+            merged = current + fresh if decision == QMessageBox.Yes else fresh
+            if self.session:
+                cfg = dict(self.session.config or {})
+                sid_cache = cfg.get("recheck_sid_lists", {}) if isinstance(cfg.get("recheck_sid_lists", {}), dict) else {}
+                sid_cache[str(subject_key)] = merged
+                cfg["recheck_sid_lists"] = sid_cache
+                self.session.config = cfg
+                self.session_dirty = True
+                self._persist_session_quietly()
+            QMessageBox.information(dlg, "Thêm danh sách", "Đã cập nhật danh sách phúc tra. Cửa sổ sẽ mở lại theo danh sách mới.")
+            dlg.accept()
+            QTimer.singleShot(0, self.action_open_recheck)
 
         def _export_recheck_excel() -> None:
             path, _ = QFileDialog.getSaveFileName(dlg, "Xuất Excel phúc tra", "", "Excel (*.xlsx)")
@@ -16298,6 +16377,7 @@ class MainWindow(QMainWindow):
 
         tbl.itemSelectionChanged.connect(_on_pick)
         btn_save.clicked.connect(_save_current)
+        btn_add_list.clicked.connect(_add_sid_list)
         btn_export.clicked.connect(_export_recheck_excel)
         if tbl.rowCount() > 0:
             tbl.setCurrentCell(0, 0)
