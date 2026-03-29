@@ -544,6 +544,30 @@ class SubjectConfigDialog(QDialog):
         self.answer_codes.setText(", ".join(sorted(self.answer_key_data.keys())))
         self.answer_key.setText(path)
         self._refresh_answer_key_summary()
+        mapping_by_room_seed = data.get("exam_room_sbd_mapping_by_room", {})
+        if isinstance(mapping_by_room_seed, dict) and mapping_by_room_seed:
+            rebuilt: dict[str, list[str]] = {}
+            for room_key, vals in mapping_by_room_seed.items():
+                room_text = str(room_key or "").strip()
+                if not room_text:
+                    continue
+                chunks: list[str] = []
+                if isinstance(vals, (list, tuple, set)):
+                    chunks = [str(x).strip() for x in vals if str(x).strip()]
+                elif isinstance(vals, str):
+                    chunks = [x.strip() for x in vals.replace(";", ",").replace("\n", ",").split(",") if x.strip()]
+                if chunks:
+                    rebuilt[room_text] = sorted(set(chunks))
+            if rebuilt:
+                self._exam_room_mapping_cache = rebuilt
+                self._refresh_exam_room_mapping_selector()
+        else:
+            mapping_seed = str(data.get("exam_room_sbd_mapping", "") or "").strip()
+            if mapping_seed:
+                seed_sids = [x.strip() for x in mapping_seed.replace(";", ",").replace("\n", ",").split(",") if x.strip()]
+                key = seed_room or "[Không rõ phòng]"
+                self._exam_room_mapping_cache[key] = sorted(set(seed_sids))
+                self._refresh_exam_room_mapping_selector()
         self._update_total_score()
         QMessageBox.information(self, "Import đáp án", "Đã gắn toàn bộ mã đề của file đáp án cho môn đang cấu hình.")
 
