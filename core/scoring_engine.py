@@ -260,11 +260,13 @@ class ScoringEngine:
             normalized = {str(k).lower(): v for k, v in value.items()}
             for opt in ["a", "b", "c", "d"]:
                 if opt not in normalized:
+                    out.append("_")
                     continue
                 parsed = self._to_bool_mark(normalized.get(opt))
                 if parsed is None:
-                    continue
-                out.append("Đ" if parsed else "S")
+                    out.append("_")
+                else:
+                    out.append("Đ" if parsed else "S")
             return "".join(out)
 
         raw = str(value or "").strip().upper().replace(" ", "")

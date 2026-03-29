@@ -12057,9 +12057,29 @@ class MainWindow(QMainWindow):
             vals = blank_map.get(sec, [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            expected = self._expected_questions_by_section(result)
+            actual_map = {
+                "MCQ": {int(q) for q in (result.mcq_answers or {}).keys()},
+                "TF": {int(q) for q in (result.true_false_answers or {}).keys()},
+                "NUMERIC": {int(q) for q in (result.numeric_answers or {}).keys()},
+            }
+            for sec in ["MCQ", "TF", "NUMERIC"]:
+                expected_set = {int(q) for q in (expected.get(sec, []) or [])}
+                outside = sorted(actual_map.get(sec, set()) - expected_set)
+                if outside:
+                    blank_parts.append(f"{sec} ngoài cấu hình: {','.join(str(v) for v in outside)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
         expected = self._expected_questions_by_section(result)
         allow_mcq = set(expected.get("MCQ", []))
         allow_tf = set(expected.get("TF", []))
@@ -12254,9 +12274,29 @@ class MainWindow(QMainWindow):
             vals = blank_map.get(sec, [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            expected = self._expected_questions_by_section(result)
+            actual_map = {
+                "MCQ": {int(q) for q in (result.mcq_answers or {}).keys()},
+                "TF": {int(q) for q in (result.true_false_answers or {}).keys()},
+                "NUMERIC": {int(q) for q in (result.numeric_answers or {}).keys()},
+            }
+            for sec in ["MCQ", "TF", "NUMERIC"]:
+                expected_set = {int(q) for q in (expected.get(sec, []) or [])}
+                outside = sorted(actual_map.get(sec, set()) - expected_set)
+                if outside:
+                    blank_parts.append(f"{sec} ngoài cấu hình: {','.join(str(v) for v in outside)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
         expected = self._expected_questions_by_section(result)
         allow_mcq = set(expected.get("MCQ", []))
         allow_tf = set(expected.get("TF", []))
@@ -12360,9 +12400,29 @@ class MainWindow(QMainWindow):
             vals = blank_map.get(sec, [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            expected = self._expected_questions_by_section(result)
+            actual_map = {
+                "MCQ": {int(q) for q in (result.mcq_answers or {}).keys()},
+                "TF": {int(q) for q in (result.true_false_answers or {}).keys()},
+                "NUMERIC": {int(q) for q in (result.numeric_answers or {}).keys()},
+            }
+            for sec in ["MCQ", "TF", "NUMERIC"]:
+                expected_set = {int(q) for q in (expected.get(sec, []) or [])}
+                outside = sorted(actual_map.get(sec, set()) - expected_set)
+                if outside:
+                    blank_parts.append(f"{sec} ngoài cấu hình: {','.join(str(v) for v in outside)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
         expected = self._expected_questions_by_section(result)
         if expected.get("MCQ"):
             allow = set(expected["MCQ"])
@@ -12469,9 +12529,29 @@ class MainWindow(QMainWindow):
             vals = blank_map.get(sec, [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            expected = self._expected_questions_by_section(result)
+            actual_map = {
+                "MCQ": {int(q) for q in (result.mcq_answers or {}).keys()},
+                "TF": {int(q) for q in (result.true_false_answers or {}).keys()},
+                "NUMERIC": {int(q) for q in (result.numeric_answers or {}).keys()},
+            }
+            for sec in ["MCQ", "TF", "NUMERIC"]:
+                expected_set = {int(q) for q in (expected.get(sec, []) or [])}
+                outside = sorted(actual_map.get(sec, set()) - expected_set)
+                if outside:
+                    blank_parts.append(f"{sec} ngoài cấu hình: {','.join(str(v) for v in outside)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
         expected = self._expected_questions_by_section(result)
         if expected.get("MCQ"):
             allow = set(expected["MCQ"])
@@ -12578,9 +12658,29 @@ class MainWindow(QMainWindow):
             vals = blank_map.get(sec, [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            expected = self._expected_questions_by_section(result)
+            actual_map = {
+                "MCQ": {int(q) for q in (result.mcq_answers or {}).keys()},
+                "TF": {int(q) for q in (result.true_false_answers or {}).keys()},
+                "NUMERIC": {int(q) for q in (result.numeric_answers or {}).keys()},
+            }
+            for sec in ["MCQ", "TF", "NUMERIC"]:
+                expected_set = {int(q) for q in (expected.get(sec, []) or [])}
+                outside = sorted(actual_map.get(sec, set()) - expected_set)
+                if outside:
+                    blank_parts.append(f"{sec} ngoài cấu hình: {','.join(str(v) for v in outside)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
         expected = self._expected_questions_by_section(result)
         if expected.get("MCQ"):
             allow = set(expected["MCQ"])
@@ -12687,9 +12787,29 @@ class MainWindow(QMainWindow):
             vals = blank_map.get(sec, [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            expected = self._expected_questions_by_section(result)
+            actual_map = {
+                "MCQ": {int(q) for q in (result.mcq_answers or {}).keys()},
+                "TF": {int(q) for q in (result.true_false_answers or {}).keys()},
+                "NUMERIC": {int(q) for q in (result.numeric_answers or {}).keys()},
+            }
+            for sec in ["MCQ", "TF", "NUMERIC"]:
+                expected_set = {int(q) for q in (expected.get(sec, []) or [])}
+                outside = sorted(actual_map.get(sec, set()) - expected_set)
+                if outside:
+                    blank_parts.append(f"{sec} ngoài cấu hình: {','.join(str(v) for v in outside)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
         expected = self._expected_questions_by_section(result)
         if expected.get("MCQ"):
             allow = set(expected["MCQ"])
@@ -12796,9 +12916,29 @@ class MainWindow(QMainWindow):
             vals = blank_map.get(sec, [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            expected = self._expected_questions_by_section(result)
+            actual_map = {
+                "MCQ": {int(q) for q in (result.mcq_answers or {}).keys()},
+                "TF": {int(q) for q in (result.true_false_answers or {}).keys()},
+                "NUMERIC": {int(q) for q in (result.numeric_answers or {}).keys()},
+            }
+            for sec in ["MCQ", "TF", "NUMERIC"]:
+                expected_set = {int(q) for q in (expected.get(sec, []) or [])}
+                outside = sorted(actual_map.get(sec, set()) - expected_set)
+                if outside:
+                    blank_parts.append(f"{sec} ngoài cấu hình: {','.join(str(v) for v in outside)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
         expected = self._expected_questions_by_section(result)
         if expected.get("MCQ"):
             allow = set(expected["MCQ"])
@@ -12905,9 +13045,29 @@ class MainWindow(QMainWindow):
             vals = blank_map.get(sec, [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            expected = self._expected_questions_by_section(result)
+            actual_map = {
+                "MCQ": {int(q) for q in (result.mcq_answers or {}).keys()},
+                "TF": {int(q) for q in (result.true_false_answers or {}).keys()},
+                "NUMERIC": {int(q) for q in (result.numeric_answers or {}).keys()},
+            }
+            for sec in ["MCQ", "TF", "NUMERIC"]:
+                expected_set = {int(q) for q in (expected.get(sec, []) or [])}
+                outside = sorted(actual_map.get(sec, set()) - expected_set)
+                if outside:
+                    blank_parts.append(f"{sec} ngoài cấu hình: {','.join(str(v) for v in outside)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
         expected = self._expected_questions_by_section(result)
         if expected.get("MCQ"):
             allow = set(expected["MCQ"])
@@ -13014,9 +13174,29 @@ class MainWindow(QMainWindow):
             vals = blank_map.get(sec, [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            expected = self._expected_questions_by_section(result)
+            actual_map = {
+                "MCQ": {int(q) for q in (result.mcq_answers or {}).keys()},
+                "TF": {int(q) for q in (result.true_false_answers or {}).keys()},
+                "NUMERIC": {int(q) for q in (result.numeric_answers or {}).keys()},
+            }
+            for sec in ["MCQ", "TF", "NUMERIC"]:
+                expected_set = {int(q) for q in (expected.get(sec, []) or [])}
+                outside = sorted(actual_map.get(sec, set()) - expected_set)
+                if outside:
+                    blank_parts.append(f"{sec} ngoài cấu hình: {','.join(str(v) for v in outside)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
         expected = self._expected_questions_by_section(result)
         if expected.get("MCQ"):
             allow = set(expected["MCQ"])
@@ -13123,9 +13303,29 @@ class MainWindow(QMainWindow):
             vals = blank_map.get(sec, [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            expected = self._expected_questions_by_section(result)
+            actual_map = {
+                "MCQ": {int(q) for q in (result.mcq_answers or {}).keys()},
+                "TF": {int(q) for q in (result.true_false_answers or {}).keys()},
+                "NUMERIC": {int(q) for q in (result.numeric_answers or {}).keys()},
+            }
+            for sec in ["MCQ", "TF", "NUMERIC"]:
+                expected_set = {int(q) for q in (expected.get(sec, []) or [])}
+                outside = sorted(actual_map.get(sec, set()) - expected_set)
+                if outside:
+                    blank_parts.append(f"{sec} ngoài cấu hình: {','.join(str(v) for v in outside)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
         expected = self._expected_questions_by_section(result)
         if expected.get("MCQ"):
             allow = set(expected["MCQ"])
@@ -13232,9 +13432,29 @@ class MainWindow(QMainWindow):
             vals = blank_map.get(sec, [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            expected = self._expected_questions_by_section(result)
+            actual_map = {
+                "MCQ": {int(q) for q in (result.mcq_answers or {}).keys()},
+                "TF": {int(q) for q in (result.true_false_answers or {}).keys()},
+                "NUMERIC": {int(q) for q in (result.numeric_answers or {}).keys()},
+            }
+            for sec in ["MCQ", "TF", "NUMERIC"]:
+                expected_set = {int(q) for q in (expected.get(sec, []) or [])}
+                outside = sorted(actual_map.get(sec, set()) - expected_set)
+                if outside:
+                    blank_parts.append(f"{sec} ngoài cấu hình: {','.join(str(v) for v in outside)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
         expected = self._expected_questions_by_section(result)
         if expected.get("MCQ"):
             allow = set(expected["MCQ"])
@@ -13341,9 +13561,29 @@ class MainWindow(QMainWindow):
             vals = blank_map.get(sec, [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            expected = self._expected_questions_by_section(result)
+            actual_map = {
+                "MCQ": {int(q) for q in (result.mcq_answers or {}).keys()},
+                "TF": {int(q) for q in (result.true_false_answers or {}).keys()},
+                "NUMERIC": {int(q) for q in (result.numeric_answers or {}).keys()},
+            }
+            for sec in ["MCQ", "TF", "NUMERIC"]:
+                expected_set = {int(q) for q in (expected.get(sec, []) or [])}
+                outside = sorted(actual_map.get(sec, set()) - expected_set)
+                if outside:
+                    blank_parts.append(f"{sec} ngoài cấu hình: {','.join(str(v) for v in outside)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
         expected = self._expected_questions_by_section(result)
         if expected.get("MCQ"):
             allow = set(expected["MCQ"])
@@ -13450,9 +13690,29 @@ class MainWindow(QMainWindow):
             vals = blank_map.get(sec, [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            expected = self._expected_questions_by_section(result)
+            actual_map = {
+                "MCQ": {int(q) for q in (result.mcq_answers or {}).keys()},
+                "TF": {int(q) for q in (result.true_false_answers or {}).keys()},
+                "NUMERIC": {int(q) for q in (result.numeric_answers or {}).keys()},
+            }
+            for sec in ["MCQ", "TF", "NUMERIC"]:
+                expected_set = {int(q) for q in (expected.get(sec, []) or [])}
+                outside = sorted(actual_map.get(sec, set()) - expected_set)
+                if outside:
+                    blank_parts.append(f"{sec} ngoài cấu hình: {','.join(str(v) for v in outside)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
         expected = self._expected_questions_by_section(result)
         if expected.get("MCQ"):
             allow = set(expected["MCQ"])
@@ -13559,9 +13819,29 @@ class MainWindow(QMainWindow):
             vals = blank_map.get(sec, [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            expected = self._expected_questions_by_section(result)
+            actual_map = {
+                "MCQ": {int(q) for q in (result.mcq_answers or {}).keys()},
+                "TF": {int(q) for q in (result.true_false_answers or {}).keys()},
+                "NUMERIC": {int(q) for q in (result.numeric_answers or {}).keys()},
+            }
+            for sec in ["MCQ", "TF", "NUMERIC"]:
+                expected_set = {int(q) for q in (expected.get(sec, []) or [])}
+                outside = sorted(actual_map.get(sec, set()) - expected_set)
+                if outside:
+                    blank_parts.append(f"{sec} ngoài cấu hình: {','.join(str(v) for v in outside)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
         expected = self._expected_questions_by_section(result)
         if expected.get("MCQ"):
             allow = set(expected["MCQ"])
@@ -13668,9 +13948,29 @@ class MainWindow(QMainWindow):
             vals = blank_map.get(sec, [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            expected = self._expected_questions_by_section(result)
+            actual_map = {
+                "MCQ": {int(q) for q in (result.mcq_answers or {}).keys()},
+                "TF": {int(q) for q in (result.true_false_answers or {}).keys()},
+                "NUMERIC": {int(q) for q in (result.numeric_answers or {}).keys()},
+            }
+            for sec in ["MCQ", "TF", "NUMERIC"]:
+                expected_set = {int(q) for q in (expected.get(sec, []) or [])}
+                outside = sorted(actual_map.get(sec, set()) - expected_set)
+                if outside:
+                    blank_parts.append(f"{sec} ngoài cấu hình: {','.join(str(v) for v in outside)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
         expected = self._expected_questions_by_section(result)
         if expected.get("MCQ"):
             allow = set(expected["MCQ"])
@@ -13777,9 +14077,29 @@ class MainWindow(QMainWindow):
             vals = blank_map.get(sec, [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            expected = self._expected_questions_by_section(result)
+            actual_map = {
+                "MCQ": {int(q) for q in (result.mcq_answers or {}).keys()},
+                "TF": {int(q) for q in (result.true_false_answers or {}).keys()},
+                "NUMERIC": {int(q) for q in (result.numeric_answers or {}).keys()},
+            }
+            for sec in ["MCQ", "TF", "NUMERIC"]:
+                expected_set = {int(q) for q in (expected.get(sec, []) or [])}
+                outside = sorted(actual_map.get(sec, set()) - expected_set)
+                if outside:
+                    blank_parts.append(f"{sec} ngoài cấu hình: {','.join(str(v) for v in outside)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
         expected = self._expected_questions_by_section(result)
         allow_mcq = set(expected.get("MCQ", []))
         allow_tf = set(expected.get("TF", []))
@@ -13817,7 +14137,7 @@ class MainWindow(QMainWindow):
             self.scan_blank_summary[idx] = blank_map
             self.scan_blank_questions[idx] = blank_map.get("MCQ", [])
             if idx < self.scan_list.rowCount():
-                self.scan_list.setItem(idx, 4, QTableWidgetItem(self._build_recognition_content_text(scoped, blank_map)))
+                self.scan_list.setItem(idx, 5, QTableWidgetItem(self._build_recognition_content_text(scoped, blank_map)))
                 sid_item = self.scan_list.item(idx, 0)
                 if sid_item:
                     sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(scoped))
@@ -14609,21 +14929,17 @@ class MainWindow(QMainWindow):
             resolved_room = self._subject_room_for_student_id(sid, cfg)
             resolved_room_norm = self._normalized_room_for_match(resolved_room)
             unresolved_room = resolved_room_norm in {"", self._normalized_room_for_match("[Không rõ phòng]"), self._normalized_room_for_match("Không rõ phòng")}
-            if (
-                sid
-                and all_sids
-                and sid_norm in all_sids
-                and has_room_assignment
-                and unresolved_room
-            ):
-                parts.append("Sai SBD phòng thi")
+            if sid and all_sids and sid_norm not in all_sids:
+                parts.append("Lỗi SBD")
+            elif sid and all_sids and sid_norm in all_sids and has_room_assignment and unresolved_room:
+                parts.append("Lỗi SBD")
             elif sid and all_sids and sid_norm in all_sids and room_sids and sid_norm not in room_sids:
-                parts.append("Sai SBD phòng thi")
+                parts.append("Lỗi SBD")
         avail_codes = self._available_exam_codes()
         code = (exam_code_text or "").strip()
         norm_code = self._normalize_exam_code_text(code)
         if not code or "?" in code or (avail_codes and (code not in avail_codes and norm_code not in avail_codes)):
-            parts.append("Lỗi mã đề")
+            parts.append("Lỗi Mã đề")
         return parts
 
     def _subject_student_room_scope(self) -> tuple[set[str], set[str]]:
