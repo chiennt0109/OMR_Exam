@@ -16378,9 +16378,9 @@ class MainWindow(QMainWindow):
             if new_sid:
                 res.student_id = new_sid
             res.exam_code = new_exam
-            res.mcq_answers = {int(k): str(v or "").strip().upper()[:1] for k, v in (new_mcq or {}).items() if str(v or "").strip()}
+            res.mcq_answers = {int(k): str(v or "").strip().upper()[:1] for k, v in (new_mcq or {}).items()}
             res.true_false_answers = {int(k): dict(v or {}) for k, v in (new_tf or {}).items()}
-            res.numeric_answers = {int(k): str(v or "").strip() for k, v in (new_numeric or {}).items() if str(v or "").strip()}
+            res.numeric_answers = {int(k): str(v or "").strip() for k, v in (new_numeric or {}).items()}
             res.answer_string = ""
             self._persist_single_scan_result_to_db(res, note="recheck_edit")
             new_score = _current_score_for_result(res)
