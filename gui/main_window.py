@@ -1965,7 +1965,7 @@ class MainWindow(QMainWindow):
         btn_delete = self._make_row_icon_button(style.standardIcon(QStyle.SP_TrashIcon), "Xoá bài thi", lambda _=False, r=row: self._delete_scan_row_by_index(r))
         lay.addWidget(btn_edit)
         lay.addWidget(btn_delete)
-        self.scan_list.setCellWidget(row, 6, holder)
+        self.scan_list.setCellWidget(row, 7, holder)
 
     def _edit_scan_row_by_index(self, row: int) -> None:
         if row < 0 or row >= self.scan_list.rowCount():
@@ -3032,7 +3032,7 @@ class MainWindow(QMainWindow):
         batch_form.addRow("", action_row)
 
         self.filter_column = QComboBox()
-        self.filter_column.addItems(["STUDENT ID", "Họ tên", "Ngày sinh", "Nội dung", "Status"])
+        self.filter_column.addItems(["STUDENT ID", "Phòng thi", "Họ tên", "Ngày sinh", "Nội dung", "Status"])
         self.filter_column.currentTextChanged.connect(self._apply_scan_filter)
         self.search_value = QLineEdit()
         self.search_value.setPlaceholderText("Filter theo tiêu đề bảng đang chọn")
@@ -3042,8 +3042,8 @@ class MainWindow(QMainWindow):
         search_row.addWidget(self.filter_column)
         search_row.addWidget(self.search_value)
 
-        self.scan_list = QTableWidget(0, 7)
-        self.scan_list.setHorizontalHeaderLabels(["STUDENT ID", "Mã đề", "Họ tên", "Ngày sinh", "Nội dung", "Status", "Chức năng"])
+        self.scan_list = QTableWidget(0, 8)
+        self.scan_list.setHorizontalHeaderLabels(["STUDENT ID", "Phòng thi", "Mã đề", "Họ tên", "Ngày sinh", "Nội dung", "Status", "Chức năng"])
         self.scan_list.verticalHeader().setVisible(False)
         self.scan_list.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.scan_list.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -3054,6 +3054,7 @@ class MainWindow(QMainWindow):
         self.scan_list.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
         self.scan_list.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
         self.scan_list.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
+        self.scan_list.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeToContents)
         self.scan_list.horizontalHeader().sectionClicked.connect(self._on_scan_header_clicked)
         self.scan_list.itemSelectionChanged.connect(self._on_scan_selected)
         self.scan_list.cellDoubleClicked.connect(self._open_edit_selected_scan)
@@ -10481,7 +10482,7 @@ class MainWindow(QMainWindow):
         self._refresh_student_profile_for_result(result, idx)
         scoped = self._scoped_result_copy(result)
         self.scan_blank_summary[idx] = self._compute_blank_questions(scoped)
-        self.scan_list.setItem(idx, 4, QTableWidgetItem(self._build_recognition_content_text(result, self.scan_blank_summary[idx])))
+        self.scan_list.setItem(idx, 5, QTableWidgetItem(self._build_recognition_content_text(result, self.scan_blank_summary[idx])))
         sid_item = self.scan_list.item(idx, 0)
         if sid_item:
             sid_item.setText((result.student_id or "").strip() or "-")
@@ -10850,8 +10851,9 @@ class MainWindow(QMainWindow):
         setattr(result, "class_name", str(profile.get("class_name", "") or ""))
         setattr(result, "exam_room", str(profile.get("exam_room", "") or ""))
         if row_idx is not None and 0 <= row_idx < self.scan_list.rowCount():
-            self.scan_list.setItem(row_idx, 2, QTableWidgetItem(str(getattr(result, "full_name", "") or "-")))
-            self.scan_list.setItem(row_idx, 3, QTableWidgetItem(str(getattr(result, "birth_date", "") or "-")))
+            self.scan_list.setItem(row_idx, 1, QTableWidgetItem(str(getattr(result, "exam_room", "") or "-")))
+            self.scan_list.setItem(row_idx, 3, QTableWidgetItem(str(getattr(result, "full_name", "") or "-")))
+            self.scan_list.setItem(row_idx, 4, QTableWidgetItem(str(getattr(result, "birth_date", "") or "-")))
 
     @staticmethod
     def _normalized_student_id_for_match(student_id: str) -> str:
@@ -11205,10 +11207,11 @@ class MainWindow(QMainWindow):
                     "image_path": str(sid_item.data(Qt.UserRole) if sid_item else ""),
                     "exam_code": str(sid_item.data(Qt.UserRole + 1) if sid_item else ""),
                     "recognized_short": str(sid_item.data(Qt.UserRole + 2) if sid_item else ""),
-                    "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                    "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                    "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                    "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                    "exam_room": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
+                    "full_name": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
+                    "birth_date": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                    "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                    "status": self.scan_list.item(r, 6).text() if self.scan_list.item(r, 6) else "-",
                 }
             )
 
@@ -11247,14 +11250,15 @@ class MainWindow(QMainWindow):
             sid_item.setData(Qt.UserRole + 1, str(row.get("exam_code", "") or ""))
             sid_item.setData(Qt.UserRole + 2, str(row.get("recognized_short", "") or ""))
             self.scan_list.setItem(r, 0, sid_item)
-            self.scan_list.setItem(r, 1, QTableWidgetItem(str(row.get("exam_code", "-") or "-")))
-            self.scan_list.setItem(r, 2, QTableWidgetItem(str(row.get("full_name", "-"))))
-            self.scan_list.setItem(r, 3, QTableWidgetItem(str(row.get("birth_date", "-"))))
-            self.scan_list.setItem(r, 4, QTableWidgetItem(str(row.get("content", "-"))))
+            self.scan_list.setItem(r, 1, QTableWidgetItem(str(row.get("exam_room", "-") or "-")))
+            self.scan_list.setItem(r, 2, QTableWidgetItem(str(row.get("exam_code", "-") or "-")))
+            self.scan_list.setItem(r, 3, QTableWidgetItem(str(row.get("full_name", "-"))))
+            self.scan_list.setItem(r, 4, QTableWidgetItem(str(row.get("birth_date", "-"))))
+            self.scan_list.setItem(r, 5, QTableWidgetItem(str(row.get("content", "-"))))
             st = QTableWidgetItem(str(row.get("status", "-")))
             if st.text() != "OK":
                 st.setForeground(Qt.red)
-            self.scan_list.setItem(r, 5, st)
+            self.scan_list.setItem(r, 6, st)
             self._set_scan_action_widget(r)
 
         for row in (cached.get("preview", []) if isinstance(cached.get("preview", []), list) else []):
@@ -12137,14 +12141,15 @@ class MainWindow(QMainWindow):
             sid_item.setData(Qt.UserRole + 1, exam_code_text)
             sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(result))
             self.scan_list.setItem(idx, 0, sid_item)
-            self.scan_list.setItem(idx, 1, QTableWidgetItem(exam_code_text or "-"))
-            self.scan_list.setItem(idx, 2, QTableWidgetItem(full_name))
-            self.scan_list.setItem(idx, 3, QTableWidgetItem(birth_date))
-            self.scan_list.setItem(idx, 4, QTableWidgetItem(content_text))
+            self.scan_list.setItem(idx, 1, QTableWidgetItem(str(getattr(result, "exam_room", "") or "-")))
+            self.scan_list.setItem(idx, 2, QTableWidgetItem(exam_code_text or "-"))
+            self.scan_list.setItem(idx, 3, QTableWidgetItem(full_name))
+            self.scan_list.setItem(idx, 4, QTableWidgetItem(birth_date))
+            self.scan_list.setItem(idx, 5, QTableWidgetItem(content_text))
             status_item = QTableWidgetItem(status)
             if status != "OK":
                 status_item.setForeground(Qt.red)
-            self.scan_list.setItem(idx, 5, status_item)
+            self.scan_list.setItem(idx, 6, status_item)
             self._set_scan_action_widget(idx)
             for issue in result.issues:
                 self.error_list.addItem(f"{Path(result.image_path).name}: {issue.code} - {issue.message}")
@@ -14003,14 +14008,15 @@ class MainWindow(QMainWindow):
             sid_item.setData(Qt.UserRole + 1, str(item["exam_code"] or ""))
             sid_item.setData(Qt.UserRole + 2, str(item["recognized_short"] or ""))
             self.scan_list.setItem(idx, 0, sid_item)
-            self.scan_list.setItem(idx, 1, QTableWidgetItem(str(item["exam_code"] or "-")))
-            self.scan_list.setItem(idx, 2, QTableWidgetItem(str(item["full_name"] or "-")))
-            self.scan_list.setItem(idx, 3, QTableWidgetItem(str(item["birth_date"] or "-")))
-            self.scan_list.setItem(idx, 4, QTableWidgetItem(str(item["content"] or "")))
+            self.scan_list.setItem(idx, 1, QTableWidgetItem(str(getattr(item["result"], "exam_room", "") or "-")))
+            self.scan_list.setItem(idx, 2, QTableWidgetItem(str(item["exam_code"] or "-")))
+            self.scan_list.setItem(idx, 3, QTableWidgetItem(str(item["full_name"] or "-")))
+            self.scan_list.setItem(idx, 4, QTableWidgetItem(str(item["birth_date"] or "-")))
+            self.scan_list.setItem(idx, 5, QTableWidgetItem(str(item["content"] or "")))
             status_item = QTableWidgetItem(str(item["status"] or "OK"))
             if str(item["status"] or "OK") != "OK":
                 status_item.setForeground(Qt.red)
-            self.scan_list.setItem(idx, 5, status_item)
+            self.scan_list.setItem(idx, 6, status_item)
             self._set_scan_action_widget(idx)
 
     def _finalize_batch_scan_display(self, refresh_statuses: bool = True) -> None:
@@ -14050,12 +14056,13 @@ class MainWindow(QMainWindow):
         sid_item.setData(Qt.UserRole + 1, exam_code_text)
         sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(scoped))
         self.scan_list.setItem(idx, 0, sid_item)
-        self.scan_list.setItem(idx, 1, QTableWidgetItem((result.exam_code or "").strip() or "-"))
-        self.scan_list.setItem(idx, 2, QTableWidgetItem(str(getattr(result, "full_name", "") or "-")))
-        self.scan_list.setItem(idx, 3, QTableWidgetItem(str(getattr(result, "birth_date", "") or "-")))
+        self.scan_list.setItem(idx, 1, QTableWidgetItem(str(getattr(result, "exam_room", "") or "-")))
+        self.scan_list.setItem(idx, 2, QTableWidgetItem((result.exam_code or "").strip() or "-"))
+        self.scan_list.setItem(idx, 3, QTableWidgetItem(str(getattr(result, "full_name", "") or "-")))
+        self.scan_list.setItem(idx, 4, QTableWidgetItem(str(getattr(result, "birth_date", "") or "-")))
         self.scan_list.setItem(
             idx,
-            4,
+            5,
             QTableWidgetItem(self._build_recognition_content_text(scoped, self.scan_blank_summary.get(idx, {"MCQ": [], "TF": [], "NUMERIC": []}))),
         )
 
@@ -14082,8 +14089,9 @@ class MainWindow(QMainWindow):
             image_path = str(sid_item.data(Qt.UserRole) if sid_item else "").strip()
             if image_path:
                 result.image_path = image_path
-            setattr(result, "full_name", str(self.scan_list.item(idx, 2).text() if self.scan_list.item(idx, 2) else ""))
-            setattr(result, "birth_date", str(self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else ""))
+            setattr(result, "exam_room", str(self.scan_list.item(idx, 1).text() if self.scan_list.item(idx, 1) else ""))
+            setattr(result, "full_name", str(self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else ""))
+            setattr(result, "birth_date", str(self.scan_list.item(idx, 4).text() if self.scan_list.item(idx, 4) else ""))
             out.append(result)
         return out
 
@@ -14099,8 +14107,9 @@ class MainWindow(QMainWindow):
             student_id = ""
         exam_code = str(sid_item.data(Qt.UserRole + 1) if sid_item else "").strip()
         result = OMRResult(image_path=image_path, student_id=student_id, exam_code=exam_code)
-        result.full_name = str(self.scan_list.item(idx, 2).text() if self.scan_list.item(idx, 2) else "")
-        result.birth_date = str(self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else "")
+        result.exam_room = str(self.scan_list.item(idx, 1).text() if self.scan_list.item(idx, 1) else "")
+        result.full_name = str(self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else "")
+        result.birth_date = str(self.scan_list.item(idx, 4).text() if self.scan_list.item(idx, 4) else "")
         result.sync_legacy_aliases()
         return result
 
@@ -14426,11 +14435,11 @@ class MainWindow(QMainWindow):
 
     def _update_scan_preview_from_saved_row(self, row: int) -> None:
         sid = self.scan_list.item(row, 0).text() if self.scan_list.item(row, 0) else "-"
-        exam_code_cell = self.scan_list.item(row, 1).text() if self.scan_list.item(row, 1) else "-"
-        full_name = self.scan_list.item(row, 2).text() if self.scan_list.item(row, 2) else "-"
-        birth = self.scan_list.item(row, 3).text() if self.scan_list.item(row, 3) else "-"
-        content = self.scan_list.item(row, 4).text() if self.scan_list.item(row, 4) else "-"
-        status = self.scan_list.item(row, 5).text() if self.scan_list.item(row, 5) else "-"
+        exam_code_cell = self.scan_list.item(row, 2).text() if self.scan_list.item(row, 2) else "-"
+        full_name = self.scan_list.item(row, 3).text() if self.scan_list.item(row, 3) else "-"
+        birth = self.scan_list.item(row, 4).text() if self.scan_list.item(row, 4) else "-"
+        content = self.scan_list.item(row, 5).text() if self.scan_list.item(row, 5) else "-"
+        status = self.scan_list.item(row, 6).text() if self.scan_list.item(row, 6) else "-"
         img_path = ""
         exam_code = ""
         recognized_short = ""
@@ -14750,7 +14759,7 @@ class MainWindow(QMainWindow):
         if row < 0:
             return
         # Only show edit history when clicking the Status column.
-        if col != 5:
+        if col != 6:
             return
         history = self.scan_edit_history.get(row, [])
         if not history:
@@ -14778,9 +14787,9 @@ class MainWindow(QMainWindow):
                 if not self._student_id_has_recognition_error(v) and v == sid:
                     dup += 1
         status_parts = self._status_parts_for_row("" if self._student_id_has_recognition_error(sid) else sid, exam_code_text, dup)
-        name_item = self.scan_list.item(row_idx, 2)
+        name_item = self.scan_list.item(row_idx, 3)
         name_text = name_item.text().strip() if name_item else ""
-        birth_item = self.scan_list.item(row_idx, 3)
+        birth_item = self.scan_list.item(row_idx, 4)
         birth_text = birth_item.text().strip() if birth_item else ""
         if not self._student_id_has_recognition_error(sid) and (self._name_missing(name_text) or self._birth_date_missing(birth_text)):
             status_parts.append("Lỗi SBD")
@@ -14794,7 +14803,7 @@ class MainWindow(QMainWindow):
         item = QTableWidgetItem(status)
         if status != "OK":
             item.setForeground(Qt.red)
-        self.scan_list.setItem(idx, 5, item)
+        self.scan_list.setItem(idx, 6, item)
 
     def _update_scan_preview(self, index: int) -> None:
         if index < 0 or index >= len(self.scan_results):
