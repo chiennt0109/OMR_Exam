@@ -16569,11 +16569,34 @@ class MainWindow(QMainWindow):
 
         def _expected_questions(exam_code_text: str, res_obj: OMRResult | None = None) -> dict[str, list[int]]:
             key_obj = _answer_key_for_exam(exam_code_text)
+            if not key_obj:
+                fetched = self.database.fetch_answer_keys_for_subject(subject_key) or {}
+                for _code, raw_key in fetched.items():
+                    if isinstance(raw_key, SubjectKey):
+                        key_obj = raw_key
+                        break
+                    if isinstance(raw_key, dict):
+                        key_obj = SubjectKey(
+                            subject=subject_key,
+                            exam_code=str(_code or "").strip(),
+                            answers={int(k): str(v) for k, v in ((raw_key.get("mcq_answers", {}) or {}).items() if isinstance(raw_key.get("mcq_answers", {}), dict) else [])},
+                            true_false_answers={int(k): dict(v or {}) for k, v in ((raw_key.get("true_false_answers", {}) or {}).items() if isinstance(raw_key.get("true_false_answers", {}), dict) else [])},
+                            numeric_answers={int(k): str(v) for k, v in ((raw_key.get("numeric_answers", {}) or {}).items() if isinstance(raw_key.get("numeric_answers", {}), dict) else [])},
+                        )
+                        break
+            configured_counts = self._subject_section_question_counts(subject_key)
             if key_obj:
-                mcq_qs = sorted(int(q) for q in (key_obj.answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
-                tf_qs = sorted(int(q) for q in (key_obj.true_false_answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
-                num_qs = sorted(int(q) for q in (key_obj.numeric_answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
-                return {"MCQ": mcq_qs, "TF": tf_qs, "NUMERIC": num_qs}
+                mcq_all = sorted(int(q) for q in (key_obj.answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
+                tf_all = sorted(int(q) for q in (key_obj.true_false_answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
+                num_all = sorted(int(q) for q in (key_obj.numeric_answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
+                mcq_cnt = max(0, int(configured_counts.get("MCQ", 0) or 0))
+                tf_cnt = max(0, int(configured_counts.get("TF", 0) or 0))
+                num_cnt = max(0, int(configured_counts.get("NUMERIC", 0) or 0))
+                return {
+                    "MCQ": mcq_all[:mcq_cnt] if mcq_cnt > 0 else mcq_all,
+                    "TF": tf_all[:tf_cnt] if tf_cnt > 0 else tf_all,
+                    "NUMERIC": num_all[:num_cnt] if num_cnt > 0 else num_all,
+                }
             if isinstance(res_obj, OMRResult):
                 mcq_qs = sorted(int(q) for q in ((getattr(res_obj, "mcq_answers", {}) or {}).keys()) if str(q).strip().lstrip("-").isdigit())
                 tf_qs = sorted(int(q) for q in ((getattr(res_obj, "true_false_answers", {}) or {}).keys()) if str(q).strip().lstrip("-").isdigit())
