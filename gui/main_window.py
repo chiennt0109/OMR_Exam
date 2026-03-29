@@ -14603,15 +14603,18 @@ class MainWindow(QMainWindow):
             all_sids, room_sids = self._subject_student_room_scope()
             sid_norm = self._normalized_student_id_for_match(sid)
             cfg = self._selected_batch_subject_config() or {}
-            selected_room = str(cfg.get("exam_room_name", "") or "").strip()
+            mapping_text = str(cfg.get("exam_room_sbd_mapping", "") or "").strip()
+            mapping_by_room = cfg.get("exam_room_sbd_mapping_by_room", {}) if isinstance(cfg.get("exam_room_sbd_mapping_by_room", {}), dict) else {}
+            has_room_assignment = bool(mapping_text or mapping_by_room)
             resolved_room = self._subject_room_for_student_id(sid, cfg)
+            resolved_room_norm = self._normalized_room_for_match(resolved_room)
+            unresolved_room = resolved_room_norm in {"", self._normalized_room_for_match("[Không rõ phòng]"), self._normalized_room_for_match("Không rõ phòng")}
             if (
                 sid
                 and all_sids
                 and sid_norm in all_sids
-                and selected_room
-                and resolved_room
-                and self._normalized_room_for_match(resolved_room) != self._normalized_room_for_match(selected_room)
+                and has_room_assignment
+                and unresolved_room
             ):
                 parts.append("Sai SBD phòng thi")
             elif sid and all_sids and sid_norm in all_sids and room_sids and sid_norm not in room_sids:
