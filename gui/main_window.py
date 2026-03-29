@@ -11746,23 +11746,40 @@ class MainWindow(QMainWindow):
             numeric_layout = [(x, 0) for x in range(next_q + 1, next_q + numeric_count + 1)]
         tf_true_chars = {"Đ", "đ", "D", "d", "T", "t", "1", "Y", "y"}
 
-        def _section_layout_from_subject_cfg(exam_code_text: str) -> tuple[list[int], list[int], list[tuple[int, int]]]:
-            imported = self._subject_imported_answer_keys_for_main(subject_cfg or {})
-            if not imported:
-                return [], [], []
+        def _section_layout_from_subject_cfg(exam_code_text: str) -> tuple[list[int], list[int], list[tuple[int, int]], bool]:
             exam_text = str(exam_code_text or "").strip()
-            payload = imported.get(exam_text)
+            exam_norm = self._normalize_exam_code_text(exam_text)
+            payload = None
+
+            configured = self.database.fetch_answer_keys_for_subject(subject_key_for_results) or {}
+            if configured:
+                payload = configured.get(exam_text)
+                if payload is None:
+                    for k, v in configured.items():
+                        if self._normalize_exam_code_text(str(k or "")) == exam_norm:
+                            payload = v
+                            break
+
             if payload is None:
-                exam_norm = self._normalize_exam_code_text(exam_text)
-                for k, v in imported.items():
-                    if self._normalize_exam_code_text(str(k)) == exam_norm:
-                        payload = v
-                        break
-            if not isinstance(payload, dict):
-                return [], [], []
-            mcq_payload = payload.get("mcq_answers", {}) if isinstance(payload.get("mcq_answers", {}), dict) else {}
-            tf_payload = payload.get("true_false_answers", {}) if isinstance(payload.get("true_false_answers", {}), dict) else {}
-            numeric_payload = payload.get("numeric_answers", {}) if isinstance(payload.get("numeric_answers", {}), dict) else {}
+                imported = self._subject_imported_answer_keys_for_main(subject_cfg or {})
+                payload = imported.get(exam_text) if isinstance(imported, dict) else None
+                if payload is None and isinstance(imported, dict):
+                    for k, v in imported.items():
+                        if self._normalize_exam_code_text(str(k or "")) == exam_norm:
+                            payload = v
+                            break
+
+            if isinstance(payload, SubjectKey):
+                mcq_payload = payload.answers if isinstance(payload.answers, dict) else {}
+                tf_payload = payload.true_false_answers if isinstance(payload.true_false_answers, dict) else {}
+                numeric_payload = payload.numeric_answers if isinstance(payload.numeric_answers, dict) else {}
+            elif isinstance(payload, dict):
+                mcq_payload = payload.get("mcq_answers", {}) if isinstance(payload.get("mcq_answers", {}), dict) else {}
+                tf_payload = payload.get("true_false_answers", {}) if isinstance(payload.get("true_false_answers", {}), dict) else {}
+                numeric_payload = payload.get("numeric_answers", {}) if isinstance(payload.get("numeric_answers", {}), dict) else {}
+            else:
+                return [], [], [], False
+
             mcq_q: list[int] = []
             tf_q: list[int] = []
             numeric_layout: list[tuple[int, int]] = []
@@ -11781,7 +11798,7 @@ class MainWindow(QMainWindow):
                     numeric_layout.append((int(q_raw), len(str(ans or ""))))
                 except Exception:
                     pass
-            return sorted(set(mcq_q)), sorted(set(tf_q)), sorted(numeric_layout, key=lambda x: int(x[0]))
+            return sorted(set(mcq_q)), sorted(set(tf_q)), sorted(numeric_layout, key=lambda x: int(x[0])), True
 
         def _parse_answer_string(
             raw_answer: str,
@@ -11872,13 +11889,15 @@ class MainWindow(QMainWindow):
             row_mcq_questions = list(mcq_questions)
             row_tf_questions = list(tf_questions)
             row_numeric_layout = list(numeric_layout)
-            cfg_mcq_q, cfg_tf_q, cfg_num_layout = _section_layout_from_subject_cfg(result.exam_code)
+            cfg_mcq_q, cfg_tf_q, cfg_num_layout, exam_code_valid = _section_layout_from_subject_cfg(result.exam_code)
             if cfg_mcq_q:
                 row_mcq_questions = list(cfg_mcq_q)
             if cfg_tf_q:
                 row_tf_questions = list(cfg_tf_q)
-            if cfg_num_layout:
+            if exam_code_valid and cfg_num_layout:
                 row_numeric_layout = list(cfg_num_layout)
+            elif not exam_code_valid:
+                row_numeric_layout = []
             mcq_map, tf_map, numeric_map, rebuilt_answer = _parse_answer_string(raw_answer, row_mcq_questions, row_tf_questions, row_numeric_layout)
             result.mcq_answers = mcq_map
             result.true_false_answers = tf_map
