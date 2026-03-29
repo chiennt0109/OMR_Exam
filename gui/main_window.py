@@ -16062,11 +16062,29 @@ class MainWindow(QMainWindow):
                         all_subject_keys.append(key_obj)
             fetched_keys = self.database.fetch_answer_keys_for_subject(subject_key)
             for exam_code, key_obj in (fetched_keys or {}).items():
-                if not isinstance(key_obj, SubjectKey):
+                if isinstance(key_obj, SubjectKey):
+                    candidate_key = key_obj
+                elif isinstance(key_obj, dict):
+                    candidate_key = SubjectKey(
+                        subject=subject_key,
+                        exam_code=str(exam_code or "").strip(),
+                        answers={int(k): str(v) for k, v in ((key_obj.get("mcq_answers", {}) or {}).items() if isinstance(key_obj.get("mcq_answers", {}), dict) else [])},
+                        true_false_answers={int(k): dict(v or {}) for k, v in ((key_obj.get("true_false_answers", {}) or {}).items() if isinstance(key_obj.get("true_false_answers", {}), dict) else [])},
+                        numeric_answers={int(k): str(v) for k, v in ((key_obj.get("numeric_answers", {}) or {}).items() if isinstance(key_obj.get("numeric_answers", {}), dict) else [])},
+                        full_credit_questions={
+                            str(sec): [int(x) for x in vals if str(x).strip().lstrip("-").isdigit()]
+                            for sec, vals in ((key_obj.get("full_credit_questions", {}) or {}).items() if isinstance(key_obj.get("full_credit_questions", {}), dict) else [])
+                        },
+                        invalid_answer_rows={
+                            str(sec): {int(q): str(v) for q, v in (bucket or {}).items() if str(q).strip().lstrip("-").isdigit()}
+                            for sec, bucket in ((key_obj.get("invalid_answer_rows", {}) or {}).items() if isinstance(key_obj.get("invalid_answer_rows", {}), dict) else [])
+                        },
+                    )
+                else:
                     continue
                 if any(str(k.exam_code or "").strip() == str(exam_code or "").strip() for k in all_subject_keys):
                     continue
-                all_subject_keys.append(key_obj)
+                all_subject_keys.append(candidate_key)
             key = self.answer_keys.get_flexible(subject_key, str(getattr(res, "exam_code", "") or "").strip()) if self.answer_keys else None
             try:
                 if key:
