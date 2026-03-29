@@ -16842,7 +16842,7 @@ class MainWindow(QMainWindow):
                 res = entry.get("result")
                 sid = str(getattr(res, "student_id", "") or "").strip() if isinstance(res, OMRResult) else str(entry.get("requested_sid", "") or "").strip()
                 prof = self._student_profile_by_id(sid)
-                score_value = tbl.item(i, 7).text() if tbl.item(i, 7) else "-"
+                score_value = tbl.item(i, 6).text() if tbl.item(i, 6) else "-"
                 h_items = [x for x in history_all if str(x.get("student_code", "") or "").strip() == sid]
                 h_text = "\n".join(f"[{str(x.get('created_at', '') or '-')}] {str(x.get('change_text', '') or '-')}" for x in h_items) or "-"
                 ws.append([
