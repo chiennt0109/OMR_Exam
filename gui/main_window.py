@@ -1431,6 +1431,8 @@ class MainWindow(QMainWindow):
         self._switching_batch_subject = False
         self._template_cache_by_path: dict[str, Template] = {}
         self._answer_keys_ready_subjects: set[str] = set()
+        self._batch_scan_running = False
+        self._batch_cancel_requested = False
         self.preview_drag_active = False
         self.preview_last_pos = None
         self.setCentralWidget(self.stack)
@@ -2410,7 +2412,7 @@ class MainWindow(QMainWindow):
                     except Exception:
                         continue
                 if restored:
-                    self.scan_results_by_subject[key] = restored
+                    self.scan_results_by_subject[self._batch_result_subject_key(key)] = restored
             self.subject_catalog = list(cfg.get("subject_catalog", self.subject_catalog)) or self.subject_catalog
             self.block_catalog = list(cfg.get("block_catalog", self.block_catalog)) or self.block_catalog
             if self.session.answer_key_path:
@@ -3285,7 +3287,7 @@ class MainWindow(QMainWindow):
 
     def _collect_current_subject_results_for_save(self, subject_key: str) -> list[OMRResult]:
         key = str(subject_key or "").strip()
-        base_results = list(self.scan_results_by_subject.get(key) or self.scan_results or [])
+        base_results = list(self.scan_results_by_subject.get(self._batch_result_subject_key(key)) or self.scan_results or [])
         row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
         if row_count <= 0:
             return base_results
@@ -3322,21 +3324,25 @@ class MainWindow(QMainWindow):
         subject = str(subject_key or "").strip()
         if not subject:
             return []
-        rows = self.database.fetch_scan_results_for_subject(subject)
+        scoped_subject = self._batch_result_subject_key(subject)
+        rows = self.database.fetch_scan_results_for_subject(scoped_subject)
+        if not rows and scoped_subject != subject:
+            # Legacy fallback (older sessions saved by raw subject key).
+            rows = self.database.fetch_scan_results_for_subject(subject)
         if not rows:
             cached_results = self._cached_subject_scans_from_config(subject)
             if cached_results:
                 for result in cached_results:
                     result.answer_string = self._build_answer_string_for_result(result, subject)
-                self.database.replace_scan_results_for_subject(subject, [self._serialize_omr_result(x) for x in cached_results])
-                rows = self.database.fetch_scan_results_for_subject(subject)
+                self.database.replace_scan_results_for_subject(scoped_subject, [self._serialize_omr_result(x) for x in cached_results])
+                rows = self.database.fetch_scan_results_for_subject(scoped_subject)
         refreshed: list[OMRResult] = []
         for item in rows:
             try:
                 refreshed.append(self._deserialize_omr_result(item))
             except Exception:
                 continue
-        self.scan_results_by_subject[subject] = list(refreshed)
+        self.scan_results_by_subject[scoped_subject] = list(refreshed)
         return refreshed
 
     def _refresh_dashboard_summary_from_db(self, subject_key: str) -> None:
@@ -3426,11 +3432,11 @@ class MainWindow(QMainWindow):
         self._refresh_all_statuses()
         current_results = self._current_scan_results_snapshot()
         self.scan_results = list(current_results)
-        self.scan_results_by_subject[subject_key] = list(current_results)
+        self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(current_results)
         for result in current_results:
             result.answer_string = self._build_answer_string_for_result(result, subject_key)
             if persist_to_db:
-                self.database.upsert_scan_result(subject_key, self._serialize_omr_result(result))
+                self.database.upsert_scan_result(self._batch_result_subject_key(subject_key), self._serialize_omr_result(result))
         return subject_key, current_results
 
     # [deduplicated] removed duplicate method block(s): _back_to_batch_scan, _build_correction_tab, _cached_subject_scans_from_config, _deserialize_omr_result, _eligible_scoring_subject_keys, _ensure_answer_keys_for_subject, _is_subject_marked_batched, _open_scoring_view, _populate_scoring_subjects, _refresh_scoring_phase_table, _resolve_preferred_scoring_subject, _run_scoring_from_panel, _save_batch_for_selected_subject, _serialize_omr_result, _show_batch_scan_panel, _show_scoring_panel, _subject_config_by_subject_key, _subject_configs_for_scoring, _subject_key_from_cfg
@@ -3511,7 +3517,7 @@ class MainWindow(QMainWindow):
 
     def _is_subject_marked_batched(self, cfg: dict) -> bool:
         key = self._subject_key_from_cfg(cfg)
-        if self.scan_results_by_subject.get(key):
+        if self.scan_results_by_subject.get(self._batch_result_subject_key(key)):
             return True
         merged = self._merge_saved_batch_snapshot(cfg)
         if bool(merged.get("batch_saved")):
@@ -3605,6 +3611,13 @@ class MainWindow(QMainWindow):
         name = str(cfg.get("name", "") or "").strip()
         block = str(cfg.get("block", "") or "").strip()
         return f"{name}_{block}" if name and block else (name or "General")
+
+    def _batch_result_subject_key(self, subject_key: str) -> str:
+        base = str(subject_key or "").strip()
+        session_id = str(self.current_session_id or "").strip()
+        if session_id and base:
+            return f"{session_id}::{base}"
+        return base
 
     def _resolve_preferred_scoring_subject(self) -> str:
         if self.stack.currentIndex() == 1:
@@ -3795,7 +3808,7 @@ class MainWindow(QMainWindow):
 
             if self.session:
                 self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
-            self.scan_results_by_subject[subject_key] = list(current_results)
+            self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(current_results)
             if isinstance(self.batch_editor_return_payload, dict):
                 self.batch_editor_return_payload["subject_configs"] = subject_cfgs
             # Update lightweight UI state only; do not trigger full subject/grid reload after save.
@@ -4532,7 +4545,7 @@ class MainWindow(QMainWindow):
 
     def _recognized_image_paths_for_subject(self, subject_key: str) -> set[str]:
         key = str(subject_key or "").strip()
-        rows = list(self.scan_results_by_subject.get(key) or [])
+        rows = list(self.scan_results_by_subject.get(self._batch_result_subject_key(key)) or [])
         if not rows and key:
             rows = list(self._refresh_scan_results_from_db(key) or [])
         return {
@@ -4732,7 +4745,7 @@ class MainWindow(QMainWindow):
                 self._update_batch_scan_scope_summary()
                 return
 
-            cached_subject_rows = list(self.scan_results_by_subject.get(subject_key, []) or [])
+            cached_subject_rows = list(self.scan_results_by_subject.get(self._batch_result_subject_key(subject_key), []) or [])
             self.scan_results = cached_subject_rows if cached_subject_rows else self._refresh_scan_results_from_db(subject_key)
             if self.scan_results:
                 self._populate_scan_grid_from_results(self.scan_results, skip_expensive_checks=True)
@@ -4746,7 +4759,7 @@ class MainWindow(QMainWindow):
             self._switching_batch_subject = False
 
     def _cache_working_batch_state(self, subject_key: str) -> None:
-        key = str(subject_key or "").strip()
+        key = self._batch_result_subject_key(subject_key)
         if not key or not hasattr(self, "scan_list"):
             return
 
@@ -4784,7 +4797,7 @@ class MainWindow(QMainWindow):
         }
 
     def _restore_cached_working_batch_state(self, subject_key: str) -> bool:
-        key = str(subject_key or "").strip()
+        key = self._batch_result_subject_key(subject_key)
         cached = self.batch_working_state_by_subject.get(key)
         if not isinstance(cached, dict):
             return False
@@ -4915,6 +4928,19 @@ class MainWindow(QMainWindow):
         return result, False
 
     def run_batch_scan(self) -> None:
+        if self._batch_scan_running:
+            confirm_cancel = QMessageBox.question(
+                self,
+                "Huỷ Batch Scan",
+                "Batch Scan đang chạy. Bạn có muốn huỷ không?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if confirm_cancel == QMessageBox.Yes:
+                self._batch_cancel_requested = True
+            return
+        self._batch_cancel_requested = False
+
         subject_cfg = self._selected_batch_subject_config() or self._resolve_subject_config_for_batch()
         if subject_cfg:
             subject_cfg = self._merge_saved_batch_snapshot(subject_cfg)
@@ -5025,6 +5051,7 @@ class MainWindow(QMainWindow):
             return
 
         subject_key_for_results = self._subject_key_from_cfg(subject_cfg) if subject_cfg else self._resolve_preferred_scoring_subject()
+        subject_db_key = self._batch_result_subject_key(subject_key_for_results)
         existing_results = list(self._refresh_scan_results_from_db(subject_key_for_results) or [])
         recognized_paths = {
             str(getattr(item, "image_path", "") or "").strip()
@@ -5061,60 +5088,71 @@ class MainWindow(QMainWindow):
         batch_started = time.perf_counter()
 
         def on_progress(current: int, total: int, image_path: str):
+            if self._batch_cancel_requested:
+                raise RuntimeError("BATCH_CANCELLED")
             self.progress.setMaximum(total)
             self.progress.setValue(current)
             QApplication.processEvents()
 
-        if file_scope_mode == "all":
-            self.database.delete_scan_results_for_subject(subject_key_for_results)
-            self.scan_results = []
-        else:
-            self.scan_results = list(existing_results)
-        duplicate_ids: dict[str, int] = {}
-        for existing in self.scan_results:
-            sid_existing = (existing.student_id or "").strip()
-            if not self._student_id_has_recognition_error(sid_existing):
-                duplicate_ids[sid_existing] = duplicate_ids.get(sid_existing, 0) + 1
+        self._batch_scan_running = True
+        try:
+            if file_scope_mode == "all":
+                self.database.delete_scan_results_for_subject(subject_db_key)
+                self.scan_results = []
+            else:
+                self.scan_results = list(existing_results)
+            duplicate_ids: dict[str, int] = {}
+            for existing in self.scan_results:
+                sid_existing = (existing.student_id or "").strip()
+                if not self._student_id_has_recognition_error(sid_existing):
+                    duplicate_ids[sid_existing] = duplicate_ids.get(sid_existing, 0) + 1
 
-        base_count = len(self.scan_results)
-        new_results = self.omr_processor.process_batch(file_paths, self.template, on_progress)
-        for offset, result in enumerate(new_results):
-            idx = base_count + offset
-            forced_status = ""
-            original_meaningful = self._result_has_meaningful_recognition(result)
-            original_identity = self._has_valid_identity(result)
+            base_count = len(self.scan_results)
+            new_results = self.omr_processor.process_batch(file_paths, self.template, on_progress)
+            for offset, result in enumerate(new_results):
+                idx = base_count + offset
+                forced_status = ""
+                original_meaningful = self._result_has_meaningful_recognition(result)
+                original_identity = self._has_valid_identity(result)
 
-            # Keep batch behavior aligned with Template Editor by default (no auto-rotation retry).
-            need_retry_180 = self._allow_batch_auto_rotate_retry() and ((not original_identity) or (not original_meaningful))
-            if need_retry_180:
-                retried, improved = self._try_reprocess_result_rotated_180(result)
-                # Accept 180° retry only when quality is strictly improved, otherwise keep original orientation.
-                if improved:
-                    result = retried
-                    self.preview_rotation_by_index[idx] = (int(self.preview_rotation_by_index.get(idx, 0) or 0) + 180) % 360
+                # Keep batch behavior aligned with Template Editor by default (no auto-rotation retry).
+                need_retry_180 = self._allow_batch_auto_rotate_retry() and ((not original_identity) or (not original_meaningful))
+                if need_retry_180:
+                    retried, improved = self._try_reprocess_result_rotated_180(result)
+                    # Accept 180° retry only when quality is strictly improved, otherwise keep original orientation.
+                    if improved:
+                        result = retried
+                        self.preview_rotation_by_index[idx] = (int(self.preview_rotation_by_index.get(idx, 0) or 0) + 180) % 360
 
-            if self._should_force_image_error_status(result):
-                # Keep raw recognition data for consistency with single-image re-recognition,
-                # but only mark image-file error when recognition is truly unusable/file-loading failed.
-                forced_status = "Lỗi file ảnh"
+                if self._should_force_image_error_status(result):
+                    # Keep raw recognition data for consistency with single-image re-recognition,
+                    # but only mark image-file error when recognition is truly unusable/file-loading failed.
+                    forced_status = "Lỗi file ảnh"
 
-            if forced_status:
-                self.scan_forced_status_by_index[idx] = forced_status
+                if forced_status:
+                    self.scan_forced_status_by_index[idx] = forced_status
 
-            self._refresh_student_profile_for_result(result)
-            result.answer_string = self._build_answer_string_for_result(result, subject_key_for_results)
-            self.scan_results.append(self._strip_transient_scan_artifacts(result))
-            sid_for_dup = (result.student_id or "").strip()
-            if not self._student_id_has_recognition_error(sid_for_dup):
-                duplicate_ids[sid_for_dup] = duplicate_ids.get(sid_for_dup, 0) + 1
+                self._refresh_student_profile_for_result(result)
+                result.answer_string = self._build_answer_string_for_result(result, subject_key_for_results)
+                self.scan_results.append(self._strip_transient_scan_artifacts(result))
+                sid_for_dup = (result.student_id or "").strip()
+                if not self._student_id_has_recognition_error(sid_for_dup):
+                    duplicate_ids[sid_for_dup] = duplicate_ids.get(sid_for_dup, 0) + 1
 
-            # Keep UI responsive while filling table after recognition reaches 100%.
-            if offset % 10 == 0:
-                QApplication.processEvents()
+                # Keep UI responsive while filling table after recognition reaches 100%.
+                if offset % 10 == 0:
+                    QApplication.processEvents()
+        except RuntimeError as exc:
+            if str(exc) != "BATCH_CANCELLED":
+                raise
+            QMessageBox.information(self, "Batch Scan", "Đã huỷ Batch Scan.")
+        finally:
+            self._batch_scan_running = False
+            self._batch_cancel_requested = False
 
-        self.scan_results_by_subject[subject_key_for_results] = list(self.scan_results)
+        self.scan_results_by_subject[subject_db_key] = list(self.scan_results)
         self.database.replace_scan_results_for_subject(
-            subject_key_for_results,
+            subject_db_key,
             [self._serialize_omr_result(x) for x in self.scan_results],
         )
 
@@ -5503,7 +5541,7 @@ class MainWindow(QMainWindow):
             return
 
         if file_scope_mode == "all":
-            self.database.delete_scan_results_for_subject(subject_key_for_results)
+            self.database.delete_scan_results_for_subject(self._batch_result_subject_key(subject_key_for_results))
             self.scan_results = []
         else:
             self.scan_results = list(self._refresh_scan_results_from_db(subject_key_for_results) or [])
@@ -5511,8 +5549,8 @@ class MainWindow(QMainWindow):
         for r in out:
             by_path[str(r.image_path)] = r
         self.scan_results = list(by_path.values())
-        self.scan_results_by_subject[subject_key_for_results] = list(self.scan_results)
-        self.database.replace_scan_results_for_subject(subject_key_for_results, [self._serialize_omr_result(x) for x in self.scan_results])
+        self.scan_results_by_subject[self._batch_result_subject_key(subject_key_for_results)] = list(self.scan_results)
+        self.database.replace_scan_results_for_subject(self._batch_result_subject_key(subject_key_for_results), [self._serialize_omr_result(x) for x in self.scan_results])
         self._populate_scan_grid_from_results(self.scan_results)
         self._finalize_batch_scan_display()
         self._update_batch_scan_scope_summary()
@@ -7939,7 +7977,7 @@ class MainWindow(QMainWindow):
         self.scan_results = [item["result"] for item in row_views]
         subject_key = self._current_batch_subject_key()
         if subject_key:
-            self.scan_results_by_subject[subject_key] = list(self.scan_results)
+            self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(self.scan_results)
         self.scan_blank_questions = {idx: list(item["blank_map"].get("MCQ", [])) for idx, item in enumerate(row_views)}
         self.scan_blank_summary = {idx: dict(item["blank_map"]) for idx, item in enumerate(row_views)}
         self.scan_forced_status_by_index = {idx: str(item["forced_status"] or "") for idx, item in enumerate(row_views) if str(item["forced_status"] or "")}
@@ -8343,7 +8381,7 @@ class MainWindow(QMainWindow):
         self._set_scan_result_at_row(idx, new_result)
         subject_key = self._current_batch_subject_key()
         if subject_key:
-            self.scan_results_by_subject[subject_key] = list(self.scan_results)
+            self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(self.scan_results)
         self.scan_blank_questions[idx] = blank_map.get("MCQ", [])
         self.scan_blank_summary[idx] = blank_map
         self._update_scan_row_from_result(idx, new_result)
@@ -8822,18 +8860,18 @@ class MainWindow(QMainWindow):
             self.database.log_change("scan_results", str(getattr(res, "image_path", "") or idx), source, "", message, source)
 
     def _persist_scan_results_to_db(self, subject_key: str) -> None:
-        source_rows = list(self.scan_results_by_subject.get(subject_key, self.scan_results) or [])
+        source_rows = list(self.scan_results_by_subject.get(self._batch_result_subject_key(subject_key), self.scan_results) or [])
         for result in source_rows:
             result.answer_string = self._build_answer_string_for_result(result, subject_key)
         rows = [self._serialize_omr_result(x) for x in source_rows]
-        self.database.replace_scan_results_for_subject(subject_key, rows)
-        self.database.log_change("scan_results", subject_key, "replace_subject_rows", "", f"{len(rows)} rows", "batch_save")
+        self.database.replace_scan_results_for_subject(self._batch_result_subject_key(subject_key), rows)
+        self.database.log_change("scan_results", self._batch_result_subject_key(subject_key), "replace_subject_rows", "", f"{len(rows)} rows", "batch_save")
         self._refresh_scan_results_from_db(subject_key)
 
     def _persist_single_scan_result_to_db(self, result: OMRResult, note: str = "") -> None:
         subject_key = self._current_batch_subject_key()
         result.answer_string = self._build_answer_string_for_result(result, subject_key)
-        self.database.update_scan_result_payload(subject_key, str(getattr(result, "image_path", "") or ""), self._serialize_omr_result(result), note=note)
+        self.database.update_scan_result_payload(self._batch_result_subject_key(subject_key), str(getattr(result, "image_path", "") or ""), self._serialize_omr_result(result), note=note)
 
     def _refresh_all_statuses(self) -> None:
         duplicate_count_map: dict[str, int] = {}
@@ -9871,11 +9909,11 @@ class MainWindow(QMainWindow):
     def calculate_scores(self, subject_key: str = "", mode: str = "Tính lại toàn bộ", note: str = "") -> list:
         subject = (subject_key or self._resolve_preferred_scoring_subject() or "General").strip()
         current_subject, current_results = self._sync_current_batch_subject_snapshot(persist_to_db=True)
-        subject_scans = self._refresh_scan_results_from_db(subject) or self.scan_results_by_subject.get(subject, [])
+        subject_scans = self._refresh_scan_results_from_db(subject) or self.scan_results_by_subject.get(self._batch_result_subject_key(subject), [])
         if not subject_scans:
             subject_scans = self._cached_subject_scans_from_config(subject)
             if subject_scans:
-                self.scan_results_by_subject[subject] = list(subject_scans)
+                self.scan_results_by_subject[self._batch_result_subject_key(subject)] = list(subject_scans)
         cfg = self._selected_batch_subject_config()
         current_key = self._subject_key_from_cfg(cfg) if cfg else ""
         if current_key == subject and current_subject == subject and current_results:
@@ -9883,11 +9921,11 @@ class MainWindow(QMainWindow):
         elif current_key == subject and hasattr(self, "scan_list") and self.scan_list.rowCount() > 0:
             subject_scans = self._current_scan_results_snapshot()
             self.scan_results = list(subject_scans)
-            self.scan_results_by_subject[subject] = list(subject_scans)
+            self.scan_results_by_subject[self._batch_result_subject_key(subject)] = list(subject_scans)
         elif not subject_scans and self.scan_results:
             if current_key == subject:
                 subject_scans = list(self.scan_results)
-                self.scan_results_by_subject[subject] = list(subject_scans)
+                self.scan_results_by_subject[self._batch_result_subject_key(subject)] = list(subject_scans)
         if not subject_scans:
             QMessageBox.warning(self, "Missing data", "Môn này chưa có dữ liệu Batch Scan để tính điểm.")
             return []
@@ -10110,7 +10148,7 @@ class MainWindow(QMainWindow):
         self.database.set_app_state(sid_cache_key, list(requested_sids))
         self.database.set_app_state(flag_key, True)
 
-        result_rows = self.database.fetch_scan_results_for_subject(subject_key) or []
+        result_rows = self.database.fetch_scan_results_for_subject(self._batch_result_subject_key(subject_key)) or []
         scans = [self._deserialize_omr_result(x) for x in result_rows]
         scan_by_sid_norm: dict[str, OMRResult] = {}
         for scan_item in scans:
