@@ -8563,33 +8563,45 @@ class MainWindow(QMainWindow):
         subject_scope: tuple[set[str], set[str]] | None = None,
         available_exam_codes: set[str] | None = None,
     ) -> list[str]:
-        parts: list[str] = []
-        if self._student_id_has_recognition_error(sid):
-            parts.append("Lỗi SBD")
-        elif sid and duplicate_count > 1:
-            parts.append("Trùng SBD")
+        sid_text = str(sid or "").strip()
+        has_sid_error = False
+        has_duplicate = False
+        has_exam_code_error = False
+
+        if self._student_id_has_recognition_error(sid_text):
+            has_sid_error = True
+            has_duplicate = duplicate_count > 1
         else:
+            has_duplicate = duplicate_count > 1
             all_sids, room_sids = subject_scope if subject_scope is not None else self._subject_student_room_scope()
-            sid_norm = self._normalized_student_id_for_match(sid)
+            sid_norm = self._normalized_student_id_for_match(sid_text)
+            profile = self._resolve_student_profile_for_status(sid_text)
             cfg = self._selected_batch_subject_config() or {}
-            mapping_text = str(cfg.get("exam_room_sbd_mapping", "") or "").strip()
-            mapping_by_room = cfg.get("exam_room_sbd_mapping_by_room", {}) if isinstance(cfg.get("exam_room_sbd_mapping_by_room", {}), dict) else {}
-            has_room_assignment = bool(mapping_text or mapping_by_room)
-            resolved_room = self._subject_room_for_student_id(sid, cfg)
-            resolved_room_norm = self._normalized_room_for_match(resolved_room)
-            unresolved_room = resolved_room_norm in {"", self._normalized_room_for_match("[Không rõ phòng]"), self._normalized_room_for_match("Không rõ phòng")}
-            if sid and all_sids and sid_norm not in all_sids:
-                parts.append("Lỗi SBD")
-            elif sid and all_sids and sid_norm in all_sids and has_room_assignment and unresolved_room:
-                parts.append("Lỗi SBD")
-            elif sid and all_sids and sid_norm in all_sids and room_sids and sid_norm not in room_sids:
-                parts.append("Lỗi SBD")
-        avail_codes = available_exam_codes if available_exam_codes is not None else self._available_exam_codes()
-        code = (exam_code_text or "").strip()
-        norm_code = self._normalize_exam_code_text(code)
-        if not code or "?" in code or (avail_codes and (code not in avail_codes and norm_code not in avail_codes)):
-            parts.append("Lỗi Mã đề")
-        return parts
+
+            if not self._has_valid_student_reference(sid_text):
+                has_sid_error = True
+            elif all_sids and sid_norm not in all_sids:
+                has_sid_error = True
+            else:
+                room_text = self._subject_room_for_student_id(sid_text, cfg)
+                if self._is_missing_room_for_status(room_text):
+                    has_sid_error = True
+                elif room_sids and sid_norm not in room_sids:
+                    has_sid_error = True
+                elif self._is_missing_name_for_status(str(profile.get("name", "") or "")):
+                    has_sid_error = True
+
+        if not self._is_valid_exam_code_for_subject(exam_code_text, available_exam_codes=available_exam_codes):
+            has_exam_code_error = True
+
+        ordered: list[str] = []
+        if has_sid_error:
+            ordered.append("Lỗi SBD")
+        if has_duplicate:
+            ordered.append("Trùng SBD")
+        if has_exam_code_error:
+            ordered.append("Lỗi Mã đề")
+        return ordered
 
     def _subject_student_room_scope(self) -> tuple[set[str], set[str]]:
         all_sids: set[str] = set()
@@ -8667,6 +8679,40 @@ class MainWindow(QMainWindow):
         return sid in {"", "-"} or ("?" in sid)
 
     @staticmethod
+    def _is_missing_name_for_status(name_text: str) -> bool:
+        return str(name_text or "").strip() in {"", "-"}
+
+    def _resolve_student_profile_for_status(self, student_id: str) -> dict:
+        sid = str(student_id or "").strip()
+        if not sid:
+            return {}
+        profile = self._student_profile_by_id(sid)
+        return dict(profile) if isinstance(profile, dict) else {}
+
+    def _has_valid_student_reference(self, student_id: str) -> bool:
+        profile = self._resolve_student_profile_for_status(student_id)
+        return bool(profile) and not self._is_missing_name_for_status(str(profile.get("name", "") or ""))
+
+    def _is_missing_room_for_status(self, room_text: str) -> bool:
+        normalized = self._normalized_room_for_match(str(room_text or ""))
+        return normalized in {
+            "",
+            self._normalized_room_for_match("-"),
+            self._normalized_room_for_match("Không rõ phòng"),
+            self._normalized_room_for_match("[Không rõ phòng]"),
+        }
+
+    def _is_valid_exam_code_for_subject(self, exam_code_text: str, available_exam_codes: set[str] | None = None) -> bool:
+        code = str(exam_code_text or "").strip()
+        if not code or code == "-" or "?" in code:
+            return False
+        valid_codes = available_exam_codes if available_exam_codes is not None else self._available_exam_codes()
+        if not valid_codes:
+            return True
+        norm_code = self._normalize_exam_code_text(code)
+        return code in valid_codes or norm_code in valid_codes
+
+    @staticmethod
     def _name_missing(name_text: str) -> bool:
         name = str(name_text or "").strip()
         return name in {"", "-"}
@@ -8680,20 +8726,13 @@ class MainWindow(QMainWindow):
     ) -> list[str]:
         sid = str(getattr(result, "student_id", "") or "").strip()
         exam_code_text = str(getattr(result, "exam_code", "") or "").strip()
-        parts = self._status_parts_for_row(
+        return self._status_parts_for_row(
             sid,
             exam_code_text,
             duplicate_count,
             subject_scope=subject_scope,
             available_exam_codes=available_exam_codes,
         )
-        full_name = str(getattr(result, "full_name", "") or "")
-        birth_date = str(getattr(result, "birth_date", "") or "")
-        if not self._student_id_has_recognition_error(sid) and (self._name_missing(full_name) or self._birth_date_missing(birth_date)):
-            profile = self._student_profile_by_id(sid)
-            if self._name_missing(str(profile.get("name", "") or "")) or self._birth_date_missing(str(profile.get("birth_date", "") or "")):
-                parts.append("Lỗi SBD")
-        return parts
 
     def _status_text_for_row(
         self,
@@ -8834,12 +8873,6 @@ class MainWindow(QMainWindow):
                 if not self._student_id_has_recognition_error(v) and v == sid:
                     dup += 1
         status_parts = self._status_parts_for_row("" if self._student_id_has_recognition_error(sid) else sid, exam_code_text, dup)
-        name_item = self.scan_list.item(row_idx, 3)
-        name_text = name_item.text().strip() if name_item else ""
-        birth_item = self.scan_list.item(row_idx, 4)
-        birth_text = birth_item.text().strip() if birth_item else ""
-        if not self._student_id_has_recognition_error(sid) and (self._name_missing(name_text) or self._birth_date_missing(birth_text)):
-            status_parts.append("Lỗi SBD")
         return ", ".join(status_parts) if status_parts else "OK"
 
     def _refresh_row_status(
