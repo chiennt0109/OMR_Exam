@@ -955,13 +955,15 @@ class NewExamDialog(QDialog):
         if "::" in base:
             return base
         session_id = str(getattr(self.parent(), "current_session_id", "") or "").strip()
+        exam_name = str(self.exam_name.text() if hasattr(self, "exam_name") else "").strip().lower()
         block_text = str(block or "").strip()
         if not block_text and "_" in base:
             block_text = str(base.rsplit("_", 1)[-1]).strip()
-        if session_id and block_text:
-            return f"{session_id}::{base}::{block_text}"
-        if session_id:
-            return f"{session_id}::{base}"
+        scope_prefix = f"{session_id}::{exam_name}" if session_id and exam_name else session_id
+        if scope_prefix and block_text:
+            return f"{scope_prefix}::{base}::{block_text}"
+        if scope_prefix:
+            return f"{scope_prefix}::{base}"
         return base
 
     @staticmethod
@@ -3355,6 +3357,11 @@ class MainWindow(QMainWindow):
             return []
         scoped_subject = self._batch_result_subject_key(subject)
         rows = self.database.fetch_scan_results_for_subject(scoped_subject)
+        if not rows:
+            sid = str(self.current_session_id or "").strip()
+            legacy_scoped = f"{sid}::{subject}" if sid else ""
+            if legacy_scoped and legacy_scoped != scoped_subject:
+                rows = self.database.fetch_scan_results_for_subject(legacy_scoped)
         if not rows and scoped_subject != subject:
             # Legacy fallback (older sessions saved by raw subject key).
             rows = self.database.fetch_scan_results_for_subject(subject)
@@ -3643,10 +3650,17 @@ class MainWindow(QMainWindow):
 
     def _batch_result_subject_key(self, subject_key: str) -> str:
         base = str(subject_key or "").strip()
-        session_id = str(self.current_session_id or "").strip()
-        if session_id and base:
-            return f"{session_id}::{base}"
+        scope_prefix = self._session_scope_prefix()
+        if scope_prefix and base:
+            return f"{scope_prefix}::{base}"
         return base
+
+    def _session_scope_prefix(self) -> str:
+        sid = str(self.current_session_id or "").strip()
+        exam_name = str((self.session.exam_name if self.session else "") or "").strip().lower()
+        if sid and exam_name:
+            return f"{sid}::{exam_name}"
+        return sid
 
     def _answer_key_subject_key(self, subject_key: str, subject_cfg: dict | None = None) -> str:
         base = str(subject_key or "").strip()
@@ -3659,16 +3673,22 @@ class MainWindow(QMainWindow):
             block = str(subject_cfg.get("block", "") or "").strip()
         if not block and "_" in base:
             block = str(base.rsplit("_", 1)[-1]).strip()
-        session_id = str(self.current_session_id or "").strip()
-        if session_id and block:
-            return f"{session_id}::{base}::{block}"
-        if session_id:
-            return f"{session_id}::{base}"
+        scope_prefix = self._session_scope_prefix()
+        if scope_prefix and block:
+            return f"{scope_prefix}::{base}::{block}"
+        if scope_prefix:
+            return f"{scope_prefix}::{base}"
         return base
 
     def _fetch_answer_keys_for_subject_scoped(self, subject_key: str, subject_cfg: dict | None = None) -> dict[str, dict[str, Any]]:
         scoped = self._answer_key_subject_key(subject_key, subject_cfg)
         rows = self.database.fetch_answer_keys_for_subject(scoped) if scoped else {}
+        if not rows:
+            sid = str(self.current_session_id or "").strip()
+            block = str((subject_cfg or {}).get("block", "") or "").strip() if isinstance(subject_cfg, dict) else ""
+            legacy_scoped = f"{sid}::{str(subject_key or '').strip()}::{block}" if sid and block else (f"{sid}::{str(subject_key or '').strip()}" if sid else "")
+            if legacy_scoped:
+                rows = self.database.fetch_answer_keys_for_subject(legacy_scoped)
         if not rows and scoped and scoped != str(subject_key or "").strip():
             rows = self.database.fetch_answer_keys_for_subject(str(subject_key or "").strip())
         return rows or {}
@@ -3689,9 +3709,9 @@ class MainWindow(QMainWindow):
         answer_key = str(cfg.get("answer_key_key", "") or "").strip().lower()
         base = f"{name}::{block}::{answer_key}"
         if include_session:
-            sid = str(self.current_session_id or "").strip().lower()
-            if sid:
-                return f"{sid}::{base}"
+            scope_prefix = self._session_scope_prefix().strip().lower()
+            if scope_prefix:
+                return f"{scope_prefix}::{base}"
         return base
 
     def _resolve_preferred_scoring_subject(self) -> str:
