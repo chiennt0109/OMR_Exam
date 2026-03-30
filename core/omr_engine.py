@@ -269,6 +269,9 @@ class OMRProcessor:
         try:
             fast_mode = self._is_fast_scan_mode(template)
             fixed_profile = self._is_fixed_scan_profile(template)
+            anchor_detect_time_sec = 0.0
+            alignment_time_sec = 0.0
+            diagnostics_time_sec = 0.0
             if isinstance(image, np.ndarray):
                 src = image.copy()
             else:
@@ -296,7 +299,10 @@ class OMRProcessor:
                 result.sync_legacy_aliases()
                 return result
 
+            align_started = time.perf_counter()
             aligned, aligned_binary = self.correct_perspective(rotated, prepared["binary"], template, result)
+            alignment_time_sec = float(time.perf_counter() - align_started)
+            anchor_detect_time_sec = float((self._last_alignment_debug.get("anchor_detect_time_sec", 0.0) or 0.0))
             if self._time_budget_exceeded():
                 result.issues.append(OMRIssue("TIMEOUT", "Recognition time budget exceeded during alignment"))
                 setattr(result, "aligned_image", aligned)
@@ -339,13 +345,19 @@ class OMRProcessor:
             setattr(result, "aligned_binary", aligned_binary)
             setattr(result, "alignment_debug", dict(self._last_alignment_debug))
             if context.collect_diagnostics:
-                context.detected_anchors = self.detect_anchors(aligned_binary, max_points=120)
+                diag_started = time.perf_counter()
+                cached_anchors = list((self._last_alignment_debug.get("matched_detected_anchors", []) or []))
+                context.detected_anchors = cached_anchors
                 setattr(result, "detected_anchors", context.detected_anchors)
-                context.detected_digit_anchors = self._detect_digit_anchor_ruler(aligned_binary, template)
-                setattr(result, "detected_digit_anchors", context.detected_digit_anchors)
-
-                context.bubble_states_by_zone = self.extract_bubble_states(aligned_binary, template)
-                setattr(result, "bubble_states_by_zone", context.bubble_states_by_zone)
+                if self.debug_mode:
+                    context.detected_digit_anchors = self._detect_digit_anchor_ruler(aligned_binary, template)
+                    setattr(result, "detected_digit_anchors", context.detected_digit_anchors)
+                    context.bubble_states_by_zone = self.extract_bubble_states(aligned_binary, template)
+                    setattr(result, "bubble_states_by_zone", context.bubble_states_by_zone)
+                diagnostics_time_sec = float(time.perf_counter() - diag_started)
+            else:
+                # diagnostics skip: keep production path minimal when diagnostics are disabled.
+                diagnostics_time_sec = 0.0
             context.digit_zone_debug = dict(getattr(result, "digit_zone_debug", {}) or {})
             setattr(result, "digit_zone_debug", context.digit_zone_debug)
 
@@ -358,6 +370,14 @@ class OMRProcessor:
             }
 
             result.processing_time_sec = time.perf_counter() - started
+            if not isinstance(getattr(result, "alignment_debug", None), dict):
+                setattr(result, "alignment_debug", {})
+            result.alignment_debug["timing_breakdown"] = {
+                "anchor_detect_time_sec": float(anchor_detect_time_sec),
+                "alignment_time_sec": float(alignment_time_sec),
+                "diagnostics_time_sec": float(diagnostics_time_sec),
+                "total_time_sec": float(result.processing_time_sec),
+            }
             setattr(result, "answers", result.mcq_answers)
             result.sync_legacy_aliases()
             return result
@@ -660,7 +680,14 @@ class OMRProcessor:
             angle += 90
         return float(angle)
 
-    def detect_anchors(self, binary: np.ndarray, use_border_padding: bool = True, relaxed_polygon: bool = True, max_points: int = 40) -> list[tuple[float, float]]:
+    def detect_anchors(
+        self,
+        binary: np.ndarray,
+        use_border_padding: bool = True,
+        relaxed_polygon: bool = True,
+        max_points: int = 40,
+        fast_mode: bool = False,
+    ) -> list[tuple[float, float]]:
         pad = 8 if use_border_padding else 0
         padded = cv2.copyMakeBorder(binary, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=0) if pad else binary
         contours, _ = cv2.findContours(padded, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
@@ -669,7 +696,10 @@ class OMRProcessor:
         border_margin = max(24.0, min(w, h) * 0.18)
         anchors: list[tuple[float, float, float]] = []
         max_keep = max(4, int(max_points or 40))
-        max_candidates = max(120, max_keep * (12 if use_border_padding else 8))
+        if fast_mode:
+            # fast fixed-form anchor detection: keep very few high-quality border anchors only.
+            max_keep = min(max_keep, 16)
+        max_candidates = max(40, max_keep * (6 if use_border_padding else 4)) if fast_mode else max(120, max_keep * (12 if use_border_padding else 8))
         if len(contours) > max_candidates:
             contours = sorted(contours, key=cv2.contourArea, reverse=True)[:max_candidates]
 
@@ -716,10 +746,13 @@ class OMRProcessor:
                 border_bonus = 1.0
             score = area * fill_ratio * darkness * border_bonus
             anchors.append((cx, cy, score))
+            if fast_mode and len(anchors) >= max_keep:
+                # fast fixed-form anchor detection: stop early when enough good anchors collected.
+                break
 
         anchors.sort(key=lambda p: p[2], reverse=True)
         if use_border_padding:
-            max_keep = min(max_keep, 24)
+            max_keep = min(max_keep, 16 if fast_mode else 24)
         return [(x, y) for x, y, _ in anchors[:max_keep]]
 
     def _template_has_border_anchors(self, template: Template) -> bool:
@@ -809,8 +842,13 @@ class OMRProcessor:
         py = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / denom
         return float(px), float(py)
 
-    def _detect_anchors_by_profile(self, binary: np.ndarray, profile: str) -> list[tuple[float, float]]:
+    def _detect_anchors_by_profile(self, binary: np.ndarray, profile: str, fast_fixed: bool = False) -> list[tuple[float, float]]:
         p = str(profile or "auto").strip().lower()
+        if fast_fixed:
+            # fast fixed-form anchor detection profile
+            if p == "one_side":
+                return self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True, max_points=16, fast_mode=True)
+            return self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True, max_points=12, fast_mode=True)
         if p == "legacy":
             return self.detect_anchors(binary, use_border_padding=False, relaxed_polygon=False)
         if p == "border":
@@ -826,6 +864,18 @@ class OMRProcessor:
                     merged.append(pt)
             return merged[:20]
         return self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True, max_points=60)
+
+    @staticmethod
+    def _fast_alignment_score_from_matches(src_pts: np.ndarray, dst_pts: np.ndarray) -> tuple[float, int, float]:
+        if len(src_pts) < 4 or len(dst_pts) < 4:
+            return -1e9, 0, 1e9
+        h = cv2.getPerspectiveTransform(src_pts[:4].astype(np.float32), dst_pts[:4].astype(np.float32))
+        probe = cv2.perspectiveTransform(src_pts.reshape(-1, 1, 2).astype(np.float32), h).reshape(-1, 2)
+        err = np.linalg.norm(probe - dst_pts.astype(np.float32), axis=1)
+        mean_err = float(np.mean(err)) if len(err) else 1e9
+        median_err = float(np.median(err)) if len(err) else 1e9
+        score = float(len(src_pts)) * 22.0 - (mean_err * 3.0) - (median_err * 1.6)
+        return score, int(len(src_pts)), mean_err
 
     def _try_anchor_alignment(self, image: np.ndarray, binary: np.ndarray, template: Template, profile: str) -> tuple[np.ndarray, np.ndarray] | None:
         detected = self._detect_anchors_by_profile(binary, profile)
@@ -944,9 +994,32 @@ class OMRProcessor:
         base_binary = aligned_binary if aligned_binary is not None else binary
         best_attempt: tuple[float, str, np.ndarray, np.ndarray] | None = None
 
+        if fixed_profile:
+            # fast alignment accept: single short path for fixed-form scan.
+            candidate = candidates[0] if candidates else "border"
+            det_started = time.perf_counter()
+            detected = self._detect_anchors_by_profile(base_binary, candidate, fast_fixed=True)
+            self._last_alignment_debug["anchor_detect_time_sec"] = float(time.perf_counter() - det_started)
+            template_pts = self._template_anchor_points_px(template)
+            if len(detected) >= 4 and len(template_pts) >= 4:
+                src_pts, dst_pts = self._match_anchor_sets(np.array(detected, dtype=np.float32), template_pts)
+                score, match_count, mean_err = self._fast_alignment_score_from_matches(src_pts, dst_pts)
+                if match_count >= 4 and mean_err <= 14.0:
+                    h = cv2.getPerspectiveTransform(self._order_points(src_pts[:4]), self._order_points(dst_pts[:4]))
+                    fast_img = cv2.warpPerspective(base_image, h, (template.width, template.height))
+                    fast_bin = cv2.warpPerspective(base_binary, h, (template.width, template.height))
+                    self._last_alignment_debug["alignment_mode"] = f"fixed_fast:{candidate}"
+                    self._last_alignment_debug["alignment_score"] = float(score)
+                    self._last_alignment_debug["fast_match_count"] = int(match_count)
+                    self._last_alignment_debug["fast_mean_error"] = float(mean_err)
+                    self._last_alignment_debug["matched_detected_anchors"] = [(float(x), float(y)) for x, y in detected[: min(12, len(detected))]]
+                    return fast_img, fast_bin
+            # safe fallback for fixed-form when fast accept fails.
+
         for candidate in candidates:
             if self._time_budget_exceeded():
                 break
+            det_started = time.perf_counter()
             if candidate == "one_side":
                 coarse_img, coarse_bin = self._fallback_align_page_contour(image, template, conservative=True)
                 refined_img, refined_bin = self._refine_alignment_with_one_side_anchors(coarse_img, coarse_bin, template)
@@ -956,6 +1029,7 @@ class OMRProcessor:
                     continue
                 coarse_img, coarse_bin = attempt
                 refined_img, refined_bin = (coarse_img, coarse_bin) if (candidate == "legacy" or fast_mode) else self._refine_alignment_with_template_anchors(coarse_img, coarse_bin, template)
+            self._last_alignment_debug["anchor_detect_time_sec"] = self._last_alignment_debug.get("anchor_detect_time_sec", 0.0) + float(time.perf_counter() - det_started)
             if fast_mode:
                 candidate_score = self._orientation_score(refined_bin, template)
                 affine_img, affine_bin = refined_img, refined_bin
@@ -1033,7 +1107,7 @@ class OMRProcessor:
 
     def _orientation_score(self, binary: np.ndarray, template: Template) -> float:
         score = 0.0
-        anchors = np.array(self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True, max_points=80), dtype=np.float32)
+        anchors = np.array(self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True, max_points=24, fast_mode=True), dtype=np.float32)
         if len(anchors) >= 4 and len(template.anchors) >= 4:
             tpl = self._template_anchor_points_px(template)
             tpl = self._pick_corner_like_points(tpl)
