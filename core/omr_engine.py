@@ -1031,6 +1031,28 @@ class OMRProcessor:
                     return fast_img, fast_bin
             # safe fallback for fixed-form when fast accept fails.
 
+        if fixed_profile:
+            # fast alignment accept: single short path for fixed-form scan.
+            candidate = candidates[0] if candidates else "border"
+            det_started = time.perf_counter()
+            detected = self._detect_anchors_by_profile(base_binary, candidate, fast_fixed=True)
+            self._last_alignment_debug["anchor_detect_time_sec"] = float(time.perf_counter() - det_started)
+            template_pts = self._template_anchor_points_px(template)
+            if len(detected) >= 4 and len(template_pts) >= 4:
+                src_pts, dst_pts = self._match_anchor_sets(np.array(detected, dtype=np.float32), template_pts)
+                score, match_count, mean_err = self._fast_alignment_score_from_matches(src_pts, dst_pts)
+                if match_count >= 4 and mean_err <= 14.0:
+                    h = cv2.getPerspectiveTransform(self._order_points(src_pts[:4]), self._order_points(dst_pts[:4]))
+                    fast_img = cv2.warpPerspective(base_image, h, (template.width, template.height))
+                    fast_bin = cv2.warpPerspective(base_binary, h, (template.width, template.height))
+                    self._last_alignment_debug["alignment_mode"] = f"fixed_fast:{candidate}"
+                    self._last_alignment_debug["alignment_score"] = float(score)
+                    self._last_alignment_debug["fast_match_count"] = int(match_count)
+                    self._last_alignment_debug["fast_mean_error"] = float(mean_err)
+                    self._last_alignment_debug["matched_detected_anchors"] = [(float(x), float(y)) for x, y in detected[: min(12, len(detected))]]
+                    return fast_img, fast_bin
+            # safe fallback for fixed-form when fast accept fails.
+
         for candidate in candidates:
             if self._time_budget_exceeded():
                 break
