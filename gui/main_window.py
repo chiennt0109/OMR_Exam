@@ -276,7 +276,15 @@ class SubjectConfigDialog(QDialog):
                 subject_key_seed = f"{seed_name}_{seed_block}" if seed_name and seed_block else ""
             if db is not None and subject_key_seed:
                 try:
-                    fetched = db.fetch_answer_keys_for_subject(subject_key_seed)
+                    scoped_seed = subject_key_seed
+                    if parent is not None and hasattr(parent, "_answer_key_scope_key"):
+                        try:
+                            scoped_seed = parent._answer_key_scope_key(subject_key_seed, str(data.get("block", "") or ""))
+                        except Exception:
+                            scoped_seed = subject_key_seed
+                    fetched = db.fetch_answer_keys_for_subject(scoped_seed)
+                    if not fetched and scoped_seed != subject_key_seed:
+                        fetched = db.fetch_answer_keys_for_subject(subject_key_seed)
                     if fetched:
                         self.answer_key_data = fetched
                 except Exception:
@@ -940,6 +948,22 @@ class NewExamDialog(QDialog):
 
         self._refresh_subject_list()
 
+    def _answer_key_scope_key(self, subject_key: str, block: str = "") -> str:
+        base = str(subject_key or "").strip()
+        if not base:
+            return ""
+        if "::" in base:
+            return base
+        session_id = str(getattr(self.parent(), "current_session_id", "") or "").strip()
+        block_text = str(block or "").strip()
+        if not block_text and "_" in base:
+            block_text = str(base.rsplit("_", 1)[-1]).strip()
+        if session_id and block_text:
+            return f"{session_id}::{base}::{block_text}"
+        if session_id:
+            return f"{session_id}::{base}"
+        return base
+
     @staticmethod
     def _normalized_student_id_for_match(student_id: str) -> str:
         sid = str(student_id or "").strip()
@@ -1249,10 +1273,11 @@ class NewExamDialog(QDialog):
         payload = dlg.payload()
         self.subject_configs.append(payload)
         try:
-            self.database.replace_answer_keys_for_subject(str(payload.get("answer_key_key", "") or ""), payload.get("imported_answer_keys", {}) or {})
+            scoped_key = self._answer_key_scope_key(str(payload.get("answer_key_key", "") or ""), str(payload.get("block", "") or ""))
+            self.database.replace_answer_keys_for_subject(scoped_key, payload.get("imported_answer_keys", {}) or {})
             self.database.log_change(
                 "answer_keys",
-                str(payload.get("answer_key_key", "") or ""),
+                scoped_key,
                 "imported_answer_keys",
                 "",
                 payload.get("imported_answer_keys", {}) or {},
@@ -1282,13 +1307,15 @@ class NewExamDialog(QDialog):
         try:
             old_subject_key = str(old_cfg.get("answer_key_key", "") or "")
             new_subject_key = str(edited.get("answer_key_key", "") or "")
-            if old_subject_key and old_subject_key != new_subject_key:
-                self.database.replace_answer_keys_for_subject(old_subject_key, {})
-            self.database.replace_answer_keys_for_subject(new_subject_key, edited.get("imported_answer_keys", {}) or {})
+            old_scoped_key = self._answer_key_scope_key(old_subject_key, str(old_cfg.get("block", "") or ""))
+            new_scoped_key = self._answer_key_scope_key(new_subject_key, str(edited.get("block", "") or ""))
+            if old_scoped_key and old_scoped_key != new_scoped_key:
+                self.database.replace_answer_keys_for_subject(old_scoped_key, {})
+            self.database.replace_answer_keys_for_subject(new_scoped_key, edited.get("imported_answer_keys", {}) or {})
             if old_cfg.get("imported_answer_keys", {}) != edited.get("imported_answer_keys", {}):
                 self.database.log_change(
                     "answer_keys",
-                    new_subject_key,
+                    new_scoped_key,
                     "imported_answer_keys",
                     old_cfg.get("imported_answer_keys", {}) or {},
                     edited.get("imported_answer_keys", {}) or {},
@@ -1427,6 +1454,12 @@ class MainWindow(QMainWindow):
         self.preview_rotation_by_index: dict[int, int] = {}
         self.preview_markers_by_index: dict[int, list[dict[str, float]]] = {}
         self.scan_forced_status_by_index: dict[int, str] = {}
+        self._scan_grid_loading = False
+        self._switching_batch_subject = False
+        self._template_cache_by_path: dict[str, Template] = {}
+        self._answer_keys_ready_subjects: set[str] = set()
+        self._batch_scan_running = False
+        self._batch_cancel_requested = False
         self.preview_drag_active = False
         self.preview_last_pos = None
         self.setCentralWidget(self.stack)
@@ -1953,6 +1986,29 @@ class MainWindow(QMainWindow):
         btn.clicked.connect(cb)
         return btn
 
+    def _begin_scan_grid_update(self) -> None:
+        if not hasattr(self, "scan_list"):
+            return
+        self._scan_grid_loading = True
+        self.scan_list.setUpdatesEnabled(False)
+        self.scan_list.blockSignals(True)
+        try:
+            self.scan_list.setSortingEnabled(False)
+        except Exception:
+            pass
+
+    def _end_scan_grid_update(self) -> None:
+        if not hasattr(self, "scan_list"):
+            self._scan_grid_loading = False
+            return
+        try:
+            self.scan_list.setSortingEnabled(False)
+        except Exception:
+            pass
+        self.scan_list.blockSignals(False)
+        self.scan_list.setUpdatesEnabled(True)
+        self._scan_grid_loading = False
+
     def _set_scan_action_widget(self, row: int) -> None:
         if row < 0 or row >= self.scan_list.rowCount():
             return
@@ -1966,6 +2022,13 @@ class MainWindow(QMainWindow):
         lay.addWidget(btn_edit)
         lay.addWidget(btn_delete)
         self.scan_list.setCellWidget(row, 7, holder)
+
+    def _ensure_scan_action_widget(self, row: int) -> None:
+        if row < 0 or row >= self.scan_list.rowCount():
+            return
+        if self.scan_list.cellWidget(row, 7) is not None:
+            return
+        self._set_scan_action_widget(row)
 
     def _edit_scan_row_by_index(self, row: int) -> None:
         if row < 0 or row >= self.scan_list.rowCount():
@@ -2376,7 +2439,7 @@ class MainWindow(QMainWindow):
                     except Exception:
                         continue
                 if restored:
-                    self.scan_results_by_subject[key] = restored
+                    self.scan_results_by_subject[self._batch_result_subject_key(key)] = restored
             self.subject_catalog = list(cfg.get("subject_catalog", self.subject_catalog)) or self.subject_catalog
             self.block_catalog = list(cfg.get("block_catalog", self.block_catalog)) or self.block_catalog
             if self.session.answer_key_path:
@@ -3001,6 +3064,7 @@ class MainWindow(QMainWindow):
         self.batch_student_id_value = QLineEdit("-"); self.batch_student_id_value.setReadOnly(True)
         self.batch_scan_folder_value = QLineEdit("-"); self.batch_scan_folder_value.setReadOnly(True)
         self.batch_scan_state_value = QLineEdit("-"); self.batch_scan_state_value.setReadOnly(True)
+        self.batch_context_value = QLineEdit("-"); self.batch_context_value.setReadOnly(True)
         style = self.style()
         self.btn_batch_recognize = QPushButton("Nhận dạng")
         self.btn_batch_recognize.setIcon(style.standardIcon(QStyle.SP_MediaPlay))
@@ -3029,6 +3093,7 @@ class MainWindow(QMainWindow):
         batch_form.addRow("Vùng STUDENT ID", self.batch_student_id_value)
         batch_form.addRow("Thư mục quét", self.batch_scan_folder_value)
         batch_form.addRow("Trạng thái file", self.batch_scan_state_value)
+        batch_form.addRow("Ngữ cảnh dữ liệu", self.batch_context_value)
         batch_form.addRow("", action_row)
 
         self.filter_column = QComboBox()
@@ -3229,85 +3294,7 @@ class MainWindow(QMainWindow):
         payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
         self._open_embedded_exam_editor(session_id, session, payload)
 
-    def _show_batch_scan_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(True)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(False)
-
-    def _show_scoring_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(False)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(True)
-
-    def _back_to_batch_scan(self) -> None:
-        if not self._confirm_before_switching_work("Batch Scan"):
-            return
-        self._show_batch_scan_panel()
-
-    def _subject_configs_for_scoring(self) -> list[dict]:
-        return self._effective_subject_configs_for_batch()
-
-    def _subject_config_by_subject_key(self, subject_key: str) -> dict | None:
-        key_norm = str(subject_key or "").strip()
-        if not key_norm:
-            return None
-        for cfg in self._subject_configs_for_scoring():
-            if self._subject_key_from_cfg(cfg) == key_norm:
-                return cfg
-        return None
-
-    @staticmethod
-    def _serialize_omr_result(result: OMRResult) -> dict:
-        return {
-            "image_path": str(getattr(result, "image_path", "") or ""),
-            "student_id": str(getattr(result, "student_id", "") or ""),
-            "exam_code": str(getattr(result, "exam_code", "") or ""),
-            "mcq_answers": {int(k): str(v) for k, v in (getattr(result, "mcq_answers", {}) or {}).items()},
-            "true_false_answers": {int(k): dict(v) for k, v in (getattr(result, "true_false_answers", {}) or {}).items()},
-            "numeric_answers": {int(k): str(v) for k, v in (getattr(result, "numeric_answers", {}) or {}).items()},
-            "answer_string": str(getattr(result, "answer_string", "") or ""),
-            "confidence_scores": {str(k): float(v) for k, v in (getattr(result, "confidence_scores", {}) or {}).items()},
-            "recognition_errors": [str(x) for x in (getattr(result, "recognition_errors", []) or [])],
-            "processing_time_sec": float(getattr(result, "processing_time_sec", 0.0) or 0.0),
-            "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
-            "full_name": str(getattr(result, "full_name", "") or ""),
-            "birth_date": str(getattr(result, "birth_date", "") or ""),
-            "cached_status": str(getattr(result, "cached_status", "") or ""),
-            "cached_content": str(getattr(result, "cached_content", "") or ""),
-            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
-            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
-            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
-        }
-
-    @staticmethod
-    def _deserialize_omr_result(payload: dict) -> OMRResult:
-        result = OMRResult(
-            image_path=str(payload.get("image_path", "") or ""),
-            student_id=str(payload.get("student_id", "") or ""),
-            exam_code=str(payload.get("exam_code", "") or ""),
-            mcq_answers={int(k): str(v) for k, v in (payload.get("mcq_answers", {}) or {}).items()},
-            true_false_answers={int(k): dict(v) for k, v in (payload.get("true_false_answers", {}) or {}).items()},
-            numeric_answers={int(k): str(v) for k, v in (payload.get("numeric_answers", {}) or {}).items()},
-            answer_string=str(payload.get("answer_string", "") or ""),
-            confidence_scores={str(k): float(v) for k, v in (payload.get("confidence_scores", {}) or {}).items()},
-            recognition_errors=[str(x) for x in (payload.get("recognition_errors", []) or [])],
-            processing_time_sec=float(payload.get("processing_time_sec", 0.0) or 0.0),
-            debug_image_path=str(payload.get("debug_image_path", "") or ""),
-        )
-        setattr(result, "full_name", str(payload.get("full_name", "") or ""))
-        setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
-        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
-        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
-        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
-        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
-        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
-        result.sync_legacy_aliases()
-        return result
-
-    @staticmethod
-    def _strip_transient_scan_artifacts(result: OMRResult) -> OMRResult:
+    def _strip_transient_scan_artifacts(self, result: OMRResult) -> OMRResult:
         for attr_name in [
             "aligned_image",
             "aligned_binary",
@@ -3329,7 +3316,7 @@ class MainWindow(QMainWindow):
 
     def _collect_current_subject_results_for_save(self, subject_key: str) -> list[OMRResult]:
         key = str(subject_key or "").strip()
-        base_results = list(self.scan_results_by_subject.get(key) or self.scan_results or [])
+        base_results = list(self.scan_results_by_subject.get(self._batch_result_subject_key(key)) or self.scan_results or [])
         row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
         if row_count <= 0:
             return base_results
@@ -3362,66 +3349,29 @@ class MainWindow(QMainWindow):
         return out
 
 
-    def _is_subject_marked_batched(self, cfg: dict) -> bool:
-        key = self._subject_key_from_cfg(cfg)
-        if self.scan_results_by_subject.get(key):
-            return True
-        merged = self._merge_saved_batch_snapshot(cfg)
-        if bool(merged.get("batch_saved")):
-            return True
-        if isinstance(merged.get("batch_saved_rows", []), list) and merged.get("batch_saved_rows"):
-            return True
-        if isinstance(merged.get("batch_saved_results", []), list) and merged.get("batch_saved_results"):
-            return True
-        return False
-
-    def _cached_subject_scans_from_config(self, subject_key: str) -> list[OMRResult]:
-        db_rows = self.database.fetch_scan_results_for_subject(subject_key)
-        if db_rows:
-            out: list[OMRResult] = []
-            for item in db_rows:
-                try:
-                    out.append(self._deserialize_omr_result(item))
-                except Exception:
-                    continue
-            if out:
-                return out
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return []
-        merged = self._merge_saved_batch_snapshot(cfg)
-        cached = merged.get("batch_saved_results", [])
-        if not isinstance(cached, list) or not cached:
-            return []
-        out: list[OMRResult] = []
-        for item in cached:
-            if not isinstance(item, dict):
-                continue
-            try:
-                out.append(self._deserialize_omr_result(item))
-            except Exception:
-                continue
-        return out
-
     def _refresh_scan_results_from_db(self, subject_key: str) -> list[OMRResult]:
         subject = str(subject_key or "").strip()
         if not subject:
             return []
-        rows = self.database.fetch_scan_results_for_subject(subject)
+        scoped_subject = self._batch_result_subject_key(subject)
+        rows = self.database.fetch_scan_results_for_subject(scoped_subject)
+        if not rows and scoped_subject != subject:
+            # Legacy fallback (older sessions saved by raw subject key).
+            rows = self.database.fetch_scan_results_for_subject(subject)
         if not rows:
             cached_results = self._cached_subject_scans_from_config(subject)
             if cached_results:
                 for result in cached_results:
                     result.answer_string = self._build_answer_string_for_result(result, subject)
-                self.database.replace_scan_results_for_subject(subject, [self._serialize_omr_result(x) for x in cached_results])
-                rows = self.database.fetch_scan_results_for_subject(subject)
+                self.database.replace_scan_results_for_subject(scoped_subject, [self._serialize_omr_result(x) for x in cached_results])
+                rows = self.database.fetch_scan_results_for_subject(scoped_subject)
         refreshed: list[OMRResult] = []
         for item in rows:
             try:
                 refreshed.append(self._deserialize_omr_result(item))
             except Exception:
                 continue
-        self.scan_results_by_subject[subject] = list(refreshed)
+        self.scan_results_by_subject[scoped_subject] = list(refreshed)
         return refreshed
 
     def _refresh_dashboard_summary_from_db(self, subject_key: str) -> None:
@@ -3436,140 +3386,6 @@ class MainWindow(QMainWindow):
         self.dashboard_summary_label.setText(
             f"Dashboard DB | Điểm TB: {avg_score:.2f} | Phổ điểm: {dist_text} | Top học sinh: {top_text}"
         )
-
-    def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
-        if self.answer_keys and any(str(k).startswith(f"{subject_key}::") for k in self.answer_keys.keys.keys()):
-            return True
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return self.answer_keys is not None
-
-        imported_keys = cfg.get("imported_answer_keys", {}) or {}
-        if isinstance(imported_keys, dict) and imported_keys:
-            repo = self.answer_keys or AnswerKeyRepository()
-            for exam_code, kd in imported_keys.items():
-                repo.upsert(
-                    SubjectKey(
-                        subject=subject_key,
-                        exam_code=str(exam_code),
-                        answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
-                        true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
-                        numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
-                        full_credit_questions={
-                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
-                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
-                        },
-                        invalid_answer_rows={
-                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
-                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
-                        },
-                    )
-                )
-            self.answer_keys = repo
-            self.imported_exam_codes = sorted(str(k) for k in imported_keys.keys())
-            self.active_batch_subject_key = subject_key
-            return True
-
-        answer_key_path = str(cfg.get("answer_key_path", "") or (self.session.answer_key_path if self.session else "") or "")
-        if answer_key_path:
-            pth = Path(answer_key_path)
-            if pth.exists() and pth.suffix.lower() == ".json":
-                try:
-                    loaded = AnswerKeyRepository.load_json(pth)
-                    repo = self.answer_keys or AnswerKeyRepository()
-                    for key_obj in loaded.keys.values():
-                        repo.upsert(key_obj)
-                    self.answer_keys = repo
-                    all_codes: set[str] = set()
-                    for key_name in self.answer_keys.keys.keys():
-                        parts = str(key_name).split("::", 1)
-                        if len(parts) == 2 and parts[0] == subject_key:
-                            all_codes.add(parts[1])
-                    if all_codes:
-                        self.imported_exam_codes = sorted(all_codes)
-                    self.active_batch_subject_key = subject_key
-                    return True
-                except Exception:
-                    pass
-
-        return self.answer_keys is not None
-
-    @staticmethod
-    def _subject_key_from_cfg(cfg: dict) -> str:
-        key = str(cfg.get("answer_key_key", "") or "").strip()
-        if key:
-            return key
-        name = str(cfg.get("name", "") or "").strip()
-        block = str(cfg.get("block", "") or "").strip()
-        return f"{name}_{block}" if name and block else (name or "General")
-
-    def _resolve_preferred_scoring_subject(self) -> str:
-        if self.stack.currentIndex() == 1:
-            cfg = self._selected_batch_subject_config()
-            if cfg:
-                return self._subject_key_from_cfg(cfg)
-        cfgs = self._subject_configs_for_scoring()
-        if cfgs:
-            return self._subject_key_from_cfg(cfgs[0])
-        if self.session and self.session.subjects:
-            return str(self.session.subjects[0])
-        return "General"
-
-    def _eligible_scoring_subject_keys(self) -> list[str]:
-        out: list[str] = []
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if self._is_subject_marked_batched(cfg):
-                out.append(key)
-        return out
-
-    def _populate_scoring_subjects(self, preferred_key: str = "") -> None:
-        if not hasattr(self, "scoring_subject_combo"):
-            return
-        self.scoring_subject_combo.blockSignals(True)
-        self.scoring_subject_combo.clear()
-        eligible = set(self._eligible_scoring_subject_keys())
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if eligible and key not in eligible:
-                continue
-            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
-            self.scoring_subject_combo.addItem(label, key)
-        if self.scoring_subject_combo.count() == 0:
-            fallback = self._resolve_preferred_scoring_subject()
-            self.scoring_subject_combo.addItem(fallback, fallback)
-        pick = preferred_key or self._resolve_preferred_scoring_subject()
-        for i in range(self.scoring_subject_combo.count()):
-            if str(self.scoring_subject_combo.itemData(i)) == pick:
-                self.scoring_subject_combo.setCurrentIndex(i)
-                break
-        self.scoring_subject_combo.blockSignals(False)
-
-    def _open_scoring_view(self) -> None:
-        if not self.session:
-            QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
-            return
-        if not self._eligible_scoring_subject_keys():
-            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
-            return
-        self.stack.setCurrentIndex(1)
-        selected_subject = self._resolve_preferred_scoring_subject()
-        self._populate_scoring_subjects(selected_subject)
-        self._refresh_scoring_phase_table()
-        self._refresh_dashboard_summary_from_db(selected_subject)
-        self._show_scoring_panel()
-
-    def _refresh_scoring_phase_table(self) -> None:
-        if not hasattr(self, "scoring_phase_table"):
-            return
-        self.scoring_phase_table.setRowCount(0)
-        for i, p in enumerate(self.scoring_phases[-100:]):
-            self.scoring_phase_table.insertRow(i)
-            self.scoring_phase_table.setItem(i, 0, QTableWidgetItem(str(p.get("timestamp", "-"))))
-            self.scoring_phase_table.setItem(i, 1, QTableWidgetItem(str(p.get("subject", "-"))))
-            self.scoring_phase_table.setItem(i, 2, QTableWidgetItem(str(p.get("mode", "-"))))
-            self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
-            self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
 
     def _load_cached_scoring_results_for_subject(self, subject_key: str) -> None:
         subject = str(subject_key or "").strip()
@@ -3634,12 +3450,6 @@ class MainWindow(QMainWindow):
             self._load_cached_scoring_results_for_subject(subject_key)
             self._refresh_dashboard_summary_from_db(subject_key)
 
-    def _run_scoring_from_panel(self) -> None:
-        subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
-        mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
-        note = self.scoring_phase_note.text().strip() if hasattr(self, "scoring_phase_note") else ""
-        self.calculate_scores(subject_key=subject_key or self._resolve_preferred_scoring_subject(), mode=mode, note=note)
-
     def _sync_current_batch_subject_snapshot(self, persist_to_db: bool = True) -> tuple[str, list[OMRResult]]:
         subject_cfg = self._selected_batch_subject_config()
         if not subject_cfg or not hasattr(self, "scan_list"):
@@ -3651,184 +3461,13 @@ class MainWindow(QMainWindow):
         self._refresh_all_statuses()
         current_results = self._current_scan_results_snapshot()
         self.scan_results = list(current_results)
-        self.scan_results_by_subject[subject_key] = list(current_results)
+        self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(current_results)
         for result in current_results:
             result.answer_string = self._build_answer_string_for_result(result, subject_key)
             if persist_to_db:
-                self.database.upsert_scan_result(subject_key, self._serialize_omr_result(result))
+                self.database.upsert_scan_result(self._batch_result_subject_key(subject_key), self._serialize_omr_result(result))
         return subject_key, current_results
 
-    def _save_batch_for_selected_subject(self) -> None:
-        subject_cfg = self._selected_batch_subject_config()
-        if not subject_cfg:
-            QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
-            return
-        row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
-        if row_count <= 0:
-            QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
-            return
-
-        session_path = self.current_session_path
-        if not session_path and self.batch_editor_return_session_id:
-            p = self._session_path_from_id(self.batch_editor_return_session_id)
-            if p.exists():
-                session_path = p
-        if not session_path:
-            QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy kỳ thi để lưu trạng thái Batch theo môn.")
-            return
-
-        try:
-            self._refresh_all_statuses()
-            ses = ExamSession.load_json(session_path)
-            cfg = ses.config or {}
-            subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
-            subject_key, current_results = self._sync_current_batch_subject_snapshot(persist_to_db=True)
-            if not subject_key:
-                QMessageBox.warning(self, "Lưu Batch", "Không xác định được môn Batch hiện tại để lưu.")
-                return
-
-            timestamp = datetime.now().isoformat(timespec="seconds")
-            updated = False
-            for item in subject_cfgs:
-                if not isinstance(item, dict):
-                    continue
-                same_name_block = str(item.get("name", "")).strip() == str(subject_cfg.get("name", "")).strip() and str(item.get("block", "")).strip() == str(subject_cfg.get("block", "")).strip()
-                same_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
-                if same_name_block or same_key:
-                    item["batch_saved"] = True
-                    item["batch_saved_at"] = timestamp
-                    item["batch_result_count"] = row_count
-                    item["batch_saved_rows"] = []
-                    item["batch_saved_preview"] = []
-                    item["batch_saved_results"] = []
-                    updated = True
-                    break
-            if not updated:
-                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
-                return
-            ses.config = {**cfg, "subject_configs": subject_cfgs}
-            ses.save_json(session_path)
-
-            if self.session:
-                self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
-            self.scan_results_by_subject[subject_key] = list(current_results)
-            if isinstance(self.batch_editor_return_payload, dict):
-                self.batch_editor_return_payload["subject_configs"] = subject_cfgs
-
-            current_row = self.scan_list.currentRow() if hasattr(self, "scan_list") else -1
-            current_image = ""
-            if hasattr(self, "scan_list") and 0 <= current_row < self.scan_list.rowCount():
-                it = self.scan_list.item(current_row, 0)
-                current_image = str(it.data(Qt.UserRole) if it else "")
-
-            if hasattr(self, "batch_subject_combo"):
-                for i in range(1, self.batch_subject_combo.count()):
-                    cfg_i = self.batch_subject_combo.itemData(i)
-                    if isinstance(cfg_i, dict) and self._subject_key_from_cfg(cfg_i) == subject_key:
-                        self.batch_subject_combo.setCurrentIndex(i)
-                        self._on_batch_subject_changed(i)
-                        break
-
-            if hasattr(self, "scan_list") and self.scan_list.rowCount() > 0:
-                target_row = -1
-                if current_image:
-                    for r in range(self.scan_list.rowCount()):
-                        it = self.scan_list.item(r, 0)
-                        if str(it.data(Qt.UserRole) if it else "") == current_image:
-                            target_row = r
-                            break
-                if target_row < 0 and current_row >= 0:
-                    target_row = min(current_row, self.scan_list.rowCount() - 1)
-                if target_row >= 0:
-                    self.scan_list.selectRow(target_row)
-                    self._on_scan_selected()
-
-            self.btn_save_batch_subject.setEnabled(False)
-            QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn vào cơ sở dữ liệu.")
-        except Exception as exc:
-            QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu trạng thái Batch\n{exc}")
-
-    def _build_correction_tab(self) -> QWidget:
-        w = QWidget()
-        splitter = QSplitter(Qt.Horizontal)
-        self.exam_code_correction_combo = QComboBox()
-        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
-        self.student_correction_combo = QComboBox()
-        self.student_correction_combo.setEditable(True)
-        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
-        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
-        self.answer_editor_scroll = QScrollArea()
-        self.answer_editor_scroll.setWidgetResizable(True)
-        self.answer_editor_container = QWidget()
-        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
-        self.answer_editor_scroll.setWidget(self.answer_editor_container)
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        self.error_list = QListWidget()
-        self.preview_label = QLabel("Image preview / bubble overlay placeholder")
-        self.preview_label.setAlignment(Qt.AlignCenter)
-        self.correction_ui_loading = False
-        self.correction_pending_payload: dict[str, object] = {}
-        self.correction_save_timer = QTimer(self)
-        self.correction_save_timer.setSingleShot(True)
-        self.correction_save_timer.timeout.connect(self._flush_pending_correction_updates)
-
-        self.exam_code_correction_combo = QComboBox()
-        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
-        self.student_correction_combo = QComboBox()
-        self.student_correction_combo.setEditable(True)
-        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
-        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
-
-        self.answer_editor_scroll = QScrollArea()
-        self.answer_editor_scroll.setWidgetResizable(True)
-        self.answer_editor_container = QWidget()
-        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
-        self.answer_editor_layout.setContentsMargins(4, 4, 4, 4)
-        self.answer_editor_layout.setSpacing(8)
-        self.answer_editor_scroll.setWidget(self.answer_editor_container)
-
-        self.manual_edit = QTextEdit()
-        self.manual_edit.setPlaceholderText("Manual corrections JSON (e.g. {'student_id': '1001', 'answers': {'1':'A'}})")
-        self.result_preview = QTextEdit()
-        self.result_preview.setReadOnly(True)
-        self.result_preview.setPlaceholderText("Recognized result for selected scan")
-
-        payload = dict(self.batch_editor_return_payload)
-        session_id = self.batch_editor_return_session_id
-        self.batch_editor_return_payload = None
-        self.batch_editor_return_session_id = None
-
-        if not session_id:
-            self.stack.setCurrentIndex(0)
-            return
-        p = self._session_path_from_id(session_id)
-        if not p.exists():
-            self.stack.setCurrentIndex(0)
-            return
-        try:
-            session = ExamSession.load_json(p)
-        except Exception:
-            self.stack.setCurrentIndex(0)
-            return
-        cfg = session.config or {}
-        payload["subject_configs"] = cfg.get("subject_configs", payload.get("subject_configs", []))
-        payload["scan_root"] = cfg.get("scan_root", payload.get("scan_root", ""))
-        payload["student_list_path"] = cfg.get("student_list_path", payload.get("student_list_path", ""))
-        payload["students"] = [
-            {
-                "student_id": s.student_id,
-                "name": s.name,
-                "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
-                "class_name": str((s.extra or {}).get("class_name", "") or ""),
-                "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
-            }
-            for s in (session.students or [])
-        ]
-        payload["scan_mode"] = cfg.get("scan_mode", payload.get("scan_mode", "Ảnh trong thư mục gốc"))
-        payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
-        self._open_embedded_exam_editor(session_id, session, payload)
-
     def _show_batch_scan_panel(self) -> None:
         if hasattr(self, "scan_lr_split"):
             self.scan_lr_split.setVisible(True)
@@ -3906,7 +3545,7 @@ class MainWindow(QMainWindow):
 
     def _is_subject_marked_batched(self, cfg: dict) -> bool:
         key = self._subject_key_from_cfg(cfg)
-        if self.scan_results_by_subject.get(key):
+        if self.scan_results_by_subject.get(self._batch_result_subject_key(key)):
             return True
         merged = self._merge_saved_batch_snapshot(cfg)
         if bool(merged.get("batch_saved")):
@@ -4001,6053 +3640,58 @@ class MainWindow(QMainWindow):
         block = str(cfg.get("block", "") or "").strip()
         return f"{name}_{block}" if name and block else (name or "General")
 
-    def _resolve_preferred_scoring_subject(self) -> str:
-        if self.stack.currentIndex() == 1:
-            cfg = self._selected_batch_subject_config()
-            if cfg:
-                return self._subject_key_from_cfg(cfg)
-        cfgs = self._subject_configs_for_scoring()
-        if cfgs:
-            return self._subject_key_from_cfg(cfgs[0])
-        if self.session and self.session.subjects:
-            return str(self.session.subjects[0])
-        return "General"
-
-    def _eligible_scoring_subject_keys(self) -> list[str]:
-        out: list[str] = []
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if self._is_subject_marked_batched(cfg):
-                out.append(key)
-        return out
-
-    def _populate_scoring_subjects(self, preferred_key: str = "") -> None:
-        if not hasattr(self, "scoring_subject_combo"):
-            return
-        self.scoring_subject_combo.blockSignals(True)
-        self.scoring_subject_combo.clear()
-        eligible = set(self._eligible_scoring_subject_keys())
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if eligible and key not in eligible:
-                continue
-            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
-            self.scoring_subject_combo.addItem(label, key)
-        if self.scoring_subject_combo.count() == 0:
-            fallback = self._resolve_preferred_scoring_subject()
-            self.scoring_subject_combo.addItem(fallback, fallback)
-        pick = preferred_key or self._resolve_preferred_scoring_subject()
-        for i in range(self.scoring_subject_combo.count()):
-            if str(self.scoring_subject_combo.itemData(i)) == pick:
-                self.scoring_subject_combo.setCurrentIndex(i)
-                break
-        self.scoring_subject_combo.blockSignals(False)
-
-    def _open_scoring_view(self) -> None:
-        if not self.session:
-            QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
-            return
-        self._sync_current_batch_subject_snapshot(persist_to_db=True)
-        if not self._eligible_scoring_subject_keys():
-            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
-            return
-        self.stack.setCurrentIndex(1)
-        selected_subject = self._resolve_preferred_scoring_subject()
-        self._populate_scoring_subjects(selected_subject)
-        self._refresh_scoring_phase_table()
-        self._load_cached_scoring_results_for_subject(selected_subject)
-        self._refresh_dashboard_summary_from_db(selected_subject)
-        self._show_scoring_panel()
-
-    def _refresh_scoring_phase_table(self) -> None:
-        if not hasattr(self, "scoring_phase_table"):
-            return
-        self.scoring_phase_table.setRowCount(0)
-        for i, p in enumerate(self.scoring_phases[-100:]):
-            self.scoring_phase_table.insertRow(i)
-            self.scoring_phase_table.setItem(i, 0, QTableWidgetItem(str(p.get("timestamp", "-"))))
-            self.scoring_phase_table.setItem(i, 1, QTableWidgetItem(str(p.get("subject", "-"))))
-            self.scoring_phase_table.setItem(i, 2, QTableWidgetItem(str(p.get("mode", "-"))))
-            self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
-            self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
-
-    def _run_scoring_from_panel(self) -> None:
-        subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
-        mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
-        note = self.scoring_phase_note.text().strip() if hasattr(self, "scoring_phase_note") else ""
-        self.calculate_scores(subject_key=subject_key or self._resolve_preferred_scoring_subject(), mode=mode, note=note)
-
-
-
-    def _save_batch_for_selected_subject(self) -> None:
-        subject_cfg = self._selected_batch_subject_config()
-        if not subject_cfg:
-            QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
-            return
-        row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
-        if row_count <= 0:
-            QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
-            return
-
-        session_path = self.current_session_path
-        if not session_path and self.batch_editor_return_session_id:
-            p = self._session_path_from_id(self.batch_editor_return_session_id)
-            if p.exists():
-                session_path = p
-        if not session_path:
-            QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy kỳ thi để lưu trạng thái Batch theo môn.")
-            return
-
-        try:
-            self._refresh_all_statuses()
-            ses = ExamSession.load_json(session_path)
-            cfg = ses.config or {}
-            subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
-            subject_key = self._subject_key_from_cfg(subject_cfg)
-            current_results = self._current_scan_results_snapshot()
-            self.scan_results = list(current_results)
-            for result in current_results:
-                result.answer_string = self._build_answer_string_for_result(result, subject_key)
-            saved_results = [self._serialize_omr_result(x) for x in current_results]
-            timestamp = datetime.now().isoformat(timespec="seconds")
-            updated = False
-            for item in subject_cfgs:
-                if not isinstance(item, dict):
-                    continue
-                same_name_block = str(item.get("name", "")).strip() == str(subject_cfg.get("name", "")).strip() and str(item.get("block", "")).strip() == str(subject_cfg.get("block", "")).strip()
-                same_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
-                if same_name_block or same_key:
-                    item["batch_saved"] = True
-                    item["batch_saved_at"] = timestamp
-                    item["batch_result_count"] = row_count
-                    item["batch_saved_rows"] = [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ]
-                    item["batch_saved_preview"] = [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ]
-                    item["batch_saved_results"] = saved_results
-                    updated = True
-                    break
-            if not updated:
-                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
-                return
-            ses.config = {**cfg, "subject_configs": subject_cfgs}
-            ses.save_json(session_path)
-
-            # Write sidecar cache to ensure grids can be restored even if subject config is trimmed elsewhere.
-            try:
-                cache_path = session_path.with_suffix(".batch_cache.json")
-                cache_data = {}
-                if cache_path.exists():
-                    raw = json.loads(cache_path.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        cache_data = raw
-                cache_key = f"{str(subject_cfg.get('name','')).strip().lower()}::{str(subject_cfg.get('block','')).strip().lower()}::{str(subject_cfg.get('answer_key_key','')).strip().lower()}"
-                cache_data[cache_key] = {
-                    "batch_saved": True,
-                    "batch_saved_at": timestamp,
-                    "batch_result_count": row_count,
-                    "batch_saved_rows": [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ],
-                    "batch_saved_preview": [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ],
-                    "batch_saved_results": saved_results,
-                }
-                cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                pass
-
-            if self.session:
-                self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
-            self.scan_results_by_subject[subject_key] = list(current_results)
-            if isinstance(self.batch_editor_return_payload, dict):
-                self.batch_editor_return_payload["subject_configs"] = subject_cfgs
-
-            # Keep selected subject and show its just-saved content right away.
-            self._refresh_batch_subject_controls()
-            if hasattr(self, "batch_subject_combo"):
-                for i in range(1, self.batch_subject_combo.count()):
-                    cfg_i = self.batch_subject_combo.itemData(i)
-                    if isinstance(cfg_i, dict) and self._subject_key_from_cfg(cfg_i) == subject_key:
-                        self.batch_subject_combo.setCurrentIndex(i)
-                        self._on_batch_subject_changed(i)
-                        break
-
-            self.btn_save_batch_subject.setEnabled(False)
-            QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
-        except Exception as exc:
-            QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu trạng thái Batch\n{exc}")
-
-
-    def _build_correction_tab(self) -> QWidget:
-        w = QWidget()
-        splitter = QSplitter(Qt.Horizontal)
-        self.exam_code_correction_combo = QComboBox()
-        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
-        self.student_correction_combo = QComboBox()
-        self.student_correction_combo.setEditable(True)
-        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
-        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
-        self.answer_editor_scroll = QScrollArea()
-        self.answer_editor_scroll.setWidgetResizable(True)
-        self.answer_editor_container = QWidget()
-        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
-        self.answer_editor_scroll.setWidget(self.answer_editor_container)
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        self.error_list = QListWidget()
-        self.preview_label = QLabel("Image preview / bubble overlay placeholder")
-        self.preview_label.setAlignment(Qt.AlignCenter)
-        self.manual_edit = QTextEdit()
-        self.manual_edit.setPlaceholderText("Manual corrections JSON (e.g. {'student_id': '1001', 'answers': {'1':'A'}})")
-        self.result_preview = QTextEdit()
-        self.result_preview.setReadOnly(True)
-        self.result_preview.setPlaceholderText("Recognized result for selected scan")
-
-        payload = dict(self.batch_editor_return_payload)
-        session_id = self.batch_editor_return_session_id
-        self.batch_editor_return_payload = None
-        self.batch_editor_return_session_id = None
-
-        if not session_id:
-            self.stack.setCurrentIndex(0)
-            return
-        p = self._session_path_from_id(session_id)
-        if not p.exists():
-            self.stack.setCurrentIndex(0)
-            return
-        try:
-            session = ExamSession.load_json(p)
-        except Exception:
-            self.stack.setCurrentIndex(0)
-            return
-        cfg = session.config or {}
-        payload["subject_configs"] = cfg.get("subject_configs", payload.get("subject_configs", []))
-        payload["scan_root"] = cfg.get("scan_root", payload.get("scan_root", ""))
-        payload["student_list_path"] = cfg.get("student_list_path", payload.get("student_list_path", ""))
-        payload["students"] = [
-            {
-                "student_id": s.student_id,
-                "name": s.name,
-                "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
-                "class_name": str((s.extra or {}).get("class_name", "") or ""),
-                "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
-            }
-            for s in (session.students or [])
-        ]
-        payload["scan_mode"] = cfg.get("scan_mode", payload.get("scan_mode", "Ảnh trong thư mục gốc"))
-        payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
-        self._open_embedded_exam_editor(session_id, session, payload)
-
-    def _show_batch_scan_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(True)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(False)
-
-    def _show_scoring_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(False)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(True)
-
-    def _back_to_batch_scan(self) -> None:
-        if not self._confirm_before_switching_work("Batch Scan"):
-            return
-        self._show_batch_scan_panel()
-
-    def _subject_configs_for_scoring(self) -> list[dict]:
-        return self._effective_subject_configs_for_batch()
-
-    def _subject_config_by_subject_key(self, subject_key: str) -> dict | None:
-        key_norm = str(subject_key or "").strip()
-        if not key_norm:
-            return None
-        for cfg in self._subject_configs_for_scoring():
-            if self._subject_key_from_cfg(cfg) == key_norm:
-                return cfg
-        return None
-
-    @staticmethod
-    def _serialize_omr_result(result: OMRResult) -> dict:
-        return {
-            "image_path": str(getattr(result, "image_path", "") or ""),
-            "student_id": str(getattr(result, "student_id", "") or ""),
-            "exam_code": str(getattr(result, "exam_code", "") or ""),
-            "mcq_answers": {int(k): str(v) for k, v in (getattr(result, "mcq_answers", {}) or {}).items()},
-            "true_false_answers": {int(k): dict(v) for k, v in (getattr(result, "true_false_answers", {}) or {}).items()},
-            "numeric_answers": {int(k): str(v) for k, v in (getattr(result, "numeric_answers", {}) or {}).items()},
-            "confidence_scores": {str(k): float(v) for k, v in (getattr(result, "confidence_scores", {}) or {}).items()},
-            "recognition_errors": [str(x) for x in (getattr(result, "recognition_errors", []) or [])],
-            "processing_time_sec": float(getattr(result, "processing_time_sec", 0.0) or 0.0),
-            "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
-            "full_name": str(getattr(result, "full_name", "") or ""),
-            "birth_date": str(getattr(result, "birth_date", "") or ""),
-            "cached_status": str(getattr(result, "cached_status", "") or ""),
-            "cached_content": str(getattr(result, "cached_content", "") or ""),
-            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
-            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
-            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
-        }
-
-    @staticmethod
-    def _deserialize_omr_result(payload: dict) -> OMRResult:
-        result = OMRResult(
-            image_path=str(payload.get("image_path", "") or ""),
-            student_id=str(payload.get("student_id", "") or ""),
-            exam_code=str(payload.get("exam_code", "") or ""),
-            mcq_answers={int(k): str(v) for k, v in (payload.get("mcq_answers", {}) or {}).items()},
-            true_false_answers={int(k): dict(v) for k, v in (payload.get("true_false_answers", {}) or {}).items()},
-            numeric_answers={int(k): str(v) for k, v in (payload.get("numeric_answers", {}) or {}).items()},
-            confidence_scores={str(k): float(v) for k, v in (payload.get("confidence_scores", {}) or {}).items()},
-            recognition_errors=[str(x) for x in (payload.get("recognition_errors", []) or [])],
-            processing_time_sec=float(payload.get("processing_time_sec", 0.0) or 0.0),
-            debug_image_path=str(payload.get("debug_image_path", "") or ""),
-        )
-        setattr(result, "full_name", str(payload.get("full_name", "") or ""))
-        setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
-        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
-        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
-        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
-        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
-        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
-        result.sync_legacy_aliases()
-        return result
-
-    def _is_subject_marked_batched(self, cfg: dict) -> bool:
-        key = self._subject_key_from_cfg(cfg)
-        if self.scan_results_by_subject.get(key):
-            return True
-        merged = self._merge_saved_batch_snapshot(cfg)
-        if bool(merged.get("batch_saved")):
-            return True
-        if isinstance(merged.get("batch_saved_rows", []), list) and merged.get("batch_saved_rows"):
-            return True
-        if isinstance(merged.get("batch_saved_results", []), list) and merged.get("batch_saved_results"):
-            return True
-        return False
-
-    def _cached_subject_scans_from_config(self, subject_key: str) -> list[OMRResult]:
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return []
-        merged = self._merge_saved_batch_snapshot(cfg)
-        cached = merged.get("batch_saved_results", [])
-        if not isinstance(cached, list) or not cached:
-            return []
-        out: list[OMRResult] = []
-        for item in cached:
-            if not isinstance(item, dict):
-                continue
-            try:
-                out.append(self._deserialize_omr_result(item))
-            except Exception:
-                continue
-        return out
-
-    def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
-        if self.answer_keys and any(str(k).startswith(f"{subject_key}::") for k in self.answer_keys.keys.keys()):
-            return True
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return self.answer_keys is not None
-
-        imported_keys = cfg.get("imported_answer_keys", {}) or {}
-        if isinstance(imported_keys, dict) and imported_keys:
-            repo = self.answer_keys or AnswerKeyRepository()
-            for exam_code, kd in imported_keys.items():
-                repo.upsert(
-                    SubjectKey(
-                        subject=subject_key,
-                        exam_code=str(exam_code),
-                        answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
-                        true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
-                        numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
-                        full_credit_questions={
-                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
-                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
-                        },
-                        invalid_answer_rows={
-                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
-                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
-                        },
-                    )
-                )
-            self.answer_keys = repo
-            self.imported_exam_codes = sorted(str(k) for k in imported_keys.keys())
-            self.active_batch_subject_key = subject_key
-            return True
-
-        answer_key_path = str(cfg.get("answer_key_path", "") or (self.session.answer_key_path if self.session else "") or "")
-        if answer_key_path:
-            pth = Path(answer_key_path)
-            if pth.exists() and pth.suffix.lower() == ".json":
-                try:
-                    loaded = AnswerKeyRepository.load_json(pth)
-                    repo = self.answer_keys or AnswerKeyRepository()
-                    for key_obj in loaded.keys.values():
-                        repo.upsert(key_obj)
-                    self.answer_keys = repo
-                    all_codes: set[str] = set()
-                    for key_name in self.answer_keys.keys.keys():
-                        parts = str(key_name).split("::", 1)
-                        if len(parts) == 2 and parts[0] == subject_key:
-                            all_codes.add(parts[1])
-                    if all_codes:
-                        self.imported_exam_codes = sorted(all_codes)
-                    self.active_batch_subject_key = subject_key
-                    return True
-                except Exception:
-                    pass
-
-        return self.answer_keys is not None
-
-    @staticmethod
-    def _subject_key_from_cfg(cfg: dict) -> str:
-        key = str(cfg.get("answer_key_key", "") or "").strip()
-        if key:
-            return key
-        name = str(cfg.get("name", "") or "").strip()
-        block = str(cfg.get("block", "") or "").strip()
-        return f"{name}_{block}" if name and block else (name or "General")
-
-    def _resolve_preferred_scoring_subject(self) -> str:
-        if self.stack.currentIndex() == 1:
-            cfg = self._selected_batch_subject_config()
-            if cfg:
-                return self._subject_key_from_cfg(cfg)
-        cfgs = self._subject_configs_for_scoring()
-        if cfgs:
-            return self._subject_key_from_cfg(cfgs[0])
-        if self.session and self.session.subjects:
-            return str(self.session.subjects[0])
-        return "General"
-
-    def _eligible_scoring_subject_keys(self) -> list[str]:
-        out: list[str] = []
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if self._is_subject_marked_batched(cfg):
-                out.append(key)
-        return out
-
-    def _populate_scoring_subjects(self, preferred_key: str = "") -> None:
-        if not hasattr(self, "scoring_subject_combo"):
-            return
-        self.scoring_subject_combo.blockSignals(True)
-        self.scoring_subject_combo.clear()
-        eligible = set(self._eligible_scoring_subject_keys())
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if eligible and key not in eligible:
-                continue
-            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
-            self.scoring_subject_combo.addItem(label, key)
-        if self.scoring_subject_combo.count() == 0:
-            fallback = self._resolve_preferred_scoring_subject()
-            self.scoring_subject_combo.addItem(fallback, fallback)
-        pick = preferred_key or self._resolve_preferred_scoring_subject()
-        for i in range(self.scoring_subject_combo.count()):
-            if str(self.scoring_subject_combo.itemData(i)) == pick:
-                self.scoring_subject_combo.setCurrentIndex(i)
-                break
-        self.scoring_subject_combo.blockSignals(False)
-
-    def _open_scoring_view(self) -> None:
-        if not self.session:
-            QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
-            return
-        if not self._eligible_scoring_subject_keys():
-            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
-            return
-        self.stack.setCurrentIndex(1)
-        selected_subject = self._resolve_preferred_scoring_subject()
-        self._populate_scoring_subjects(selected_subject)
-        self._refresh_scoring_phase_table()
-        self._load_cached_scoring_results_for_subject(selected_subject)
-        self._refresh_dashboard_summary_from_db(selected_subject)
-        self._show_scoring_panel()
-
-    def _refresh_scoring_phase_table(self) -> None:
-        if not hasattr(self, "scoring_phase_table"):
-            return
-        self.scoring_phase_table.setRowCount(0)
-        for i, p in enumerate(self.scoring_phases[-100:]):
-            self.scoring_phase_table.insertRow(i)
-            self.scoring_phase_table.setItem(i, 0, QTableWidgetItem(str(p.get("timestamp", "-"))))
-            self.scoring_phase_table.setItem(i, 1, QTableWidgetItem(str(p.get("subject", "-"))))
-            self.scoring_phase_table.setItem(i, 2, QTableWidgetItem(str(p.get("mode", "-"))))
-            self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
-            self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
-
-    def _run_scoring_from_panel(self) -> None:
-        subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
-        mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
-        note = self.scoring_phase_note.text().strip() if hasattr(self, "scoring_phase_note") else ""
-        self.calculate_scores(subject_key=subject_key or self._resolve_preferred_scoring_subject(), mode=mode, note=note)
-
-
-
-    def _save_batch_for_selected_subject(self) -> None:
-        subject_cfg = self._selected_batch_subject_config()
-        if not subject_cfg:
-            QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
-            return
-        row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
-        if row_count <= 0:
-            QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
-            return
-
-        session_path = self.current_session_path
-        if not session_path and self.batch_editor_return_session_id:
-            p = self._session_path_from_id(self.batch_editor_return_session_id)
-            if p.exists():
-                session_path = p
-        if not session_path:
-            QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy kỳ thi để lưu trạng thái Batch theo môn.")
-            return
-
-        try:
-            self._refresh_all_statuses()
-            ses = ExamSession.load_json(session_path)
-            cfg = ses.config or {}
-            subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
-            subject_key = self._subject_key_from_cfg(subject_cfg)
-            current_results = self._current_scan_results_snapshot()
-            self.scan_results = list(current_results)
-            for result in current_results:
-                result.answer_string = self._build_answer_string_for_result(result, subject_key)
-            saved_results = [self._serialize_omr_result(x) for x in current_results]
-            timestamp = datetime.now().isoformat(timespec="seconds")
-            updated = False
-            for item in subject_cfgs:
-                if not isinstance(item, dict):
-                    continue
-                same_name_block = str(item.get("name", "")).strip() == str(subject_cfg.get("name", "")).strip() and str(item.get("block", "")).strip() == str(subject_cfg.get("block", "")).strip()
-                same_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
-                if same_name_block or same_key:
-                    item["batch_saved"] = True
-                    item["batch_saved_at"] = timestamp
-                    item["batch_result_count"] = row_count
-                    item["batch_saved_rows"] = [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ]
-                    item["batch_saved_preview"] = [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ]
-                    item["batch_saved_results"] = saved_results
-                    updated = True
-                    break
-            if not updated:
-                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
-                return
-            ses.config = {**cfg, "subject_configs": subject_cfgs}
-            ses.save_json(session_path)
-
-            # Write sidecar cache to ensure grids can be restored even if subject config is trimmed elsewhere.
-            try:
-                cache_path = session_path.with_suffix(".batch_cache.json")
-                cache_data = {}
-                if cache_path.exists():
-                    raw = json.loads(cache_path.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        cache_data = raw
-                cache_key = f"{str(subject_cfg.get('name','')).strip().lower()}::{str(subject_cfg.get('block','')).strip().lower()}::{str(subject_cfg.get('answer_key_key','')).strip().lower()}"
-                cache_data[cache_key] = {
-                    "batch_saved": True,
-                    "batch_saved_at": timestamp,
-                    "batch_result_count": row_count,
-                    "batch_saved_rows": [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ],
-                    "batch_saved_preview": [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ],
-                    "batch_saved_results": saved_results,
-                }
-                cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                pass
-
-            if self.session:
-                self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
-            self.scan_results_by_subject[subject_key] = list(current_results)
-            if isinstance(self.batch_editor_return_payload, dict):
-                self.batch_editor_return_payload["subject_configs"] = subject_cfgs
-
-            # Keep selected subject in combo and refresh the grid with that subject's saved rows.
-            self._refresh_batch_subject_controls()
-            if hasattr(self, "batch_subject_combo"):
-                for i in range(1, self.batch_subject_combo.count()):
-                    cfg_i = self.batch_subject_combo.itemData(i)
-                    if isinstance(cfg_i, dict) and self._subject_key_from_cfg(cfg_i) == subject_key:
-                        self.batch_subject_combo.setCurrentIndex(i)
-                        self._on_batch_subject_changed(i)
-                        break
-
-            self.btn_save_batch_subject.setEnabled(False)
-            QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
-        except Exception as exc:
-            QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu trạng thái Batch\n{exc}")
-
-
-    def _build_correction_tab(self) -> QWidget:
-        w = QWidget()
-        splitter = QSplitter(Qt.Horizontal)
-        self.exam_code_correction_combo = QComboBox()
-        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
-        self.student_correction_combo = QComboBox()
-        self.student_correction_combo.setEditable(True)
-        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
-        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
-        self.answer_editor_scroll = QScrollArea()
-        self.answer_editor_scroll.setWidgetResizable(True)
-        self.answer_editor_container = QWidget()
-        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
-        self.answer_editor_scroll.setWidget(self.answer_editor_container)
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        self.error_list = QListWidget()
-        self.preview_label = QLabel("Image preview / bubble overlay placeholder")
-        self.preview_label.setAlignment(Qt.AlignCenter)
-        self.manual_edit = QTextEdit()
-        self.manual_edit.setPlaceholderText("Manual corrections JSON (e.g. {'student_id': '1001', 'answers': {'1':'A'}})")
-        self.result_preview = QTextEdit()
-        self.result_preview.setReadOnly(True)
-        self.result_preview.setPlaceholderText("Recognized result for selected scan")
-
-        payload = dict(self.batch_editor_return_payload)
-        session_id = self.batch_editor_return_session_id
-        self.batch_editor_return_payload = None
-        self.batch_editor_return_session_id = None
-
-        if not session_id:
-            self.stack.setCurrentIndex(0)
-            return
-        p = self._session_path_from_id(session_id)
-        if not p.exists():
-            self.stack.setCurrentIndex(0)
-            return
-        try:
-            session = ExamSession.load_json(p)
-        except Exception:
-            self.stack.setCurrentIndex(0)
-            return
-        cfg = session.config or {}
-        payload["subject_configs"] = cfg.get("subject_configs", payload.get("subject_configs", []))
-        payload["scan_root"] = cfg.get("scan_root", payload.get("scan_root", ""))
-        payload["student_list_path"] = cfg.get("student_list_path", payload.get("student_list_path", ""))
-        payload["students"] = [
-            {
-                "student_id": s.student_id,
-                "name": s.name,
-                "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
-                "class_name": str((s.extra or {}).get("class_name", "") or ""),
-                "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
-            }
-            for s in (session.students or [])
-        ]
-        payload["scan_mode"] = cfg.get("scan_mode", payload.get("scan_mode", "Ảnh trong thư mục gốc"))
-        payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
-        self._open_embedded_exam_editor(session_id, session, payload)
-
-    def _show_batch_scan_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(True)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(False)
-
-    def _show_scoring_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(False)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(True)
-
-    def _back_to_batch_scan(self) -> None:
-        if not self._confirm_before_switching_work("Batch Scan"):
-            return
-        self._show_batch_scan_panel()
-
-    def _subject_configs_for_scoring(self) -> list[dict]:
-        return self._effective_subject_configs_for_batch()
-
-    def _subject_config_by_subject_key(self, subject_key: str) -> dict | None:
-        key_norm = str(subject_key or "").strip()
-        if not key_norm:
-            return None
-        for cfg in self._subject_configs_for_scoring():
-            if self._subject_key_from_cfg(cfg) == key_norm:
-                return cfg
-        return None
-
-    @staticmethod
-    def _serialize_omr_result(result: OMRResult) -> dict:
-        return {
-            "image_path": str(getattr(result, "image_path", "") or ""),
-            "student_id": str(getattr(result, "student_id", "") or ""),
-            "exam_code": str(getattr(result, "exam_code", "") or ""),
-            "mcq_answers": {int(k): str(v) for k, v in (getattr(result, "mcq_answers", {}) or {}).items()},
-            "true_false_answers": {int(k): dict(v) for k, v in (getattr(result, "true_false_answers", {}) or {}).items()},
-            "numeric_answers": {int(k): str(v) for k, v in (getattr(result, "numeric_answers", {}) or {}).items()},
-            "confidence_scores": {str(k): float(v) for k, v in (getattr(result, "confidence_scores", {}) or {}).items()},
-            "recognition_errors": [str(x) for x in (getattr(result, "recognition_errors", []) or [])],
-            "processing_time_sec": float(getattr(result, "processing_time_sec", 0.0) or 0.0),
-            "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
-            "full_name": str(getattr(result, "full_name", "") or ""),
-            "birth_date": str(getattr(result, "birth_date", "") or ""),
-            "cached_status": str(getattr(result, "cached_status", "") or ""),
-            "cached_content": str(getattr(result, "cached_content", "") or ""),
-            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
-            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
-            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
-        }
-
-    @staticmethod
-    def _deserialize_omr_result(payload: dict) -> OMRResult:
-        result = OMRResult(
-            image_path=str(payload.get("image_path", "") or ""),
-            student_id=str(payload.get("student_id", "") or ""),
-            exam_code=str(payload.get("exam_code", "") or ""),
-            mcq_answers={int(k): str(v) for k, v in (payload.get("mcq_answers", {}) or {}).items()},
-            true_false_answers={int(k): dict(v) for k, v in (payload.get("true_false_answers", {}) or {}).items()},
-            numeric_answers={int(k): str(v) for k, v in (payload.get("numeric_answers", {}) or {}).items()},
-            confidence_scores={str(k): float(v) for k, v in (payload.get("confidence_scores", {}) or {}).items()},
-            recognition_errors=[str(x) for x in (payload.get("recognition_errors", []) or [])],
-            processing_time_sec=float(payload.get("processing_time_sec", 0.0) or 0.0),
-            debug_image_path=str(payload.get("debug_image_path", "") or ""),
-        )
-        setattr(result, "full_name", str(payload.get("full_name", "") or ""))
-        setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
-        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
-        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
-        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
-        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
-        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
-        result.sync_legacy_aliases()
-        return result
-
-    def _is_subject_marked_batched(self, cfg: dict) -> bool:
-        key = self._subject_key_from_cfg(cfg)
-        if self.scan_results_by_subject.get(key):
-            return True
-        merged = self._merge_saved_batch_snapshot(cfg)
-        if bool(merged.get("batch_saved")):
-            return True
-        if isinstance(merged.get("batch_saved_rows", []), list) and merged.get("batch_saved_rows"):
-            return True
-        if isinstance(merged.get("batch_saved_results", []), list) and merged.get("batch_saved_results"):
-            return True
-        return False
-
-    def _cached_subject_scans_from_config(self, subject_key: str) -> list[OMRResult]:
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return []
-        merged = self._merge_saved_batch_snapshot(cfg)
-        cached = merged.get("batch_saved_results", [])
-        if not isinstance(cached, list) or not cached:
-            return []
-        out: list[OMRResult] = []
-        for item in cached:
-            if not isinstance(item, dict):
-                continue
-            try:
-                out.append(self._deserialize_omr_result(item))
-            except Exception:
-                continue
-        return out
-
-    def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
-        if self.answer_keys and any(str(k).startswith(f"{subject_key}::") for k in self.answer_keys.keys.keys()):
-            return True
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return self.answer_keys is not None
-
-        imported_keys = cfg.get("imported_answer_keys", {}) or {}
-        if isinstance(imported_keys, dict) and imported_keys:
-            repo = self.answer_keys or AnswerKeyRepository()
-            for exam_code, kd in imported_keys.items():
-                repo.upsert(
-                    SubjectKey(
-                        subject=subject_key,
-                        exam_code=str(exam_code),
-                        answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
-                        true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
-                        numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
-                        full_credit_questions={
-                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
-                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
-                        },
-                        invalid_answer_rows={
-                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
-                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
-                        },
-                    )
-                )
-            self.answer_keys = repo
-            self.imported_exam_codes = sorted(str(k) for k in imported_keys.keys())
-            self.active_batch_subject_key = subject_key
-            return True
-
-        answer_key_path = str(cfg.get("answer_key_path", "") or (self.session.answer_key_path if self.session else "") or "")
-        if answer_key_path:
-            pth = Path(answer_key_path)
-            if pth.exists() and pth.suffix.lower() == ".json":
-                try:
-                    loaded = AnswerKeyRepository.load_json(pth)
-                    repo = self.answer_keys or AnswerKeyRepository()
-                    for key_obj in loaded.keys.values():
-                        repo.upsert(key_obj)
-                    self.answer_keys = repo
-                    all_codes: set[str] = set()
-                    for key_name in self.answer_keys.keys.keys():
-                        parts = str(key_name).split("::", 1)
-                        if len(parts) == 2 and parts[0] == subject_key:
-                            all_codes.add(parts[1])
-                    if all_codes:
-                        self.imported_exam_codes = sorted(all_codes)
-                    self.active_batch_subject_key = subject_key
-                    return True
-                except Exception:
-                    pass
-
-        return self.answer_keys is not None
-
-    @staticmethod
-    def _subject_key_from_cfg(cfg: dict) -> str:
-        key = str(cfg.get("answer_key_key", "") or "").strip()
-        if key:
-            return key
-        name = str(cfg.get("name", "") or "").strip()
-        block = str(cfg.get("block", "") or "").strip()
-        return f"{name}_{block}" if name and block else (name or "General")
-
-    def _resolve_preferred_scoring_subject(self) -> str:
-        if self.stack.currentIndex() == 1:
-            cfg = self._selected_batch_subject_config()
-            if cfg:
-                return self._subject_key_from_cfg(cfg)
-        cfgs = self._subject_configs_for_scoring()
-        if cfgs:
-            return self._subject_key_from_cfg(cfgs[0])
-        if self.session and self.session.subjects:
-            return str(self.session.subjects[0])
-        return "General"
-
-    def _eligible_scoring_subject_keys(self) -> list[str]:
-        out: list[str] = []
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if self._is_subject_marked_batched(cfg):
-                out.append(key)
-        return out
-
-    def _populate_scoring_subjects(self, preferred_key: str = "") -> None:
-        if not hasattr(self, "scoring_subject_combo"):
-            return
-        self.scoring_subject_combo.blockSignals(True)
-        self.scoring_subject_combo.clear()
-        eligible = set(self._eligible_scoring_subject_keys())
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if eligible and key not in eligible:
-                continue
-            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
-            self.scoring_subject_combo.addItem(label, key)
-        if self.scoring_subject_combo.count() == 0:
-            fallback = self._resolve_preferred_scoring_subject()
-            self.scoring_subject_combo.addItem(fallback, fallback)
-        pick = preferred_key or self._resolve_preferred_scoring_subject()
-        for i in range(self.scoring_subject_combo.count()):
-            if str(self.scoring_subject_combo.itemData(i)) == pick:
-                self.scoring_subject_combo.setCurrentIndex(i)
-                break
-        self.scoring_subject_combo.blockSignals(False)
-
-    def _open_scoring_view(self) -> None:
-        if not self.session:
-            QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
-            return
-        if not self._eligible_scoring_subject_keys():
-            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
-            return
-        self.stack.setCurrentIndex(1)
-        self._populate_scoring_subjects(self._resolve_preferred_scoring_subject())
-        self._refresh_scoring_phase_table()
-        self._show_scoring_panel()
-
-    def _refresh_scoring_phase_table(self) -> None:
-        if not hasattr(self, "scoring_phase_table"):
-            return
-        self.scoring_phase_table.setRowCount(0)
-        for i, p in enumerate(self.scoring_phases[-100:]):
-            self.scoring_phase_table.insertRow(i)
-            self.scoring_phase_table.setItem(i, 0, QTableWidgetItem(str(p.get("timestamp", "-"))))
-            self.scoring_phase_table.setItem(i, 1, QTableWidgetItem(str(p.get("subject", "-"))))
-            self.scoring_phase_table.setItem(i, 2, QTableWidgetItem(str(p.get("mode", "-"))))
-            self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
-            self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
-
-    def _run_scoring_from_panel(self) -> None:
-        subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
-        mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
-        note = self.scoring_phase_note.text().strip() if hasattr(self, "scoring_phase_note") else ""
-        self.calculate_scores(subject_key=subject_key or self._resolve_preferred_scoring_subject(), mode=mode, note=note)
-
-
-
-    def _save_batch_for_selected_subject(self) -> None:
-        subject_cfg = self._selected_batch_subject_config()
-        if not subject_cfg:
-            QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
-            return
-        row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
-        if row_count <= 0:
-            QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
-            return
-
-        session_path = self.current_session_path
-        if not session_path and self.batch_editor_return_session_id:
-            p = self._session_path_from_id(self.batch_editor_return_session_id)
-            if p.exists():
-                session_path = p
-        if not session_path:
-            QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy kỳ thi để lưu trạng thái Batch theo môn.")
-            return
-
-        try:
-            self._refresh_all_statuses()
-            ses = ExamSession.load_json(session_path)
-            cfg = ses.config or {}
-            subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
-            subject_key = self._subject_key_from_cfg(subject_cfg)
-            current_results = self._current_scan_results_snapshot()
-            self.scan_results = list(current_results)
-            for result in current_results:
-                result.answer_string = self._build_answer_string_for_result(result, subject_key)
-            saved_results = [self._serialize_omr_result(x) for x in current_results]
-            timestamp = datetime.now().isoformat(timespec="seconds")
-            updated = False
-            for item in subject_cfgs:
-                if not isinstance(item, dict):
-                    continue
-                same_name_block = str(item.get("name", "")).strip() == str(subject_cfg.get("name", "")).strip() and str(item.get("block", "")).strip() == str(subject_cfg.get("block", "")).strip()
-                same_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
-                if same_name_block or same_key:
-                    item["batch_saved"] = True
-                    item["batch_saved_at"] = timestamp
-                    item["batch_result_count"] = row_count
-                    item["batch_saved_rows"] = [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ]
-                    item["batch_saved_preview"] = [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ]
-                    item["batch_saved_results"] = saved_results
-                    updated = True
-                    break
-            if not updated:
-                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
-                return
-            ses.config = {**cfg, "subject_configs": subject_cfgs}
-            ses.save_json(session_path)
-
-            # Write sidecar cache to ensure grids can be restored even if subject config is trimmed elsewhere.
-            try:
-                cache_path = session_path.with_suffix(".batch_cache.json")
-                cache_data = {}
-                if cache_path.exists():
-                    raw = json.loads(cache_path.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        cache_data = raw
-                cache_key = f"{str(subject_cfg.get('name','')).strip().lower()}::{str(subject_cfg.get('block','')).strip().lower()}::{str(subject_cfg.get('answer_key_key','')).strip().lower()}"
-                cache_data[cache_key] = {
-                    "batch_saved": True,
-                    "batch_saved_at": timestamp,
-                    "batch_result_count": row_count,
-                    "batch_saved_rows": [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ],
-                    "batch_saved_preview": [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ],
-                    "batch_saved_results": saved_results,
-                }
-                cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                pass
-
-            if self.session:
-                self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
-            self.scan_results_by_subject[subject_key] = list(current_results)
-            if isinstance(self.batch_editor_return_payload, dict):
-                self.batch_editor_return_payload["subject_configs"] = subject_cfgs
-            self._refresh_batch_subject_controls()
-            self.btn_save_batch_subject.setEnabled(False)
-            QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
-        except Exception as exc:
-            QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu trạng thái Batch\n{exc}")
-
-
-    def _build_correction_tab(self) -> QWidget:
-        w = QWidget()
-        splitter = QSplitter(Qt.Horizontal)
-        self.exam_code_correction_combo = QComboBox()
-        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
-        self.student_correction_combo = QComboBox()
-        self.student_correction_combo.setEditable(True)
-        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
-        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
-        self.answer_editor_scroll = QScrollArea()
-        self.answer_editor_scroll.setWidgetResizable(True)
-        self.answer_editor_container = QWidget()
-        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
-        self.answer_editor_scroll.setWidget(self.answer_editor_container)
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        self.error_list = QListWidget()
-        self.preview_label = QLabel("Image preview / bubble overlay placeholder")
-        self.preview_label.setAlignment(Qt.AlignCenter)
-        self.manual_edit = QTextEdit()
-        self.manual_edit.setPlaceholderText("Manual corrections JSON (e.g. {'student_id': '1001', 'answers': {'1':'A'}})")
-        self.result_preview = QTextEdit()
-        self.result_preview.setReadOnly(True)
-        self.result_preview.setPlaceholderText("Recognized result for selected scan")
-
-        payload = dict(self.batch_editor_return_payload)
-        session_id = self.batch_editor_return_session_id
-        self.batch_editor_return_payload = None
-        self.batch_editor_return_session_id = None
-
-        if not session_id:
-            self.stack.setCurrentIndex(0)
-            return
-        p = self._session_path_from_id(session_id)
-        if not p.exists():
-            self.stack.setCurrentIndex(0)
-            return
-        try:
-            session = ExamSession.load_json(p)
-        except Exception:
-            self.stack.setCurrentIndex(0)
-            return
-        cfg = session.config or {}
-        payload["subject_configs"] = cfg.get("subject_configs", payload.get("subject_configs", []))
-        payload["scan_root"] = cfg.get("scan_root", payload.get("scan_root", ""))
-        payload["student_list_path"] = cfg.get("student_list_path", payload.get("student_list_path", ""))
-        payload["students"] = [
-            {
-                "student_id": s.student_id,
-                "name": s.name,
-                "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
-                "class_name": str((s.extra or {}).get("class_name", "") or ""),
-                "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
-            }
-            for s in (session.students or [])
-        ]
-        payload["scan_mode"] = cfg.get("scan_mode", payload.get("scan_mode", "Ảnh trong thư mục gốc"))
-        payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
-        self._open_embedded_exam_editor(session_id, session, payload)
-
-    def _show_batch_scan_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(True)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(False)
-
-    def _show_scoring_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(False)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(True)
-
-    def _back_to_batch_scan(self) -> None:
-        if not self._confirm_before_switching_work("Batch Scan"):
-            return
-        self._show_batch_scan_panel()
-
-    def _subject_configs_for_scoring(self) -> list[dict]:
-        return self._effective_subject_configs_for_batch()
-
-    def _subject_config_by_subject_key(self, subject_key: str) -> dict | None:
-        key_norm = str(subject_key or "").strip()
-        if not key_norm:
-            return None
-        for cfg in self._subject_configs_for_scoring():
-            if self._subject_key_from_cfg(cfg) == key_norm:
-                return cfg
-        return None
-
-    @staticmethod
-    def _serialize_omr_result(result: OMRResult) -> dict:
-        return {
-            "image_path": str(getattr(result, "image_path", "") or ""),
-            "student_id": str(getattr(result, "student_id", "") or ""),
-            "exam_code": str(getattr(result, "exam_code", "") or ""),
-            "mcq_answers": {int(k): str(v) for k, v in (getattr(result, "mcq_answers", {}) or {}).items()},
-            "true_false_answers": {int(k): dict(v) for k, v in (getattr(result, "true_false_answers", {}) or {}).items()},
-            "numeric_answers": {int(k): str(v) for k, v in (getattr(result, "numeric_answers", {}) or {}).items()},
-            "confidence_scores": {str(k): float(v) for k, v in (getattr(result, "confidence_scores", {}) or {}).items()},
-            "recognition_errors": [str(x) for x in (getattr(result, "recognition_errors", []) or [])],
-            "processing_time_sec": float(getattr(result, "processing_time_sec", 0.0) or 0.0),
-            "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
-            "full_name": str(getattr(result, "full_name", "") or ""),
-            "birth_date": str(getattr(result, "birth_date", "") or ""),
-            "cached_status": str(getattr(result, "cached_status", "") or ""),
-            "cached_content": str(getattr(result, "cached_content", "") or ""),
-            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
-            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
-            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
-        }
-
-    @staticmethod
-    def _deserialize_omr_result(payload: dict) -> OMRResult:
-        result = OMRResult(
-            image_path=str(payload.get("image_path", "") or ""),
-            student_id=str(payload.get("student_id", "") or ""),
-            exam_code=str(payload.get("exam_code", "") or ""),
-            mcq_answers={int(k): str(v) for k, v in (payload.get("mcq_answers", {}) or {}).items()},
-            true_false_answers={int(k): dict(v) for k, v in (payload.get("true_false_answers", {}) or {}).items()},
-            numeric_answers={int(k): str(v) for k, v in (payload.get("numeric_answers", {}) or {}).items()},
-            confidence_scores={str(k): float(v) for k, v in (payload.get("confidence_scores", {}) or {}).items()},
-            recognition_errors=[str(x) for x in (payload.get("recognition_errors", []) or [])],
-            processing_time_sec=float(payload.get("processing_time_sec", 0.0) or 0.0),
-            debug_image_path=str(payload.get("debug_image_path", "") or ""),
-        )
-        setattr(result, "full_name", str(payload.get("full_name", "") or ""))
-        setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
-        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
-        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
-        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
-        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
-        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
-        result.sync_legacy_aliases()
-        return result
-
-    def _is_subject_marked_batched(self, cfg: dict) -> bool:
-        key = self._subject_key_from_cfg(cfg)
-        if self.scan_results_by_subject.get(key):
-            return True
-        merged = self._merge_saved_batch_snapshot(cfg)
-        if bool(merged.get("batch_saved")):
-            return True
-        if isinstance(merged.get("batch_saved_rows", []), list) and merged.get("batch_saved_rows"):
-            return True
-        if isinstance(merged.get("batch_saved_results", []), list) and merged.get("batch_saved_results"):
-            return True
-        return False
-
-    def _cached_subject_scans_from_config(self, subject_key: str) -> list[OMRResult]:
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return []
-        merged = self._merge_saved_batch_snapshot(cfg)
-        cached = merged.get("batch_saved_results", [])
-        if not isinstance(cached, list) or not cached:
-            return []
-        out: list[OMRResult] = []
-        for item in cached:
-            if not isinstance(item, dict):
-                continue
-            try:
-                out.append(self._deserialize_omr_result(item))
-            except Exception:
-                continue
-        return out
-
-    def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
-        if self.answer_keys and any(str(k).startswith(f"{subject_key}::") for k in self.answer_keys.keys.keys()):
-            return True
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return self.answer_keys is not None
-
-        imported_keys = cfg.get("imported_answer_keys", {}) or {}
-        if isinstance(imported_keys, dict) and imported_keys:
-            repo = self.answer_keys or AnswerKeyRepository()
-            for exam_code, kd in imported_keys.items():
-                repo.upsert(
-                    SubjectKey(
-                        subject=subject_key,
-                        exam_code=str(exam_code),
-                        answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
-                        true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
-                        numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
-                        full_credit_questions={
-                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
-                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
-                        },
-                        invalid_answer_rows={
-                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
-                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
-                        },
-                    )
-                )
-            self.answer_keys = repo
-            self.imported_exam_codes = sorted(str(k) for k in imported_keys.keys())
-            self.active_batch_subject_key = subject_key
-            return True
-
-        answer_key_path = str(cfg.get("answer_key_path", "") or (self.session.answer_key_path if self.session else "") or "")
-        if answer_key_path:
-            pth = Path(answer_key_path)
-            if pth.exists() and pth.suffix.lower() == ".json":
-                try:
-                    loaded = AnswerKeyRepository.load_json(pth)
-                    repo = self.answer_keys or AnswerKeyRepository()
-                    for key_obj in loaded.keys.values():
-                        repo.upsert(key_obj)
-                    self.answer_keys = repo
-                    all_codes: set[str] = set()
-                    for key_name in self.answer_keys.keys.keys():
-                        parts = str(key_name).split("::", 1)
-                        if len(parts) == 2 and parts[0] == subject_key:
-                            all_codes.add(parts[1])
-                    if all_codes:
-                        self.imported_exam_codes = sorted(all_codes)
-                    self.active_batch_subject_key = subject_key
-                    return True
-                except Exception:
-                    pass
-
-        return self.answer_keys is not None
-
-    @staticmethod
-    def _subject_key_from_cfg(cfg: dict) -> str:
-        key = str(cfg.get("answer_key_key", "") or "").strip()
-        if key:
-            return key
-        name = str(cfg.get("name", "") or "").strip()
-        block = str(cfg.get("block", "") or "").strip()
-        return f"{name}_{block}" if name and block else (name or "General")
-
-    def _resolve_preferred_scoring_subject(self) -> str:
-        if self.stack.currentIndex() == 1:
-            cfg = self._selected_batch_subject_config()
-            if cfg:
-                return self._subject_key_from_cfg(cfg)
-        cfgs = self._subject_configs_for_scoring()
-        if cfgs:
-            return self._subject_key_from_cfg(cfgs[0])
-        if self.session and self.session.subjects:
-            return str(self.session.subjects[0])
-        return "General"
-
-    def _eligible_scoring_subject_keys(self) -> list[str]:
-        out: list[str] = []
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if self._is_subject_marked_batched(cfg):
-                out.append(key)
-        return out
-
-    def _populate_scoring_subjects(self, preferred_key: str = "") -> None:
-        if not hasattr(self, "scoring_subject_combo"):
-            return
-        self.scoring_subject_combo.blockSignals(True)
-        self.scoring_subject_combo.clear()
-        eligible = set(self._eligible_scoring_subject_keys())
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if eligible and key not in eligible:
-                continue
-            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
-            self.scoring_subject_combo.addItem(label, key)
-        if self.scoring_subject_combo.count() == 0:
-            fallback = self._resolve_preferred_scoring_subject()
-            self.scoring_subject_combo.addItem(fallback, fallback)
-        pick = preferred_key or self._resolve_preferred_scoring_subject()
-        for i in range(self.scoring_subject_combo.count()):
-            if str(self.scoring_subject_combo.itemData(i)) == pick:
-                self.scoring_subject_combo.setCurrentIndex(i)
-                break
-        self.scoring_subject_combo.blockSignals(False)
-
-    def _open_scoring_view(self) -> None:
-        if not self.session:
-            QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
-            return
-        if not self._eligible_scoring_subject_keys():
-            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
-            return
-        self.stack.setCurrentIndex(1)
-        self._populate_scoring_subjects(self._resolve_preferred_scoring_subject())
-        self._refresh_scoring_phase_table()
-        self._show_scoring_panel()
-
-    def _refresh_scoring_phase_table(self) -> None:
-        if not hasattr(self, "scoring_phase_table"):
-            return
-        self.scoring_phase_table.setRowCount(0)
-        for i, p in enumerate(self.scoring_phases[-100:]):
-            self.scoring_phase_table.insertRow(i)
-            self.scoring_phase_table.setItem(i, 0, QTableWidgetItem(str(p.get("timestamp", "-"))))
-            self.scoring_phase_table.setItem(i, 1, QTableWidgetItem(str(p.get("subject", "-"))))
-            self.scoring_phase_table.setItem(i, 2, QTableWidgetItem(str(p.get("mode", "-"))))
-            self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
-            self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
-
-    def _run_scoring_from_panel(self) -> None:
-        subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
-        mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
-        note = self.scoring_phase_note.text().strip() if hasattr(self, "scoring_phase_note") else ""
-        self.calculate_scores(subject_key=subject_key or self._resolve_preferred_scoring_subject(), mode=mode, note=note)
-
-
-
-    def _save_batch_for_selected_subject(self) -> None:
-        subject_cfg = self._selected_batch_subject_config()
-        if not subject_cfg:
-            QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
-            return
-        row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
-        if row_count <= 0:
-            QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
-            return
-
-        session_path = self.current_session_path
-        if not session_path and self.batch_editor_return_session_id:
-            p = self._session_path_from_id(self.batch_editor_return_session_id)
-            if p.exists():
-                session_path = p
-        if not session_path:
-            QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy kỳ thi để lưu trạng thái Batch theo môn.")
-            return
-
-        try:
-            self._refresh_all_statuses()
-            ses = ExamSession.load_json(session_path)
-            cfg = ses.config or {}
-            subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
-            subject_key = self._subject_key_from_cfg(subject_cfg)
-            current_results = self._current_scan_results_snapshot()
-            self.scan_results = list(current_results)
-            for result in current_results:
-                result.answer_string = self._build_answer_string_for_result(result, subject_key)
-            saved_results = [self._serialize_omr_result(x) for x in current_results]
-            timestamp = datetime.now().isoformat(timespec="seconds")
-            updated = False
-            for item in subject_cfgs:
-                if not isinstance(item, dict):
-                    continue
-                same_name_block = str(item.get("name", "")).strip() == str(subject_cfg.get("name", "")).strip() and str(item.get("block", "")).strip() == str(subject_cfg.get("block", "")).strip()
-                same_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
-                if same_name_block or same_key:
-                    item["batch_saved"] = True
-                    item["batch_saved_at"] = timestamp
-                    item["batch_result_count"] = row_count
-                    item["batch_saved_rows"] = [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ]
-                    item["batch_saved_preview"] = [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ]
-                    item["batch_saved_results"] = saved_results
-                    updated = True
-                    break
-            if not updated:
-                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
-                return
-            ses.config = {**cfg, "subject_configs": subject_cfgs}
-            ses.save_json(session_path)
-
-            # Write sidecar cache to ensure grids can be restored even if subject config is trimmed elsewhere.
-            try:
-                cache_path = session_path.with_suffix(".batch_cache.json")
-                cache_data = {}
-                if cache_path.exists():
-                    raw = json.loads(cache_path.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        cache_data = raw
-                cache_key = f"{str(subject_cfg.get('name','')).strip().lower()}::{str(subject_cfg.get('block','')).strip().lower()}::{str(subject_cfg.get('answer_key_key','')).strip().lower()}"
-                cache_data[cache_key] = {
-                    "batch_saved": True,
-                    "batch_saved_at": timestamp,
-                    "batch_result_count": row_count,
-                    "batch_saved_rows": [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ],
-                    "batch_saved_preview": [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ],
-                    "batch_saved_results": saved_results,
-                }
-                cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                pass
-
-            if self.session:
-                self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
-            self.scan_results_by_subject[subject_key] = list(current_results)
-            if isinstance(self.batch_editor_return_payload, dict):
-                self.batch_editor_return_payload["subject_configs"] = subject_cfgs
-            self._refresh_batch_subject_controls()
-            self.btn_save_batch_subject.setEnabled(False)
-            QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
-        except Exception as exc:
-            QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu trạng thái Batch\n{exc}")
-
-
-    def _build_correction_tab(self) -> QWidget:
-        w = QWidget()
-        splitter = QSplitter(Qt.Horizontal)
-        self.exam_code_correction_combo = QComboBox()
-        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
-        self.student_correction_combo = QComboBox()
-        self.student_correction_combo.setEditable(True)
-        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
-        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
-        self.answer_editor_scroll = QScrollArea()
-        self.answer_editor_scroll.setWidgetResizable(True)
-        self.answer_editor_container = QWidget()
-        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
-        self.answer_editor_scroll.setWidget(self.answer_editor_container)
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        self.error_list = QListWidget()
-        self.preview_label = QLabel("Image preview / bubble overlay placeholder")
-        self.preview_label.setAlignment(Qt.AlignCenter)
-        self.manual_edit = QTextEdit()
-        self.manual_edit.setPlaceholderText("Manual corrections JSON (e.g. {'student_id': '1001', 'answers': {'1':'A'}})")
-        self.result_preview = QTextEdit()
-        self.result_preview.setReadOnly(True)
-        self.result_preview.setPlaceholderText("Recognized result for selected scan")
-
-        payload = dict(self.batch_editor_return_payload)
-        session_id = self.batch_editor_return_session_id
-        self.batch_editor_return_payload = None
-        self.batch_editor_return_session_id = None
-
-        if not session_id:
-            self.stack.setCurrentIndex(0)
-            return
-        p = self._session_path_from_id(session_id)
-        if not p.exists():
-            self.stack.setCurrentIndex(0)
-            return
-        try:
-            session = ExamSession.load_json(p)
-        except Exception:
-            self.stack.setCurrentIndex(0)
-            return
-        cfg = session.config or {}
-        payload["subject_configs"] = cfg.get("subject_configs", payload.get("subject_configs", []))
-        payload["scan_root"] = cfg.get("scan_root", payload.get("scan_root", ""))
-        payload["student_list_path"] = cfg.get("student_list_path", payload.get("student_list_path", ""))
-        payload["students"] = [
-            {
-                "student_id": s.student_id,
-                "name": s.name,
-                "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
-                "class_name": str((s.extra or {}).get("class_name", "") or ""),
-                "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
-            }
-            for s in (session.students or [])
-        ]
-        payload["scan_mode"] = cfg.get("scan_mode", payload.get("scan_mode", "Ảnh trong thư mục gốc"))
-        payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
-        self._open_embedded_exam_editor(session_id, session, payload)
-
-    def _show_batch_scan_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(True)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(False)
-
-    def _show_scoring_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(False)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(True)
-
-    def _back_to_batch_scan(self) -> None:
-        if not self._confirm_before_switching_work("Batch Scan"):
-            return
-        self._show_batch_scan_panel()
-
-    def _subject_configs_for_scoring(self) -> list[dict]:
-        return self._effective_subject_configs_for_batch()
-
-    def _subject_config_by_subject_key(self, subject_key: str) -> dict | None:
-        key_norm = str(subject_key or "").strip()
-        if not key_norm:
-            return None
-        for cfg in self._subject_configs_for_scoring():
-            if self._subject_key_from_cfg(cfg) == key_norm:
-                return cfg
-        return None
-
-    @staticmethod
-    def _serialize_omr_result(result: OMRResult) -> dict:
-        return {
-            "image_path": str(getattr(result, "image_path", "") or ""),
-            "student_id": str(getattr(result, "student_id", "") or ""),
-            "exam_code": str(getattr(result, "exam_code", "") or ""),
-            "mcq_answers": {int(k): str(v) for k, v in (getattr(result, "mcq_answers", {}) or {}).items()},
-            "true_false_answers": {int(k): dict(v) for k, v in (getattr(result, "true_false_answers", {}) or {}).items()},
-            "numeric_answers": {int(k): str(v) for k, v in (getattr(result, "numeric_answers", {}) or {}).items()},
-            "confidence_scores": {str(k): float(v) for k, v in (getattr(result, "confidence_scores", {}) or {}).items()},
-            "recognition_errors": [str(x) for x in (getattr(result, "recognition_errors", []) or [])],
-            "processing_time_sec": float(getattr(result, "processing_time_sec", 0.0) or 0.0),
-            "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
-            "full_name": str(getattr(result, "full_name", "") or ""),
-            "birth_date": str(getattr(result, "birth_date", "") or ""),
-            "cached_status": str(getattr(result, "cached_status", "") or ""),
-            "cached_content": str(getattr(result, "cached_content", "") or ""),
-            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
-            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
-            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
-        }
-
-    @staticmethod
-    def _deserialize_omr_result(payload: dict) -> OMRResult:
-        result = OMRResult(
-            image_path=str(payload.get("image_path", "") or ""),
-            student_id=str(payload.get("student_id", "") or ""),
-            exam_code=str(payload.get("exam_code", "") or ""),
-            mcq_answers={int(k): str(v) for k, v in (payload.get("mcq_answers", {}) or {}).items()},
-            true_false_answers={int(k): dict(v) for k, v in (payload.get("true_false_answers", {}) or {}).items()},
-            numeric_answers={int(k): str(v) for k, v in (payload.get("numeric_answers", {}) or {}).items()},
-            confidence_scores={str(k): float(v) for k, v in (payload.get("confidence_scores", {}) or {}).items()},
-            recognition_errors=[str(x) for x in (payload.get("recognition_errors", []) or [])],
-            processing_time_sec=float(payload.get("processing_time_sec", 0.0) or 0.0),
-            debug_image_path=str(payload.get("debug_image_path", "") or ""),
-        )
-        setattr(result, "full_name", str(payload.get("full_name", "") or ""))
-        setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
-        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
-        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
-        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
-        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
-        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
-        result.sync_legacy_aliases()
-        return result
-
-    def _is_subject_marked_batched(self, cfg: dict) -> bool:
-        key = self._subject_key_from_cfg(cfg)
-        if self.scan_results_by_subject.get(key):
-            return True
-        merged = self._merge_saved_batch_snapshot(cfg)
-        if bool(merged.get("batch_saved")):
-            return True
-        if isinstance(merged.get("batch_saved_rows", []), list) and merged.get("batch_saved_rows"):
-            return True
-        if isinstance(merged.get("batch_saved_results", []), list) and merged.get("batch_saved_results"):
-            return True
-        return False
-
-    def _cached_subject_scans_from_config(self, subject_key: str) -> list[OMRResult]:
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return []
-        merged = self._merge_saved_batch_snapshot(cfg)
-        cached = merged.get("batch_saved_results", [])
-        if not isinstance(cached, list) or not cached:
-            return []
-        out: list[OMRResult] = []
-        for item in cached:
-            if not isinstance(item, dict):
-                continue
-            try:
-                out.append(self._deserialize_omr_result(item))
-            except Exception:
-                continue
-        return out
-
-    def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
-        if self.answer_keys and any(str(k).startswith(f"{subject_key}::") for k in self.answer_keys.keys.keys()):
-            return True
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return self.answer_keys is not None
-
-        imported_keys = cfg.get("imported_answer_keys", {}) or {}
-        if isinstance(imported_keys, dict) and imported_keys:
-            repo = self.answer_keys or AnswerKeyRepository()
-            for exam_code, kd in imported_keys.items():
-                repo.upsert(
-                    SubjectKey(
-                        subject=subject_key,
-                        exam_code=str(exam_code),
-                        answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
-                        true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
-                        numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
-                        full_credit_questions={
-                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
-                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
-                        },
-                        invalid_answer_rows={
-                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
-                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
-                        },
-                    )
-                )
-            self.answer_keys = repo
-            self.imported_exam_codes = sorted(str(k) for k in imported_keys.keys())
-            self.active_batch_subject_key = subject_key
-            return True
-
-        answer_key_path = str(cfg.get("answer_key_path", "") or (self.session.answer_key_path if self.session else "") or "")
-        if answer_key_path:
-            pth = Path(answer_key_path)
-            if pth.exists() and pth.suffix.lower() == ".json":
-                try:
-                    loaded = AnswerKeyRepository.load_json(pth)
-                    repo = self.answer_keys or AnswerKeyRepository()
-                    for key_obj in loaded.keys.values():
-                        repo.upsert(key_obj)
-                    self.answer_keys = repo
-                    all_codes: set[str] = set()
-                    for key_name in self.answer_keys.keys.keys():
-                        parts = str(key_name).split("::", 1)
-                        if len(parts) == 2 and parts[0] == subject_key:
-                            all_codes.add(parts[1])
-                    if all_codes:
-                        self.imported_exam_codes = sorted(all_codes)
-                    self.active_batch_subject_key = subject_key
-                    return True
-                except Exception:
-                    pass
-
-        return self.answer_keys is not None
-
-    @staticmethod
-    def _subject_key_from_cfg(cfg: dict) -> str:
-        key = str(cfg.get("answer_key_key", "") or "").strip()
-        if key:
-            return key
-        name = str(cfg.get("name", "") or "").strip()
-        block = str(cfg.get("block", "") or "").strip()
-        return f"{name}_{block}" if name and block else (name or "General")
-
-    def _resolve_preferred_scoring_subject(self) -> str:
-        if self.stack.currentIndex() == 1:
-            cfg = self._selected_batch_subject_config()
-            if cfg:
-                return self._subject_key_from_cfg(cfg)
-        cfgs = self._subject_configs_for_scoring()
-        if cfgs:
-            return self._subject_key_from_cfg(cfgs[0])
-        if self.session and self.session.subjects:
-            return str(self.session.subjects[0])
-        return "General"
-
-    def _eligible_scoring_subject_keys(self) -> list[str]:
-        out: list[str] = []
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if self._is_subject_marked_batched(cfg):
-                out.append(key)
-        return out
-
-    def _populate_scoring_subjects(self, preferred_key: str = "") -> None:
-        if not hasattr(self, "scoring_subject_combo"):
-            return
-        self.scoring_subject_combo.blockSignals(True)
-        self.scoring_subject_combo.clear()
-        eligible = set(self._eligible_scoring_subject_keys())
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if eligible and key not in eligible:
-                continue
-            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
-            self.scoring_subject_combo.addItem(label, key)
-        if self.scoring_subject_combo.count() == 0:
-            fallback = self._resolve_preferred_scoring_subject()
-            self.scoring_subject_combo.addItem(fallback, fallback)
-        pick = preferred_key or self._resolve_preferred_scoring_subject()
-        for i in range(self.scoring_subject_combo.count()):
-            if str(self.scoring_subject_combo.itemData(i)) == pick:
-                self.scoring_subject_combo.setCurrentIndex(i)
-                break
-        self.scoring_subject_combo.blockSignals(False)
-
-    def _open_scoring_view(self) -> None:
-        if not self.session:
-            QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
-            return
-        if not self._eligible_scoring_subject_keys():
-            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
-            return
-        self.stack.setCurrentIndex(1)
-        self._populate_scoring_subjects(self._resolve_preferred_scoring_subject())
-        self._refresh_scoring_phase_table()
-        self._show_scoring_panel()
-
-    def _refresh_scoring_phase_table(self) -> None:
-        if not hasattr(self, "scoring_phase_table"):
-            return
-        self.scoring_phase_table.setRowCount(0)
-        for i, p in enumerate(self.scoring_phases[-100:]):
-            self.scoring_phase_table.insertRow(i)
-            self.scoring_phase_table.setItem(i, 0, QTableWidgetItem(str(p.get("timestamp", "-"))))
-            self.scoring_phase_table.setItem(i, 1, QTableWidgetItem(str(p.get("subject", "-"))))
-            self.scoring_phase_table.setItem(i, 2, QTableWidgetItem(str(p.get("mode", "-"))))
-            self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
-            self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
-
-    def _run_scoring_from_panel(self) -> None:
-        subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
-        mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
-        note = self.scoring_phase_note.text().strip() if hasattr(self, "scoring_phase_note") else ""
-        self.calculate_scores(subject_key=subject_key or self._resolve_preferred_scoring_subject(), mode=mode, note=note)
-
-
-
-    def _save_batch_for_selected_subject(self) -> None:
-        subject_cfg = self._selected_batch_subject_config()
-        if not subject_cfg:
-            QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
-            return
-        row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
-        if row_count <= 0:
-            QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
-            return
-
-        session_path = self.current_session_path
-        if not session_path and self.batch_editor_return_session_id:
-            p = self._session_path_from_id(self.batch_editor_return_session_id)
-            if p.exists():
-                session_path = p
-        if not session_path:
-            QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy kỳ thi để lưu trạng thái Batch theo môn.")
-            return
-
-        try:
-            self._refresh_all_statuses()
-            ses = ExamSession.load_json(session_path)
-            cfg = ses.config or {}
-            subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
-            subject_key = self._subject_key_from_cfg(subject_cfg)
-            current_results = self._current_scan_results_snapshot()
-            self.scan_results = list(current_results)
-            for result in current_results:
-                result.answer_string = self._build_answer_string_for_result(result, subject_key)
-            saved_results = [self._serialize_omr_result(x) for x in current_results]
-            timestamp = datetime.now().isoformat(timespec="seconds")
-            updated = False
-            for item in subject_cfgs:
-                if not isinstance(item, dict):
-                    continue
-                same_name_block = str(item.get("name", "")).strip() == str(subject_cfg.get("name", "")).strip() and str(item.get("block", "")).strip() == str(subject_cfg.get("block", "")).strip()
-                same_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
-                if same_name_block or same_key:
-                    item["batch_saved"] = True
-                    item["batch_saved_at"] = timestamp
-                    item["batch_result_count"] = row_count
-                    item["batch_saved_rows"] = [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ]
-                    item["batch_saved_preview"] = [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ]
-                    item["batch_saved_results"] = saved_results
-                    updated = True
-                    break
-            if not updated:
-                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
-                return
-            ses.config = {**cfg, "subject_configs": subject_cfgs}
-            ses.save_json(session_path)
-
-            # Write sidecar cache to ensure grids can be restored even if subject config is trimmed elsewhere.
-            try:
-                cache_path = session_path.with_suffix(".batch_cache.json")
-                cache_data = {}
-                if cache_path.exists():
-                    raw = json.loads(cache_path.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        cache_data = raw
-                cache_key = f"{str(subject_cfg.get('name','')).strip().lower()}::{str(subject_cfg.get('block','')).strip().lower()}::{str(subject_cfg.get('answer_key_key','')).strip().lower()}"
-                cache_data[cache_key] = {
-                    "batch_saved": True,
-                    "batch_saved_at": timestamp,
-                    "batch_result_count": row_count,
-                    "batch_saved_rows": [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ],
-                    "batch_saved_preview": [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ],
-                    "batch_saved_results": saved_results,
-                }
-                cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                pass
-
-            if self.session:
-                self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
-            self.scan_results_by_subject[subject_key] = list(current_results)
-            if isinstance(self.batch_editor_return_payload, dict):
-                self.batch_editor_return_payload["subject_configs"] = subject_cfgs
-            self._refresh_batch_subject_controls()
-            self.btn_save_batch_subject.setEnabled(False)
-            QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
-        except Exception as exc:
-            QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu trạng thái Batch\n{exc}")
-
-
-    def _build_correction_tab(self) -> QWidget:
-        w = QWidget()
-        splitter = QSplitter(Qt.Horizontal)
-        self.exam_code_correction_combo = QComboBox()
-        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
-        self.student_correction_combo = QComboBox()
-        self.student_correction_combo.setEditable(True)
-        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
-        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
-        self.answer_editor_scroll = QScrollArea()
-        self.answer_editor_scroll.setWidgetResizable(True)
-        self.answer_editor_container = QWidget()
-        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
-        self.answer_editor_scroll.setWidget(self.answer_editor_container)
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        self.error_list = QListWidget()
-        self.preview_label = QLabel("Image preview / bubble overlay placeholder")
-        self.preview_label.setAlignment(Qt.AlignCenter)
-        self.manual_edit = QTextEdit()
-        self.manual_edit.setPlaceholderText("Manual corrections JSON (e.g. {'student_id': '1001', 'answers': {'1':'A'}})")
-        self.result_preview = QTextEdit()
-        self.result_preview.setReadOnly(True)
-        self.result_preview.setPlaceholderText("Recognized result for selected scan")
-
-        payload = dict(self.batch_editor_return_payload)
-        session_id = self.batch_editor_return_session_id
-        self.batch_editor_return_payload = None
-        self.batch_editor_return_session_id = None
-
-        if not session_id:
-            self.stack.setCurrentIndex(0)
-            return
-        p = self._session_path_from_id(session_id)
-        if not p.exists():
-            self.stack.setCurrentIndex(0)
-            return
-        try:
-            session = ExamSession.load_json(p)
-        except Exception:
-            self.stack.setCurrentIndex(0)
-            return
-        cfg = session.config or {}
-        payload["subject_configs"] = cfg.get("subject_configs", payload.get("subject_configs", []))
-        payload["scan_root"] = cfg.get("scan_root", payload.get("scan_root", ""))
-        payload["student_list_path"] = cfg.get("student_list_path", payload.get("student_list_path", ""))
-        payload["students"] = [
-            {
-                "student_id": s.student_id,
-                "name": s.name,
-                "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
-                "class_name": str((s.extra or {}).get("class_name", "") or ""),
-                "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
-            }
-            for s in (session.students or [])
-        ]
-        payload["scan_mode"] = cfg.get("scan_mode", payload.get("scan_mode", "Ảnh trong thư mục gốc"))
-        payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
-        self._open_embedded_exam_editor(session_id, session, payload)
-
-    def _show_batch_scan_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(True)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(False)
-
-    def _show_scoring_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(False)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(True)
-
-    def _back_to_batch_scan(self) -> None:
-        if not self._confirm_before_switching_work("Batch Scan"):
-            return
-        self._show_batch_scan_panel()
-
-    def _subject_configs_for_scoring(self) -> list[dict]:
-        return self._effective_subject_configs_for_batch()
-
-    def _subject_config_by_subject_key(self, subject_key: str) -> dict | None:
-        key_norm = str(subject_key or "").strip()
-        if not key_norm:
-            return None
-        for cfg in self._subject_configs_for_scoring():
-            if self._subject_key_from_cfg(cfg) == key_norm:
-                return cfg
-        return None
-
-    @staticmethod
-    def _serialize_omr_result(result: OMRResult) -> dict:
-        return {
-            "image_path": str(getattr(result, "image_path", "") or ""),
-            "student_id": str(getattr(result, "student_id", "") or ""),
-            "exam_code": str(getattr(result, "exam_code", "") or ""),
-            "mcq_answers": {int(k): str(v) for k, v in (getattr(result, "mcq_answers", {}) or {}).items()},
-            "true_false_answers": {int(k): dict(v) for k, v in (getattr(result, "true_false_answers", {}) or {}).items()},
-            "numeric_answers": {int(k): str(v) for k, v in (getattr(result, "numeric_answers", {}) or {}).items()},
-            "confidence_scores": {str(k): float(v) for k, v in (getattr(result, "confidence_scores", {}) or {}).items()},
-            "recognition_errors": [str(x) for x in (getattr(result, "recognition_errors", []) or [])],
-            "processing_time_sec": float(getattr(result, "processing_time_sec", 0.0) or 0.0),
-            "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
-            "full_name": str(getattr(result, "full_name", "") or ""),
-            "birth_date": str(getattr(result, "birth_date", "") or ""),
-            "cached_status": str(getattr(result, "cached_status", "") or ""),
-            "cached_content": str(getattr(result, "cached_content", "") or ""),
-            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
-            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
-            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
-        }
-
-    @staticmethod
-    def _deserialize_omr_result(payload: dict) -> OMRResult:
-        result = OMRResult(
-            image_path=str(payload.get("image_path", "") or ""),
-            student_id=str(payload.get("student_id", "") or ""),
-            exam_code=str(payload.get("exam_code", "") or ""),
-            mcq_answers={int(k): str(v) for k, v in (payload.get("mcq_answers", {}) or {}).items()},
-            true_false_answers={int(k): dict(v) for k, v in (payload.get("true_false_answers", {}) or {}).items()},
-            numeric_answers={int(k): str(v) for k, v in (payload.get("numeric_answers", {}) or {}).items()},
-            confidence_scores={str(k): float(v) for k, v in (payload.get("confidence_scores", {}) or {}).items()},
-            recognition_errors=[str(x) for x in (payload.get("recognition_errors", []) or [])],
-            processing_time_sec=float(payload.get("processing_time_sec", 0.0) or 0.0),
-            debug_image_path=str(payload.get("debug_image_path", "") or ""),
-        )
-        setattr(result, "full_name", str(payload.get("full_name", "") or ""))
-        setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
-        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
-        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
-        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
-        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
-        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
-        result.sync_legacy_aliases()
-        return result
-
-    def _is_subject_marked_batched(self, cfg: dict) -> bool:
-        key = self._subject_key_from_cfg(cfg)
-        if self.scan_results_by_subject.get(key):
-            return True
-        merged = self._merge_saved_batch_snapshot(cfg)
-        if bool(merged.get("batch_saved")):
-            return True
-        if isinstance(merged.get("batch_saved_rows", []), list) and merged.get("batch_saved_rows"):
-            return True
-        if isinstance(merged.get("batch_saved_results", []), list) and merged.get("batch_saved_results"):
-            return True
-        return False
-
-    def _cached_subject_scans_from_config(self, subject_key: str) -> list[OMRResult]:
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return []
-        merged = self._merge_saved_batch_snapshot(cfg)
-        cached = merged.get("batch_saved_results", [])
-        if not isinstance(cached, list) or not cached:
-            return []
-        out: list[OMRResult] = []
-        for item in cached:
-            if not isinstance(item, dict):
-                continue
-            try:
-                out.append(self._deserialize_omr_result(item))
-            except Exception:
-                continue
-        return out
-
-    def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
-        if self.answer_keys and any(str(k).startswith(f"{subject_key}::") for k in self.answer_keys.keys.keys()):
-            return True
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return self.answer_keys is not None
-
-        imported_keys = cfg.get("imported_answer_keys", {}) or {}
-        if isinstance(imported_keys, dict) and imported_keys:
-            repo = self.answer_keys or AnswerKeyRepository()
-            for exam_code, kd in imported_keys.items():
-                repo.upsert(
-                    SubjectKey(
-                        subject=subject_key,
-                        exam_code=str(exam_code),
-                        answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
-                        true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
-                        numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
-                        full_credit_questions={
-                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
-                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
-                        },
-                        invalid_answer_rows={
-                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
-                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
-                        },
-                    )
-                )
-            self.answer_keys = repo
-            self.imported_exam_codes = sorted(str(k) for k in imported_keys.keys())
-            self.active_batch_subject_key = subject_key
-            return True
-
-        answer_key_path = str(cfg.get("answer_key_path", "") or (self.session.answer_key_path if self.session else "") or "")
-        if answer_key_path:
-            pth = Path(answer_key_path)
-            if pth.exists() and pth.suffix.lower() == ".json":
-                try:
-                    loaded = AnswerKeyRepository.load_json(pth)
-                    repo = self.answer_keys or AnswerKeyRepository()
-                    for key_obj in loaded.keys.values():
-                        repo.upsert(key_obj)
-                    self.answer_keys = repo
-                    all_codes: set[str] = set()
-                    for key_name in self.answer_keys.keys.keys():
-                        parts = str(key_name).split("::", 1)
-                        if len(parts) == 2 and parts[0] == subject_key:
-                            all_codes.add(parts[1])
-                    if all_codes:
-                        self.imported_exam_codes = sorted(all_codes)
-                    self.active_batch_subject_key = subject_key
-                    return True
-                except Exception:
-                    pass
-
-        return self.answer_keys is not None
-
-    @staticmethod
-    def _subject_key_from_cfg(cfg: dict) -> str:
-        key = str(cfg.get("answer_key_key", "") or "").strip()
-        if key:
-            return key
-        name = str(cfg.get("name", "") or "").strip()
-        block = str(cfg.get("block", "") or "").strip()
-        return f"{name}_{block}" if name and block else (name or "General")
-
-    def _resolve_preferred_scoring_subject(self) -> str:
-        if self.stack.currentIndex() == 1:
-            cfg = self._selected_batch_subject_config()
-            if cfg:
-                return self._subject_key_from_cfg(cfg)
-        cfgs = self._subject_configs_for_scoring()
-        if cfgs:
-            return self._subject_key_from_cfg(cfgs[0])
-        if self.session and self.session.subjects:
-            return str(self.session.subjects[0])
-        return "General"
-
-    def _eligible_scoring_subject_keys(self) -> list[str]:
-        out: list[str] = []
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if self._is_subject_marked_batched(cfg):
-                out.append(key)
-        return out
-
-    def _populate_scoring_subjects(self, preferred_key: str = "") -> None:
-        if not hasattr(self, "scoring_subject_combo"):
-            return
-        self.scoring_subject_combo.blockSignals(True)
-        self.scoring_subject_combo.clear()
-        eligible = set(self._eligible_scoring_subject_keys())
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if eligible and key not in eligible:
-                continue
-            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
-            self.scoring_subject_combo.addItem(label, key)
-        if self.scoring_subject_combo.count() == 0:
-            fallback = self._resolve_preferred_scoring_subject()
-            self.scoring_subject_combo.addItem(fallback, fallback)
-        pick = preferred_key or self._resolve_preferred_scoring_subject()
-        for i in range(self.scoring_subject_combo.count()):
-            if str(self.scoring_subject_combo.itemData(i)) == pick:
-                self.scoring_subject_combo.setCurrentIndex(i)
-                break
-        self.scoring_subject_combo.blockSignals(False)
-
-    def _open_scoring_view(self) -> None:
-        if not self.session:
-            QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
-            return
-        if not self._eligible_scoring_subject_keys():
-            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
-            return
-        self.stack.setCurrentIndex(1)
-        self._populate_scoring_subjects(self._resolve_preferred_scoring_subject())
-        self._refresh_scoring_phase_table()
-        self._show_scoring_panel()
-
-    def _refresh_scoring_phase_table(self) -> None:
-        if not hasattr(self, "scoring_phase_table"):
-            return
-        self.scoring_phase_table.setRowCount(0)
-        for i, p in enumerate(self.scoring_phases[-100:]):
-            self.scoring_phase_table.insertRow(i)
-            self.scoring_phase_table.setItem(i, 0, QTableWidgetItem(str(p.get("timestamp", "-"))))
-            self.scoring_phase_table.setItem(i, 1, QTableWidgetItem(str(p.get("subject", "-"))))
-            self.scoring_phase_table.setItem(i, 2, QTableWidgetItem(str(p.get("mode", "-"))))
-            self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
-            self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
-
-    def _run_scoring_from_panel(self) -> None:
-        subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
-        mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
-        note = self.scoring_phase_note.text().strip() if hasattr(self, "scoring_phase_note") else ""
-        self.calculate_scores(subject_key=subject_key or self._resolve_preferred_scoring_subject(), mode=mode, note=note)
-
-
-
-    def _save_batch_for_selected_subject(self) -> None:
-        subject_cfg = self._selected_batch_subject_config()
-        if not subject_cfg:
-            QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
-            return
-        row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
-        if row_count <= 0:
-            QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
-            return
-
-        session_path = self.current_session_path
-        if not session_path and self.batch_editor_return_session_id:
-            p = self._session_path_from_id(self.batch_editor_return_session_id)
-            if p.exists():
-                session_path = p
-        if not session_path:
-            QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy kỳ thi để lưu trạng thái Batch theo môn.")
-            return
-
-        try:
-            self._refresh_all_statuses()
-            ses = ExamSession.load_json(session_path)
-            cfg = ses.config or {}
-            subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
-            subject_key = self._subject_key_from_cfg(subject_cfg)
-            current_results = self._current_scan_results_snapshot()
-            self.scan_results = list(current_results)
-            for result in current_results:
-                result.answer_string = self._build_answer_string_for_result(result, subject_key)
-            saved_results = [self._serialize_omr_result(x) for x in current_results]
-            timestamp = datetime.now().isoformat(timespec="seconds")
-            updated = False
-            for item in subject_cfgs:
-                if not isinstance(item, dict):
-                    continue
-                same_name_block = str(item.get("name", "")).strip() == str(subject_cfg.get("name", "")).strip() and str(item.get("block", "")).strip() == str(subject_cfg.get("block", "")).strip()
-                same_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
-                if same_name_block or same_key:
-                    item["batch_saved"] = True
-                    item["batch_saved_at"] = timestamp
-                    item["batch_result_count"] = row_count
-                    item["batch_saved_rows"] = [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ]
-                    item["batch_saved_preview"] = [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ]
-                    item["batch_saved_results"] = saved_results
-                    updated = True
-                    break
-            if not updated:
-                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
-                return
-            ses.config = {**cfg, "subject_configs": subject_cfgs}
-            ses.save_json(session_path)
-
-            # Write sidecar cache to ensure grids can be restored even if subject config is trimmed elsewhere.
-            try:
-                cache_path = session_path.with_suffix(".batch_cache.json")
-                cache_data = {}
-                if cache_path.exists():
-                    raw = json.loads(cache_path.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        cache_data = raw
-                cache_key = f"{str(subject_cfg.get('name','')).strip().lower()}::{str(subject_cfg.get('block','')).strip().lower()}::{str(subject_cfg.get('answer_key_key','')).strip().lower()}"
-                cache_data[cache_key] = {
-                    "batch_saved": True,
-                    "batch_saved_at": timestamp,
-                    "batch_result_count": row_count,
-                    "batch_saved_rows": [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ],
-                    "batch_saved_preview": [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ],
-                    "batch_saved_results": saved_results,
-                }
-                cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                pass
-
-            if self.session:
-                self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
-            self.scan_results_by_subject[subject_key] = list(current_results)
-            if isinstance(self.batch_editor_return_payload, dict):
-                self.batch_editor_return_payload["subject_configs"] = subject_cfgs
-            self._refresh_batch_subject_controls()
-            self.btn_save_batch_subject.setEnabled(False)
-            QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
-        except Exception as exc:
-            QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu trạng thái Batch\n{exc}")
-
-
-    def _build_correction_tab(self) -> QWidget:
-        w = QWidget()
-        splitter = QSplitter(Qt.Horizontal)
-        self.exam_code_correction_combo = QComboBox()
-        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
-        self.student_correction_combo = QComboBox()
-        self.student_correction_combo.setEditable(True)
-        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
-        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
-        self.answer_editor_scroll = QScrollArea()
-        self.answer_editor_scroll.setWidgetResizable(True)
-        self.answer_editor_container = QWidget()
-        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
-        self.answer_editor_scroll.setWidget(self.answer_editor_container)
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        self.error_list = QListWidget()
-        self.preview_label = QLabel("Image preview / bubble overlay placeholder")
-        self.preview_label.setAlignment(Qt.AlignCenter)
-        self.manual_edit = QTextEdit()
-        self.manual_edit.setPlaceholderText("Manual corrections JSON (e.g. {'student_id': '1001', 'answers': {'1':'A'}})")
-        self.result_preview = QTextEdit()
-        self.result_preview.setReadOnly(True)
-        self.result_preview.setPlaceholderText("Recognized result for selected scan")
-
-        payload = dict(self.batch_editor_return_payload)
-        session_id = self.batch_editor_return_session_id
-        self.batch_editor_return_payload = None
-        self.batch_editor_return_session_id = None
-
-        if not session_id:
-            self.stack.setCurrentIndex(0)
-            return
-        p = self._session_path_from_id(session_id)
-        if not p.exists():
-            self.stack.setCurrentIndex(0)
-            return
-        try:
-            session = ExamSession.load_json(p)
-        except Exception:
-            self.stack.setCurrentIndex(0)
-            return
-        cfg = session.config or {}
-        payload["subject_configs"] = cfg.get("subject_configs", payload.get("subject_configs", []))
-        payload["scan_root"] = cfg.get("scan_root", payload.get("scan_root", ""))
-        payload["student_list_path"] = cfg.get("student_list_path", payload.get("student_list_path", ""))
-        payload["students"] = [
-            {
-                "student_id": s.student_id,
-                "name": s.name,
-                "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
-                "class_name": str((s.extra or {}).get("class_name", "") or ""),
-                "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
-            }
-            for s in (session.students or [])
-        ]
-        payload["scan_mode"] = cfg.get("scan_mode", payload.get("scan_mode", "Ảnh trong thư mục gốc"))
-        payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
-        self._open_embedded_exam_editor(session_id, session, payload)
-
-    def _show_batch_scan_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(True)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(False)
-
-    def _show_scoring_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(False)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(True)
-
-    def _back_to_batch_scan(self) -> None:
-        if not self._confirm_before_switching_work("Batch Scan"):
-            return
-        self._show_batch_scan_panel()
-
-    def _subject_configs_for_scoring(self) -> list[dict]:
-        return self._effective_subject_configs_for_batch()
-
-    def _subject_config_by_subject_key(self, subject_key: str) -> dict | None:
-        key_norm = str(subject_key or "").strip()
-        if not key_norm:
-            return None
-        for cfg in self._subject_configs_for_scoring():
-            if self._subject_key_from_cfg(cfg) == key_norm:
-                return cfg
-        return None
-
-    @staticmethod
-    def _serialize_omr_result(result: OMRResult) -> dict:
-        return {
-            "image_path": str(getattr(result, "image_path", "") or ""),
-            "student_id": str(getattr(result, "student_id", "") or ""),
-            "exam_code": str(getattr(result, "exam_code", "") or ""),
-            "mcq_answers": {int(k): str(v) for k, v in (getattr(result, "mcq_answers", {}) or {}).items()},
-            "true_false_answers": {int(k): dict(v) for k, v in (getattr(result, "true_false_answers", {}) or {}).items()},
-            "numeric_answers": {int(k): str(v) for k, v in (getattr(result, "numeric_answers", {}) or {}).items()},
-            "confidence_scores": {str(k): float(v) for k, v in (getattr(result, "confidence_scores", {}) or {}).items()},
-            "recognition_errors": [str(x) for x in (getattr(result, "recognition_errors", []) or [])],
-            "processing_time_sec": float(getattr(result, "processing_time_sec", 0.0) or 0.0),
-            "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
-            "full_name": str(getattr(result, "full_name", "") or ""),
-            "birth_date": str(getattr(result, "birth_date", "") or ""),
-            "cached_status": str(getattr(result, "cached_status", "") or ""),
-            "cached_content": str(getattr(result, "cached_content", "") or ""),
-            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
-            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
-            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
-        }
-
-    @staticmethod
-    def _deserialize_omr_result(payload: dict) -> OMRResult:
-        result = OMRResult(
-            image_path=str(payload.get("image_path", "") or ""),
-            student_id=str(payload.get("student_id", "") or ""),
-            exam_code=str(payload.get("exam_code", "") or ""),
-            mcq_answers={int(k): str(v) for k, v in (payload.get("mcq_answers", {}) or {}).items()},
-            true_false_answers={int(k): dict(v) for k, v in (payload.get("true_false_answers", {}) or {}).items()},
-            numeric_answers={int(k): str(v) for k, v in (payload.get("numeric_answers", {}) or {}).items()},
-            confidence_scores={str(k): float(v) for k, v in (payload.get("confidence_scores", {}) or {}).items()},
-            recognition_errors=[str(x) for x in (payload.get("recognition_errors", []) or [])],
-            processing_time_sec=float(payload.get("processing_time_sec", 0.0) or 0.0),
-            debug_image_path=str(payload.get("debug_image_path", "") or ""),
-        )
-        setattr(result, "full_name", str(payload.get("full_name", "") or ""))
-        setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
-        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
-        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
-        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
-        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
-        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
-        result.sync_legacy_aliases()
-        return result
-
-    def _is_subject_marked_batched(self, cfg: dict) -> bool:
-        key = self._subject_key_from_cfg(cfg)
-        if self.scan_results_by_subject.get(key):
-            return True
-        merged = self._merge_saved_batch_snapshot(cfg)
-        if bool(merged.get("batch_saved")):
-            return True
-        if isinstance(merged.get("batch_saved_rows", []), list) and merged.get("batch_saved_rows"):
-            return True
-        if isinstance(merged.get("batch_saved_results", []), list) and merged.get("batch_saved_results"):
-            return True
-        return False
-
-    def _cached_subject_scans_from_config(self, subject_key: str) -> list[OMRResult]:
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return []
-        merged = self._merge_saved_batch_snapshot(cfg)
-        cached = merged.get("batch_saved_results", [])
-        if not isinstance(cached, list) or not cached:
-            return []
-        out: list[OMRResult] = []
-        for item in cached:
-            if not isinstance(item, dict):
-                continue
-            try:
-                out.append(self._deserialize_omr_result(item))
-            except Exception:
-                continue
-        return out
-
-    def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
-        if self.answer_keys and any(str(k).startswith(f"{subject_key}::") for k in self.answer_keys.keys.keys()):
-            return True
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return self.answer_keys is not None
-
-        imported_keys = cfg.get("imported_answer_keys", {}) or {}
-        if isinstance(imported_keys, dict) and imported_keys:
-            repo = self.answer_keys or AnswerKeyRepository()
-            for exam_code, kd in imported_keys.items():
-                repo.upsert(
-                    SubjectKey(
-                        subject=subject_key,
-                        exam_code=str(exam_code),
-                        answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
-                        true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
-                        numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
-                        full_credit_questions={
-                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
-                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
-                        },
-                        invalid_answer_rows={
-                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
-                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
-                        },
-                    )
-                )
-            self.answer_keys = repo
-            self.imported_exam_codes = sorted(str(k) for k in imported_keys.keys())
-            self.active_batch_subject_key = subject_key
-            return True
-
-        answer_key_path = str(cfg.get("answer_key_path", "") or (self.session.answer_key_path if self.session else "") or "")
-        if answer_key_path:
-            pth = Path(answer_key_path)
-            if pth.exists() and pth.suffix.lower() == ".json":
-                try:
-                    loaded = AnswerKeyRepository.load_json(pth)
-                    repo = self.answer_keys or AnswerKeyRepository()
-                    for key_obj in loaded.keys.values():
-                        repo.upsert(key_obj)
-                    self.answer_keys = repo
-                    all_codes: set[str] = set()
-                    for key_name in self.answer_keys.keys.keys():
-                        parts = str(key_name).split("::", 1)
-                        if len(parts) == 2 and parts[0] == subject_key:
-                            all_codes.add(parts[1])
-                    if all_codes:
-                        self.imported_exam_codes = sorted(all_codes)
-                    self.active_batch_subject_key = subject_key
-                    return True
-                except Exception:
-                    pass
-
-        return self.answer_keys is not None
-
-    @staticmethod
-    def _subject_key_from_cfg(cfg: dict) -> str:
-        key = str(cfg.get("answer_key_key", "") or "").strip()
-        if key:
-            return key
-        name = str(cfg.get("name", "") or "").strip()
-        block = str(cfg.get("block", "") or "").strip()
-        return f"{name}_{block}" if name and block else (name or "General")
-
-    def _resolve_preferred_scoring_subject(self) -> str:
-        if self.stack.currentIndex() == 1:
-            cfg = self._selected_batch_subject_config()
-            if cfg:
-                return self._subject_key_from_cfg(cfg)
-        cfgs = self._subject_configs_for_scoring()
-        if cfgs:
-            return self._subject_key_from_cfg(cfgs[0])
-        if self.session and self.session.subjects:
-            return str(self.session.subjects[0])
-        return "General"
-
-    def _eligible_scoring_subject_keys(self) -> list[str]:
-        out: list[str] = []
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if self._is_subject_marked_batched(cfg):
-                out.append(key)
-        return out
-
-    def _populate_scoring_subjects(self, preferred_key: str = "") -> None:
-        if not hasattr(self, "scoring_subject_combo"):
-            return
-        self.scoring_subject_combo.blockSignals(True)
-        self.scoring_subject_combo.clear()
-        eligible = set(self._eligible_scoring_subject_keys())
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if eligible and key not in eligible:
-                continue
-            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
-            self.scoring_subject_combo.addItem(label, key)
-        if self.scoring_subject_combo.count() == 0:
-            fallback = self._resolve_preferred_scoring_subject()
-            self.scoring_subject_combo.addItem(fallback, fallback)
-        pick = preferred_key or self._resolve_preferred_scoring_subject()
-        for i in range(self.scoring_subject_combo.count()):
-            if str(self.scoring_subject_combo.itemData(i)) == pick:
-                self.scoring_subject_combo.setCurrentIndex(i)
-                break
-        self.scoring_subject_combo.blockSignals(False)
-
-    def _open_scoring_view(self) -> None:
-        if not self.session:
-            QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
-            return
-        if not self._eligible_scoring_subject_keys():
-            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
-            return
-        self.stack.setCurrentIndex(1)
-        self._populate_scoring_subjects(self._resolve_preferred_scoring_subject())
-        self._refresh_scoring_phase_table()
-        self._show_scoring_panel()
-
-    def _refresh_scoring_phase_table(self) -> None:
-        if not hasattr(self, "scoring_phase_table"):
-            return
-        self.scoring_phase_table.setRowCount(0)
-        for i, p in enumerate(self.scoring_phases[-100:]):
-            self.scoring_phase_table.insertRow(i)
-            self.scoring_phase_table.setItem(i, 0, QTableWidgetItem(str(p.get("timestamp", "-"))))
-            self.scoring_phase_table.setItem(i, 1, QTableWidgetItem(str(p.get("subject", "-"))))
-            self.scoring_phase_table.setItem(i, 2, QTableWidgetItem(str(p.get("mode", "-"))))
-            self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
-            self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
-
-    def _run_scoring_from_panel(self) -> None:
-        subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
-        mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
-        note = self.scoring_phase_note.text().strip() if hasattr(self, "scoring_phase_note") else ""
-        self.calculate_scores(subject_key=subject_key or self._resolve_preferred_scoring_subject(), mode=mode, note=note)
-
-
-
-    def _save_batch_for_selected_subject(self) -> None:
-        subject_cfg = self._selected_batch_subject_config()
-        if not subject_cfg:
-            QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
-            return
-        row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
-        if row_count <= 0:
-            QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
-            return
-
-        session_path = self.current_session_path
-        if not session_path and self.batch_editor_return_session_id:
-            p = self._session_path_from_id(self.batch_editor_return_session_id)
-            if p.exists():
-                session_path = p
-        if not session_path:
-            QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy kỳ thi để lưu trạng thái Batch theo môn.")
-            return
-
-        try:
-            self._refresh_all_statuses()
-            ses = ExamSession.load_json(session_path)
-            cfg = ses.config or {}
-            subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
-            subject_key = self._subject_key_from_cfg(subject_cfg)
-            current_results = self._current_scan_results_snapshot()
-            self.scan_results = list(current_results)
-            for result in current_results:
-                result.answer_string = self._build_answer_string_for_result(result, subject_key)
-            saved_results = [self._serialize_omr_result(x) for x in current_results]
-            timestamp = datetime.now().isoformat(timespec="seconds")
-            updated = False
-            for item in subject_cfgs:
-                if not isinstance(item, dict):
-                    continue
-                same_name_block = str(item.get("name", "")).strip() == str(subject_cfg.get("name", "")).strip() and str(item.get("block", "")).strip() == str(subject_cfg.get("block", "")).strip()
-                same_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
-                if same_name_block or same_key:
-                    item["batch_saved"] = True
-                    item["batch_saved_at"] = timestamp
-                    item["batch_result_count"] = row_count
-                    item["batch_saved_rows"] = [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ]
-                    item["batch_saved_preview"] = [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ]
-                    item["batch_saved_results"] = saved_results
-                    updated = True
-                    break
-            if not updated:
-                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
-                return
-            ses.config = {**cfg, "subject_configs": subject_cfgs}
-            ses.save_json(session_path)
-
-            # Write sidecar cache to ensure grids can be restored even if subject config is trimmed elsewhere.
-            try:
-                cache_path = session_path.with_suffix(".batch_cache.json")
-                cache_data = {}
-                if cache_path.exists():
-                    raw = json.loads(cache_path.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        cache_data = raw
-                cache_key = f"{str(subject_cfg.get('name','')).strip().lower()}::{str(subject_cfg.get('block','')).strip().lower()}::{str(subject_cfg.get('answer_key_key','')).strip().lower()}"
-                cache_data[cache_key] = {
-                    "batch_saved": True,
-                    "batch_saved_at": timestamp,
-                    "batch_result_count": row_count,
-                    "batch_saved_rows": [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ],
-                    "batch_saved_preview": [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ],
-                    "batch_saved_results": saved_results,
-                }
-                cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                pass
-
-            if self.session:
-                self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
-            self.scan_results_by_subject[subject_key] = list(current_results)
-            if isinstance(self.batch_editor_return_payload, dict):
-                self.batch_editor_return_payload["subject_configs"] = subject_cfgs
-            self._refresh_batch_subject_controls()
-            self.btn_save_batch_subject.setEnabled(False)
-            QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
-        except Exception as exc:
-            QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu trạng thái Batch\n{exc}")
-
-
-    def _build_correction_tab(self) -> QWidget:
-        w = QWidget()
-        splitter = QSplitter(Qt.Horizontal)
-        self.exam_code_correction_combo = QComboBox()
-        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
-        self.student_correction_combo = QComboBox()
-        self.student_correction_combo.setEditable(True)
-        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
-        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
-        self.answer_editor_scroll = QScrollArea()
-        self.answer_editor_scroll.setWidgetResizable(True)
-        self.answer_editor_container = QWidget()
-        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
-        self.answer_editor_scroll.setWidget(self.answer_editor_container)
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        self.error_list = QListWidget()
-        self.preview_label = QLabel("Image preview / bubble overlay placeholder")
-        self.preview_label.setAlignment(Qt.AlignCenter)
-        self.manual_edit = QTextEdit()
-        self.manual_edit.setPlaceholderText("Manual corrections JSON (e.g. {'student_id': '1001', 'answers': {'1':'A'}})")
-        self.result_preview = QTextEdit()
-        self.result_preview.setReadOnly(True)
-        self.result_preview.setPlaceholderText("Recognized result for selected scan")
-
-        payload = dict(self.batch_editor_return_payload)
-        session_id = self.batch_editor_return_session_id
-        self.batch_editor_return_payload = None
-        self.batch_editor_return_session_id = None
-
-        if not session_id:
-            self.stack.setCurrentIndex(0)
-            return
-        p = self._session_path_from_id(session_id)
-        if not p.exists():
-            self.stack.setCurrentIndex(0)
-            return
-        try:
-            session = ExamSession.load_json(p)
-        except Exception:
-            self.stack.setCurrentIndex(0)
-            return
-        cfg = session.config or {}
-        payload["subject_configs"] = cfg.get("subject_configs", payload.get("subject_configs", []))
-        payload["scan_root"] = cfg.get("scan_root", payload.get("scan_root", ""))
-        payload["student_list_path"] = cfg.get("student_list_path", payload.get("student_list_path", ""))
-        payload["students"] = [
-            {
-                "student_id": s.student_id,
-                "name": s.name,
-                "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
-                "class_name": str((s.extra or {}).get("class_name", "") or ""),
-                "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
-            }
-            for s in (session.students or [])
-        ]
-        payload["scan_mode"] = cfg.get("scan_mode", payload.get("scan_mode", "Ảnh trong thư mục gốc"))
-        payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
-        self._open_embedded_exam_editor(session_id, session, payload)
-
-    def _show_batch_scan_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(True)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(False)
-
-    def _show_scoring_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(False)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(True)
-
-    def _back_to_batch_scan(self) -> None:
-        if not self._confirm_before_switching_work("Batch Scan"):
-            return
-        self._show_batch_scan_panel()
-
-    def _subject_configs_for_scoring(self) -> list[dict]:
-        return self._effective_subject_configs_for_batch()
-
-    def _subject_config_by_subject_key(self, subject_key: str) -> dict | None:
-        key_norm = str(subject_key or "").strip()
-        if not key_norm:
-            return None
-        for cfg in self._subject_configs_for_scoring():
-            if self._subject_key_from_cfg(cfg) == key_norm:
-                return cfg
-        return None
-
-    @staticmethod
-    def _serialize_omr_result(result: OMRResult) -> dict:
-        return {
-            "image_path": str(getattr(result, "image_path", "") or ""),
-            "student_id": str(getattr(result, "student_id", "") or ""),
-            "exam_code": str(getattr(result, "exam_code", "") or ""),
-            "mcq_answers": {int(k): str(v) for k, v in (getattr(result, "mcq_answers", {}) or {}).items()},
-            "true_false_answers": {int(k): dict(v) for k, v in (getattr(result, "true_false_answers", {}) or {}).items()},
-            "numeric_answers": {int(k): str(v) for k, v in (getattr(result, "numeric_answers", {}) or {}).items()},
-            "confidence_scores": {str(k): float(v) for k, v in (getattr(result, "confidence_scores", {}) or {}).items()},
-            "recognition_errors": [str(x) for x in (getattr(result, "recognition_errors", []) or [])],
-            "processing_time_sec": float(getattr(result, "processing_time_sec", 0.0) or 0.0),
-            "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
-            "full_name": str(getattr(result, "full_name", "") or ""),
-            "birth_date": str(getattr(result, "birth_date", "") or ""),
-            "cached_status": str(getattr(result, "cached_status", "") or ""),
-            "cached_content": str(getattr(result, "cached_content", "") or ""),
-            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
-            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
-            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
-        }
-
-    @staticmethod
-    def _deserialize_omr_result(payload: dict) -> OMRResult:
-        result = OMRResult(
-            image_path=str(payload.get("image_path", "") or ""),
-            student_id=str(payload.get("student_id", "") or ""),
-            exam_code=str(payload.get("exam_code", "") or ""),
-            mcq_answers={int(k): str(v) for k, v in (payload.get("mcq_answers", {}) or {}).items()},
-            true_false_answers={int(k): dict(v) for k, v in (payload.get("true_false_answers", {}) or {}).items()},
-            numeric_answers={int(k): str(v) for k, v in (payload.get("numeric_answers", {}) or {}).items()},
-            confidence_scores={str(k): float(v) for k, v in (payload.get("confidence_scores", {}) or {}).items()},
-            recognition_errors=[str(x) for x in (payload.get("recognition_errors", []) or [])],
-            processing_time_sec=float(payload.get("processing_time_sec", 0.0) or 0.0),
-            debug_image_path=str(payload.get("debug_image_path", "") or ""),
-        )
-        setattr(result, "full_name", str(payload.get("full_name", "") or ""))
-        setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
-        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
-        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
-        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
-        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
-        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
-        result.sync_legacy_aliases()
-        return result
-
-    def _is_subject_marked_batched(self, cfg: dict) -> bool:
-        key = self._subject_key_from_cfg(cfg)
-        if self.scan_results_by_subject.get(key):
-            return True
-        merged = self._merge_saved_batch_snapshot(cfg)
-        if bool(merged.get("batch_saved")):
-            return True
-        if isinstance(merged.get("batch_saved_rows", []), list) and merged.get("batch_saved_rows"):
-            return True
-        if isinstance(merged.get("batch_saved_results", []), list) and merged.get("batch_saved_results"):
-            return True
-        return False
-
-    def _cached_subject_scans_from_config(self, subject_key: str) -> list[OMRResult]:
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return []
-        merged = self._merge_saved_batch_snapshot(cfg)
-        cached = merged.get("batch_saved_results", [])
-        if not isinstance(cached, list) or not cached:
-            return []
-        out: list[OMRResult] = []
-        for item in cached:
-            if not isinstance(item, dict):
-                continue
-            try:
-                out.append(self._deserialize_omr_result(item))
-            except Exception:
-                continue
-        return out
-
-    def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
-        if self.answer_keys and any(str(k).startswith(f"{subject_key}::") for k in self.answer_keys.keys.keys()):
-            return True
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return self.answer_keys is not None
-
-        imported_keys = cfg.get("imported_answer_keys", {}) or {}
-        if isinstance(imported_keys, dict) and imported_keys:
-            repo = self.answer_keys or AnswerKeyRepository()
-            for exam_code, kd in imported_keys.items():
-                repo.upsert(
-                    SubjectKey(
-                        subject=subject_key,
-                        exam_code=str(exam_code),
-                        answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
-                        true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
-                        numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
-                        full_credit_questions={
-                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
-                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
-                        },
-                        invalid_answer_rows={
-                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
-                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
-                        },
-                    )
-                )
-            self.answer_keys = repo
-            self.imported_exam_codes = sorted(str(k) for k in imported_keys.keys())
-            self.active_batch_subject_key = subject_key
-            return True
-
-        answer_key_path = str(cfg.get("answer_key_path", "") or (self.session.answer_key_path if self.session else "") or "")
-        if answer_key_path:
-            pth = Path(answer_key_path)
-            if pth.exists() and pth.suffix.lower() == ".json":
-                try:
-                    loaded = AnswerKeyRepository.load_json(pth)
-                    repo = self.answer_keys or AnswerKeyRepository()
-                    for key_obj in loaded.keys.values():
-                        repo.upsert(key_obj)
-                    self.answer_keys = repo
-                    all_codes: set[str] = set()
-                    for key_name in self.answer_keys.keys.keys():
-                        parts = str(key_name).split("::", 1)
-                        if len(parts) == 2 and parts[0] == subject_key:
-                            all_codes.add(parts[1])
-                    if all_codes:
-                        self.imported_exam_codes = sorted(all_codes)
-                    self.active_batch_subject_key = subject_key
-                    return True
-                except Exception:
-                    pass
-
-        return self.answer_keys is not None
-
-    @staticmethod
-    def _subject_key_from_cfg(cfg: dict) -> str:
-        key = str(cfg.get("answer_key_key", "") or "").strip()
-        if key:
-            return key
-        name = str(cfg.get("name", "") or "").strip()
-        block = str(cfg.get("block", "") or "").strip()
-        return f"{name}_{block}" if name and block else (name or "General")
-
-    def _resolve_preferred_scoring_subject(self) -> str:
-        if self.stack.currentIndex() == 1:
-            cfg = self._selected_batch_subject_config()
-            if cfg:
-                return self._subject_key_from_cfg(cfg)
-        cfgs = self._subject_configs_for_scoring()
-        if cfgs:
-            return self._subject_key_from_cfg(cfgs[0])
-        if self.session and self.session.subjects:
-            return str(self.session.subjects[0])
-        return "General"
-
-    def _eligible_scoring_subject_keys(self) -> list[str]:
-        out: list[str] = []
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if self._is_subject_marked_batched(cfg):
-                out.append(key)
-        return out
-
-    def _populate_scoring_subjects(self, preferred_key: str = "") -> None:
-        if not hasattr(self, "scoring_subject_combo"):
-            return
-        self.scoring_subject_combo.blockSignals(True)
-        self.scoring_subject_combo.clear()
-        eligible = set(self._eligible_scoring_subject_keys())
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if eligible and key not in eligible:
-                continue
-            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
-            self.scoring_subject_combo.addItem(label, key)
-        if self.scoring_subject_combo.count() == 0:
-            fallback = self._resolve_preferred_scoring_subject()
-            self.scoring_subject_combo.addItem(fallback, fallback)
-        pick = preferred_key or self._resolve_preferred_scoring_subject()
-        for i in range(self.scoring_subject_combo.count()):
-            if str(self.scoring_subject_combo.itemData(i)) == pick:
-                self.scoring_subject_combo.setCurrentIndex(i)
-                break
-        self.scoring_subject_combo.blockSignals(False)
-
-    def _open_scoring_view(self) -> None:
-        if not self.session:
-            QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
-            return
-        if not self._eligible_scoring_subject_keys():
-            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
-            return
-        self.stack.setCurrentIndex(1)
-        self._populate_scoring_subjects(self._resolve_preferred_scoring_subject())
-        self._refresh_scoring_phase_table()
-        self._show_scoring_panel()
-
-    def _refresh_scoring_phase_table(self) -> None:
-        if not hasattr(self, "scoring_phase_table"):
-            return
-        self.scoring_phase_table.setRowCount(0)
-        for i, p in enumerate(self.scoring_phases[-100:]):
-            self.scoring_phase_table.insertRow(i)
-            self.scoring_phase_table.setItem(i, 0, QTableWidgetItem(str(p.get("timestamp", "-"))))
-            self.scoring_phase_table.setItem(i, 1, QTableWidgetItem(str(p.get("subject", "-"))))
-            self.scoring_phase_table.setItem(i, 2, QTableWidgetItem(str(p.get("mode", "-"))))
-            self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
-            self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
-
-    def _run_scoring_from_panel(self) -> None:
-        subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
-        mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
-        note = self.scoring_phase_note.text().strip() if hasattr(self, "scoring_phase_note") else ""
-        self.calculate_scores(subject_key=subject_key or self._resolve_preferred_scoring_subject(), mode=mode, note=note)
-
-
-
-    def _save_batch_for_selected_subject(self) -> None:
-        subject_cfg = self._selected_batch_subject_config()
-        if not subject_cfg:
-            QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
-            return
-        row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
-        if row_count <= 0:
-            QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
-            return
-
-        session_path = self.current_session_path
-        if not session_path and self.batch_editor_return_session_id:
-            p = self._session_path_from_id(self.batch_editor_return_session_id)
-            if p.exists():
-                session_path = p
-        if not session_path:
-            QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy kỳ thi để lưu trạng thái Batch theo môn.")
-            return
-
-        try:
-            self._refresh_all_statuses()
-            ses = ExamSession.load_json(session_path)
-            cfg = ses.config or {}
-            subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
-            subject_key = self._subject_key_from_cfg(subject_cfg)
-            current_results = self._current_scan_results_snapshot()
-            self.scan_results = list(current_results)
-            for result in current_results:
-                result.answer_string = self._build_answer_string_for_result(result, subject_key)
-            saved_results = [self._serialize_omr_result(x) for x in current_results]
-            timestamp = datetime.now().isoformat(timespec="seconds")
-            updated = False
-            for item in subject_cfgs:
-                if not isinstance(item, dict):
-                    continue
-                same_name_block = str(item.get("name", "")).strip() == str(subject_cfg.get("name", "")).strip() and str(item.get("block", "")).strip() == str(subject_cfg.get("block", "")).strip()
-                same_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
-                if same_name_block or same_key:
-                    item["batch_saved"] = True
-                    item["batch_saved_at"] = timestamp
-                    item["batch_result_count"] = row_count
-                    item["batch_saved_rows"] = [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ]
-                    item["batch_saved_preview"] = [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ]
-                    item["batch_saved_results"] = saved_results
-                    updated = True
-                    break
-            if not updated:
-                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
-                return
-            ses.config = {**cfg, "subject_configs": subject_cfgs}
-            ses.save_json(session_path)
-
-            # Write sidecar cache to ensure grids can be restored even if subject config is trimmed elsewhere.
-            try:
-                cache_path = session_path.with_suffix(".batch_cache.json")
-                cache_data = {}
-                if cache_path.exists():
-                    raw = json.loads(cache_path.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        cache_data = raw
-                cache_key = f"{str(subject_cfg.get('name','')).strip().lower()}::{str(subject_cfg.get('block','')).strip().lower()}::{str(subject_cfg.get('answer_key_key','')).strip().lower()}"
-                cache_data[cache_key] = {
-                    "batch_saved": True,
-                    "batch_saved_at": timestamp,
-                    "batch_result_count": row_count,
-                    "batch_saved_rows": [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ],
-                    "batch_saved_preview": [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ],
-                    "batch_saved_results": saved_results,
-                }
-                cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                pass
-
-            if self.session:
-                self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
-            self.scan_results_by_subject[subject_key] = list(current_results)
-            if isinstance(self.batch_editor_return_payload, dict):
-                self.batch_editor_return_payload["subject_configs"] = subject_cfgs
-            self._refresh_batch_subject_controls()
-            self.btn_save_batch_subject.setEnabled(False)
-            QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
-        except Exception as exc:
-            QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu trạng thái Batch\n{exc}")
-
-
-    def _build_correction_tab(self) -> QWidget:
-        w = QWidget()
-        splitter = QSplitter(Qt.Horizontal)
-        self.exam_code_correction_combo = QComboBox()
-        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
-        self.student_correction_combo = QComboBox()
-        self.student_correction_combo.setEditable(True)
-        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
-        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
-        self.answer_editor_scroll = QScrollArea()
-        self.answer_editor_scroll.setWidgetResizable(True)
-        self.answer_editor_container = QWidget()
-        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
-        self.answer_editor_scroll.setWidget(self.answer_editor_container)
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        self.error_list = QListWidget()
-        self.preview_label = QLabel("Image preview / bubble overlay placeholder")
-        self.preview_label.setAlignment(Qt.AlignCenter)
-        self.manual_edit = QTextEdit()
-        self.manual_edit.setPlaceholderText("Manual corrections JSON (e.g. {'student_id': '1001', 'answers': {'1':'A'}})")
-        self.result_preview = QTextEdit()
-        self.result_preview.setReadOnly(True)
-        self.result_preview.setPlaceholderText("Recognized result for selected scan")
-
-        payload = dict(self.batch_editor_return_payload)
-        session_id = self.batch_editor_return_session_id
-        self.batch_editor_return_payload = None
-        self.batch_editor_return_session_id = None
-
-        if not session_id:
-            self.stack.setCurrentIndex(0)
-            return
-        p = self._session_path_from_id(session_id)
-        if not p.exists():
-            self.stack.setCurrentIndex(0)
-            return
-        try:
-            session = ExamSession.load_json(p)
-        except Exception:
-            self.stack.setCurrentIndex(0)
-            return
-        cfg = session.config or {}
-        payload["subject_configs"] = cfg.get("subject_configs", payload.get("subject_configs", []))
-        payload["scan_root"] = cfg.get("scan_root", payload.get("scan_root", ""))
-        payload["student_list_path"] = cfg.get("student_list_path", payload.get("student_list_path", ""))
-        payload["students"] = [
-            {
-                "student_id": s.student_id,
-                "name": s.name,
-                "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
-                "class_name": str((s.extra or {}).get("class_name", "") or ""),
-                "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
-            }
-            for s in (session.students or [])
-        ]
-        payload["scan_mode"] = cfg.get("scan_mode", payload.get("scan_mode", "Ảnh trong thư mục gốc"))
-        payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
-        self._open_embedded_exam_editor(session_id, session, payload)
-
-    def _show_batch_scan_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(True)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(False)
-
-    def _show_scoring_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(False)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(True)
-
-    def _back_to_batch_scan(self) -> None:
-        if not self._confirm_before_switching_work("Batch Scan"):
-            return
-        self._show_batch_scan_panel()
-
-    def _subject_configs_for_scoring(self) -> list[dict]:
-        return self._effective_subject_configs_for_batch()
-
-    def _subject_config_by_subject_key(self, subject_key: str) -> dict | None:
-        key_norm = str(subject_key or "").strip()
-        if not key_norm:
-            return None
-        for cfg in self._subject_configs_for_scoring():
-            if self._subject_key_from_cfg(cfg) == key_norm:
-                return cfg
-        return None
-
-    @staticmethod
-    def _serialize_omr_result(result: OMRResult) -> dict:
-        return {
-            "image_path": str(getattr(result, "image_path", "") or ""),
-            "student_id": str(getattr(result, "student_id", "") or ""),
-            "exam_code": str(getattr(result, "exam_code", "") or ""),
-            "mcq_answers": {int(k): str(v) for k, v in (getattr(result, "mcq_answers", {}) or {}).items()},
-            "true_false_answers": {int(k): dict(v) for k, v in (getattr(result, "true_false_answers", {}) or {}).items()},
-            "numeric_answers": {int(k): str(v) for k, v in (getattr(result, "numeric_answers", {}) or {}).items()},
-            "confidence_scores": {str(k): float(v) for k, v in (getattr(result, "confidence_scores", {}) or {}).items()},
-            "recognition_errors": [str(x) for x in (getattr(result, "recognition_errors", []) or [])],
-            "processing_time_sec": float(getattr(result, "processing_time_sec", 0.0) or 0.0),
-            "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
-            "full_name": str(getattr(result, "full_name", "") or ""),
-            "birth_date": str(getattr(result, "birth_date", "") or ""),
-            "cached_status": str(getattr(result, "cached_status", "") or ""),
-            "cached_content": str(getattr(result, "cached_content", "") or ""),
-            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
-            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
-            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
-        }
-
-    @staticmethod
-    def _deserialize_omr_result(payload: dict) -> OMRResult:
-        result = OMRResult(
-            image_path=str(payload.get("image_path", "") or ""),
-            student_id=str(payload.get("student_id", "") or ""),
-            exam_code=str(payload.get("exam_code", "") or ""),
-            mcq_answers={int(k): str(v) for k, v in (payload.get("mcq_answers", {}) or {}).items()},
-            true_false_answers={int(k): dict(v) for k, v in (payload.get("true_false_answers", {}) or {}).items()},
-            numeric_answers={int(k): str(v) for k, v in (payload.get("numeric_answers", {}) or {}).items()},
-            confidence_scores={str(k): float(v) for k, v in (payload.get("confidence_scores", {}) or {}).items()},
-            recognition_errors=[str(x) for x in (payload.get("recognition_errors", []) or [])],
-            processing_time_sec=float(payload.get("processing_time_sec", 0.0) or 0.0),
-            debug_image_path=str(payload.get("debug_image_path", "") or ""),
-        )
-        setattr(result, "full_name", str(payload.get("full_name", "") or ""))
-        setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
-        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
-        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
-        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
-        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
-        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
-        result.sync_legacy_aliases()
-        return result
-
-    def _is_subject_marked_batched(self, cfg: dict) -> bool:
-        key = self._subject_key_from_cfg(cfg)
-        if self.scan_results_by_subject.get(key):
-            return True
-        merged = self._merge_saved_batch_snapshot(cfg)
-        if bool(merged.get("batch_saved")):
-            return True
-        if isinstance(merged.get("batch_saved_rows", []), list) and merged.get("batch_saved_rows"):
-            return True
-        if isinstance(merged.get("batch_saved_results", []), list) and merged.get("batch_saved_results"):
-            return True
-        return False
-
-    def _cached_subject_scans_from_config(self, subject_key: str) -> list[OMRResult]:
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return []
-        merged = self._merge_saved_batch_snapshot(cfg)
-        cached = merged.get("batch_saved_results", [])
-        if not isinstance(cached, list) or not cached:
-            return []
-        out: list[OMRResult] = []
-        for item in cached:
-            if not isinstance(item, dict):
-                continue
-            try:
-                out.append(self._deserialize_omr_result(item))
-            except Exception:
-                continue
-        return out
-
-    def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
-        if self.answer_keys and any(str(k).startswith(f"{subject_key}::") for k in self.answer_keys.keys.keys()):
-            return True
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return self.answer_keys is not None
-
-        imported_keys = cfg.get("imported_answer_keys", {}) or {}
-        if isinstance(imported_keys, dict) and imported_keys:
-            repo = self.answer_keys or AnswerKeyRepository()
-            for exam_code, kd in imported_keys.items():
-                repo.upsert(
-                    SubjectKey(
-                        subject=subject_key,
-                        exam_code=str(exam_code),
-                        answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
-                        true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
-                        numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
-                        full_credit_questions={
-                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
-                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
-                        },
-                        invalid_answer_rows={
-                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
-                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
-                        },
-                    )
-                )
-            self.answer_keys = repo
-            self.imported_exam_codes = sorted(str(k) for k in imported_keys.keys())
-            self.active_batch_subject_key = subject_key
-            return True
-
-        answer_key_path = str(cfg.get("answer_key_path", "") or (self.session.answer_key_path if self.session else "") or "")
-        if answer_key_path:
-            pth = Path(answer_key_path)
-            if pth.exists() and pth.suffix.lower() == ".json":
-                try:
-                    loaded = AnswerKeyRepository.load_json(pth)
-                    repo = self.answer_keys or AnswerKeyRepository()
-                    for key_obj in loaded.keys.values():
-                        repo.upsert(key_obj)
-                    self.answer_keys = repo
-                    all_codes: set[str] = set()
-                    for key_name in self.answer_keys.keys.keys():
-                        parts = str(key_name).split("::", 1)
-                        if len(parts) == 2 and parts[0] == subject_key:
-                            all_codes.add(parts[1])
-                    if all_codes:
-                        self.imported_exam_codes = sorted(all_codes)
-                    self.active_batch_subject_key = subject_key
-                    return True
-                except Exception:
-                    pass
-
-        return self.answer_keys is not None
-
-    @staticmethod
-    def _subject_key_from_cfg(cfg: dict) -> str:
-        key = str(cfg.get("answer_key_key", "") or "").strip()
-        if key:
-            return key
-        name = str(cfg.get("name", "") or "").strip()
-        block = str(cfg.get("block", "") or "").strip()
-        return f"{name}_{block}" if name and block else (name or "General")
-
-    def _resolve_preferred_scoring_subject(self) -> str:
-        if self.stack.currentIndex() == 1:
-            cfg = self._selected_batch_subject_config()
-            if cfg:
-                return self._subject_key_from_cfg(cfg)
-        cfgs = self._subject_configs_for_scoring()
-        if cfgs:
-            return self._subject_key_from_cfg(cfgs[0])
-        if self.session and self.session.subjects:
-            return str(self.session.subjects[0])
-        return "General"
-
-    def _eligible_scoring_subject_keys(self) -> list[str]:
-        out: list[str] = []
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if self._is_subject_marked_batched(cfg):
-                out.append(key)
-        return out
-
-    def _populate_scoring_subjects(self, preferred_key: str = "") -> None:
-        if not hasattr(self, "scoring_subject_combo"):
-            return
-        self.scoring_subject_combo.blockSignals(True)
-        self.scoring_subject_combo.clear()
-        eligible = set(self._eligible_scoring_subject_keys())
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if eligible and key not in eligible:
-                continue
-            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
-            self.scoring_subject_combo.addItem(label, key)
-        if self.scoring_subject_combo.count() == 0:
-            fallback = self._resolve_preferred_scoring_subject()
-            self.scoring_subject_combo.addItem(fallback, fallback)
-        pick = preferred_key or self._resolve_preferred_scoring_subject()
-        for i in range(self.scoring_subject_combo.count()):
-            if str(self.scoring_subject_combo.itemData(i)) == pick:
-                self.scoring_subject_combo.setCurrentIndex(i)
-                break
-        self.scoring_subject_combo.blockSignals(False)
-
-    def _open_scoring_view(self) -> None:
-        if not self.session:
-            QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
-            return
-        if not self._eligible_scoring_subject_keys():
-            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
-            return
-        self.stack.setCurrentIndex(1)
-        self._populate_scoring_subjects(self._resolve_preferred_scoring_subject())
-        self._refresh_scoring_phase_table()
-        self._show_scoring_panel()
-
-    def _refresh_scoring_phase_table(self) -> None:
-        if not hasattr(self, "scoring_phase_table"):
-            return
-        self.scoring_phase_table.setRowCount(0)
-        for i, p in enumerate(self.scoring_phases[-100:]):
-            self.scoring_phase_table.insertRow(i)
-            self.scoring_phase_table.setItem(i, 0, QTableWidgetItem(str(p.get("timestamp", "-"))))
-            self.scoring_phase_table.setItem(i, 1, QTableWidgetItem(str(p.get("subject", "-"))))
-            self.scoring_phase_table.setItem(i, 2, QTableWidgetItem(str(p.get("mode", "-"))))
-            self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
-            self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
-
-    def _run_scoring_from_panel(self) -> None:
-        subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
-        mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
-        note = self.scoring_phase_note.text().strip() if hasattr(self, "scoring_phase_note") else ""
-        self.calculate_scores(subject_key=subject_key or self._resolve_preferred_scoring_subject(), mode=mode, note=note)
-
-
-
-    def _save_batch_for_selected_subject(self) -> None:
-        subject_cfg = self._selected_batch_subject_config()
-        if not subject_cfg:
-            QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
-            return
-        row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
-        if row_count <= 0:
-            QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
-            return
-
-        session_path = self.current_session_path
-        if not session_path and self.batch_editor_return_session_id:
-            p = self._session_path_from_id(self.batch_editor_return_session_id)
-            if p.exists():
-                session_path = p
-        if not session_path:
-            QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy kỳ thi để lưu trạng thái Batch theo môn.")
-            return
-
-        try:
-            self._refresh_all_statuses()
-            ses = ExamSession.load_json(session_path)
-            cfg = ses.config or {}
-            subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
-            subject_key = self._subject_key_from_cfg(subject_cfg)
-            current_results = self._current_scan_results_snapshot()
-            self.scan_results = list(current_results)
-            for result in current_results:
-                result.answer_string = self._build_answer_string_for_result(result, subject_key)
-            saved_results = [self._serialize_omr_result(x) for x in current_results]
-            timestamp = datetime.now().isoformat(timespec="seconds")
-            updated = False
-            for item in subject_cfgs:
-                if not isinstance(item, dict):
-                    continue
-                same_name_block = str(item.get("name", "")).strip() == str(subject_cfg.get("name", "")).strip() and str(item.get("block", "")).strip() == str(subject_cfg.get("block", "")).strip()
-                same_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
-                if same_name_block or same_key:
-                    item["batch_saved"] = True
-                    item["batch_saved_at"] = timestamp
-                    item["batch_result_count"] = row_count
-                    item["batch_saved_rows"] = [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ]
-                    item["batch_saved_preview"] = [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ]
-                    item["batch_saved_results"] = saved_results
-                    updated = True
-                    break
-            if not updated:
-                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
-                return
-            ses.config = {**cfg, "subject_configs": subject_cfgs}
-            ses.save_json(session_path)
-
-            # Write sidecar cache to ensure grids can be restored even if subject config is trimmed elsewhere.
-            try:
-                cache_path = session_path.with_suffix(".batch_cache.json")
-                cache_data = {}
-                if cache_path.exists():
-                    raw = json.loads(cache_path.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        cache_data = raw
-                cache_key = f"{str(subject_cfg.get('name','')).strip().lower()}::{str(subject_cfg.get('block','')).strip().lower()}::{str(subject_cfg.get('answer_key_key','')).strip().lower()}"
-                cache_data[cache_key] = {
-                    "batch_saved": True,
-                    "batch_saved_at": timestamp,
-                    "batch_result_count": row_count,
-                    "batch_saved_rows": [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ],
-                    "batch_saved_preview": [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ],
-                    "batch_saved_results": saved_results,
-                }
-                cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                pass
-
-            if self.session:
-                self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
-            self.scan_results_by_subject[subject_key] = list(current_results)
-            if isinstance(self.batch_editor_return_payload, dict):
-                self.batch_editor_return_payload["subject_configs"] = subject_cfgs
-            self._refresh_batch_subject_controls()
-            self.btn_save_batch_subject.setEnabled(False)
-            QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
-        except Exception as exc:
-            QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu trạng thái Batch\n{exc}")
-
-
-    def _build_correction_tab(self) -> QWidget:
-        w = QWidget()
-        splitter = QSplitter(Qt.Horizontal)
-        self.exam_code_correction_combo = QComboBox()
-        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
-        self.student_correction_combo = QComboBox()
-        self.student_correction_combo.setEditable(True)
-        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
-        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
-        self.answer_editor_scroll = QScrollArea()
-        self.answer_editor_scroll.setWidgetResizable(True)
-        self.answer_editor_container = QWidget()
-        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
-        self.answer_editor_scroll.setWidget(self.answer_editor_container)
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        self.error_list = QListWidget()
-        self.preview_label = QLabel("Image preview / bubble overlay placeholder")
-        self.preview_label.setAlignment(Qt.AlignCenter)
-        self.manual_edit = QTextEdit()
-        self.manual_edit.setPlaceholderText("Manual corrections JSON (e.g. {'student_id': '1001', 'answers': {'1':'A'}})")
-        self.result_preview = QTextEdit()
-        self.result_preview.setReadOnly(True)
-        self.result_preview.setPlaceholderText("Recognized result for selected scan")
-
-        payload = dict(self.batch_editor_return_payload)
-        session_id = self.batch_editor_return_session_id
-        self.batch_editor_return_payload = None
-        self.batch_editor_return_session_id = None
-
-        if not session_id:
-            self.stack.setCurrentIndex(0)
-            return
-        p = self._session_path_from_id(session_id)
-        if not p.exists():
-            self.stack.setCurrentIndex(0)
-            return
-        try:
-            session = ExamSession.load_json(p)
-        except Exception:
-            self.stack.setCurrentIndex(0)
-            return
-        cfg = session.config or {}
-        payload["subject_configs"] = cfg.get("subject_configs", payload.get("subject_configs", []))
-        payload["scan_root"] = cfg.get("scan_root", payload.get("scan_root", ""))
-        payload["student_list_path"] = cfg.get("student_list_path", payload.get("student_list_path", ""))
-        payload["students"] = [
-            {
-                "student_id": s.student_id,
-                "name": s.name,
-                "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
-                "class_name": str((s.extra or {}).get("class_name", "") or ""),
-                "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
-            }
-            for s in (session.students or [])
-        ]
-        payload["scan_mode"] = cfg.get("scan_mode", payload.get("scan_mode", "Ảnh trong thư mục gốc"))
-        payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
-        self._open_embedded_exam_editor(session_id, session, payload)
-
-    def _show_batch_scan_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(True)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(False)
-
-    def _show_scoring_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(False)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(True)
-
-    def _back_to_batch_scan(self) -> None:
-        if not self._confirm_before_switching_work("Batch Scan"):
-            return
-        self._show_batch_scan_panel()
-
-    def _subject_configs_for_scoring(self) -> list[dict]:
-        return self._effective_subject_configs_for_batch()
-
-    def _subject_config_by_subject_key(self, subject_key: str) -> dict | None:
-        key_norm = str(subject_key or "").strip()
-        if not key_norm:
-            return None
-        for cfg in self._subject_configs_for_scoring():
-            if self._subject_key_from_cfg(cfg) == key_norm:
-                return cfg
-        return None
-
-    @staticmethod
-    def _serialize_omr_result(result: OMRResult) -> dict:
-        return {
-            "image_path": str(getattr(result, "image_path", "") or ""),
-            "student_id": str(getattr(result, "student_id", "") or ""),
-            "exam_code": str(getattr(result, "exam_code", "") or ""),
-            "mcq_answers": {int(k): str(v) for k, v in (getattr(result, "mcq_answers", {}) or {}).items()},
-            "true_false_answers": {int(k): dict(v) for k, v in (getattr(result, "true_false_answers", {}) or {}).items()},
-            "numeric_answers": {int(k): str(v) for k, v in (getattr(result, "numeric_answers", {}) or {}).items()},
-            "confidence_scores": {str(k): float(v) for k, v in (getattr(result, "confidence_scores", {}) or {}).items()},
-            "recognition_errors": [str(x) for x in (getattr(result, "recognition_errors", []) or [])],
-            "processing_time_sec": float(getattr(result, "processing_time_sec", 0.0) or 0.0),
-            "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
-            "full_name": str(getattr(result, "full_name", "") or ""),
-            "birth_date": str(getattr(result, "birth_date", "") or ""),
-            "cached_status": str(getattr(result, "cached_status", "") or ""),
-            "cached_content": str(getattr(result, "cached_content", "") or ""),
-            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
-            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
-            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
-        }
-
-    @staticmethod
-    def _deserialize_omr_result(payload: dict) -> OMRResult:
-        result = OMRResult(
-            image_path=str(payload.get("image_path", "") or ""),
-            student_id=str(payload.get("student_id", "") or ""),
-            exam_code=str(payload.get("exam_code", "") or ""),
-            mcq_answers={int(k): str(v) for k, v in (payload.get("mcq_answers", {}) or {}).items()},
-            true_false_answers={int(k): dict(v) for k, v in (payload.get("true_false_answers", {}) or {}).items()},
-            numeric_answers={int(k): str(v) for k, v in (payload.get("numeric_answers", {}) or {}).items()},
-            confidence_scores={str(k): float(v) for k, v in (payload.get("confidence_scores", {}) or {}).items()},
-            recognition_errors=[str(x) for x in (payload.get("recognition_errors", []) or [])],
-            processing_time_sec=float(payload.get("processing_time_sec", 0.0) or 0.0),
-            debug_image_path=str(payload.get("debug_image_path", "") or ""),
-        )
-        setattr(result, "full_name", str(payload.get("full_name", "") or ""))
-        setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
-        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
-        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
-        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
-        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
-        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
-        result.sync_legacy_aliases()
-        return result
-
-    def _is_subject_marked_batched(self, cfg: dict) -> bool:
-        key = self._subject_key_from_cfg(cfg)
-        if self.scan_results_by_subject.get(key):
-            return True
-        merged = self._merge_saved_batch_snapshot(cfg)
-        if bool(merged.get("batch_saved")):
-            return True
-        if isinstance(merged.get("batch_saved_rows", []), list) and merged.get("batch_saved_rows"):
-            return True
-        if isinstance(merged.get("batch_saved_results", []), list) and merged.get("batch_saved_results"):
-            return True
-        return False
-
-    def _cached_subject_scans_from_config(self, subject_key: str) -> list[OMRResult]:
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return []
-        merged = self._merge_saved_batch_snapshot(cfg)
-        cached = merged.get("batch_saved_results", [])
-        if not isinstance(cached, list) or not cached:
-            return []
-        out: list[OMRResult] = []
-        for item in cached:
-            if not isinstance(item, dict):
-                continue
-            try:
-                out.append(self._deserialize_omr_result(item))
-            except Exception:
-                continue
-        return out
-
-    def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
-        if self.answer_keys and any(str(k).startswith(f"{subject_key}::") for k in self.answer_keys.keys.keys()):
-            return True
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return self.answer_keys is not None
-
-        imported_keys = cfg.get("imported_answer_keys", {}) or {}
-        if isinstance(imported_keys, dict) and imported_keys:
-            repo = self.answer_keys or AnswerKeyRepository()
-            for exam_code, kd in imported_keys.items():
-                repo.upsert(
-                    SubjectKey(
-                        subject=subject_key,
-                        exam_code=str(exam_code),
-                        answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
-                        true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
-                        numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
-                        full_credit_questions={
-                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
-                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
-                        },
-                        invalid_answer_rows={
-                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
-                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
-                        },
-                    )
-                )
-            self.answer_keys = repo
-            self.imported_exam_codes = sorted(str(k) for k in imported_keys.keys())
-            self.active_batch_subject_key = subject_key
-            return True
-
-        answer_key_path = str(cfg.get("answer_key_path", "") or (self.session.answer_key_path if self.session else "") or "")
-        if answer_key_path:
-            pth = Path(answer_key_path)
-            if pth.exists() and pth.suffix.lower() == ".json":
-                try:
-                    loaded = AnswerKeyRepository.load_json(pth)
-                    repo = self.answer_keys or AnswerKeyRepository()
-                    for key_obj in loaded.keys.values():
-                        repo.upsert(key_obj)
-                    self.answer_keys = repo
-                    all_codes: set[str] = set()
-                    for key_name in self.answer_keys.keys.keys():
-                        parts = str(key_name).split("::", 1)
-                        if len(parts) == 2 and parts[0] == subject_key:
-                            all_codes.add(parts[1])
-                    if all_codes:
-                        self.imported_exam_codes = sorted(all_codes)
-                    self.active_batch_subject_key = subject_key
-                    return True
-                except Exception:
-                    pass
-
-        return self.answer_keys is not None
-
-    @staticmethod
-    def _subject_key_from_cfg(cfg: dict) -> str:
-        key = str(cfg.get("answer_key_key", "") or "").strip()
-        if key:
-            return key
-        name = str(cfg.get("name", "") or "").strip()
-        block = str(cfg.get("block", "") or "").strip()
-        return f"{name}_{block}" if name and block else (name or "General")
-
-    def _resolve_preferred_scoring_subject(self) -> str:
-        if self.stack.currentIndex() == 1:
-            cfg = self._selected_batch_subject_config()
-            if cfg:
-                return self._subject_key_from_cfg(cfg)
-        cfgs = self._subject_configs_for_scoring()
-        if cfgs:
-            return self._subject_key_from_cfg(cfgs[0])
-        if self.session and self.session.subjects:
-            return str(self.session.subjects[0])
-        return "General"
-
-    def _eligible_scoring_subject_keys(self) -> list[str]:
-        out: list[str] = []
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if self._is_subject_marked_batched(cfg):
-                out.append(key)
-        return out
-
-    def _populate_scoring_subjects(self, preferred_key: str = "") -> None:
-        if not hasattr(self, "scoring_subject_combo"):
-            return
-        self.scoring_subject_combo.blockSignals(True)
-        self.scoring_subject_combo.clear()
-        eligible = set(self._eligible_scoring_subject_keys())
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if eligible and key not in eligible:
-                continue
-            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
-            self.scoring_subject_combo.addItem(label, key)
-        if self.scoring_subject_combo.count() == 0:
-            fallback = self._resolve_preferred_scoring_subject()
-            self.scoring_subject_combo.addItem(fallback, fallback)
-        pick = preferred_key or self._resolve_preferred_scoring_subject()
-        for i in range(self.scoring_subject_combo.count()):
-            if str(self.scoring_subject_combo.itemData(i)) == pick:
-                self.scoring_subject_combo.setCurrentIndex(i)
-                break
-        self.scoring_subject_combo.blockSignals(False)
-
-    def _open_scoring_view(self) -> None:
-        if not self.session:
-            QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
-            return
-        if not self._eligible_scoring_subject_keys():
-            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
-            return
-        self.stack.setCurrentIndex(1)
-        self._populate_scoring_subjects(self._resolve_preferred_scoring_subject())
-        self._refresh_scoring_phase_table()
-        self._show_scoring_panel()
-
-    def _refresh_scoring_phase_table(self) -> None:
-        if not hasattr(self, "scoring_phase_table"):
-            return
-        self.scoring_phase_table.setRowCount(0)
-        for i, p in enumerate(self.scoring_phases[-100:]):
-            self.scoring_phase_table.insertRow(i)
-            self.scoring_phase_table.setItem(i, 0, QTableWidgetItem(str(p.get("timestamp", "-"))))
-            self.scoring_phase_table.setItem(i, 1, QTableWidgetItem(str(p.get("subject", "-"))))
-            self.scoring_phase_table.setItem(i, 2, QTableWidgetItem(str(p.get("mode", "-"))))
-            self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
-            self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
-
-    def _run_scoring_from_panel(self) -> None:
-        subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
-        mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
-        note = self.scoring_phase_note.text().strip() if hasattr(self, "scoring_phase_note") else ""
-        self.calculate_scores(subject_key=subject_key or self._resolve_preferred_scoring_subject(), mode=mode, note=note)
-
-
-
-    def _save_batch_for_selected_subject(self) -> None:
-        subject_cfg = self._selected_batch_subject_config()
-        if not subject_cfg:
-            QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
-            return
-        row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
-        if row_count <= 0:
-            QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
-            return
-
-        session_path = self.current_session_path
-        if not session_path and self.batch_editor_return_session_id:
-            p = self._session_path_from_id(self.batch_editor_return_session_id)
-            if p.exists():
-                session_path = p
-        if not session_path:
-            QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy kỳ thi để lưu trạng thái Batch theo môn.")
-            return
-
-        try:
-            self._refresh_all_statuses()
-            ses = ExamSession.load_json(session_path)
-            cfg = ses.config or {}
-            subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
-            subject_key = self._subject_key_from_cfg(subject_cfg)
-            current_results = self._current_scan_results_snapshot()
-            self.scan_results = list(current_results)
-            for result in current_results:
-                result.answer_string = self._build_answer_string_for_result(result, subject_key)
-            saved_results = [self._serialize_omr_result(x) for x in current_results]
-            timestamp = datetime.now().isoformat(timespec="seconds")
-            updated = False
-            for item in subject_cfgs:
-                if not isinstance(item, dict):
-                    continue
-                same_name_block = str(item.get("name", "")).strip() == str(subject_cfg.get("name", "")).strip() and str(item.get("block", "")).strip() == str(subject_cfg.get("block", "")).strip()
-                same_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
-                if same_name_block or same_key:
-                    item["batch_saved"] = True
-                    item["batch_saved_at"] = timestamp
-                    item["batch_result_count"] = row_count
-                    item["batch_saved_rows"] = [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ]
-                    item["batch_saved_preview"] = [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ]
-                    item["batch_saved_results"] = saved_results
-                    updated = True
-                    break
-            if not updated:
-                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
-                return
-            ses.config = {**cfg, "subject_configs": subject_cfgs}
-            ses.save_json(session_path)
-
-            # Write sidecar cache to ensure grids can be restored even if subject config is trimmed elsewhere.
-            try:
-                cache_path = session_path.with_suffix(".batch_cache.json")
-                cache_data = {}
-                if cache_path.exists():
-                    raw = json.loads(cache_path.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        cache_data = raw
-                cache_key = f"{str(subject_cfg.get('name','')).strip().lower()}::{str(subject_cfg.get('block','')).strip().lower()}::{str(subject_cfg.get('answer_key_key','')).strip().lower()}"
-                cache_data[cache_key] = {
-                    "batch_saved": True,
-                    "batch_saved_at": timestamp,
-                    "batch_result_count": row_count,
-                    "batch_saved_rows": [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ],
-                    "batch_saved_preview": [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ],
-                    "batch_saved_results": saved_results,
-                }
-                cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                pass
-
-            if self.session:
-                self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
-            self.scan_results_by_subject[subject_key] = list(current_results)
-            if isinstance(self.batch_editor_return_payload, dict):
-                self.batch_editor_return_payload["subject_configs"] = subject_cfgs
-            self._refresh_batch_subject_controls()
-            self.btn_save_batch_subject.setEnabled(False)
-            QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
-        except Exception as exc:
-            QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu trạng thái Batch\n{exc}")
-
-
-    def _build_correction_tab(self) -> QWidget:
-        w = QWidget()
-        splitter = QSplitter(Qt.Horizontal)
-        self.exam_code_correction_combo = QComboBox()
-        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
-        self.student_correction_combo = QComboBox()
-        self.student_correction_combo.setEditable(True)
-        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
-        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
-        self.answer_editor_scroll = QScrollArea()
-        self.answer_editor_scroll.setWidgetResizable(True)
-        self.answer_editor_container = QWidget()
-        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
-        self.answer_editor_scroll.setWidget(self.answer_editor_container)
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        self.error_list = QListWidget()
-        self.preview_label = QLabel("Image preview / bubble overlay placeholder")
-        self.preview_label.setAlignment(Qt.AlignCenter)
-        self.manual_edit = QTextEdit()
-        self.manual_edit.setPlaceholderText("Manual corrections JSON (e.g. {'student_id': '1001', 'answers': {'1':'A'}})")
-        self.result_preview = QTextEdit()
-        self.result_preview.setReadOnly(True)
-        self.result_preview.setPlaceholderText("Recognized result for selected scan")
-
-        payload = dict(self.batch_editor_return_payload)
-        session_id = self.batch_editor_return_session_id
-        self.batch_editor_return_payload = None
-        self.batch_editor_return_session_id = None
-
-        if not session_id:
-            self.stack.setCurrentIndex(0)
-            return
-        p = self._session_path_from_id(session_id)
-        if not p.exists():
-            self.stack.setCurrentIndex(0)
-            return
-        try:
-            session = ExamSession.load_json(p)
-        except Exception:
-            self.stack.setCurrentIndex(0)
-            return
-        cfg = session.config or {}
-        payload["subject_configs"] = cfg.get("subject_configs", payload.get("subject_configs", []))
-        payload["scan_root"] = cfg.get("scan_root", payload.get("scan_root", ""))
-        payload["student_list_path"] = cfg.get("student_list_path", payload.get("student_list_path", ""))
-        payload["students"] = [
-            {
-                "student_id": s.student_id,
-                "name": s.name,
-                "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
-                "class_name": str((s.extra or {}).get("class_name", "") or ""),
-                "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
-            }
-            for s in (session.students or [])
-        ]
-        payload["scan_mode"] = cfg.get("scan_mode", payload.get("scan_mode", "Ảnh trong thư mục gốc"))
-        payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
-        self._open_embedded_exam_editor(session_id, session, payload)
-
-    def _show_batch_scan_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(True)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(False)
-
-    def _show_scoring_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(False)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(True)
-
-    def _back_to_batch_scan(self) -> None:
-        if not self._confirm_before_switching_work("Batch Scan"):
-            return
-        self._show_batch_scan_panel()
-
-    def _subject_configs_for_scoring(self) -> list[dict]:
-        return self._effective_subject_configs_for_batch()
-
-    def _subject_config_by_subject_key(self, subject_key: str) -> dict | None:
-        key_norm = str(subject_key or "").strip()
-        if not key_norm:
-            return None
-        for cfg in self._subject_configs_for_scoring():
-            if self._subject_key_from_cfg(cfg) == key_norm:
-                return cfg
-        return None
-
-    @staticmethod
-    def _serialize_omr_result(result: OMRResult) -> dict:
-        return {
-            "image_path": str(getattr(result, "image_path", "") or ""),
-            "student_id": str(getattr(result, "student_id", "") or ""),
-            "exam_code": str(getattr(result, "exam_code", "") or ""),
-            "mcq_answers": {int(k): str(v) for k, v in (getattr(result, "mcq_answers", {}) or {}).items()},
-            "true_false_answers": {int(k): dict(v) for k, v in (getattr(result, "true_false_answers", {}) or {}).items()},
-            "numeric_answers": {int(k): str(v) for k, v in (getattr(result, "numeric_answers", {}) or {}).items()},
-            "confidence_scores": {str(k): float(v) for k, v in (getattr(result, "confidence_scores", {}) or {}).items()},
-            "recognition_errors": [str(x) for x in (getattr(result, "recognition_errors", []) or [])],
-            "processing_time_sec": float(getattr(result, "processing_time_sec", 0.0) or 0.0),
-            "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
-            "full_name": str(getattr(result, "full_name", "") or ""),
-            "birth_date": str(getattr(result, "birth_date", "") or ""),
-            "cached_status": str(getattr(result, "cached_status", "") or ""),
-            "cached_content": str(getattr(result, "cached_content", "") or ""),
-            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
-            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
-            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
-        }
-
-    @staticmethod
-    def _deserialize_omr_result(payload: dict) -> OMRResult:
-        result = OMRResult(
-            image_path=str(payload.get("image_path", "") or ""),
-            student_id=str(payload.get("student_id", "") or ""),
-            exam_code=str(payload.get("exam_code", "") or ""),
-            mcq_answers={int(k): str(v) for k, v in (payload.get("mcq_answers", {}) or {}).items()},
-            true_false_answers={int(k): dict(v) for k, v in (payload.get("true_false_answers", {}) or {}).items()},
-            numeric_answers={int(k): str(v) for k, v in (payload.get("numeric_answers", {}) or {}).items()},
-            confidence_scores={str(k): float(v) for k, v in (payload.get("confidence_scores", {}) or {}).items()},
-            recognition_errors=[str(x) for x in (payload.get("recognition_errors", []) or [])],
-            processing_time_sec=float(payload.get("processing_time_sec", 0.0) or 0.0),
-            debug_image_path=str(payload.get("debug_image_path", "") or ""),
-        )
-        setattr(result, "full_name", str(payload.get("full_name", "") or ""))
-        setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
-        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
-        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
-        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
-        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
-        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
-        result.sync_legacy_aliases()
-        return result
-
-    def _is_subject_marked_batched(self, cfg: dict) -> bool:
-        key = self._subject_key_from_cfg(cfg)
-        if self.scan_results_by_subject.get(key):
-            return True
-        merged = self._merge_saved_batch_snapshot(cfg)
-        if bool(merged.get("batch_saved")):
-            return True
-        if isinstance(merged.get("batch_saved_rows", []), list) and merged.get("batch_saved_rows"):
-            return True
-        if isinstance(merged.get("batch_saved_results", []), list) and merged.get("batch_saved_results"):
-            return True
-        return False
-
-    def _cached_subject_scans_from_config(self, subject_key: str) -> list[OMRResult]:
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return []
-        merged = self._merge_saved_batch_snapshot(cfg)
-        cached = merged.get("batch_saved_results", [])
-        if not isinstance(cached, list) or not cached:
-            return []
-        out: list[OMRResult] = []
-        for item in cached:
-            if not isinstance(item, dict):
-                continue
-            try:
-                out.append(self._deserialize_omr_result(item))
-            except Exception:
-                continue
-        return out
-
-    def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
-        if self.answer_keys and any(str(k).startswith(f"{subject_key}::") for k in self.answer_keys.keys.keys()):
-            return True
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return self.answer_keys is not None
-
-        imported_keys = cfg.get("imported_answer_keys", {}) or {}
-        if isinstance(imported_keys, dict) and imported_keys:
-            repo = self.answer_keys or AnswerKeyRepository()
-            for exam_code, kd in imported_keys.items():
-                repo.upsert(
-                    SubjectKey(
-                        subject=subject_key,
-                        exam_code=str(exam_code),
-                        answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
-                        true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
-                        numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
-                        full_credit_questions={
-                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
-                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
-                        },
-                        invalid_answer_rows={
-                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
-                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
-                        },
-                    )
-                )
-            self.answer_keys = repo
-            self.imported_exam_codes = sorted(str(k) for k in imported_keys.keys())
-            self.active_batch_subject_key = subject_key
-            return True
-
-        answer_key_path = str(cfg.get("answer_key_path", "") or (self.session.answer_key_path if self.session else "") or "")
-        if answer_key_path:
-            pth = Path(answer_key_path)
-            if pth.exists() and pth.suffix.lower() == ".json":
-                try:
-                    loaded = AnswerKeyRepository.load_json(pth)
-                    repo = self.answer_keys or AnswerKeyRepository()
-                    for key_obj in loaded.keys.values():
-                        repo.upsert(key_obj)
-                    self.answer_keys = repo
-                    all_codes: set[str] = set()
-                    for key_name in self.answer_keys.keys.keys():
-                        parts = str(key_name).split("::", 1)
-                        if len(parts) == 2 and parts[0] == subject_key:
-                            all_codes.add(parts[1])
-                    if all_codes:
-                        self.imported_exam_codes = sorted(all_codes)
-                    self.active_batch_subject_key = subject_key
-                    return True
-                except Exception:
-                    pass
-
-        return self.answer_keys is not None
-
-    @staticmethod
-    def _subject_key_from_cfg(cfg: dict) -> str:
-        key = str(cfg.get("answer_key_key", "") or "").strip()
-        if key:
-            return key
-        name = str(cfg.get("name", "") or "").strip()
-        block = str(cfg.get("block", "") or "").strip()
-        return f"{name}_{block}" if name and block else (name or "General")
-
-    def _resolve_preferred_scoring_subject(self) -> str:
-        if self.stack.currentIndex() == 1:
-            cfg = self._selected_batch_subject_config()
-            if cfg:
-                return self._subject_key_from_cfg(cfg)
-        cfgs = self._subject_configs_for_scoring()
-        if cfgs:
-            return self._subject_key_from_cfg(cfgs[0])
-        if self.session and self.session.subjects:
-            return str(self.session.subjects[0])
-        return "General"
-
-    def _eligible_scoring_subject_keys(self) -> list[str]:
-        out: list[str] = []
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if self._is_subject_marked_batched(cfg):
-                out.append(key)
-        return out
-
-    def _populate_scoring_subjects(self, preferred_key: str = "") -> None:
-        if not hasattr(self, "scoring_subject_combo"):
-            return
-        self.scoring_subject_combo.blockSignals(True)
-        self.scoring_subject_combo.clear()
-        eligible = set(self._eligible_scoring_subject_keys())
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if eligible and key not in eligible:
-                continue
-            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
-            self.scoring_subject_combo.addItem(label, key)
-        if self.scoring_subject_combo.count() == 0:
-            fallback = self._resolve_preferred_scoring_subject()
-            self.scoring_subject_combo.addItem(fallback, fallback)
-        pick = preferred_key or self._resolve_preferred_scoring_subject()
-        for i in range(self.scoring_subject_combo.count()):
-            if str(self.scoring_subject_combo.itemData(i)) == pick:
-                self.scoring_subject_combo.setCurrentIndex(i)
-                break
-        self.scoring_subject_combo.blockSignals(False)
-
-    def _open_scoring_view(self) -> None:
-        if not self.session:
-            QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
-            return
-        if not self._eligible_scoring_subject_keys():
-            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
-            return
-        self.stack.setCurrentIndex(1)
-        self._populate_scoring_subjects(self._resolve_preferred_scoring_subject())
-        self._refresh_scoring_phase_table()
-        self._show_scoring_panel()
-
-    def _refresh_scoring_phase_table(self) -> None:
-        if not hasattr(self, "scoring_phase_table"):
-            return
-        self.scoring_phase_table.setRowCount(0)
-        for i, p in enumerate(self.scoring_phases[-100:]):
-            self.scoring_phase_table.insertRow(i)
-            self.scoring_phase_table.setItem(i, 0, QTableWidgetItem(str(p.get("timestamp", "-"))))
-            self.scoring_phase_table.setItem(i, 1, QTableWidgetItem(str(p.get("subject", "-"))))
-            self.scoring_phase_table.setItem(i, 2, QTableWidgetItem(str(p.get("mode", "-"))))
-            self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
-            self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
-
-    def _run_scoring_from_panel(self) -> None:
-        subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
-        mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
-        note = self.scoring_phase_note.text().strip() if hasattr(self, "scoring_phase_note") else ""
-        self.calculate_scores(subject_key=subject_key or self._resolve_preferred_scoring_subject(), mode=mode, note=note)
-
-
-
-    def _save_batch_for_selected_subject(self) -> None:
-        subject_cfg = self._selected_batch_subject_config()
-        if not subject_cfg:
-            QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
-            return
-        row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
-        if row_count <= 0:
-            QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
-            return
-
-        session_path = self.current_session_path
-        if not session_path and self.batch_editor_return_session_id:
-            p = self._session_path_from_id(self.batch_editor_return_session_id)
-            if p.exists():
-                session_path = p
-        if not session_path:
-            QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy kỳ thi để lưu trạng thái Batch theo môn.")
-            return
-
-        try:
-            self._refresh_all_statuses()
-            ses = ExamSession.load_json(session_path)
-            cfg = ses.config or {}
-            subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
-            subject_key = self._subject_key_from_cfg(subject_cfg)
-            current_results = self._current_scan_results_snapshot()
-            self.scan_results = list(current_results)
-            for result in current_results:
-                result.answer_string = self._build_answer_string_for_result(result, subject_key)
-            saved_results = [self._serialize_omr_result(x) for x in current_results]
-            timestamp = datetime.now().isoformat(timespec="seconds")
-            updated = False
-            for item in subject_cfgs:
-                if not isinstance(item, dict):
-                    continue
-                same_name_block = str(item.get("name", "")).strip() == str(subject_cfg.get("name", "")).strip() and str(item.get("block", "")).strip() == str(subject_cfg.get("block", "")).strip()
-                same_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
-                if same_name_block or same_key:
-                    item["batch_saved"] = True
-                    item["batch_saved_at"] = timestamp
-                    item["batch_result_count"] = row_count
-                    item["batch_saved_rows"] = [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ]
-                    item["batch_saved_preview"] = [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ]
-                    item["batch_saved_results"] = saved_results
-                    updated = True
-                    break
-            if not updated:
-                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
-                return
-            ses.config = {**cfg, "subject_configs": subject_cfgs}
-            ses.save_json(session_path)
-
-            # Write sidecar cache to ensure grids can be restored even if subject config is trimmed elsewhere.
-            try:
-                cache_path = session_path.with_suffix(".batch_cache.json")
-                cache_data = {}
-                if cache_path.exists():
-                    raw = json.loads(cache_path.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        cache_data = raw
-                cache_key = f"{str(subject_cfg.get('name','')).strip().lower()}::{str(subject_cfg.get('block','')).strip().lower()}::{str(subject_cfg.get('answer_key_key','')).strip().lower()}"
-                cache_data[cache_key] = {
-                    "batch_saved": True,
-                    "batch_saved_at": timestamp,
-                    "batch_result_count": row_count,
-                    "batch_saved_rows": [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ],
-                    "batch_saved_preview": [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ],
-                    "batch_saved_results": saved_results,
-                }
-                cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                pass
-
-            if self.session:
-                self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
-            self.scan_results_by_subject[subject_key] = list(current_results)
-            if isinstance(self.batch_editor_return_payload, dict):
-                self.batch_editor_return_payload["subject_configs"] = subject_cfgs
-            self._refresh_batch_subject_controls()
-            self.btn_save_batch_subject.setEnabled(False)
-            QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
-        except Exception as exc:
-            QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu trạng thái Batch\n{exc}")
-
-
-    def _build_correction_tab(self) -> QWidget:
-        w = QWidget()
-        splitter = QSplitter(Qt.Horizontal)
-        self.exam_code_correction_combo = QComboBox()
-        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
-        self.student_correction_combo = QComboBox()
-        self.student_correction_combo.setEditable(True)
-        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
-        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
-        self.answer_editor_scroll = QScrollArea()
-        self.answer_editor_scroll.setWidgetResizable(True)
-        self.answer_editor_container = QWidget()
-        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
-        self.answer_editor_scroll.setWidget(self.answer_editor_container)
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        self.error_list = QListWidget()
-        self.preview_label = QLabel("Image preview / bubble overlay placeholder")
-        self.preview_label.setAlignment(Qt.AlignCenter)
-        self.manual_edit = QTextEdit()
-        self.manual_edit.setPlaceholderText("Manual corrections JSON (e.g. {'student_id': '1001', 'answers': {'1':'A'}})")
-        self.result_preview = QTextEdit()
-        self.result_preview.setReadOnly(True)
-        self.result_preview.setPlaceholderText("Recognized result for selected scan")
-
-        payload = dict(self.batch_editor_return_payload)
-        session_id = self.batch_editor_return_session_id
-        self.batch_editor_return_payload = None
-        self.batch_editor_return_session_id = None
-
-        if not session_id:
-            self.stack.setCurrentIndex(0)
-            return
-        p = self._session_path_from_id(session_id)
-        if not p.exists():
-            self.stack.setCurrentIndex(0)
-            return
-        try:
-            session = ExamSession.load_json(p)
-        except Exception:
-            self.stack.setCurrentIndex(0)
-            return
-        cfg = session.config or {}
-        payload["subject_configs"] = cfg.get("subject_configs", payload.get("subject_configs", []))
-        payload["scan_root"] = cfg.get("scan_root", payload.get("scan_root", ""))
-        payload["student_list_path"] = cfg.get("student_list_path", payload.get("student_list_path", ""))
-        payload["students"] = [
-            {
-                "student_id": s.student_id,
-                "name": s.name,
-                "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
-                "class_name": str((s.extra or {}).get("class_name", "") or ""),
-                "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
-            }
-            for s in (session.students or [])
-        ]
-        payload["scan_mode"] = cfg.get("scan_mode", payload.get("scan_mode", "Ảnh trong thư mục gốc"))
-        payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
-        self._open_embedded_exam_editor(session_id, session, payload)
-
-    def _show_batch_scan_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(True)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(False)
-
-    def _show_scoring_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(False)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(True)
-
-    def _back_to_batch_scan(self) -> None:
-        if not self._confirm_before_switching_work("Batch Scan"):
-            return
-        self._show_batch_scan_panel()
-
-    def _subject_configs_for_scoring(self) -> list[dict]:
-        return self._effective_subject_configs_for_batch()
-
-    def _subject_config_by_subject_key(self, subject_key: str) -> dict | None:
-        key_norm = str(subject_key or "").strip()
-        if not key_norm:
-            return None
-        for cfg in self._subject_configs_for_scoring():
-            if self._subject_key_from_cfg(cfg) == key_norm:
-                return cfg
-        return None
-
-    @staticmethod
-    def _serialize_omr_result(result: OMRResult) -> dict:
-        return {
-            "image_path": str(getattr(result, "image_path", "") or ""),
-            "student_id": str(getattr(result, "student_id", "") or ""),
-            "exam_code": str(getattr(result, "exam_code", "") or ""),
-            "mcq_answers": {int(k): str(v) for k, v in (getattr(result, "mcq_answers", {}) or {}).items()},
-            "true_false_answers": {int(k): dict(v) for k, v in (getattr(result, "true_false_answers", {}) or {}).items()},
-            "numeric_answers": {int(k): str(v) for k, v in (getattr(result, "numeric_answers", {}) or {}).items()},
-            "confidence_scores": {str(k): float(v) for k, v in (getattr(result, "confidence_scores", {}) or {}).items()},
-            "recognition_errors": [str(x) for x in (getattr(result, "recognition_errors", []) or [])],
-            "processing_time_sec": float(getattr(result, "processing_time_sec", 0.0) or 0.0),
-            "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
-            "full_name": str(getattr(result, "full_name", "") or ""),
-            "birth_date": str(getattr(result, "birth_date", "") or ""),
-            "cached_status": str(getattr(result, "cached_status", "") or ""),
-            "cached_content": str(getattr(result, "cached_content", "") or ""),
-            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
-            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
-            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
-        }
-
-    @staticmethod
-    def _deserialize_omr_result(payload: dict) -> OMRResult:
-        result = OMRResult(
-            image_path=str(payload.get("image_path", "") or ""),
-            student_id=str(payload.get("student_id", "") or ""),
-            exam_code=str(payload.get("exam_code", "") or ""),
-            mcq_answers={int(k): str(v) for k, v in (payload.get("mcq_answers", {}) or {}).items()},
-            true_false_answers={int(k): dict(v) for k, v in (payload.get("true_false_answers", {}) or {}).items()},
-            numeric_answers={int(k): str(v) for k, v in (payload.get("numeric_answers", {}) or {}).items()},
-            confidence_scores={str(k): float(v) for k, v in (payload.get("confidence_scores", {}) or {}).items()},
-            recognition_errors=[str(x) for x in (payload.get("recognition_errors", []) or [])],
-            processing_time_sec=float(payload.get("processing_time_sec", 0.0) or 0.0),
-            debug_image_path=str(payload.get("debug_image_path", "") or ""),
-        )
-        setattr(result, "full_name", str(payload.get("full_name", "") or ""))
-        setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
-        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
-        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
-        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
-        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
-        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
-        result.sync_legacy_aliases()
-        return result
-
-    def _is_subject_marked_batched(self, cfg: dict) -> bool:
-        key = self._subject_key_from_cfg(cfg)
-        if self.scan_results_by_subject.get(key):
-            return True
-        merged = self._merge_saved_batch_snapshot(cfg)
-        if bool(merged.get("batch_saved")):
-            return True
-        if isinstance(merged.get("batch_saved_rows", []), list) and merged.get("batch_saved_rows"):
-            return True
-        if isinstance(merged.get("batch_saved_results", []), list) and merged.get("batch_saved_results"):
-            return True
-        return False
-
-    def _cached_subject_scans_from_config(self, subject_key: str) -> list[OMRResult]:
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return []
-        merged = self._merge_saved_batch_snapshot(cfg)
-        cached = merged.get("batch_saved_results", [])
-        if not isinstance(cached, list) or not cached:
-            return []
-        out: list[OMRResult] = []
-        for item in cached:
-            if not isinstance(item, dict):
-                continue
-            try:
-                out.append(self._deserialize_omr_result(item))
-            except Exception:
-                continue
-        return out
-
-    def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
-        if self.answer_keys and any(str(k).startswith(f"{subject_key}::") for k in self.answer_keys.keys.keys()):
-            return True
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return self.answer_keys is not None
-
-        imported_keys = cfg.get("imported_answer_keys", {}) or {}
-        if isinstance(imported_keys, dict) and imported_keys:
-            repo = self.answer_keys or AnswerKeyRepository()
-            for exam_code, kd in imported_keys.items():
-                repo.upsert(
-                    SubjectKey(
-                        subject=subject_key,
-                        exam_code=str(exam_code),
-                        answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
-                        true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
-                        numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
-                        full_credit_questions={
-                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
-                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
-                        },
-                        invalid_answer_rows={
-                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
-                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
-                        },
-                    )
-                )
-            self.answer_keys = repo
-            self.imported_exam_codes = sorted(str(k) for k in imported_keys.keys())
-            self.active_batch_subject_key = subject_key
-            return True
-
-        answer_key_path = str(cfg.get("answer_key_path", "") or (self.session.answer_key_path if self.session else "") or "")
-        if answer_key_path:
-            pth = Path(answer_key_path)
-            if pth.exists() and pth.suffix.lower() == ".json":
-                try:
-                    loaded = AnswerKeyRepository.load_json(pth)
-                    repo = self.answer_keys or AnswerKeyRepository()
-                    for key_obj in loaded.keys.values():
-                        repo.upsert(key_obj)
-                    self.answer_keys = repo
-                    all_codes: set[str] = set()
-                    for key_name in self.answer_keys.keys.keys():
-                        parts = str(key_name).split("::", 1)
-                        if len(parts) == 2 and parts[0] == subject_key:
-                            all_codes.add(parts[1])
-                    if all_codes:
-                        self.imported_exam_codes = sorted(all_codes)
-                    self.active_batch_subject_key = subject_key
-                    return True
-                except Exception:
-                    pass
-
-        return self.answer_keys is not None
-
-    @staticmethod
-    def _subject_key_from_cfg(cfg: dict) -> str:
-        key = str(cfg.get("answer_key_key", "") or "").strip()
-        if key:
-            return key
-        name = str(cfg.get("name", "") or "").strip()
-        block = str(cfg.get("block", "") or "").strip()
-        return f"{name}_{block}" if name and block else (name or "General")
-
-    def _resolve_preferred_scoring_subject(self) -> str:
-        if self.stack.currentIndex() == 1:
-            cfg = self._selected_batch_subject_config()
-            if cfg:
-                return self._subject_key_from_cfg(cfg)
-        cfgs = self._subject_configs_for_scoring()
-        if cfgs:
-            return self._subject_key_from_cfg(cfgs[0])
-        if self.session and self.session.subjects:
-            return str(self.session.subjects[0])
-        return "General"
-
-    def _eligible_scoring_subject_keys(self) -> list[str]:
-        out: list[str] = []
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if self._is_subject_marked_batched(cfg):
-                out.append(key)
-        return out
-
-    def _populate_scoring_subjects(self, preferred_key: str = "") -> None:
-        if not hasattr(self, "scoring_subject_combo"):
-            return
-        self.scoring_subject_combo.blockSignals(True)
-        self.scoring_subject_combo.clear()
-        eligible = set(self._eligible_scoring_subject_keys())
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if eligible and key not in eligible:
-                continue
-            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
-            self.scoring_subject_combo.addItem(label, key)
-        if self.scoring_subject_combo.count() == 0:
-            fallback = self._resolve_preferred_scoring_subject()
-            self.scoring_subject_combo.addItem(fallback, fallback)
-        pick = preferred_key or self._resolve_preferred_scoring_subject()
-        for i in range(self.scoring_subject_combo.count()):
-            if str(self.scoring_subject_combo.itemData(i)) == pick:
-                self.scoring_subject_combo.setCurrentIndex(i)
-                break
-        self.scoring_subject_combo.blockSignals(False)
-
-    def _open_scoring_view(self) -> None:
-        if not self.session:
-            QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
-            return
-        if not self._eligible_scoring_subject_keys():
-            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
-            return
-        self.stack.setCurrentIndex(1)
-        self._populate_scoring_subjects(self._resolve_preferred_scoring_subject())
-        self._refresh_scoring_phase_table()
-        self._show_scoring_panel()
-
-    def _refresh_scoring_phase_table(self) -> None:
-        if not hasattr(self, "scoring_phase_table"):
-            return
-        self.scoring_phase_table.setRowCount(0)
-        for i, p in enumerate(self.scoring_phases[-100:]):
-            self.scoring_phase_table.insertRow(i)
-            self.scoring_phase_table.setItem(i, 0, QTableWidgetItem(str(p.get("timestamp", "-"))))
-            self.scoring_phase_table.setItem(i, 1, QTableWidgetItem(str(p.get("subject", "-"))))
-            self.scoring_phase_table.setItem(i, 2, QTableWidgetItem(str(p.get("mode", "-"))))
-            self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
-            self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
-
-    def _run_scoring_from_panel(self) -> None:
-        subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
-        mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
-        note = self.scoring_phase_note.text().strip() if hasattr(self, "scoring_phase_note") else ""
-        self.calculate_scores(subject_key=subject_key or self._resolve_preferred_scoring_subject(), mode=mode, note=note)
-
-
-
-    def _save_batch_for_selected_subject(self) -> None:
-        subject_cfg = self._selected_batch_subject_config()
-        if not subject_cfg:
-            QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
-            return
-        row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
-        if row_count <= 0:
-            QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
-            return
-
-        session_path = self.current_session_path
-        if not session_path and self.batch_editor_return_session_id:
-            p = self._session_path_from_id(self.batch_editor_return_session_id)
-            if p.exists():
-                session_path = p
-        if not session_path:
-            QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy kỳ thi để lưu trạng thái Batch theo môn.")
-            return
-
-        try:
-            self._refresh_all_statuses()
-            ses = ExamSession.load_json(session_path)
-            cfg = ses.config or {}
-            subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
-            subject_key = self._subject_key_from_cfg(subject_cfg)
-            current_results = self._current_scan_results_snapshot()
-            self.scan_results = list(current_results)
-            for result in current_results:
-                result.answer_string = self._build_answer_string_for_result(result, subject_key)
-            saved_results = [self._serialize_omr_result(x) for x in current_results]
-            timestamp = datetime.now().isoformat(timespec="seconds")
-            updated = False
-            for item in subject_cfgs:
-                if not isinstance(item, dict):
-                    continue
-                same_name_block = str(item.get("name", "")).strip() == str(subject_cfg.get("name", "")).strip() and str(item.get("block", "")).strip() == str(subject_cfg.get("block", "")).strip()
-                same_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
-                if same_name_block or same_key:
-                    item["batch_saved"] = True
-                    item["batch_saved_at"] = timestamp
-                    item["batch_result_count"] = row_count
-                    item["batch_saved_rows"] = [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ]
-                    item["batch_saved_preview"] = [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ]
-                    item["batch_saved_results"] = saved_results
-                    updated = True
-                    break
-            if not updated:
-                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
-                return
-            ses.config = {**cfg, "subject_configs": subject_cfgs}
-            ses.save_json(session_path)
-
-            # Write sidecar cache to ensure grids can be restored even if subject config is trimmed elsewhere.
-            try:
-                cache_path = session_path.with_suffix(".batch_cache.json")
-                cache_data = {}
-                if cache_path.exists():
-                    raw = json.loads(cache_path.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        cache_data = raw
-                cache_key = f"{str(subject_cfg.get('name','')).strip().lower()}::{str(subject_cfg.get('block','')).strip().lower()}::{str(subject_cfg.get('answer_key_key','')).strip().lower()}"
-                cache_data[cache_key] = {
-                    "batch_saved": True,
-                    "batch_saved_at": timestamp,
-                    "batch_result_count": row_count,
-                    "batch_saved_rows": [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ],
-                    "batch_saved_preview": [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ],
-                    "batch_saved_results": saved_results,
-                }
-                cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                pass
-
-            if self.session:
-                self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
-            self.scan_results_by_subject[subject_key] = list(current_results)
-            if isinstance(self.batch_editor_return_payload, dict):
-                self.batch_editor_return_payload["subject_configs"] = subject_cfgs
-            self._refresh_batch_subject_controls()
-            self.btn_save_batch_subject.setEnabled(False)
-            QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
-        except Exception as exc:
-            QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu trạng thái Batch\n{exc}")
-
-
-    def _build_correction_tab(self) -> QWidget:
-        w = QWidget()
-        splitter = QSplitter(Qt.Horizontal)
-        self.exam_code_correction_combo = QComboBox()
-        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
-        self.student_correction_combo = QComboBox()
-        self.student_correction_combo.setEditable(True)
-        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
-        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
-        self.answer_editor_scroll = QScrollArea()
-        self.answer_editor_scroll.setWidgetResizable(True)
-        self.answer_editor_container = QWidget()
-        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
-        self.answer_editor_scroll.setWidget(self.answer_editor_container)
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        self.error_list = QListWidget()
-        self.preview_label = QLabel("Image preview / bubble overlay placeholder")
-        self.preview_label.setAlignment(Qt.AlignCenter)
-        self.manual_edit = QTextEdit()
-        self.manual_edit.setPlaceholderText("Manual corrections JSON (e.g. {'student_id': '1001', 'answers': {'1':'A'}})")
-        self.result_preview = QTextEdit()
-        self.result_preview.setReadOnly(True)
-        self.result_preview.setPlaceholderText("Recognized result for selected scan")
-
-        btn_load_selected = QPushButton("Load Selected Scan Result")
-        btn_load_selected.clicked.connect(self._load_selected_result_for_correction)
-        btn_apply_correction = QPushButton("Apply Manual Correction")
-        btn_apply_correction.clicked.connect(self.apply_manual_correction)
-
-        payload = dict(self.batch_editor_return_payload)
-        session_id = self.batch_editor_return_session_id
-        self.batch_editor_return_payload = None
-        self.batch_editor_return_session_id = None
-
-        if not session_id:
-            self.stack.setCurrentIndex(0)
-            return
-        p = self._session_path_from_id(session_id)
-        if not p.exists():
-            self.stack.setCurrentIndex(0)
-            return
-        try:
-            session = ExamSession.load_json(p)
-        except Exception:
-            self.stack.setCurrentIndex(0)
-            return
-        cfg = session.config or {}
-        payload["subject_configs"] = cfg.get("subject_configs", payload.get("subject_configs", []))
-        payload["scan_root"] = cfg.get("scan_root", payload.get("scan_root", ""))
-        payload["student_list_path"] = cfg.get("student_list_path", payload.get("student_list_path", ""))
-        payload["students"] = [
-            {
-                "student_id": s.student_id,
-                "name": s.name,
-                "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
-                "class_name": str((s.extra or {}).get("class_name", "") or ""),
-                "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
-            }
-            for s in (session.students or [])
-        ]
-        payload["scan_mode"] = cfg.get("scan_mode", payload.get("scan_mode", "Ảnh trong thư mục gốc"))
-        payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
-        self._open_embedded_exam_editor(session_id, session, payload)
-
-    def _show_batch_scan_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(True)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(False)
-
-    def _show_scoring_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(False)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(True)
-
-    def _back_to_batch_scan(self) -> None:
-        if not self._confirm_before_switching_work("Batch Scan"):
-            return
-        self._show_batch_scan_panel()
-
-    def _subject_configs_for_scoring(self) -> list[dict]:
-        return self._effective_subject_configs_for_batch()
-
-    def _subject_config_by_subject_key(self, subject_key: str) -> dict | None:
-        key_norm = str(subject_key or "").strip()
-        if not key_norm:
-            return None
-        for cfg in self._subject_configs_for_scoring():
-            if self._subject_key_from_cfg(cfg) == key_norm:
-                return cfg
-        return None
-
-    @staticmethod
-    def _serialize_omr_result(result: OMRResult) -> dict:
-        return {
-            "image_path": str(getattr(result, "image_path", "") or ""),
-            "student_id": str(getattr(result, "student_id", "") or ""),
-            "exam_code": str(getattr(result, "exam_code", "") or ""),
-            "mcq_answers": {int(k): str(v) for k, v in (getattr(result, "mcq_answers", {}) or {}).items()},
-            "true_false_answers": {int(k): dict(v) for k, v in (getattr(result, "true_false_answers", {}) or {}).items()},
-            "numeric_answers": {int(k): str(v) for k, v in (getattr(result, "numeric_answers", {}) or {}).items()},
-            "confidence_scores": {str(k): float(v) for k, v in (getattr(result, "confidence_scores", {}) or {}).items()},
-            "recognition_errors": [str(x) for x in (getattr(result, "recognition_errors", []) or [])],
-            "processing_time_sec": float(getattr(result, "processing_time_sec", 0.0) or 0.0),
-            "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
-            "full_name": str(getattr(result, "full_name", "") or ""),
-            "birth_date": str(getattr(result, "birth_date", "") or ""),
-            "cached_status": str(getattr(result, "cached_status", "") or ""),
-            "cached_content": str(getattr(result, "cached_content", "") or ""),
-            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
-            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
-            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
-        }
-
-    @staticmethod
-    def _deserialize_omr_result(payload: dict) -> OMRResult:
-        result = OMRResult(
-            image_path=str(payload.get("image_path", "") or ""),
-            student_id=str(payload.get("student_id", "") or ""),
-            exam_code=str(payload.get("exam_code", "") or ""),
-            mcq_answers={int(k): str(v) for k, v in (payload.get("mcq_answers", {}) or {}).items()},
-            true_false_answers={int(k): dict(v) for k, v in (payload.get("true_false_answers", {}) or {}).items()},
-            numeric_answers={int(k): str(v) for k, v in (payload.get("numeric_answers", {}) or {}).items()},
-            confidence_scores={str(k): float(v) for k, v in (payload.get("confidence_scores", {}) or {}).items()},
-            recognition_errors=[str(x) for x in (payload.get("recognition_errors", []) or [])],
-            processing_time_sec=float(payload.get("processing_time_sec", 0.0) or 0.0),
-            debug_image_path=str(payload.get("debug_image_path", "") or ""),
-        )
-        setattr(result, "full_name", str(payload.get("full_name", "") or ""))
-        setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
-        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
-        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
-        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
-        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
-        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
-        result.sync_legacy_aliases()
-        return result
-
-    def _is_subject_marked_batched(self, cfg: dict) -> bool:
-        key = self._subject_key_from_cfg(cfg)
-        if self.scan_results_by_subject.get(key):
-            return True
-        merged = self._merge_saved_batch_snapshot(cfg)
-        if bool(merged.get("batch_saved")):
-            return True
-        if isinstance(merged.get("batch_saved_rows", []), list) and merged.get("batch_saved_rows"):
-            return True
-        if isinstance(merged.get("batch_saved_results", []), list) and merged.get("batch_saved_results"):
-            return True
-        return False
-
-    def _cached_subject_scans_from_config(self, subject_key: str) -> list[OMRResult]:
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return []
-        merged = self._merge_saved_batch_snapshot(cfg)
-        cached = merged.get("batch_saved_results", [])
-        if not isinstance(cached, list) or not cached:
-            return []
-        out: list[OMRResult] = []
-        for item in cached:
-            if not isinstance(item, dict):
-                continue
-            try:
-                out.append(self._deserialize_omr_result(item))
-            except Exception:
-                continue
-        return out
-
-    def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
-        if self.answer_keys and any(str(k).startswith(f"{subject_key}::") for k in self.answer_keys.keys.keys()):
-            return True
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return self.answer_keys is not None
-
-        imported_keys = cfg.get("imported_answer_keys", {}) or {}
-        if isinstance(imported_keys, dict) and imported_keys:
-            repo = self.answer_keys or AnswerKeyRepository()
-            for exam_code, kd in imported_keys.items():
-                repo.upsert(
-                    SubjectKey(
-                        subject=subject_key,
-                        exam_code=str(exam_code),
-                        answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
-                        true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
-                        numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
-                        full_credit_questions={
-                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
-                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
-                        },
-                        invalid_answer_rows={
-                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
-                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
-                        },
-                    )
-                )
-            self.answer_keys = repo
-            self.imported_exam_codes = sorted(str(k) for k in imported_keys.keys())
-            self.active_batch_subject_key = subject_key
-            return True
-
-        answer_key_path = str(cfg.get("answer_key_path", "") or (self.session.answer_key_path if self.session else "") or "")
-        if answer_key_path:
-            pth = Path(answer_key_path)
-            if pth.exists() and pth.suffix.lower() == ".json":
-                try:
-                    loaded = AnswerKeyRepository.load_json(pth)
-                    repo = self.answer_keys or AnswerKeyRepository()
-                    for key_obj in loaded.keys.values():
-                        repo.upsert(key_obj)
-                    self.answer_keys = repo
-                    all_codes: set[str] = set()
-                    for key_name in self.answer_keys.keys.keys():
-                        parts = str(key_name).split("::", 1)
-                        if len(parts) == 2 and parts[0] == subject_key:
-                            all_codes.add(parts[1])
-                    if all_codes:
-                        self.imported_exam_codes = sorted(all_codes)
-                    self.active_batch_subject_key = subject_key
-                    return True
-                except Exception:
-                    pass
-
-        return self.answer_keys is not None
-
-    @staticmethod
-    def _subject_key_from_cfg(cfg: dict) -> str:
-        key = str(cfg.get("answer_key_key", "") or "").strip()
-        if key:
-            return key
-        name = str(cfg.get("name", "") or "").strip()
-        block = str(cfg.get("block", "") or "").strip()
-        return f"{name}_{block}" if name and block else (name or "General")
-
-    def _resolve_preferred_scoring_subject(self) -> str:
-        if self.stack.currentIndex() == 1:
-            cfg = self._selected_batch_subject_config()
-            if cfg:
-                return self._subject_key_from_cfg(cfg)
-        cfgs = self._subject_configs_for_scoring()
-        if cfgs:
-            return self._subject_key_from_cfg(cfgs[0])
-        if self.session and self.session.subjects:
-            return str(self.session.subjects[0])
-        return "General"
-
-    def _eligible_scoring_subject_keys(self) -> list[str]:
-        out: list[str] = []
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if self._is_subject_marked_batched(cfg):
-                out.append(key)
-        return out
-
-    def _populate_scoring_subjects(self, preferred_key: str = "") -> None:
-        if not hasattr(self, "scoring_subject_combo"):
-            return
-        self.scoring_subject_combo.blockSignals(True)
-        self.scoring_subject_combo.clear()
-        eligible = set(self._eligible_scoring_subject_keys())
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if eligible and key not in eligible:
-                continue
-            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
-            self.scoring_subject_combo.addItem(label, key)
-        if self.scoring_subject_combo.count() == 0:
-            fallback = self._resolve_preferred_scoring_subject()
-            self.scoring_subject_combo.addItem(fallback, fallback)
-        pick = preferred_key or self._resolve_preferred_scoring_subject()
-        for i in range(self.scoring_subject_combo.count()):
-            if str(self.scoring_subject_combo.itemData(i)) == pick:
-                self.scoring_subject_combo.setCurrentIndex(i)
-                break
-        self.scoring_subject_combo.blockSignals(False)
-
-    def _open_scoring_view(self) -> None:
-        if not self.session:
-            QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
-            return
-        if not self._eligible_scoring_subject_keys():
-            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
-            return
-        self.stack.setCurrentIndex(1)
-        self._populate_scoring_subjects(self._resolve_preferred_scoring_subject())
-        self._refresh_scoring_phase_table()
-        self._show_scoring_panel()
-
-    def _refresh_scoring_phase_table(self) -> None:
-        if not hasattr(self, "scoring_phase_table"):
-            return
-        self.scoring_phase_table.setRowCount(0)
-        for i, p in enumerate(self.scoring_phases[-100:]):
-            self.scoring_phase_table.insertRow(i)
-            self.scoring_phase_table.setItem(i, 0, QTableWidgetItem(str(p.get("timestamp", "-"))))
-            self.scoring_phase_table.setItem(i, 1, QTableWidgetItem(str(p.get("subject", "-"))))
-            self.scoring_phase_table.setItem(i, 2, QTableWidgetItem(str(p.get("mode", "-"))))
-            self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
-            self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
-
-    def _run_scoring_from_panel(self) -> None:
-        subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
-        mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
-        note = self.scoring_phase_note.text().strip() if hasattr(self, "scoring_phase_note") else ""
-        self.calculate_scores(subject_key=subject_key or self._resolve_preferred_scoring_subject(), mode=mode, note=note)
-
-
-
-    def _save_batch_for_selected_subject(self) -> None:
-        subject_cfg = self._selected_batch_subject_config()
-        if not subject_cfg:
-            QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
-            return
-        row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
-        if row_count <= 0:
-            QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
-            return
-
-        session_path = self.current_session_path
-        if not session_path and self.batch_editor_return_session_id:
-            p = self._session_path_from_id(self.batch_editor_return_session_id)
-            if p.exists():
-                session_path = p
-        if not session_path:
-            QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy kỳ thi để lưu trạng thái Batch theo môn.")
-            return
-
-        try:
-            self._refresh_all_statuses()
-            ses = ExamSession.load_json(session_path)
-            cfg = ses.config or {}
-            subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
-            subject_key = self._subject_key_from_cfg(subject_cfg)
-            current_results = self._current_scan_results_snapshot()
-            self.scan_results = list(current_results)
-            for result in current_results:
-                result.answer_string = self._build_answer_string_for_result(result, subject_key)
-            saved_results = [self._serialize_omr_result(x) for x in current_results]
-            timestamp = datetime.now().isoformat(timespec="seconds")
-            updated = False
-            for item in subject_cfgs:
-                if not isinstance(item, dict):
-                    continue
-                same_name_block = str(item.get("name", "")).strip() == str(subject_cfg.get("name", "")).strip() and str(item.get("block", "")).strip() == str(subject_cfg.get("block", "")).strip()
-                same_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
-                if same_name_block or same_key:
-                    item["batch_saved"] = True
-                    item["batch_saved_at"] = timestamp
-                    item["batch_result_count"] = row_count
-                    item["batch_saved_rows"] = [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ]
-                    item["batch_saved_preview"] = [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ]
-                    item["batch_saved_results"] = saved_results
-                    updated = True
-                    break
-            if not updated:
-                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
-                return
-            ses.config = {**cfg, "subject_configs": subject_cfgs}
-            ses.save_json(session_path)
-
-            # Write sidecar cache to ensure grids can be restored even if subject config is trimmed elsewhere.
-            try:
-                cache_path = session_path.with_suffix(".batch_cache.json")
-                cache_data = {}
-                if cache_path.exists():
-                    raw = json.loads(cache_path.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        cache_data = raw
-                cache_key = f"{str(subject_cfg.get('name','')).strip().lower()}::{str(subject_cfg.get('block','')).strip().lower()}::{str(subject_cfg.get('answer_key_key','')).strip().lower()}"
-                cache_data[cache_key] = {
-                    "batch_saved": True,
-                    "batch_saved_at": timestamp,
-                    "batch_result_count": row_count,
-                    "batch_saved_rows": [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ],
-                    "batch_saved_preview": [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ],
-                    "batch_saved_results": saved_results,
-                }
-                cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                pass
-
-            if self.session:
-                self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
-            self.scan_results_by_subject[subject_key] = list(current_results)
-            if isinstance(self.batch_editor_return_payload, dict):
-                self.batch_editor_return_payload["subject_configs"] = subject_cfgs
-            self._refresh_batch_subject_controls()
-            self.btn_save_batch_subject.setEnabled(False)
-            QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
-        except Exception as exc:
-            QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu trạng thái Batch\n{exc}")
-
-
-    def _build_correction_tab(self) -> QWidget:
-        w = QWidget()
-        splitter = QSplitter(Qt.Horizontal)
-        self.exam_code_correction_combo = QComboBox()
-        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
-        self.student_correction_combo = QComboBox()
-        self.student_correction_combo.setEditable(True)
-        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
-        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
-        self.answer_editor_scroll = QScrollArea()
-        self.answer_editor_scroll.setWidgetResizable(True)
-        self.answer_editor_container = QWidget()
-        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
-        self.answer_editor_scroll.setWidget(self.answer_editor_container)
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        self.error_list = QListWidget()
-        self.preview_label = QLabel("Image preview / bubble overlay placeholder")
-        self.preview_label.setAlignment(Qt.AlignCenter)
-        self.manual_edit = QTextEdit()
-        self.manual_edit.setPlaceholderText("Manual corrections JSON (e.g. {'student_id': '1001', 'answers': {'1':'A'}})")
-        self.result_preview = QTextEdit()
-        self.result_preview.setReadOnly(True)
-        self.result_preview.setPlaceholderText("Recognized result for selected scan")
-
-        btn_load_selected = QPushButton("Load Selected Scan Result")
-        btn_load_selected.clicked.connect(self._load_selected_result_for_correction)
-        btn_apply_correction = QPushButton("Apply Manual Correction")
-        btn_apply_correction.clicked.connect(self.apply_manual_correction)
-
-        payload = dict(self.batch_editor_return_payload)
-        session_id = self.batch_editor_return_session_id
-        self.batch_editor_return_payload = None
-        self.batch_editor_return_session_id = None
-
-        if not session_id:
-            self.stack.setCurrentIndex(0)
-            return
-        p = self._session_path_from_id(session_id)
-        if not p.exists():
-            self.stack.setCurrentIndex(0)
-            return
-        try:
-            session = ExamSession.load_json(p)
-        except Exception:
-            self.stack.setCurrentIndex(0)
-            return
-        cfg = session.config or {}
-        payload["subject_configs"] = cfg.get("subject_configs", payload.get("subject_configs", []))
-        payload["scan_root"] = cfg.get("scan_root", payload.get("scan_root", ""))
-        payload["student_list_path"] = cfg.get("student_list_path", payload.get("student_list_path", ""))
-        payload["students"] = [
-            {
-                "student_id": s.student_id,
-                "name": s.name,
-                "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
-                "class_name": str((s.extra or {}).get("class_name", "") or ""),
-                "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
-            }
-            for s in (session.students or [])
-        ]
-        payload["scan_mode"] = cfg.get("scan_mode", payload.get("scan_mode", "Ảnh trong thư mục gốc"))
-        payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
-        self._open_embedded_exam_editor(session_id, session, payload)
-
-    def _show_batch_scan_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(True)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(False)
-
-    def _show_scoring_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(False)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(True)
-
-    def _back_to_batch_scan(self) -> None:
-        if not self._confirm_before_switching_work("Batch Scan"):
-            return
-        self._show_batch_scan_panel()
-
-    def _subject_configs_for_scoring(self) -> list[dict]:
-        return self._effective_subject_configs_for_batch()
-
-    def _subject_config_by_subject_key(self, subject_key: str) -> dict | None:
-        key_norm = str(subject_key or "").strip()
-        if not key_norm:
-            return None
-        for cfg in self._subject_configs_for_scoring():
-            if self._subject_key_from_cfg(cfg) == key_norm:
-                return cfg
-        return None
-
-    @staticmethod
-    def _serialize_omr_result(result: OMRResult) -> dict:
-        return {
-            "image_path": str(getattr(result, "image_path", "") or ""),
-            "student_id": str(getattr(result, "student_id", "") or ""),
-            "exam_code": str(getattr(result, "exam_code", "") or ""),
-            "mcq_answers": {int(k): str(v) for k, v in (getattr(result, "mcq_answers", {}) or {}).items()},
-            "true_false_answers": {int(k): dict(v) for k, v in (getattr(result, "true_false_answers", {}) or {}).items()},
-            "numeric_answers": {int(k): str(v) for k, v in (getattr(result, "numeric_answers", {}) or {}).items()},
-            "confidence_scores": {str(k): float(v) for k, v in (getattr(result, "confidence_scores", {}) or {}).items()},
-            "recognition_errors": [str(x) for x in (getattr(result, "recognition_errors", []) or [])],
-            "processing_time_sec": float(getattr(result, "processing_time_sec", 0.0) or 0.0),
-            "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
-            "full_name": str(getattr(result, "full_name", "") or ""),
-            "birth_date": str(getattr(result, "birth_date", "") or ""),
-            "cached_status": str(getattr(result, "cached_status", "") or ""),
-            "cached_content": str(getattr(result, "cached_content", "") or ""),
-            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
-            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
-            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
-        }
-
-    @staticmethod
-    def _deserialize_omr_result(payload: dict) -> OMRResult:
-        result = OMRResult(
-            image_path=str(payload.get("image_path", "") or ""),
-            student_id=str(payload.get("student_id", "") or ""),
-            exam_code=str(payload.get("exam_code", "") or ""),
-            mcq_answers={int(k): str(v) for k, v in (payload.get("mcq_answers", {}) or {}).items()},
-            true_false_answers={int(k): dict(v) for k, v in (payload.get("true_false_answers", {}) or {}).items()},
-            numeric_answers={int(k): str(v) for k, v in (payload.get("numeric_answers", {}) or {}).items()},
-            confidence_scores={str(k): float(v) for k, v in (payload.get("confidence_scores", {}) or {}).items()},
-            recognition_errors=[str(x) for x in (payload.get("recognition_errors", []) or [])],
-            processing_time_sec=float(payload.get("processing_time_sec", 0.0) or 0.0),
-            debug_image_path=str(payload.get("debug_image_path", "") or ""),
-        )
-        setattr(result, "full_name", str(payload.get("full_name", "") or ""))
-        setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
-        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
-        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
-        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
-        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
-        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
-        result.sync_legacy_aliases()
-        return result
-
-    def _is_subject_marked_batched(self, cfg: dict) -> bool:
-        key = self._subject_key_from_cfg(cfg)
-        if self.scan_results_by_subject.get(key):
-            return True
-        merged = self._merge_saved_batch_snapshot(cfg)
-        if bool(merged.get("batch_saved")):
-            return True
-        if isinstance(merged.get("batch_saved_rows", []), list) and merged.get("batch_saved_rows"):
-            return True
-        if isinstance(merged.get("batch_saved_results", []), list) and merged.get("batch_saved_results"):
-            return True
-        return False
-
-    def _cached_subject_scans_from_config(self, subject_key: str) -> list[OMRResult]:
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return []
-        merged = self._merge_saved_batch_snapshot(cfg)
-        cached = merged.get("batch_saved_results", [])
-        if not isinstance(cached, list) or not cached:
-            return []
-        out: list[OMRResult] = []
-        for item in cached:
-            if not isinstance(item, dict):
-                continue
-            try:
-                out.append(self._deserialize_omr_result(item))
-            except Exception:
-                continue
-        return out
-
-    def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
-        if self.answer_keys and any(str(k).startswith(f"{subject_key}::") for k in self.answer_keys.keys.keys()):
-            return True
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return self.answer_keys is not None
-
-        imported_keys = cfg.get("imported_answer_keys", {}) or {}
-        if isinstance(imported_keys, dict) and imported_keys:
-            repo = self.answer_keys or AnswerKeyRepository()
-            for exam_code, kd in imported_keys.items():
-                repo.upsert(
-                    SubjectKey(
-                        subject=subject_key,
-                        exam_code=str(exam_code),
-                        answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
-                        true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
-                        numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
-                        full_credit_questions={
-                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
-                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
-                        },
-                        invalid_answer_rows={
-                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
-                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
-                        },
-                    )
-                )
-            self.answer_keys = repo
-            self.imported_exam_codes = sorted(str(k) for k in imported_keys.keys())
-            self.active_batch_subject_key = subject_key
-            return True
-
-        answer_key_path = str(cfg.get("answer_key_path", "") or (self.session.answer_key_path if self.session else "") or "")
-        if answer_key_path:
-            pth = Path(answer_key_path)
-            if pth.exists() and pth.suffix.lower() == ".json":
-                try:
-                    loaded = AnswerKeyRepository.load_json(pth)
-                    repo = self.answer_keys or AnswerKeyRepository()
-                    for key_obj in loaded.keys.values():
-                        repo.upsert(key_obj)
-                    self.answer_keys = repo
-                    all_codes: set[str] = set()
-                    for key_name in self.answer_keys.keys.keys():
-                        parts = str(key_name).split("::", 1)
-                        if len(parts) == 2 and parts[0] == subject_key:
-                            all_codes.add(parts[1])
-                    if all_codes:
-                        self.imported_exam_codes = sorted(all_codes)
-                    self.active_batch_subject_key = subject_key
-                    return True
-                except Exception:
-                    pass
-
-        return self.answer_keys is not None
-
-    @staticmethod
-    def _subject_key_from_cfg(cfg: dict) -> str:
-        key = str(cfg.get("answer_key_key", "") or "").strip()
-        if key:
-            return key
-        name = str(cfg.get("name", "") or "").strip()
-        block = str(cfg.get("block", "") or "").strip()
-        return f"{name}_{block}" if name and block else (name or "General")
-
-    def _resolve_preferred_scoring_subject(self) -> str:
-        if self.stack.currentIndex() == 1:
-            cfg = self._selected_batch_subject_config()
-            if cfg:
-                return self._subject_key_from_cfg(cfg)
-        cfgs = self._subject_configs_for_scoring()
-        if cfgs:
-            return self._subject_key_from_cfg(cfgs[0])
-        if self.session and self.session.subjects:
-            return str(self.session.subjects[0])
-        return "General"
-
-    def _eligible_scoring_subject_keys(self) -> list[str]:
-        out: list[str] = []
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if self._is_subject_marked_batched(cfg):
-                out.append(key)
-        return out
-
-    def _populate_scoring_subjects(self, preferred_key: str = "") -> None:
-        if not hasattr(self, "scoring_subject_combo"):
-            return
-        self.scoring_subject_combo.blockSignals(True)
-        self.scoring_subject_combo.clear()
-        eligible = set(self._eligible_scoring_subject_keys())
-        for cfg in self._subject_configs_for_scoring():
-            key = self._subject_key_from_cfg(cfg)
-            if eligible and key not in eligible:
-                continue
-            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
-            self.scoring_subject_combo.addItem(label, key)
-        if self.scoring_subject_combo.count() == 0:
-            fallback = self._resolve_preferred_scoring_subject()
-            self.scoring_subject_combo.addItem(fallback, fallback)
-        pick = preferred_key or self._resolve_preferred_scoring_subject()
-        for i in range(self.scoring_subject_combo.count()):
-            if str(self.scoring_subject_combo.itemData(i)) == pick:
-                self.scoring_subject_combo.setCurrentIndex(i)
-                break
-        self.scoring_subject_combo.blockSignals(False)
-
-    def _open_scoring_view(self) -> None:
-        if not self.session:
-            QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
-            return
-        if not self._eligible_scoring_subject_keys():
-            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
-            return
-        self.stack.setCurrentIndex(1)
-        self._populate_scoring_subjects(self._resolve_preferred_scoring_subject())
-        self._refresh_scoring_phase_table()
-        self._show_scoring_panel()
-
-    def _refresh_scoring_phase_table(self) -> None:
-        if not hasattr(self, "scoring_phase_table"):
-            return
-        self.scoring_phase_table.setRowCount(0)
-        for i, p in enumerate(self.scoring_phases[-100:]):
-            self.scoring_phase_table.insertRow(i)
-            self.scoring_phase_table.setItem(i, 0, QTableWidgetItem(str(p.get("timestamp", "-"))))
-            self.scoring_phase_table.setItem(i, 1, QTableWidgetItem(str(p.get("subject", "-"))))
-            self.scoring_phase_table.setItem(i, 2, QTableWidgetItem(str(p.get("mode", "-"))))
-            self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
-            self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
-
-    def _run_scoring_from_panel(self) -> None:
-        subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
-        mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
-        note = self.scoring_phase_note.text().strip() if hasattr(self, "scoring_phase_note") else ""
-        self.calculate_scores(subject_key=subject_key or self._resolve_preferred_scoring_subject(), mode=mode, note=note)
-
-
-
-    def _save_batch_for_selected_subject(self) -> None:
-        subject_cfg = self._selected_batch_subject_config()
-        if not subject_cfg:
-            QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
-            return
-        row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
-        if row_count <= 0:
-            QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
-            return
-
-        session_path = self.current_session_path
-        if not session_path and self.batch_editor_return_session_id:
-            p = self._session_path_from_id(self.batch_editor_return_session_id)
-            if p.exists():
-                session_path = p
-        if not session_path:
-            QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy kỳ thi để lưu trạng thái Batch theo môn.")
-            return
-
-        try:
-            self._refresh_all_statuses()
-            ses = ExamSession.load_json(session_path)
-            cfg = ses.config or {}
-            subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
-            subject_key = self._subject_key_from_cfg(subject_cfg)
-            current_results = self._current_scan_results_snapshot()
-            self.scan_results = list(current_results)
-            for result in current_results:
-                result.answer_string = self._build_answer_string_for_result(result, subject_key)
-            saved_results = [self._serialize_omr_result(x) for x in current_results]
-            timestamp = datetime.now().isoformat(timespec="seconds")
-            updated = False
-            for item in subject_cfgs:
-                if not isinstance(item, dict):
-                    continue
-                same_name_block = str(item.get("name", "")).strip() == str(subject_cfg.get("name", "")).strip() and str(item.get("block", "")).strip() == str(subject_cfg.get("block", "")).strip()
-                same_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
-                if same_name_block or same_key:
-                    item["batch_saved"] = True
-                    item["batch_saved_at"] = timestamp
-                    item["batch_result_count"] = row_count
-                    item["batch_saved_rows"] = [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ]
-                    item["batch_saved_preview"] = [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ]
-                    item["batch_saved_results"] = saved_results
-                    updated = True
-                    break
-            if not updated:
-                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
-                return
-            ses.config = {**cfg, "subject_configs": subject_cfgs}
-            ses.save_json(session_path)
-
-            # Write sidecar cache to ensure grids can be restored even if subject config is trimmed elsewhere.
-            try:
-                cache_path = session_path.with_suffix(".batch_cache.json")
-                cache_data = {}
-                if cache_path.exists():
-                    raw = json.loads(cache_path.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        cache_data = raw
-                cache_key = f"{str(subject_cfg.get('name','')).strip().lower()}::{str(subject_cfg.get('block','')).strip().lower()}::{str(subject_cfg.get('answer_key_key','')).strip().lower()}"
-                cache_data[cache_key] = {
-                    "batch_saved": True,
-                    "batch_saved_at": timestamp,
-                    "batch_result_count": row_count,
-                    "batch_saved_rows": [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ],
-                    "batch_saved_preview": [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ],
-                    "batch_saved_results": saved_results,
-                }
-                cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                pass
-
-            if self.session:
-                self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
-            self.scan_results_by_subject[subject_key] = list(current_results)
-            if isinstance(self.batch_editor_return_payload, dict):
-                self.batch_editor_return_payload["subject_configs"] = subject_cfgs
-            self._refresh_batch_subject_controls()
-            self.btn_save_batch_subject.setEnabled(False)
-            QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
-        except Exception as exc:
-            QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu trạng thái Batch\n{exc}")
-
-
-    def _build_correction_tab(self) -> QWidget:
-        w = QWidget()
-        splitter = QSplitter(Qt.Horizontal)
-        self.exam_code_correction_combo = QComboBox()
-        self.exam_code_correction_combo.currentIndexChanged.connect(self._handle_exam_code_correction_changed)
-        self.student_correction_combo = QComboBox()
-        self.student_correction_combo.setEditable(True)
-        self.student_correction_combo.setInsertPolicy(QComboBox.NoInsert)
-        self.student_correction_combo.currentIndexChanged.connect(self._handle_student_correction_changed)
-        self.answer_editor_scroll = QScrollArea()
-        self.answer_editor_scroll.setWidgetResizable(True)
-        self.answer_editor_container = QWidget()
-        self.answer_editor_layout = QVBoxLayout(self.answer_editor_container)
-        self.answer_editor_scroll.setWidget(self.answer_editor_container)
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        self.error_list = QListWidget()
-        self.preview_label = QLabel("Image preview / bubble overlay placeholder")
-        self.preview_label.setAlignment(Qt.AlignCenter)
-        self.manual_edit = QTextEdit()
-        self.manual_edit.setPlaceholderText("Manual corrections JSON (e.g. {'student_id': '1001', 'answers': {'1':'A'}})")
-        self.result_preview = QTextEdit()
-        self.result_preview.setReadOnly(True)
-        self.result_preview.setPlaceholderText("Recognized result for selected scan")
-
-        btn_load_selected = QPushButton("Load Selected Scan Result")
-        btn_load_selected.clicked.connect(self._load_selected_result_for_correction)
-        btn_apply_correction = QPushButton("Apply Manual Correction")
-        btn_apply_correction.clicked.connect(self.apply_manual_correction)
-
-        payload = dict(self.batch_editor_return_payload)
-        session_id = self.batch_editor_return_session_id
-        self.batch_editor_return_payload = None
-        self.batch_editor_return_session_id = None
-
-        if not session_id:
-            self.stack.setCurrentIndex(0)
-            return
-        p = self._session_path_from_id(session_id)
-        if not p.exists():
-            self.stack.setCurrentIndex(0)
-            return
-        try:
-            session = ExamSession.load_json(p)
-        except Exception:
-            self.stack.setCurrentIndex(0)
-            return
-        cfg = session.config or {}
-        payload["subject_configs"] = cfg.get("subject_configs", payload.get("subject_configs", []))
-        payload["scan_root"] = cfg.get("scan_root", payload.get("scan_root", ""))
-        payload["student_list_path"] = cfg.get("student_list_path", payload.get("student_list_path", ""))
-        payload["students"] = [
-            {
-                "student_id": s.student_id,
-                "name": s.name,
-                "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
-                "class_name": str((s.extra or {}).get("class_name", "") or ""),
-                "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
-            }
-            for s in (session.students or [])
-        ]
-        payload["scan_mode"] = cfg.get("scan_mode", payload.get("scan_mode", "Ảnh trong thư mục gốc"))
-        payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
-        self._open_embedded_exam_editor(session_id, session, payload)
-
-    def _show_batch_scan_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(True)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(False)
-
-    def _show_scoring_panel(self) -> None:
-        if hasattr(self, "scan_lr_split"):
-            self.scan_lr_split.setVisible(False)
-        if hasattr(self, "scoring_panel"):
-            self.scoring_panel.setVisible(True)
-
-    def _back_to_batch_scan(self) -> None:
-        if not self._confirm_before_switching_work("Batch Scan"):
-            return
-        self._show_batch_scan_panel()
-
-    def _subject_configs_for_scoring(self) -> list[dict]:
-        return self._effective_subject_configs_for_batch()
-
-    def _subject_config_by_subject_key(self, subject_key: str) -> dict | None:
-        key_norm = str(subject_key or "").strip()
-        if not key_norm:
-            return None
-        for cfg in self._subject_configs_for_scoring():
-            if self._subject_key_from_cfg(cfg) == key_norm:
-                return cfg
-        return None
-
-    @staticmethod
-    def _serialize_omr_result(result: OMRResult) -> dict:
-        return {
-            "image_path": str(getattr(result, "image_path", "") or ""),
-            "student_id": str(getattr(result, "student_id", "") or ""),
-            "exam_code": str(getattr(result, "exam_code", "") or ""),
-            "mcq_answers": {int(k): str(v) for k, v in (getattr(result, "mcq_answers", {}) or {}).items()},
-            "true_false_answers": {int(k): dict(v) for k, v in (getattr(result, "true_false_answers", {}) or {}).items()},
-            "numeric_answers": {int(k): str(v) for k, v in (getattr(result, "numeric_answers", {}) or {}).items()},
-            "confidence_scores": {str(k): float(v) for k, v in (getattr(result, "confidence_scores", {}) or {}).items()},
-            "recognition_errors": [str(x) for x in (getattr(result, "recognition_errors", []) or [])],
-            "processing_time_sec": float(getattr(result, "processing_time_sec", 0.0) or 0.0),
-            "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
-            "full_name": str(getattr(result, "full_name", "") or ""),
-            "birth_date": str(getattr(result, "birth_date", "") or ""),
-            "cached_status": str(getattr(result, "cached_status", "") or ""),
-            "cached_content": str(getattr(result, "cached_content", "") or ""),
-            "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
-            "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
-            "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
-        }
-
-    @staticmethod
-    def _deserialize_omr_result(payload: dict) -> OMRResult:
-        result = OMRResult(
-            image_path=str(payload.get("image_path", "") or ""),
-            student_id=str(payload.get("student_id", "") or ""),
-            exam_code=str(payload.get("exam_code", "") or ""),
-            mcq_answers={int(k): str(v) for k, v in (payload.get("mcq_answers", {}) or {}).items()},
-            true_false_answers={int(k): dict(v) for k, v in (payload.get("true_false_answers", {}) or {}).items()},
-            numeric_answers={int(k): str(v) for k, v in (payload.get("numeric_answers", {}) or {}).items()},
-            confidence_scores={str(k): float(v) for k, v in (payload.get("confidence_scores", {}) or {}).items()},
-            recognition_errors=[str(x) for x in (payload.get("recognition_errors", []) or [])],
-            processing_time_sec=float(payload.get("processing_time_sec", 0.0) or 0.0),
-            debug_image_path=str(payload.get("debug_image_path", "") or ""),
-        )
-        setattr(result, "full_name", str(payload.get("full_name", "") or ""))
-        setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
-        setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
-        setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
-        setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
-        setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
-        setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
-        result.sync_legacy_aliases()
-        return result
-
-    def _is_subject_marked_batched(self, cfg: dict) -> bool:
-        key = self._subject_key_from_cfg(cfg)
-        if self.scan_results_by_subject.get(key):
-            return True
-        merged = self._merge_saved_batch_snapshot(cfg)
-        if bool(merged.get("batch_saved")):
-            return True
-        if isinstance(merged.get("batch_saved_rows", []), list) and merged.get("batch_saved_rows"):
-            return True
-        if isinstance(merged.get("batch_saved_results", []), list) and merged.get("batch_saved_results"):
-            return True
-        return False
-
-    def _cached_subject_scans_from_config(self, subject_key: str) -> list[OMRResult]:
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return []
-        merged = self._merge_saved_batch_snapshot(cfg)
-        cached = merged.get("batch_saved_results", [])
-        if not isinstance(cached, list) or not cached:
-            return []
-        out: list[OMRResult] = []
-        for item in cached:
-            if not isinstance(item, dict):
-                continue
-            try:
-                out.append(self._deserialize_omr_result(item))
-            except Exception:
-                continue
-        return out
-
-    def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
-        if self.answer_keys and any(str(k).startswith(f"{subject_key}::") for k in self.answer_keys.keys.keys()):
-            return True
-        cfg = self._subject_config_by_subject_key(subject_key)
-        if not cfg:
-            return self.answer_keys is not None
-
-        imported_keys = cfg.get("imported_answer_keys", {}) or {}
-        if isinstance(imported_keys, dict) and imported_keys:
-            repo = self.answer_keys or AnswerKeyRepository()
-            for exam_code, kd in imported_keys.items():
-                repo.upsert(
-                    SubjectKey(
-                        subject=subject_key,
-                        exam_code=str(exam_code),
-                        answers={int(k): str(v) for k, v in (kd.get("mcq_answers", {}) or {}).items()},
-                        true_false_answers={int(k): dict(v) for k, v in (kd.get("true_false_answers", {}) or {}).items()},
-                        numeric_answers={int(k): str(v) for k, v in (kd.get("numeric_answers", {}) or {}).items()},
-                        full_credit_questions={
-                            str(sec): [int(x) for x in (vals or []) if str(x).strip().lstrip("-").isdigit()]
-                            for sec, vals in (kd.get("full_credit_questions", {}) or {}).items()
-                        },
-                        invalid_answer_rows={
-                            str(sec): {int(k): str(v) for k, v in (vals or {}).items()}
-                            for sec, vals in (kd.get("invalid_answer_rows", {}) or {}).items()
-                        },
-                    )
-                )
-            self.answer_keys = repo
-            self.imported_exam_codes = sorted(str(k) for k in imported_keys.keys())
-            self.active_batch_subject_key = subject_key
-            return True
-
-        answer_key_path = str(cfg.get("answer_key_path", "") or (self.session.answer_key_path if self.session else "") or "")
-        if answer_key_path:
-            pth = Path(answer_key_path)
-            if pth.exists() and pth.suffix.lower() == ".json":
-                try:
-                    loaded = AnswerKeyRepository.load_json(pth)
-                    repo = self.answer_keys or AnswerKeyRepository()
-                    for key_obj in loaded.keys.values():
-                        repo.upsert(key_obj)
-                    self.answer_keys = repo
-                    all_codes: set[str] = set()
-                    for key_name in self.answer_keys.keys.keys():
-                        parts = str(key_name).split("::", 1)
-                        if len(parts) == 2 and parts[0] == subject_key:
-                            all_codes.add(parts[1])
-                    if all_codes:
-                        self.imported_exam_codes = sorted(all_codes)
-                    self.active_batch_subject_key = subject_key
-                    return True
-                except Exception:
-                    pass
-
-        return self.answer_keys is not None
-
-    @staticmethod
-    def _subject_key_from_cfg(cfg: dict) -> str:
-        key = str(cfg.get("answer_key_key", "") or "").strip()
-        if key:
-            return key
-        name = str(cfg.get("name", "") or "").strip()
-        block = str(cfg.get("block", "") or "").strip()
-        return f"{name}_{block}" if name and block else (name or "General")
+    def _batch_result_subject_key(self, subject_key: str) -> str:
+        base = str(subject_key or "").strip()
+        session_id = str(self.current_session_id or "").strip()
+        if session_id and base:
+            return f"{session_id}::{base}"
+        return base
+
+    def _answer_key_subject_key(self, subject_key: str, subject_cfg: dict | None = None) -> str:
+        base = str(subject_key or "").strip()
+        if not base:
+            return ""
+        if "::" in base:
+            return base
+        block = ""
+        if isinstance(subject_cfg, dict):
+            block = str(subject_cfg.get("block", "") or "").strip()
+        if not block and "_" in base:
+            block = str(base.rsplit("_", 1)[-1]).strip()
+        session_id = str(self.current_session_id or "").strip()
+        if session_id and block:
+            return f"{session_id}::{base}::{block}"
+        if session_id:
+            return f"{session_id}::{base}"
+        return base
+
+    def _fetch_answer_keys_for_subject_scoped(self, subject_key: str, subject_cfg: dict | None = None) -> dict[str, dict[str, Any]]:
+        scoped = self._answer_key_subject_key(subject_key, subject_cfg)
+        rows = self.database.fetch_answer_keys_for_subject(scoped) if scoped else {}
+        if not rows and scoped and scoped != str(subject_key or "").strip():
+            rows = self.database.fetch_answer_keys_for_subject(str(subject_key or "").strip())
+        return rows or {}
+
+    def _display_subject_label(self, cfg: dict | None) -> str:
+        if not isinstance(cfg, dict):
+            return "-"
+        exam_name = str((self.session.exam_name if self.session else "") or "").strip() or "Kỳ thi hiện tại"
+        subject_name = str(cfg.get("name", "") or "").strip() or str(self._subject_key_from_cfg(cfg) or "-")
+        block = str(cfg.get("block", "") or "").strip() or "-"
+        return f"{exam_name} | {subject_name} | Khối {block}"
+
+    def _batch_cache_subject_key(self, cfg: dict | None, include_session: bool = True) -> str:
+        if not isinstance(cfg, dict):
+            return ""
+        name = str(cfg.get("name", "") or "").strip().lower()
+        block = str(cfg.get("block", "") or "").strip().lower()
+        answer_key = str(cfg.get("answer_key_key", "") or "").strip().lower()
+        base = f"{name}::{block}::{answer_key}"
+        if include_session:
+            sid = str(self.current_session_id or "").strip().lower()
+            if sid:
+                return f"{sid}::{base}"
+        return base
 
     def _resolve_preferred_scoring_subject(self) -> str:
         if self.stack.currentIndex() == 1:
@@ -10157,12 +3801,13 @@ class MainWindow(QMainWindow):
             saved_results = [self._serialize_omr_result(x) for x in current_results]
             timestamp = datetime.now().isoformat(timespec="seconds")
             updated = False
+            target_token = self._batch_cache_subject_key(subject_cfg, include_session=False)
             for item in subject_cfgs:
                 if not isinstance(item, dict):
                     continue
-                same_name_block = str(item.get("name", "")).strip() == str(subject_cfg.get("name", "")).strip() and str(item.get("block", "")).strip() == str(subject_cfg.get("block", "")).strip()
-                same_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
-                if same_name_block or same_key:
+                item_token = self._batch_cache_subject_key(item, include_session=False)
+                same_logical_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
+                if item_token == target_token or same_logical_key:
                     item["batch_saved"] = True
                     item["batch_saved_at"] = timestamp
                     item["batch_result_count"] = row_count
@@ -10204,8 +3849,9 @@ class MainWindow(QMainWindow):
                     raw = json.loads(cache_path.read_text(encoding="utf-8"))
                     if isinstance(raw, dict):
                         cache_data = raw
-                cache_key = f"{str(subject_cfg.get('name','')).strip().lower()}::{str(subject_cfg.get('block','')).strip().lower()}::{str(subject_cfg.get('answer_key_key','')).strip().lower()}"
-                cache_data[cache_key] = {
+                cache_key = self._batch_cache_subject_key(subject_cfg, include_session=True)
+                legacy_cache_key = self._batch_cache_subject_key(subject_cfg, include_session=False)
+                payload = {
                     "batch_saved": True,
                     "batch_saved_at": timestamp,
                     "batch_result_count": row_count,
@@ -10232,46 +3878,22 @@ class MainWindow(QMainWindow):
                     ],
                     "batch_saved_results": saved_results,
                 }
+                cache_data[cache_key] = payload
+                # Keep a legacy sidecar key for backward compatibility with older builds.
+                if legacy_cache_key and legacy_cache_key not in cache_data:
+                    cache_data[legacy_cache_key] = payload
                 cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
             except Exception:
                 pass
 
             if self.session:
                 self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
-            self.scan_results_by_subject[subject_key] = list(current_results)
+            self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(current_results)
             if isinstance(self.batch_editor_return_payload, dict):
                 self.batch_editor_return_payload["subject_configs"] = subject_cfgs
-            # Keep selected subject in combo and refresh the grid with that subject's saved rows.
-            current_row = self.scan_list.currentRow() if hasattr(self, "scan_list") else -1
-            current_image = ""
-            if hasattr(self, "scan_list") and 0 <= current_row < self.scan_list.rowCount():
-                it = self.scan_list.item(current_row, 0)
-                current_image = str(it.data(Qt.UserRole) if it else "")
-
-            self._refresh_batch_subject_controls()
-            if hasattr(self, "batch_subject_combo"):
-                for i in range(1, self.batch_subject_combo.count()):
-                    cfg_i = self.batch_subject_combo.itemData(i)
-                    if isinstance(cfg_i, dict) and self._subject_key_from_cfg(cfg_i) == subject_key:
-                        self.batch_subject_combo.setCurrentIndex(i)
-                        self._on_batch_subject_changed(i)
-                        break
-
-            # Try to keep the edited record position/selection after save.
-            if hasattr(self, "scan_list") and self.scan_list.rowCount() > 0:
-                target_row = -1
-                if current_image:
-                    for r in range(self.scan_list.rowCount()):
-                        it = self.scan_list.item(r, 0)
-                        if str(it.data(Qt.UserRole) if it else "") == current_image:
-                            target_row = r
-                            break
-                if target_row < 0 and current_row >= 0:
-                    target_row = min(current_row, self.scan_list.rowCount() - 1)
-                if target_row >= 0:
-                    self.scan_list.selectRow(target_row)
-                    self._on_scan_selected()
-
+            # Update lightweight UI state only; do not trigger full subject/grid reload after save.
+            self.batch_answer_codes_value.setText(", ".join(sorted((subject_cfg.get("imported_answer_keys") or {}).keys())) or "-")
+            self._update_batch_scan_scope_summary()
             self.btn_save_batch_subject.setEnabled(False)
             QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
         except Exception as exc:
@@ -10344,7 +3966,7 @@ class MainWindow(QMainWindow):
     def _load_exam_code_correction_options(self, subject_key: str, current_code: str) -> None:
         self.exam_code_correction_combo.blockSignals(True)
         self.exam_code_correction_combo.clear()
-        codes = set(self.database.fetch_answer_keys_for_subject(subject_key).keys())
+        codes = set(self._fetch_answer_keys_for_subject_scoped(subject_key).keys())
         codes.update(str(x).strip() for x in (self.imported_exam_codes or []) if str(x).strip())
         if current_code:
             codes.add(str(current_code).strip())
@@ -10942,7 +4564,7 @@ class MainWindow(QMainWindow):
         self.batch_subject_combo.clear()
         self.batch_subject_combo.addItem("[Chọn môn]")
         for cfg in self._effective_subject_configs_for_batch():
-            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
+            label = self._display_subject_label(cfg)
             self.batch_subject_combo.addItem(label, cfg)
         self.batch_subject_combo.blockSignals(False)
         self._on_batch_subject_changed(self.batch_subject_combo.currentIndex())
@@ -11003,7 +4625,7 @@ class MainWindow(QMainWindow):
 
     def _recognized_image_paths_for_subject(self, subject_key: str) -> set[str]:
         key = str(subject_key or "").strip()
-        rows = list(self.scan_results_by_subject.get(key) or [])
+        rows = list(self.scan_results_by_subject.get(self._batch_result_subject_key(key)) or [])
         if not rows and key:
             rows = list(self._refresh_scan_results_from_db(key) or [])
         return {
@@ -11041,6 +4663,15 @@ class MainWindow(QMainWindow):
         mode = str(self.batch_file_scope_combo.currentData() or "new_only") if hasattr(self, "batch_file_scope_combo") else "new_only"
         mode_label = "File mới" if mode == "new_only" else "Toàn bộ"
         self.batch_scan_state_value.setText(f"{mode_label} | Đã nhận diện: {recognized_count} | Chưa nhận diện: {pending_count}")
+        if hasattr(self, "batch_context_value"):
+            logical_key = self._subject_key_from_cfg(cfg) if cfg else ""
+            scoped_key = self._batch_result_subject_key(logical_key) if logical_key else "-"
+            source_hint = "database/cache scoped"
+            if cfg and bool(cfg.get("batch_saved")):
+                source_hint = "working memory/session cache"
+            self.batch_context_value.setText(
+                f"{self._display_subject_label(cfg)} | Key: {logical_key or '-'} | Scope: {scoped_key} | Nguồn: {source_hint}"
+            )
 
     @staticmethod
     def _recommended_batch_timeout_sec(template: Template | None) -> float:
@@ -11073,16 +4704,15 @@ class MainWindow(QMainWindow):
         def _norm(v: str) -> str:
             return str(v or "").strip().lower()
 
-        name = _norm(merged.get("name", ""))
-        block = _norm(merged.get("block", ""))
+        target_token = self._batch_cache_subject_key(merged, include_session=False)
         key = _norm(merged.get("answer_key_key", ""))
         found: dict | None = None
         for item in raw_cfgs:
             if not isinstance(item, dict):
                 continue
-            same_name_block = _norm(item.get("name", "")) == name and _norm(item.get("block", "")) == block
+            item_token = self._batch_cache_subject_key(item, include_session=False)
             same_key = key and _norm(item.get("answer_key_key", "")) == key
-            if same_name_block or same_key:
+            if item_token == target_token or same_key:
                 found = item
                 break
 
@@ -11097,8 +4727,11 @@ class MainWindow(QMainWindow):
             try:
                 raw = json.loads(sidecar.read_text(encoding="utf-8"))
                 if isinstance(raw, dict):
-                    cache_key = f"{_norm(merged.get('name', ''))}::{_norm(merged.get('block', ''))}::{_norm(merged.get('answer_key_key', ''))}"
-                    payload = raw.get(cache_key)
+                    cache_key_scoped = self._batch_cache_subject_key(merged, include_session=True)
+                    cache_key_legacy = self._batch_cache_subject_key(merged, include_session=False)
+                    payload = raw.get(cache_key_scoped)
+                    if payload is None:
+                        payload = raw.get(cache_key_legacy)
                     if isinstance(payload, dict):
                         merged["batch_saved_rows"] = payload.get("batch_saved_rows", [])
                         merged["batch_saved_preview"] = payload.get("batch_saved_preview", [])
@@ -11111,90 +4744,115 @@ class MainWindow(QMainWindow):
         return merged
 
     def _on_batch_subject_changed(self, _index: int) -> None:
-        cfg = self._selected_batch_subject_config()
-        if cfg:
-            cfg = self._merge_saved_batch_snapshot(cfg)
-            self.active_batch_subject_key = self._subject_key_from_cfg(cfg)
-        else:
-            self.active_batch_subject_key = None
-
-        # Refresh recognition grids below when switching subject to avoid stale cross-subject data.
-        self.scan_results = []
-        self.scan_files = []
-        self.scan_blank_questions.clear()
-        self.scan_blank_summary.clear()
-        self.scan_manual_adjustments.clear()
-        self.scan_edit_history.clear()
-        self.scan_last_adjustment.clear()
-        self.scan_forced_status_by_index.clear()
-        if hasattr(self, "scan_list"):
-            self.scan_list.setRowCount(0)
-        if hasattr(self, "scan_result_preview"):
-            self.scan_result_preview.setRowCount(0)
-        if hasattr(self, "error_list"):
-            self.error_list.clear()
-        if hasattr(self, "result_preview"):
-            self.result_preview.clear()
-        if hasattr(self, "manual_edit"):
-            self.manual_edit.clear()
-        if hasattr(self, "progress"):
-            self.progress.setValue(0)
-        if hasattr(self, "scan_image_preview"):
-            self.preview_source_pixmap = QPixmap()
-            self.scan_image_preview.setPixmap(QPixmap())
-            self.scan_image_preview.setText("Chọn bài thi ở danh sách bên trái")
-            self.scan_image_preview.clear_markers()
-            if hasattr(self, "btn_zoom_reset"):
-                self.preview_zoom_factor = 1.0
-                self.btn_zoom_reset.setText("100%")
-        if hasattr(self, "btn_save_batch_subject"):
-            self.btn_save_batch_subject.setEnabled(False)
-
-        if not cfg:
-            self.batch_template_value.setText("-")
-            self.batch_answer_codes_value.setText("-")
-            self.batch_student_id_value.setText("-")
-            self.batch_scan_folder_value.setText("-")
-            self.batch_scan_state_value.setText("-")
+        if self._switching_batch_subject:
             return
+        self._switching_batch_subject = True
+        try:
+            previous_subject_key = str(getattr(self, "active_batch_subject_key", "") or "").strip()
+            if previous_subject_key:
+                self._cache_working_batch_state(previous_subject_key)
+            cfg = self._selected_batch_subject_config()
+            if cfg:
+                cfg = self._merge_saved_batch_snapshot(cfg)
+                self.active_batch_subject_key = self._subject_key_from_cfg(cfg)
+            else:
+                self.active_batch_subject_key = None
 
-        template_path = self._normalize_template_path(str(cfg.get("template_path", "") or "")) or self._normalize_template_path(str(self.session.template_path if self.session else "")) or "-"
-        scan_folder = str(cfg.get("scan_folder", "") or ((self.session.config or {}).get("scan_root", "") if self.session else "") or "-")
-        codes = ", ".join(sorted((cfg.get("imported_answer_keys") or {}).keys())) or "-"
-        self.batch_template_value.setText(template_path)
-        self.batch_answer_codes_value.setText(codes)
-        self.batch_scan_folder_value.setText(scan_folder)
-        tpl_for_view = None
-        tp = Path(template_path) if template_path and template_path != "-" else None
-        if tp and tp.exists():
-            try:
-                tpl_for_view = Template.load_json(tp)
-            except Exception:
+            # Reset lightweight UI state once; avoid nested reload loops.
+            self.scan_results = []
+            self.scan_files = []
+            self.scan_blank_questions.clear()
+            self.scan_blank_summary.clear()
+            self.scan_manual_adjustments.clear()
+            self.scan_edit_history.clear()
+            self.scan_last_adjustment.clear()
+            self.scan_forced_status_by_index.clear()
+            if hasattr(self, "scan_list"):
+                self.scan_list.setRowCount(0)
+            if hasattr(self, "scan_result_preview"):
+                self.scan_result_preview.setRowCount(0)
+            if hasattr(self, "error_list"):
+                self.error_list.clear()
+            if hasattr(self, "result_preview"):
+                self.result_preview.clear()
+            if hasattr(self, "manual_edit"):
+                self.manual_edit.clear()
+            if hasattr(self, "progress"):
+                self.progress.setValue(0)
+            if hasattr(self, "scan_image_preview"):
+                self.preview_source_pixmap = QPixmap()
+                self.scan_image_preview.setPixmap(QPixmap())
+                self.scan_image_preview.setText("Chọn bài thi ở danh sách bên trái")
+                self.scan_image_preview.clear_markers()
+                if hasattr(self, "btn_zoom_reset"):
+                    self.preview_zoom_factor = 1.0
+                    self.btn_zoom_reset.setText("100%")
+            if hasattr(self, "btn_save_batch_subject"):
+                self.btn_save_batch_subject.setEnabled(False)
+
+            if not cfg:
+                self.batch_template_value.setText("-")
+                self.batch_answer_codes_value.setText("-")
+                self.batch_student_id_value.setText("-")
+                self.batch_scan_folder_value.setText("-")
+                self.batch_scan_state_value.setText("-")
+                if hasattr(self, "batch_context_value"):
+                    self.batch_context_value.setText("-")
+                return
+
+            template_path = self._normalize_template_path(str(cfg.get("template_path", "") or "")) or self._normalize_template_path(str(self.session.template_path if self.session else "")) or "-"
+            scan_folder = str(cfg.get("scan_folder", "") or ((self.session.config or {}).get("scan_root", "") if self.session else "") or "-")
+            codes = ", ".join(sorted((cfg.get("imported_answer_keys") or {}).keys())) or "-"
+            self.batch_template_value.setText(template_path)
+            self.batch_answer_codes_value.setText(codes)
+            self.batch_scan_folder_value.setText(scan_folder)
+
+            tp = Path(template_path) if template_path and template_path != "-" else None
+            template_cache_key = str(tp.resolve()) if tp and tp.exists() else ""
+            tpl_for_view = self._template_cache_by_path.get(template_cache_key) if template_cache_key else None
+            if tpl_for_view is None and tp and tp.exists():
+                try:
+                    tpl_for_view = Template.load_json(tp)
+                    if template_cache_key:
+                        self._template_cache_by_path[template_cache_key] = tpl_for_view
+                except Exception:
+                    tpl_for_view = self.template
+            if tpl_for_view is None:
                 tpl_for_view = self.template
-        else:
-            tpl_for_view = self.template
-        has_sid = "Có" if (tpl_for_view and any(z.zone_type.value == "STUDENT_ID_BLOCK" for z in tpl_for_view.zones)) else "Không"
-        self.batch_student_id_value.setText(has_sid)
-        if tpl_for_view:
-            self._apply_template_recognition_settings(tpl_for_view)
-        self._update_batch_scan_scope_summary()
 
-        subject_key = self._subject_key_from_cfg(cfg)
-        if tpl_for_view:
-            self.template = tpl_for_view
-        self._ensure_answer_keys_for_subject(subject_key)
-        self.scan_results = self._refresh_scan_results_from_db(subject_key)
-        if self.scan_results:
-            self._populate_scan_grid_from_results(self.scan_results)
-            self._finalize_batch_scan_display(refresh_statuses=False)
-            self.scan_image_preview.setText("Đã nạp kết quả Batch Scan từ nguồn dữ liệu chuẩn trong cơ sở dữ liệu cho môn này")
-        elif bool(cfg.get("batch_saved")):
-            self.scan_image_preview.setText(
-                f"Môn này đã lưu Batch ({cfg.get('batch_saved_at', '-')}) - Số bài: {cfg.get('batch_result_count', '-')}."
-            )
+            has_sid = "Có" if (tpl_for_view and any(z.zone_type.value == "STUDENT_ID_BLOCK" for z in tpl_for_view.zones)) else "Không"
+            self.batch_student_id_value.setText(has_sid)
+            if tpl_for_view:
+                self._apply_template_recognition_settings(tpl_for_view)
+                self.template = tpl_for_view
+            self._update_batch_scan_scope_summary()
+
+            subject_key = self._subject_key_from_cfg(cfg)
+            if subject_key not in self._answer_keys_ready_subjects:
+                self._ensure_answer_keys_for_subject(subject_key)
+                self._answer_keys_ready_subjects.add(subject_key)
+
+            if self._restore_cached_working_batch_state(subject_key):
+                self._finalize_batch_scan_display(refresh_statuses=False)
+                self.scan_image_preview.setText("Đã khôi phục dữ liệu Batch Scan từ bộ nhớ tạm của môn này")
+                self._update_batch_scan_scope_summary()
+                return
+
+            cached_subject_rows = list(self.scan_results_by_subject.get(self._batch_result_subject_key(subject_key), []) or [])
+            self.scan_results = cached_subject_rows if cached_subject_rows else self._refresh_scan_results_from_db(subject_key)
+            if self.scan_results:
+                self._populate_scan_grid_from_results(self.scan_results, skip_expensive_checks=True)
+                self._finalize_batch_scan_display(refresh_statuses=False)
+                self.scan_image_preview.setText("Đã nạp kết quả Batch Scan từ nguồn dữ liệu chuẩn trong cơ sở dữ liệu cho môn này")
+            elif bool(cfg.get("batch_saved")):
+                self.scan_image_preview.setText(
+                    f"Môn này đã lưu Batch ({cfg.get('batch_saved_at', '-')}) - Số bài: {cfg.get('batch_result_count', '-')}."
+                )
+        finally:
+            self._switching_batch_subject = False
 
     def _cache_working_batch_state(self, subject_key: str) -> None:
-        key = str(subject_key or "").strip()
+        key = self._batch_result_subject_key(subject_key)
         if not key or not hasattr(self, "scan_list"):
             return
 
@@ -11232,7 +4890,7 @@ class MainWindow(QMainWindow):
         }
 
     def _restore_cached_working_batch_state(self, subject_key: str) -> bool:
-        key = str(subject_key or "").strip()
+        key = self._batch_result_subject_key(subject_key)
         cached = self.batch_working_state_by_subject.get(key)
         if not isinstance(cached, dict):
             return False
@@ -11363,6 +5021,19 @@ class MainWindow(QMainWindow):
         return result, False
 
     def run_batch_scan(self) -> None:
+        if self._batch_scan_running:
+            confirm_cancel = QMessageBox.question(
+                self,
+                "Huỷ Batch Scan",
+                "Batch Scan đang chạy. Bạn có muốn huỷ không?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if confirm_cancel == QMessageBox.Yes:
+                self._batch_cancel_requested = True
+            return
+        self._batch_cancel_requested = False
+
         subject_cfg = self._selected_batch_subject_config() or self._resolve_subject_config_for_batch()
         if subject_cfg:
             subject_cfg = self._merge_saved_batch_snapshot(subject_cfg)
@@ -11473,6 +5144,7 @@ class MainWindow(QMainWindow):
             return
 
         subject_key_for_results = self._subject_key_from_cfg(subject_cfg) if subject_cfg else self._resolve_preferred_scoring_subject()
+        subject_db_key = self._batch_result_subject_key(subject_key_for_results)
         existing_results = list(self._refresh_scan_results_from_db(subject_key_for_results) or [])
         recognized_paths = {
             str(getattr(item, "image_path", "") or "").strip()
@@ -11509,60 +5181,71 @@ class MainWindow(QMainWindow):
         batch_started = time.perf_counter()
 
         def on_progress(current: int, total: int, image_path: str):
+            if self._batch_cancel_requested:
+                raise RuntimeError("BATCH_CANCELLED")
             self.progress.setMaximum(total)
             self.progress.setValue(current)
             QApplication.processEvents()
 
-        if file_scope_mode == "all":
-            self.database.delete_scan_results_for_subject(subject_key_for_results)
-            self.scan_results = []
-        else:
-            self.scan_results = list(existing_results)
-        duplicate_ids: dict[str, int] = {}
-        for existing in self.scan_results:
-            sid_existing = (existing.student_id or "").strip()
-            if not self._student_id_has_recognition_error(sid_existing):
-                duplicate_ids[sid_existing] = duplicate_ids.get(sid_existing, 0) + 1
+        self._batch_scan_running = True
+        try:
+            if file_scope_mode == "all":
+                self.database.delete_scan_results_for_subject(subject_db_key)
+                self.scan_results = []
+            else:
+                self.scan_results = list(existing_results)
+            duplicate_ids: dict[str, int] = {}
+            for existing in self.scan_results:
+                sid_existing = (existing.student_id or "").strip()
+                if not self._student_id_has_recognition_error(sid_existing):
+                    duplicate_ids[sid_existing] = duplicate_ids.get(sid_existing, 0) + 1
 
-        base_count = len(self.scan_results)
-        new_results = self.omr_processor.process_batch(file_paths, self.template, on_progress)
-        for offset, result in enumerate(new_results):
-            idx = base_count + offset
-            forced_status = ""
-            original_meaningful = self._result_has_meaningful_recognition(result)
-            original_identity = self._has_valid_identity(result)
+            base_count = len(self.scan_results)
+            new_results = self.omr_processor.process_batch(file_paths, self.template, on_progress)
+            for offset, result in enumerate(new_results):
+                idx = base_count + offset
+                forced_status = ""
+                original_meaningful = self._result_has_meaningful_recognition(result)
+                original_identity = self._has_valid_identity(result)
 
-            # Keep batch behavior aligned with Template Editor by default (no auto-rotation retry).
-            need_retry_180 = self._allow_batch_auto_rotate_retry() and ((not original_identity) or (not original_meaningful))
-            if need_retry_180:
-                retried, improved = self._try_reprocess_result_rotated_180(result)
-                # Accept 180° retry only when quality is strictly improved, otherwise keep original orientation.
-                if improved:
-                    result = retried
-                    self.preview_rotation_by_index[idx] = (int(self.preview_rotation_by_index.get(idx, 0) or 0) + 180) % 360
+                # Keep batch behavior aligned with Template Editor by default (no auto-rotation retry).
+                need_retry_180 = self._allow_batch_auto_rotate_retry() and ((not original_identity) or (not original_meaningful))
+                if need_retry_180:
+                    retried, improved = self._try_reprocess_result_rotated_180(result)
+                    # Accept 180° retry only when quality is strictly improved, otherwise keep original orientation.
+                    if improved:
+                        result = retried
+                        self.preview_rotation_by_index[idx] = (int(self.preview_rotation_by_index.get(idx, 0) or 0) + 180) % 360
 
-            if self._should_force_image_error_status(result):
-                # Keep raw recognition data for consistency with single-image re-recognition,
-                # but only mark image-file error when recognition is truly unusable/file-loading failed.
-                forced_status = "Lỗi file ảnh"
+                if self._should_force_image_error_status(result):
+                    # Keep raw recognition data for consistency with single-image re-recognition,
+                    # but only mark image-file error when recognition is truly unusable/file-loading failed.
+                    forced_status = "Lỗi file ảnh"
 
-            if forced_status:
-                self.scan_forced_status_by_index[idx] = forced_status
+                if forced_status:
+                    self.scan_forced_status_by_index[idx] = forced_status
 
-            self._refresh_student_profile_for_result(result)
-            result.answer_string = self._build_answer_string_for_result(result, subject_key_for_results)
-            self.scan_results.append(self._strip_transient_scan_artifacts(result))
-            sid_for_dup = (result.student_id or "").strip()
-            if not self._student_id_has_recognition_error(sid_for_dup):
-                duplicate_ids[sid_for_dup] = duplicate_ids.get(sid_for_dup, 0) + 1
+                self._refresh_student_profile_for_result(result)
+                result.answer_string = self._build_answer_string_for_result(result, subject_key_for_results)
+                self.scan_results.append(self._strip_transient_scan_artifacts(result))
+                sid_for_dup = (result.student_id or "").strip()
+                if not self._student_id_has_recognition_error(sid_for_dup):
+                    duplicate_ids[sid_for_dup] = duplicate_ids.get(sid_for_dup, 0) + 1
 
-            # Keep UI responsive while filling table after recognition reaches 100%.
-            if offset % 10 == 0:
-                QApplication.processEvents()
+                # Keep UI responsive while filling table after recognition reaches 100%.
+                if offset % 10 == 0:
+                    QApplication.processEvents()
+        except RuntimeError as exc:
+            if str(exc) != "BATCH_CANCELLED":
+                raise
+            QMessageBox.information(self, "Batch Scan", "Đã huỷ Batch Scan.")
+        finally:
+            self._batch_scan_running = False
+            self._batch_cancel_requested = False
 
-        self.scan_results_by_subject[subject_key_for_results] = list(self.scan_results)
+        self.scan_results_by_subject[subject_db_key] = list(self.scan_results)
         self.database.replace_scan_results_for_subject(
-            subject_key_for_results,
+            subject_db_key,
             [self._serialize_omr_result(x) for x in self.scan_results],
         )
 
@@ -11642,26 +5325,54 @@ class MainWindow(QMainWindow):
         raise RuntimeError("Chỉ hỗ trợ .csv/.txt/.tsv/.xlsx")
 
     def _expected_answer_string_length_for_subject(self, subject_key: str) -> int:
-        fetched = self.database.fetch_answer_keys_for_subject(subject_key) or {}
+        fetched = self._fetch_answer_keys_for_subject_scoped(subject_key) or {}
         if not fetched:
             return 0
         sample = next(iter(fetched.values()))
-        mcq_len = len(getattr(sample, "answers", {}) or {})
-        tf_len = 4 * len(getattr(sample, "true_false_answers", {}) or {})
-        numeric = getattr(sample, "numeric_answers", {}) or {}
+        if isinstance(sample, SubjectKey):
+            mcq_map = sample.answers if isinstance(sample.answers, dict) else {}
+            tf_map = sample.true_false_answers if isinstance(sample.true_false_answers, dict) else {}
+            numeric = sample.numeric_answers if isinstance(sample.numeric_answers, dict) else {}
+        elif isinstance(sample, dict):
+            mcq_map = sample.get("mcq_answers", sample.get("answers", {}))
+            tf_map = sample.get("true_false_answers", {})
+            numeric = sample.get("numeric_answers", {})
+            mcq_map = mcq_map if isinstance(mcq_map, dict) else {}
+            tf_map = tf_map if isinstance(tf_map, dict) else {}
+            numeric = numeric if isinstance(numeric, dict) else {}
+        else:
+            mcq_map = {}
+            tf_map = {}
+            numeric = {}
+        mcq_len = len(mcq_map)
+        tf_len = 4 * len(tf_map)
         num_len = sum(len(str(v or "")) for v in numeric.values())
         return int(mcq_len + tf_len + num_len)
 
     def _answer_layout_for_subject(self, subject_key: str) -> tuple[list[int], list[int], list[tuple[int, int]]]:
-        fetched = self.database.fetch_answer_keys_for_subject(subject_key) or {}
+        fetched = self._fetch_answer_keys_for_subject_scoped(subject_key) or {}
         if not fetched:
             return [], [], []
         sample = next(iter(fetched.values()))
-        mcq_questions = sorted(set(int(q) for q in (getattr(sample, "answers", {}) or {}).keys()))
-        tf_questions = sorted(set(int(q) for q in (getattr(sample, "true_false_answers", {}) or {}).keys()))
-        numeric_questions = sorted(set(int(q) for q in (getattr(sample, "numeric_answers", {}) or {}).keys()))
+        if isinstance(sample, SubjectKey):
+            mcq_map = sample.answers if isinstance(sample.answers, dict) else {}
+            tf_map = sample.true_false_answers if isinstance(sample.true_false_answers, dict) else {}
+            numeric_map = sample.numeric_answers if isinstance(sample.numeric_answers, dict) else {}
+        elif isinstance(sample, dict):
+            mcq_map = sample.get("mcq_answers", sample.get("answers", {}))
+            tf_map = sample.get("true_false_answers", {})
+            numeric_map = sample.get("numeric_answers", {})
+            mcq_map = mcq_map if isinstance(mcq_map, dict) else {}
+            tf_map = tf_map if isinstance(tf_map, dict) else {}
+            numeric_map = numeric_map if isinstance(numeric_map, dict) else {}
+        else:
+            mcq_map, tf_map, numeric_map = {}, {}, {}
+
+        mcq_questions = sorted(set(int(q) for q in mcq_map.keys() if str(q).strip().lstrip("-").isdigit()))
+        tf_questions = sorted(set(int(q) for q in tf_map.keys() if str(q).strip().lstrip("-").isdigit()))
+        numeric_questions = sorted(set(int(q) for q in numeric_map.keys() if str(q).strip().lstrip("-").isdigit()))
         numeric_layout = [
-            (q, len(str((getattr(sample, "numeric_answers", {}) or {}).get(q, "") or "")))
+            (q, len(str((numeric_map or {}).get(q, (numeric_map or {}).get(str(q), "")) or "")))
             for q in numeric_questions
         ]
         return mcq_questions, tf_questions, numeric_layout
@@ -11746,25 +5457,31 @@ class MainWindow(QMainWindow):
             numeric_layout = [(x, 0) for x in range(next_q + 1, next_q + numeric_count + 1)]
         tf_true_chars = {"Đ", "đ", "D", "d", "T", "t", "1", "Y", "y"}
 
+        configured_answer_keys = self._fetch_answer_keys_for_subject_scoped(subject_key_for_results, subject_cfg) or {}
+        imported_answer_keys = self._subject_imported_answer_keys_for_main(subject_cfg or {})
+        section_layout_cache: dict[str, tuple[list[int], list[int], list[tuple[int, int]], bool]] = {}
+
         def _section_layout_from_subject_cfg(exam_code_text: str) -> tuple[list[int], list[int], list[tuple[int, int]], bool]:
             exam_text = str(exam_code_text or "").strip()
             exam_norm = self._normalize_exam_code_text(exam_text)
+            cache_key = f"{exam_text}::{exam_norm}"
+            cached = section_layout_cache.get(cache_key)
+            if cached is not None:
+                return cached
             payload = None
 
-            configured = self.database.fetch_answer_keys_for_subject(subject_key_for_results) or {}
-            if configured:
-                payload = configured.get(exam_text)
+            if configured_answer_keys:
+                payload = configured_answer_keys.get(exam_text)
                 if payload is None:
-                    for k, v in configured.items():
+                    for k, v in configured_answer_keys.items():
                         if self._normalize_exam_code_text(str(k or "")) == exam_norm:
                             payload = v
                             break
 
             if payload is None:
-                imported = self._subject_imported_answer_keys_for_main(subject_cfg or {})
-                payload = imported.get(exam_text) if isinstance(imported, dict) else None
-                if payload is None and isinstance(imported, dict):
-                    for k, v in imported.items():
+                payload = imported_answer_keys.get(exam_text) if isinstance(imported_answer_keys, dict) else None
+                if payload is None and isinstance(imported_answer_keys, dict):
+                    for k, v in imported_answer_keys.items():
                         if self._normalize_exam_code_text(str(k or "")) == exam_norm:
                             payload = v
                             break
@@ -11798,7 +5515,9 @@ class MainWindow(QMainWindow):
                     numeric_layout.append((int(q_raw), len(str(ans or ""))))
                 except Exception:
                     pass
-            return sorted(set(mcq_q)), sorted(set(tf_q)), sorted(numeric_layout, key=lambda x: int(x[0])), True
+            parsed = (sorted(set(mcq_q)), sorted(set(tf_q)), sorted(numeric_layout, key=lambda x: int(x[0])), True)
+            section_layout_cache[cache_key] = parsed
+            return parsed
 
         def _parse_answer_string(
             raw_answer: str,
@@ -11824,7 +5543,9 @@ class MainWindow(QMainWindow):
                     numeric_map[int(q_no)] = token.replace("_", "")
                     pos += int(expected_len)
             else:
-                numeric_tokens = [tok.strip() for tok in re.split(r"[,;|]+", numeric_tail) if tok and tok.strip()]
+                # Do not split by comma because decimal answers commonly use comma
+                # (e.g. 0,61 / 58,3). Use explicit field separators only.
+                numeric_tokens = [tok.strip() for tok in re.split(r"[;|]+", numeric_tail) if tok and tok.strip()]
                 if len(numeric_tokens) >= len(row_numeric_layout) and row_numeric_layout:
                     for idx_layout, (q_no, expected_len) in enumerate(row_numeric_layout):
                         token = str(numeric_tokens[idx_layout]) if idx_layout < len(numeric_tokens) else ""
@@ -11896,8 +5617,8 @@ class MainWindow(QMainWindow):
                 row_tf_questions = list(cfg_tf_q)
             if exam_code_valid and cfg_num_layout:
                 row_numeric_layout = list(cfg_num_layout)
-            elif not exam_code_valid:
-                row_numeric_layout = []
+            # Keep default numeric layout from current subject configuration when exam code
+            # is missing/invalid, so Numeric answer string is still cut by configured lengths.
             mcq_map, tf_map, numeric_map, rebuilt_answer = _parse_answer_string(raw_answer, row_mcq_questions, row_tf_questions, row_numeric_layout)
             result.mcq_answers = mcq_map
             result.true_false_answers = tf_map
@@ -11913,7 +5634,7 @@ class MainWindow(QMainWindow):
             return
 
         if file_scope_mode == "all":
-            self.database.delete_scan_results_for_subject(subject_key_for_results)
+            self.database.delete_scan_results_for_subject(self._batch_result_subject_key(subject_key_for_results))
             self.scan_results = []
         else:
             self.scan_results = list(self._refresh_scan_results_from_db(subject_key_for_results) or [])
@@ -11921,8 +5642,8 @@ class MainWindow(QMainWindow):
         for r in out:
             by_path[str(r.image_path)] = r
         self.scan_results = list(by_path.values())
-        self.scan_results_by_subject[subject_key_for_results] = list(self.scan_results)
-        self.database.replace_scan_results_for_subject(subject_key_for_results, [self._serialize_omr_result(x) for x in self.scan_results])
+        self.scan_results_by_subject[self._batch_result_subject_key(subject_key_for_results)] = list(self.scan_results)
+        self.database.replace_scan_results_for_subject(self._batch_result_subject_key(subject_key_for_results), [self._serialize_omr_result(x) for x in self.scan_results])
         self._populate_scan_grid_from_results(self.scan_results)
         self._finalize_batch_scan_display()
         self._update_batch_scan_scope_summary()
@@ -12040,10 +5761,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         configured_counts = self._subject_section_question_counts(subject_key_name)
@@ -12257,10 +5977,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -12383,10 +6102,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -12512,10 +6230,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -12641,10 +6358,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -12770,10 +6486,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -12899,10 +6614,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -13028,10 +6742,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -13157,10 +6870,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -13286,10 +6998,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -13415,10 +7126,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -13544,10 +7254,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -13673,10 +7382,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -13802,10 +7510,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -13931,10 +7638,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -14060,10 +7766,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -14260,13 +7965,26 @@ class MainWindow(QMainWindow):
             return 1
         return 2
 
-    def _populate_scan_grid_from_results(self, results: list[OMRResult], forced_status_by_image: dict[str, str] | None = None) -> None:
+    def _populate_scan_grid_from_results(
+        self,
+        results: list[OMRResult],
+        forced_status_by_image: dict[str, str] | None = None,
+        skip_expensive_checks: bool = False,
+        preserve_selection_image_path: str = "",
+        refresh_statuses: bool = False,
+        rebuild_error_list: bool = False,
+    ) -> None:
         forced_status_by_image = forced_status_by_image or {}
         duplicate_ids: dict[str, int] = {}
-        for res in results:
-            sid = str(getattr(res, "student_id", "") or "").strip()
-            if not self._student_id_has_recognition_error(sid):
-                duplicate_ids[sid] = duplicate_ids.get(sid, 0) + 1
+        subject_scope: tuple[set[str], set[str]] | None = None
+        available_exam_codes: set[str] | None = None
+        if not skip_expensive_checks:
+            for res in results:
+                sid = str(getattr(res, "student_id", "") or "").strip()
+                if not self._student_id_has_recognition_error(sid):
+                    duplicate_ids[sid] = duplicate_ids.get(sid, 0) + 1
+            subject_scope = self._subject_student_room_scope()
+            available_exam_codes = self._available_exam_codes()
 
         row_views: list[dict[str, object]] = []
         for result in results:
@@ -14280,6 +7998,9 @@ class MainWindow(QMainWindow):
                     "NUMERIC": [int(x) for x in (cached_blank_map.get("NUMERIC", []) or [])],
                 }
                 scoped = None
+            elif skip_expensive_checks:
+                blank_map = {"MCQ": [], "TF": [], "NUMERIC": []}
+                scoped = None
             else:
                 scoped = self._scoped_result_copy(result)
                 blank_map = self._compute_blank_questions(scoped)
@@ -14291,13 +8012,28 @@ class MainWindow(QMainWindow):
                 status = forced_status
             elif can_use_cached_display:
                 status = str(getattr(result, "cached_status", "") or "OK")
+            elif skip_expensive_checks:
+                status = forced_status or "OK"
             else:
-                status_parts = self._status_parts_for_result(result, duplicate_ids.get(sid, 0))
+                status_parts = self._status_parts_for_result(
+                    result,
+                    duplicate_ids.get(sid, 0),
+                    subject_scope=subject_scope,
+                    available_exam_codes=available_exam_codes,
+                )
                 status = ", ".join(status_parts) if status_parts else "OK"
             if can_use_cached_display:
                 content_text = str(getattr(result, "cached_content", "") or "")
                 recognized_short = str(getattr(result, "cached_recognized_short", "") or "")
                 forced_status = str(getattr(result, "cached_forced_status", "") or forced_status)
+            elif skip_expensive_checks:
+                content_text = str(getattr(result, "cached_content", "") or self._short_recognition_text_for_result(result))
+                recognized_short = str(getattr(result, "cached_recognized_short", "") or self._short_recognition_text_for_result(result))
+                setattr(result, "cached_status", status)
+                setattr(result, "cached_content", content_text)
+                setattr(result, "cached_recognized_short", recognized_short)
+                setattr(result, "cached_forced_status", forced_status)
+                setattr(result, "cached_blank_summary", dict(blank_map))
             else:
                 content_text = self._build_recognition_content_text(scoped, blank_map)
                 recognized_short = self._short_recognition_text_for_result(scoped)
@@ -14334,29 +8070,54 @@ class MainWindow(QMainWindow):
         self.scan_results = [item["result"] for item in row_views]
         subject_key = self._current_batch_subject_key()
         if subject_key:
-            self.scan_results_by_subject[subject_key] = list(self.scan_results)
+            self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(self.scan_results)
         self.scan_blank_questions = {idx: list(item["blank_map"].get("MCQ", [])) for idx, item in enumerate(row_views)}
         self.scan_blank_summary = {idx: dict(item["blank_map"]) for idx, item in enumerate(row_views)}
         self.scan_forced_status_by_index = {idx: str(item["forced_status"] or "") for idx, item in enumerate(row_views) if str(item["forced_status"] or "")}
 
-        self.scan_list.setRowCount(0)
-        for idx, item in enumerate(row_views):
-            self.scan_list.insertRow(idx)
-            sid_item = QTableWidgetItem(str(item["sid"] or "-"))
-            sid_item.setData(Qt.UserRole, str(item["image_path"] or ""))
-            sid_item.setData(Qt.UserRole + 1, str(item["exam_code"] or ""))
-            sid_item.setData(Qt.UserRole + 2, str(item["recognized_short"] or ""))
-            self.scan_list.setItem(idx, 0, sid_item)
-            self.scan_list.setItem(idx, 1, QTableWidgetItem(str(getattr(item["result"], "exam_room", "") or "-")))
-            self.scan_list.setItem(idx, 2, QTableWidgetItem(str(item["exam_code"] or "-")))
-            self.scan_list.setItem(idx, 3, QTableWidgetItem(str(item["full_name"] or "-")))
-            self.scan_list.setItem(idx, 4, QTableWidgetItem(str(item["birth_date"] or "-")))
-            self.scan_list.setItem(idx, 5, QTableWidgetItem(str(item["content"] or "")))
-            status_item = QTableWidgetItem(str(item["status"] or "OK"))
-            if str(item["status"] or "OK") != "OK":
-                status_item.setForeground(Qt.red)
-            self.scan_list.setItem(idx, 6, status_item)
-            self._set_scan_action_widget(idx)
+        scan_list = self.scan_list
+        selected_image = str(preserve_selection_image_path or "").strip()
+        if not selected_image and 0 <= scan_list.currentRow() < scan_list.rowCount():
+            current_item = scan_list.item(scan_list.currentRow(), 0)
+            selected_image = str(current_item.data(Qt.UserRole) if current_item else "").strip()
+
+        self._begin_scan_grid_update()
+        try:
+            scan_list.setRowCount(len(row_views))
+            for idx, item in enumerate(row_views):
+                sid_item = QTableWidgetItem(str(item["sid"] or "-"))
+                sid_item.setData(Qt.UserRole, str(item["image_path"] or ""))
+                sid_item.setData(Qt.UserRole + 1, str(item["exam_code"] or ""))
+                sid_item.setData(Qt.UserRole + 2, str(item["recognized_short"] or ""))
+                scan_list.setItem(idx, 0, sid_item)
+                scan_list.setItem(idx, 1, QTableWidgetItem(str(getattr(item["result"], "exam_room", "") or "-")))
+                scan_list.setItem(idx, 2, QTableWidgetItem(str(item["exam_code"] or "-")))
+                scan_list.setItem(idx, 3, QTableWidgetItem(str(item["full_name"] or "-")))
+                scan_list.setItem(idx, 4, QTableWidgetItem(str(item["birth_date"] or "-")))
+                scan_list.setItem(idx, 5, QTableWidgetItem(str(item["content"] or "")))
+                status_item = QTableWidgetItem(str(item["status"] or "OK"))
+                if str(item["status"] or "OK") != "OK":
+                    status_item.setForeground(Qt.red)
+                scan_list.setItem(idx, 6, status_item)
+                if skip_expensive_checks:
+                    scan_list.setItem(idx, 7, QTableWidgetItem("..."))
+                else:
+                    self._set_scan_action_widget(idx)
+        finally:
+            self._end_scan_grid_update()
+
+        if refresh_statuses:
+            self._refresh_all_statuses()
+        if rebuild_error_list:
+            self._rebuild_error_list()
+
+        if selected_image:
+            for row in range(scan_list.rowCount()):
+                cell = scan_list.item(row, 0)
+                if str(cell.data(Qt.UserRole) if cell else "").strip() == selected_image:
+                    scan_list.setCurrentCell(row, 0)
+                    scan_list.selectRow(row)
+                    break
 
     def _finalize_batch_scan_display(self, refresh_statuses: bool = True) -> None:
         if not hasattr(self, "scan_list"):
@@ -14713,7 +8474,7 @@ class MainWindow(QMainWindow):
         self._set_scan_result_at_row(idx, new_result)
         subject_key = self._current_batch_subject_key()
         if subject_key:
-            self.scan_results_by_subject[subject_key] = list(self.scan_results)
+            self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(self.scan_results)
         self.scan_blank_questions[idx] = blank_map.get("MCQ", [])
         self.scan_blank_summary[idx] = blank_map
         self._update_scan_row_from_result(idx, new_result)
@@ -14828,9 +8589,12 @@ class MainWindow(QMainWindow):
             self.scan_result_preview.setItem(r, 1, QTableWidgetItem(str(v)))
 
     def _on_scan_selected(self) -> None:
+        if self._scan_grid_loading:
+            return
         index = self.scan_list.currentRow()
         if index < 0:
             return
+        self._ensure_scan_action_widget(index)
         if 0 <= index < len(self.scan_results):
             self._update_scan_preview(index)
             self._load_selected_result_for_correction()
@@ -14874,7 +8638,7 @@ class MainWindow(QMainWindow):
                     key = self.answer_keys.get(subject, candidate_text)
                     if key is not None:
                         return key
-        fetched = self.database.fetch_answer_keys_for_subject(subject)
+        fetched = self._fetch_answer_keys_for_subject_scoped(subject)
         if exam_code in fetched:
             return fetched[exam_code]
         normalized = self._normalize_exam_code_text(exam_code)
@@ -14932,34 +8696,53 @@ class MainWindow(QMainWindow):
             parts.append(f"NUM: {num}")
         return " | ".join(parts) if parts else "-"
 
-    def _status_parts_for_row(self, sid: str, exam_code_text: str, duplicate_count: int) -> list[str]:
-        parts: list[str] = []
-        if self._student_id_has_recognition_error(sid):
-            parts.append("Lỗi SBD")
-        elif sid and duplicate_count > 1:
-            parts.append("Trùng SBD")
+    def _status_parts_for_row(
+        self,
+        sid: str,
+        exam_code_text: str,
+        duplicate_count: int,
+        subject_scope: tuple[set[str], set[str]] | None = None,
+        available_exam_codes: set[str] | None = None,
+    ) -> list[str]:
+        sid_text = str(sid or "").strip()
+        has_sid_error = False
+        has_duplicate = False
+        has_exam_code_error = False
+
+        if self._student_id_has_recognition_error(sid_text):
+            has_sid_error = True
+            has_duplicate = duplicate_count > 1
         else:
-            all_sids, room_sids = self._subject_student_room_scope()
-            sid_norm = self._normalized_student_id_for_match(sid)
+            has_duplicate = duplicate_count > 1
+            all_sids, room_sids = subject_scope if subject_scope is not None else self._subject_student_room_scope()
+            sid_norm = self._normalized_student_id_for_match(sid_text)
+            profile = self._resolve_student_profile_for_status(sid_text)
             cfg = self._selected_batch_subject_config() or {}
-            mapping_text = str(cfg.get("exam_room_sbd_mapping", "") or "").strip()
-            mapping_by_room = cfg.get("exam_room_sbd_mapping_by_room", {}) if isinstance(cfg.get("exam_room_sbd_mapping_by_room", {}), dict) else {}
-            has_room_assignment = bool(mapping_text or mapping_by_room)
-            resolved_room = self._subject_room_for_student_id(sid, cfg)
-            resolved_room_norm = self._normalized_room_for_match(resolved_room)
-            unresolved_room = resolved_room_norm in {"", self._normalized_room_for_match("[Không rõ phòng]"), self._normalized_room_for_match("Không rõ phòng")}
-            if sid and all_sids and sid_norm not in all_sids:
-                parts.append("Lỗi SBD")
-            elif sid and all_sids and sid_norm in all_sids and has_room_assignment and unresolved_room:
-                parts.append("Lỗi SBD")
-            elif sid and all_sids and sid_norm in all_sids and room_sids and sid_norm not in room_sids:
-                parts.append("Lỗi SBD")
-        avail_codes = self._available_exam_codes()
-        code = (exam_code_text or "").strip()
-        norm_code = self._normalize_exam_code_text(code)
-        if not code or "?" in code or (avail_codes and (code not in avail_codes and norm_code not in avail_codes)):
-            parts.append("Lỗi Mã đề")
-        return parts
+
+            if not self._has_valid_student_reference(sid_text):
+                has_sid_error = True
+            elif all_sids and sid_norm not in all_sids:
+                has_sid_error = True
+            else:
+                room_text = self._subject_room_for_student_id(sid_text, cfg)
+                if self._is_missing_room_for_status(room_text):
+                    has_sid_error = True
+                elif room_sids and sid_norm not in room_sids:
+                    has_sid_error = True
+                elif self._is_missing_name_for_status(str(profile.get("name", "") or "")):
+                    has_sid_error = True
+
+        if not self._is_valid_exam_code_for_subject(exam_code_text, available_exam_codes=available_exam_codes):
+            has_exam_code_error = True
+
+        ordered: list[str] = []
+        if has_sid_error:
+            ordered.append("Lỗi SBD")
+        if has_duplicate:
+            ordered.append("Trùng SBD")
+        if has_exam_code_error:
+            ordered.append("Lỗi Mã đề")
+        return ordered
 
     def _subject_student_room_scope(self) -> tuple[set[str], set[str]]:
         all_sids: set[str] = set()
@@ -15037,33 +8820,88 @@ class MainWindow(QMainWindow):
         return sid in {"", "-"} or ("?" in sid)
 
     @staticmethod
+    def _is_missing_name_for_status(name_text: str) -> bool:
+        return str(name_text or "").strip() in {"", "-"}
+
+    def _resolve_student_profile_for_status(self, student_id: str) -> dict:
+        sid = str(student_id or "").strip()
+        if not sid:
+            return {}
+        profile = self._student_profile_by_id(sid)
+        return dict(profile) if isinstance(profile, dict) else {}
+
+    def _has_valid_student_reference(self, student_id: str) -> bool:
+        profile = self._resolve_student_profile_for_status(student_id)
+        return bool(profile) and not self._is_missing_name_for_status(str(profile.get("name", "") or ""))
+
+    def _is_missing_room_for_status(self, room_text: str) -> bool:
+        normalized = self._normalized_room_for_match(str(room_text or ""))
+        return normalized in {
+            "",
+            self._normalized_room_for_match("-"),
+            self._normalized_room_for_match("Không rõ phòng"),
+            self._normalized_room_for_match("[Không rõ phòng]"),
+        }
+
+    def _is_valid_exam_code_for_subject(self, exam_code_text: str, available_exam_codes: set[str] | None = None) -> bool:
+        code = str(exam_code_text or "").strip()
+        if not code or code == "-" or "?" in code:
+            return False
+        valid_codes = available_exam_codes if available_exam_codes is not None else self._available_exam_codes()
+        if not valid_codes:
+            return True
+        norm_code = self._normalize_exam_code_text(code)
+        return code in valid_codes or norm_code in valid_codes
+
+    @staticmethod
     def _name_missing(name_text: str) -> bool:
         name = str(name_text or "").strip()
         return name in {"", "-"}
 
-    def _status_parts_for_result(self, result, duplicate_count: int) -> list[str]:
+    def _status_parts_for_result(
+        self,
+        result,
+        duplicate_count: int,
+        subject_scope: tuple[set[str], set[str]] | None = None,
+        available_exam_codes: set[str] | None = None,
+    ) -> list[str]:
         sid = str(getattr(result, "student_id", "") or "").strip()
         exam_code_text = str(getattr(result, "exam_code", "") or "").strip()
-        parts = self._status_parts_for_row(sid, exam_code_text, duplicate_count)
-        full_name = str(getattr(result, "full_name", "") or "")
-        birth_date = str(getattr(result, "birth_date", "") or "")
-        if not self._student_id_has_recognition_error(sid) and (self._name_missing(full_name) or self._birth_date_missing(birth_date)):
-            profile = self._student_profile_by_id(sid)
-            if self._name_missing(str(profile.get("name", "") or "")) or self._birth_date_missing(str(profile.get("birth_date", "") or "")):
-                parts.append("Lỗi SBD")
-        return parts
+        return self._status_parts_for_row(
+            sid,
+            exam_code_text,
+            duplicate_count,
+            subject_scope=subject_scope,
+            available_exam_codes=available_exam_codes,
+        )
 
-    def _status_text_for_row(self, idx: int) -> str:
+    def _status_text_for_row(
+        self,
+        idx: int,
+        duplicate_count_map: dict[str, int] | None = None,
+        subject_scope: tuple[set[str], set[str]] | None = None,
+        available_exam_codes: set[str] | None = None,
+    ) -> str:
         if idx < 0 or idx >= len(self.scan_results):
             return "OK"
         res = self.scan_results[idx]
         sid = (res.student_id or "").strip()
-        dup = sum(
-            1
-            for r in self.scan_results
-            if not self._student_id_has_recognition_error((r.student_id or "").strip()) and (r.student_id or "").strip() == sid
-        ) if not self._student_id_has_recognition_error(sid) else 0
-        status_parts = self._status_parts_for_result(res, dup)
+        if self._student_id_has_recognition_error(sid):
+            dup = 0
+        elif duplicate_count_map is not None:
+            dup = int(duplicate_count_map.get(sid, 0) or 0)
+        else:
+            dup = sum(
+                1
+                for r in self.scan_results
+                if not self._student_id_has_recognition_error((r.student_id or "").strip()) and (r.student_id or "").strip() == sid
+            )
+        status_parts = self._status_parts_for_result(
+            res,
+            dup,
+            subject_scope=subject_scope,
+            available_exam_codes=available_exam_codes,
+        )
         return ", ".join(status_parts) if status_parts else "OK"
 
     def _current_batch_subject_key(self) -> str:
@@ -15115,22 +8953,34 @@ class MainWindow(QMainWindow):
             self.database.log_change("scan_results", str(getattr(res, "image_path", "") or idx), source, "", message, source)
 
     def _persist_scan_results_to_db(self, subject_key: str) -> None:
-        source_rows = list(self.scan_results_by_subject.get(subject_key, self.scan_results) or [])
+        source_rows = list(self.scan_results_by_subject.get(self._batch_result_subject_key(subject_key), self.scan_results) or [])
         for result in source_rows:
             result.answer_string = self._build_answer_string_for_result(result, subject_key)
         rows = [self._serialize_omr_result(x) for x in source_rows]
-        self.database.replace_scan_results_for_subject(subject_key, rows)
-        self.database.log_change("scan_results", subject_key, "replace_subject_rows", "", f"{len(rows)} rows", "batch_save")
+        self.database.replace_scan_results_for_subject(self._batch_result_subject_key(subject_key), rows)
+        self.database.log_change("scan_results", self._batch_result_subject_key(subject_key), "replace_subject_rows", "", f"{len(rows)} rows", "batch_save")
         self._refresh_scan_results_from_db(subject_key)
 
     def _persist_single_scan_result_to_db(self, result: OMRResult, note: str = "") -> None:
         subject_key = self._current_batch_subject_key()
         result.answer_string = self._build_answer_string_for_result(result, subject_key)
-        self.database.update_scan_result_payload(subject_key, str(getattr(result, "image_path", "") or ""), self._serialize_omr_result(result), note=note)
+        self.database.update_scan_result_payload(self._batch_result_subject_key(subject_key), str(getattr(result, "image_path", "") or ""), self._serialize_omr_result(result), note=note)
 
     def _refresh_all_statuses(self) -> None:
+        duplicate_count_map: dict[str, int] = {}
+        for res in self.scan_results:
+            sid = str(getattr(res, "student_id", "") or "").strip()
+            if not self._student_id_has_recognition_error(sid):
+                duplicate_count_map[sid] = duplicate_count_map.get(sid, 0) + 1
+        subject_scope = self._subject_student_room_scope()
+        available_exam_codes = self._available_exam_codes()
         for row_idx in range(self.scan_list.rowCount()):
-            self._refresh_row_status(row_idx)
+            self._refresh_row_status(
+                row_idx,
+                duplicate_count_map=duplicate_count_map,
+                subject_scope=subject_scope,
+                available_exam_codes=available_exam_codes,
+            )
 
     def _on_scan_cell_clicked(self, row: int, col: int) -> None:
         if row < 0:
@@ -15164,19 +9014,28 @@ class MainWindow(QMainWindow):
                 if not self._student_id_has_recognition_error(v) and v == sid:
                     dup += 1
         status_parts = self._status_parts_for_row("" if self._student_id_has_recognition_error(sid) else sid, exam_code_text, dup)
-        name_item = self.scan_list.item(row_idx, 3)
-        name_text = name_item.text().strip() if name_item else ""
-        birth_item = self.scan_list.item(row_idx, 4)
-        birth_text = birth_item.text().strip() if birth_item else ""
-        if not self._student_id_has_recognition_error(sid) and (self._name_missing(name_text) or self._birth_date_missing(birth_text)):
-            status_parts.append("Lỗi SBD")
         return ", ".join(status_parts) if status_parts else "OK"
 
-    def _refresh_row_status(self, idx: int) -> None:
+    def _refresh_row_status(
+        self,
+        idx: int,
+        duplicate_count_map: dict[str, int] | None = None,
+        subject_scope: tuple[set[str], set[str]] | None = None,
+        available_exam_codes: set[str] | None = None,
+    ) -> None:
         if idx < 0 or idx >= self.scan_list.rowCount():
             return
         forced_status = self.scan_forced_status_by_index.get(idx, "")
-        status = forced_status or (self._status_text_for_row(idx) if idx < len(self.scan_results) else self._status_text_for_saved_table_row(idx))
+        status = forced_status or (
+            self._status_text_for_row(
+                idx,
+                duplicate_count_map=duplicate_count_map,
+                subject_scope=subject_scope,
+                available_exam_codes=available_exam_codes,
+            )
+            if idx < len(self.scan_results)
+            else self._status_text_for_saved_table_row(idx)
+        )
         item = QTableWidgetItem(status)
         if status != "OK":
             item.setForeground(Qt.red)
@@ -15583,7 +9442,7 @@ class MainWindow(QMainWindow):
             if not subject:
                 return []
             try:
-                codes.update(str(x).strip() for x in self.database.fetch_answer_keys_for_subject(subject).keys() if str(x).strip())
+                codes.update(str(x).strip() for x in self._fetch_answer_keys_for_subject_scoped(subject).keys() if str(x).strip())
             except Exception:
                 pass
             if self.answer_keys:
@@ -16143,11 +10002,11 @@ class MainWindow(QMainWindow):
     def calculate_scores(self, subject_key: str = "", mode: str = "Tính lại toàn bộ", note: str = "") -> list:
         subject = (subject_key or self._resolve_preferred_scoring_subject() or "General").strip()
         current_subject, current_results = self._sync_current_batch_subject_snapshot(persist_to_db=True)
-        subject_scans = self._refresh_scan_results_from_db(subject) or self.scan_results_by_subject.get(subject, [])
+        subject_scans = self._refresh_scan_results_from_db(subject) or self.scan_results_by_subject.get(self._batch_result_subject_key(subject), [])
         if not subject_scans:
             subject_scans = self._cached_subject_scans_from_config(subject)
             if subject_scans:
-                self.scan_results_by_subject[subject] = list(subject_scans)
+                self.scan_results_by_subject[self._batch_result_subject_key(subject)] = list(subject_scans)
         cfg = self._selected_batch_subject_config()
         current_key = self._subject_key_from_cfg(cfg) if cfg else ""
         if current_key == subject and current_subject == subject and current_results:
@@ -16155,11 +10014,11 @@ class MainWindow(QMainWindow):
         elif current_key == subject and hasattr(self, "scan_list") and self.scan_list.rowCount() > 0:
             subject_scans = self._current_scan_results_snapshot()
             self.scan_results = list(subject_scans)
-            self.scan_results_by_subject[subject] = list(subject_scans)
+            self.scan_results_by_subject[self._batch_result_subject_key(subject)] = list(subject_scans)
         elif not subject_scans and self.scan_results:
             if current_key == subject:
                 subject_scans = list(self.scan_results)
-                self.scan_results_by_subject[subject] = list(subject_scans)
+                self.scan_results_by_subject[self._batch_result_subject_key(subject)] = list(subject_scans)
         if not subject_scans:
             QMessageBox.warning(self, "Missing data", "Môn này chưa có dữ liệu Batch Scan để tính điểm.")
             return []
@@ -16173,7 +10032,7 @@ class MainWindow(QMainWindow):
             for key_obj in self.answer_keys.keys.values():
                 if isinstance(key_obj, SubjectKey) and str(getattr(key_obj, "subject", "") or "").strip() == subject:
                     all_subject_keys.append(key_obj)
-        fetched_keys = self.database.fetch_answer_keys_for_subject(subject)
+        fetched_keys = self._fetch_answer_keys_for_subject_scoped(subject)
         for exam_code, key_obj in (fetched_keys or {}).items():
             if not isinstance(key_obj, SubjectKey):
                 continue
@@ -16382,7 +10241,7 @@ class MainWindow(QMainWindow):
         self.database.set_app_state(sid_cache_key, list(requested_sids))
         self.database.set_app_state(flag_key, True)
 
-        result_rows = self.database.fetch_scan_results_for_subject(subject_key) or []
+        result_rows = self.database.fetch_scan_results_for_subject(self._batch_result_subject_key(subject_key)) or []
         scans = [self._deserialize_omr_result(x) for x in result_rows]
         scan_by_sid_norm: dict[str, OMRResult] = {}
         for scan_item in scans:
@@ -16402,7 +10261,7 @@ class MainWindow(QMainWindow):
         exam_codes = sorted(
             {
                 str(code or "").strip()
-                for code in (self.database.fetch_answer_keys_for_subject(subject_key) or {}).keys()
+                for code in (self._fetch_answer_keys_for_subject_scoped(subject_key) or {}).keys()
                 if str(code or "").strip()
             }
         )
@@ -16456,7 +10315,7 @@ class MainWindow(QMainWindow):
                 for key_obj in self.answer_keys.keys.values():
                     if isinstance(key_obj, SubjectKey) and str(getattr(key_obj, "subject", "") or "").strip() == subject_key:
                         all_subject_keys.append(key_obj)
-            fetched_keys = self.database.fetch_answer_keys_for_subject(subject_key)
+            fetched_keys = self._fetch_answer_keys_for_subject_scoped(subject_key)
             for exam_code, key_obj in (fetched_keys or {}).items():
                 if isinstance(key_obj, SubjectKey):
                     candidate_key = key_obj
@@ -16578,7 +10437,7 @@ class MainWindow(QMainWindow):
             key_obj = self.answer_keys.get_flexible(subject_key, code) if self.answer_keys else None
             if isinstance(key_obj, SubjectKey):
                 return key_obj
-            raw = (self.database.fetch_answer_keys_for_subject(subject_key) or {}).get(code)
+            raw = (self._fetch_answer_keys_for_subject_scoped(subject_key) or {}).get(code)
             if isinstance(raw, dict):
                 return SubjectKey(
                     subject=subject_key,
@@ -16592,7 +10451,7 @@ class MainWindow(QMainWindow):
         def _expected_questions(exam_code_text: str, res_obj: OMRResult | None = None) -> dict[str, list[int]]:
             key_obj = _answer_key_for_exam(exam_code_text)
             if not key_obj:
-                fetched = self.database.fetch_answer_keys_for_subject(subject_key) or {}
+                fetched = self._fetch_answer_keys_for_subject_scoped(subject_key) or {}
                 for _code, raw_key in fetched.items():
                     if isinstance(raw_key, SubjectKey):
                         key_obj = raw_key
