@@ -73,6 +73,20 @@ class RecognitionContext:
         }
 
 
+@dataclass
+class TemplateRuntimePlan:
+    key: tuple[int, int, int, int, int]
+    target_width: int
+    target_height: int
+    alignment_profile: str
+    template_match_mode: str
+    scan_profile: str
+    sorted_zones: list[Zone] = field(default_factory=list)
+    anchor_points_px: np.ndarray = field(default_factory=lambda: np.empty((0, 2), dtype=np.float32))
+    zone_bounds_px: dict[str, tuple[int, int, int, int]] = field(default_factory=dict)
+    zone_centers_px: dict[str, np.ndarray] = field(default_factory=dict)
+
+
 class OMRProcessor:
     def __init__(
         self,
@@ -97,6 +111,7 @@ class OMRProcessor:
         self._batch_orientation_hint: int | None = None
         self._batch_orientation_hint_score: float | None = None
         self._template_anchor_cache: dict[tuple[int, int, int, int], np.ndarray] = {}
+        self._template_plan_cache: dict[tuple[int, int, int, int, int], TemplateRuntimePlan] = {}
 
     def _time_budget_exceeded(self) -> bool:
         deadline = self._processing_deadline_monotonic
@@ -157,6 +172,69 @@ class OMRProcessor:
         meta = getattr(template, "metadata", {}) or {}
         val = str(meta.get("fast_alignment_profile", "border") or "border").strip().lower()
         return val if val in {"border", "one_side", "legacy", "hybrid"} else "border"
+
+    @staticmethod
+    def _scan_profile(template: Template) -> str:
+        meta = getattr(template, "metadata", {}) or {}
+        return str(meta.get("scan_profile", "") or "").strip().lower()
+
+    @staticmethod
+    def _template_match_mode(template: Template) -> str:
+        meta = getattr(template, "metadata", {}) or {}
+        return str(meta.get("template_match_mode", "generic") or "generic").strip().lower()
+
+    def _is_fixed_scan_profile(self, template: Template) -> bool:
+        profile = self._scan_profile(template)
+        match_mode = self._template_match_mode(template)
+        return profile.startswith("fixed_") or match_mode == "precompiled_anchors"
+
+    def _template_plan_key(self, template: Template) -> tuple[int, int, int, int, int]:
+        return (id(template), int(template.width), int(template.height), len(template.zones), len(template.anchors))
+
+    def _build_template_runtime_plan(self, template: Template) -> TemplateRuntimePlan:
+        key = self._template_plan_key(template)
+        sorted_zones = sorted(template.zones, key=self._zone_recognition_priority)
+        zone_bounds_px: dict[str, tuple[int, int, int, int]] = {}
+        zone_centers_px: dict[str, np.ndarray] = {}
+        for zone in sorted_zones:
+            x = int(round((zone.x * template.width) if zone.x <= 1.0 else zone.x))
+            y = int(round((zone.y * template.height) if zone.y <= 1.0 else zone.y))
+            w = int(round((zone.width * template.width) if zone.width <= 1.0 else zone.width))
+            h = int(round((zone.height * template.height) if zone.height <= 1.0 else zone.height))
+            zone_bounds_px[zone.id] = (x, y, w, h)
+            positions = getattr(getattr(zone, "grid", None), "bubble_positions", None) or []
+            if positions:
+                centers = np.array(
+                    [
+                        (bx * template.width, by * template.height) if bx <= 1.0 and by <= 1.0 else (bx, by)
+                        for bx, by in positions
+                    ],
+                    dtype=np.float32,
+                )
+            else:
+                centers = np.empty((0, 2), dtype=np.float32)
+            zone_centers_px[zone.id] = centers
+        return TemplateRuntimePlan(
+            key=key,
+            target_width=int(template.width),
+            target_height=int(template.height),
+            alignment_profile=self._fast_alignment_profile(template),
+            template_match_mode=self._template_match_mode(template),
+            scan_profile=self._scan_profile(template),
+            sorted_zones=sorted_zones,
+            anchor_points_px=self._template_anchor_points_px(template),
+            zone_bounds_px=zone_bounds_px,
+            zone_centers_px=zone_centers_px,
+        )
+
+    def _get_template_runtime_plan(self, template: Template) -> TemplateRuntimePlan:
+        key = self._template_plan_key(template)
+        cached = self._template_plan_cache.get(key)
+        if cached is not None:
+            return cached
+        plan = self._build_template_runtime_plan(template)
+        self._template_plan_cache[key] = plan
+        return plan
 
     def _preprocess_fast(self, image: np.ndarray) -> dict[str, np.ndarray]:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -231,7 +309,8 @@ class OMRProcessor:
             if debug_overlay is not None:
                 self._draw_alignment_debug(debug_overlay, template)
 
-            for zone in sorted(template.zones, key=self._zone_recognition_priority):
+            plan = self._get_template_runtime_plan(template)
+            for zone in plan.sorted_zones:
                 if self._time_budget_exceeded():
                     result.issues.append(OMRIssue("TIMEOUT", "Recognition time budget exceeded; skipped remaining zones"))
                     break
@@ -319,6 +398,7 @@ class OMRProcessor:
         worker.alignment_profile = self.alignment_profile
         worker.standard_width = self.standard_width
         worker.processing_time_limit_sec = self.processing_time_limit_sec
+        worker._template_plan_cache = dict(self._template_plan_cache)
         return worker
 
     def _get_thread_batch_worker(self) -> "OMRProcessor":
@@ -411,6 +491,7 @@ class OMRProcessor:
         total = len(image_paths)
         if total == 0:
             return []
+        self._get_template_runtime_plan(template)
         # Reset cross-file orientation hints at the start of each batch.
         # Sequential batches (single worker) will repopulate these values from
         # per-file alignment diagnostics as they progress.
@@ -832,9 +913,13 @@ class OMRProcessor:
         aligned: np.ndarray | None = None
         aligned_binary: np.ndarray | None = None
         fast_mode = self._is_fast_scan_mode(template)
+        fixed_profile = self._is_fixed_scan_profile(template)
         mode = str(getattr(self, "alignment_profile", "auto") or "auto").strip().lower()
         candidates: list[str] = []
-        if fast_mode:
+        if fixed_profile:
+            mode_fast = self._template_match_mode(template)
+            candidates = ["one_side"] if mode_fast == "one_side_ruler" else [self._fast_alignment_profile(template)]
+        elif fast_mode:
             candidates = [self._fast_alignment_profile(template)]
         elif mode == "auto":
             if self._template_has_one_side_anchor_ruler(template):
@@ -878,6 +963,11 @@ class OMRProcessor:
                 shifted_img, shifted_bin = self._refine_corner_translation(oriented_img, oriented_bin, template)
                 affine_img, affine_bin = self._refine_alignment_with_affine_anchors(shifted_img, shifted_bin, template)
                 candidate_score = self._orientation_score(affine_bin, template)
+            if fixed_profile and candidate_score >= 135.0:
+                self._last_alignment_debug["alignment_mode"] = f"fixed:{candidate}"
+                self._last_alignment_debug["alignment_score"] = float(candidate_score)
+                self._last_alignment_debug["template_match_mode"] = self._template_match_mode(template)
+                return affine_img, affine_bin
             if best_attempt is None or candidate_score > best_attempt[0]:
                 best_attempt = (candidate_score, candidate, affine_img, affine_bin)
 
@@ -1374,7 +1464,16 @@ class OMRProcessor:
         if not grid or not grid.bubble_positions:
             return np.empty((0, 2), dtype=np.float32)
         h, w = binary.shape[:2]
-        expected = np.array([(x * w, y * h) if x <= 1.0 and y <= 1.0 else (x, y) for x, y in grid.bubble_positions], dtype=np.float32)
+        plan = self._get_template_runtime_plan(template)
+        expected = np.array(plan.zone_centers_px.get(zone.id, np.empty((0, 2), dtype=np.float32)), dtype=np.float32)
+        if expected.size == 0:
+            expected = np.array([(x * w, y * h) if x <= 1.0 and y <= 1.0 else (x, y) for x, y in grid.bubble_positions], dtype=np.float32)
+        elif expected.shape[0] and (w != template.width or h != template.height):
+            sx = float(w) / float(max(1, template.width))
+            sy = float(h) / float(max(1, template.height))
+            expected = expected.copy()
+            expected[:, 0] *= sx
+            expected[:, 1] *= sy
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
             if zone.zone_type == ZoneType.EXAM_CODE_BLOCK:
                 modeled_expected, _ = self._digit_model_expected_points(template, zone)
@@ -1385,6 +1484,8 @@ class OMRProcessor:
             else:
                 expected, _ = self._digit_zone_guidance(binary, expected, zone, template)
             return self._resolve_column_digit_centers(binary, expected, grid, float(zone.metadata.get("bubble_radius", 9)))
+        if self._is_fast_scan_mode(template) and self._is_fixed_scan_profile(template):
+            return expected.astype(np.float32)
         bubble_radius = float(zone.metadata.get("bubble_radius", 9))
         min_area = max(6.0, 0.25 * np.pi * (bubble_radius ** 2))
         max_area = max(min_area * 3.5, 4.0 * np.pi * (bubble_radius ** 2))
@@ -2802,10 +2903,7 @@ class OMRProcessor:
         working_binary = binary
         working_image = getattr(result, "aligned_image", None)
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
-            expected = np.array(
-                [(x * working_binary.shape[1], y * working_binary.shape[0]) if x <= 1.0 and y <= 1.0 else (x, y) for x, y in grid.bubble_positions],
-                dtype=np.float32,
-            )
+            expected = self._resolve_zone_centers(working_binary, zone, template).astype(np.float32)
             bubble_radius = float(zone.metadata.get("bubble_radius", 9))
             sid_ratio_debug: dict[str, object] = {}
             sid_ratio_guided: np.ndarray | None = None
@@ -3428,11 +3526,9 @@ class OMRProcessor:
             for idx, pt in enumerate(np.array(corners, dtype=np.int32)):
                 cv2.circle(image, tuple(pt), 8, (0, 165, 255), -1)
                 cv2.putText(image, f"C{idx+1}", (int(pt[0]) + 8, int(pt[1]) - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1, cv2.LINE_AA)
+        plan = self._get_template_runtime_plan(template)
         for zone in template.zones:
-            x = int(zone.x * template.width)
-            y = int(zone.y * template.height)
-            ww = int(zone.width * template.width)
-            hh = int(zone.height * template.height)
+            x, y, ww, hh = plan.zone_bounds_px.get(zone.id, (0, 0, 0, 0))
             cv2.rectangle(image, (x, y), (x + ww, y + hh), (255, 128, 0), 1)
 
     def _draw_debug_overlay(self, image: np.ndarray, centers: np.ndarray, ratios: np.ndarray, radius: int, zone: Zone | None = None) -> None:
