@@ -127,6 +127,37 @@ class OMRProcessor:
         meta = getattr(template, "metadata", {}) or {}
         return bool(meta.get("fast_200dpi_mode", False))
 
+    @staticmethod
+    def _is_fast_scan_mode(template: Template) -> bool:
+        meta = getattr(template, "metadata", {}) or {}
+        return bool(meta.get("fast_scan_mode", False) or meta.get("fast_200dpi_mode", False))
+
+    @staticmethod
+    def _should_skip_rotation(template: Template) -> bool:
+        meta = getattr(template, "metadata", {}) or {}
+        return bool(meta.get("skip_rotation_for_scanner", False))
+
+    @staticmethod
+    def _should_skip_heavy_identifier_fallback(template: Template) -> bool:
+        meta = getattr(template, "metadata", {}) or {}
+        return bool(meta.get("skip_heavy_identifier_fallback", False))
+
+    @staticmethod
+    def _should_force_grayscale_load(template: Template) -> bool:
+        meta = getattr(template, "metadata", {}) or {}
+        return bool(meta.get("force_grayscale_load", False))
+
+    @staticmethod
+    def _use_shape_based_dpi_normalization(template: Template) -> bool:
+        meta = getattr(template, "metadata", {}) or {}
+        return bool(meta.get("use_shape_based_dpi_normalization", False))
+
+    @staticmethod
+    def _fast_alignment_profile(template: Template) -> str:
+        meta = getattr(template, "metadata", {}) or {}
+        val = str(meta.get("fast_alignment_profile", "border") or "border").strip().lower()
+        return val if val in {"border", "one_side", "legacy", "hybrid"} else "border"
+
     def _preprocess_fast(self, image: np.ndarray) -> dict[str, np.ndarray]:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         blur = cv2.GaussianBlur(gray, (3, 3), 0)
@@ -157,11 +188,11 @@ class OMRProcessor:
         self._processing_deadline_monotonic = context.deadline_monotonic
 
         try:
-            fast_mode = self._is_fast_200dpi_mode(template)
+            fast_mode = self._is_fast_scan_mode(template)
             if isinstance(image, np.ndarray):
                 src = image.copy()
             else:
-                src, dpi_msg = self._load_image_normalized_to_200_dpi(str(image))
+                src, dpi_msg = self._load_image_normalized_to_200_dpi(str(image), template=template)
                 if dpi_msg:
                     result.issues.append(OMRIssue("DPI", dpi_msg))
                 if src is None:
@@ -169,14 +200,14 @@ class OMRProcessor:
                     result.sync_legacy_aliases()
                     return result
 
-            rotated = self._correct_rotation(src)
+            rotated = src if (fast_mode and self._should_skip_rotation(template)) else self._correct_rotation(src)
             if self._time_budget_exceeded():
                 result.issues.append(OMRIssue("TIMEOUT", "Recognition time budget exceeded during rotation correction"))
                 setattr(result, "aligned_image", rotated)
                 result.processing_time_sec = time.perf_counter() - started
                 result.sync_legacy_aliases()
                 return result
-            prepared = self._preprocess(rotated)
+            prepared = self._preprocess_fast(rotated) if fast_mode else self._preprocess(rotated)
             if self._time_budget_exceeded():
                 result.issues.append(OMRIssue("TIMEOUT", "Recognition time budget exceeded during preprocessing"))
                 setattr(result, "aligned_image", rotated)
@@ -437,7 +468,25 @@ class OMRProcessor:
             self._write_batch_timing_log(Path(log_path_text), timing_rows, total)
         return [res for res in ordered_results if res is not None]
 
-    def _load_image_normalized_to_200_dpi(self, path: str) -> tuple[np.ndarray | None, str]:
+    def _load_image_normalized_to_200_dpi(self, path: str, template: Template | None = None) -> tuple[np.ndarray | None, str]:
+        if template is not None and self._should_force_grayscale_load(template):
+            gray = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+            if gray is None:
+                return None, ""
+            img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+            if self._use_shape_based_dpi_normalization(template):
+                h, w = img.shape[:2]
+                # A4 portrait expected near 1240x1754 (150dpi) or 1654x2339 (200dpi).
+                # Fast production path: upscale only when image is close to 150dpi shape.
+                if max(h, w) < 2100:
+                    scale = 4.0 / 3.0
+                    out = cv2.resize(
+                        img,
+                        (max(1, int(round(w * scale))), max(1, int(round(h * scale)))),
+                        interpolation=cv2.INTER_LINEAR,
+                    )
+                    return out, "Shape-based normalization: assumed ~150 DPI, scaled to ~200 DPI."
+                return img, ""
         dpi = 0
         try:
             with Image.open(path) as im_meta:
@@ -782,9 +831,12 @@ class OMRProcessor:
         self._last_alignment_debug = {}
         aligned: np.ndarray | None = None
         aligned_binary: np.ndarray | None = None
+        fast_mode = self._is_fast_scan_mode(template)
         mode = str(getattr(self, "alignment_profile", "auto") or "auto").strip().lower()
         candidates: list[str] = []
-        if mode == "auto":
+        if fast_mode:
+            candidates = [self._fast_alignment_profile(template)]
+        elif mode == "auto":
             if self._template_has_one_side_anchor_ruler(template):
                 candidates = ["one_side", "border", "hybrid", "legacy"]
             elif self._template_has_border_anchors(template):
@@ -811,11 +863,21 @@ class OMRProcessor:
                 if attempt is None:
                     continue
                 coarse_img, coarse_bin = attempt
-                refined_img, refined_bin = (coarse_img, coarse_bin) if candidate == "legacy" else self._refine_alignment_with_template_anchors(coarse_img, coarse_bin, template)
-            oriented_img, oriented_bin = self._auto_orient(refined_img, refined_bin, template)
-            shifted_img, shifted_bin = self._refine_corner_translation(oriented_img, oriented_bin, template)
-            affine_img, affine_bin = self._refine_alignment_with_affine_anchors(shifted_img, shifted_bin, template)
-            candidate_score = self._orientation_score(affine_bin, template)
+                refined_img, refined_bin = (coarse_img, coarse_bin) if (candidate == "legacy" or fast_mode) else self._refine_alignment_with_template_anchors(coarse_img, coarse_bin, template)
+            if fast_mode:
+                candidate_score = self._orientation_score(refined_bin, template)
+                affine_img, affine_bin = refined_img, refined_bin
+                if candidate_score < 150.0:
+                    # Fast-path not confident enough -> light fallback to safe orientation/refine.
+                    oriented_img, oriented_bin = self._auto_orient(refined_img, refined_bin, template)
+                    shifted_img, shifted_bin = self._refine_corner_translation(oriented_img, oriented_bin, template)
+                    affine_img, affine_bin = self._refine_alignment_with_affine_anchors(shifted_img, shifted_bin, template)
+                    candidate_score = self._orientation_score(affine_bin, template)
+            else:
+                oriented_img, oriented_bin = self._auto_orient(refined_img, refined_bin, template)
+                shifted_img, shifted_bin = self._refine_corner_translation(oriented_img, oriented_bin, template)
+                affine_img, affine_bin = self._refine_alignment_with_affine_anchors(shifted_img, shifted_bin, template)
+                candidate_score = self._orientation_score(affine_bin, template)
             if best_attempt is None or candidate_score > best_attempt[0]:
                 best_attempt = (candidate_score, candidate, affine_img, affine_bin)
 
@@ -2878,7 +2940,10 @@ class OMRProcessor:
                 "col_segments": [],
                 "recognition_path": "axis_projection" if bool(axis_final) else "direct",
             }
-            skip_sampling_fallback = key == "exam_code" and exam_digit_model_applied
+            skip_sampling_fallback = bool(
+                (key == "exam_code" and exam_digit_model_applied)
+                or (self._is_fast_scan_mode(template) and self._should_skip_heavy_identifier_fallback(template))
+            )
             if allow_fallbacks and not final_value and not skip_sampling_fallback:
                 rows, cols = 10, max(1, grid.cols)
                 source_img = self._preprocess_digit_sampling(working_image if working_image is not None else working_binary)
