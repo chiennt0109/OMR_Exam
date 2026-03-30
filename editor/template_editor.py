@@ -1260,8 +1260,17 @@ class TemplateEditorWindow(QMainWindow):
             self.canvas.pixmap = bg
             self.canvas.resize(int(bg.width() * self.canvas.zoom), int(bg.height() * self.canvas.zoom))
 
+        sid_text = str(res.student_id or "").strip() or "Không nhận diện được"
+        exam_text = str(res.exam_code or "").strip() or "Không nhận diện được"
+        timing_text = self._format_processing_time_text(float(getattr(res, "processing_time_sec", 0.0) or 0.0))
+        alignment_mode = str((getattr(res, "alignment_debug", {}) or {}).get("alignment_mode", "-") or "-")
+        id_warnings = self._identifier_warning_text(res)
         self.result_box.setPlainText(
-            f"Student ID: {res.student_id or '-'}\nExam Code: {res.exam_code or '-'}\n"
+            f"Student ID: {sid_text}\n"
+            f"Exam Code: {exam_text}\n"
+            f"Recognition time: {timing_text}\n"
+            f"Alignment mode: {alignment_mode}\n"
+            f"Identifier warning: {id_warnings}\n"
             f"MCQ: {', '.join([f'Q{k}:{v}' for k, v in sorted(res.mcq_answers.items())]) or '(none)'}\n"
             f"TF: {res.true_false_answers or {}}\n"
             f"NUM: {res.numeric_answers or {}}"
@@ -1278,6 +1287,21 @@ class TemplateEditorWindow(QMainWindow):
         self.canvas.preview_mode = True
         self.canvas.update()
         self.test_ok = True
+
+    @staticmethod
+    def _format_processing_time_text(seconds: float) -> str:
+        sec = max(0.0, float(seconds or 0.0))
+        if sec < 1.0:
+            return f"{int(round(sec * 1000.0))} ms"
+        return f"{sec:.3f} s"
+
+    @staticmethod
+    def _identifier_warning_text(result) -> str:
+        errs = [str(x or "") for x in (getattr(result, "recognition_errors", []) or [])]
+        id_errs = [e for e in errs if ("STUDENT_ID_BLOCK" in e) or ("EXAM_CODE_BLOCK" in e)]
+        if not id_errs:
+            return "Không có"
+        return "; ".join(id_errs[:3])
 
     @staticmethod
     def _cv_to_qpixmap(image_bgr: np.ndarray) -> QPixmap:
