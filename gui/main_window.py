@@ -11198,7 +11198,7 @@ class MainWindow(QMainWindow):
         else:
             self.scan_results = self._refresh_scan_results_from_db(subject_key)
         if self.scan_results:
-            self._populate_scan_grid_from_results(self.scan_results)
+            self._populate_scan_grid_from_results(self.scan_results, skip_expensive_checks=True)
             self._finalize_batch_scan_display(refresh_statuses=False)
             self.scan_image_preview.setText("Đã nạp kết quả Batch Scan từ nguồn dữ liệu chuẩn trong cơ sở dữ liệu cho môn này")
         elif bool(cfg.get("batch_saved")):
@@ -14281,15 +14281,23 @@ class MainWindow(QMainWindow):
             return 1
         return 2
 
-    def _populate_scan_grid_from_results(self, results: list[OMRResult], forced_status_by_image: dict[str, str] | None = None) -> None:
+    def _populate_scan_grid_from_results(
+        self,
+        results: list[OMRResult],
+        forced_status_by_image: dict[str, str] | None = None,
+        skip_expensive_checks: bool = False,
+    ) -> None:
         forced_status_by_image = forced_status_by_image or {}
         duplicate_ids: dict[str, int] = {}
-        for res in results:
-            sid = str(getattr(res, "student_id", "") or "").strip()
-            if not self._student_id_has_recognition_error(sid):
-                duplicate_ids[sid] = duplicate_ids.get(sid, 0) + 1
-        subject_scope = self._subject_student_room_scope()
-        available_exam_codes = self._available_exam_codes()
+        subject_scope: tuple[set[str], set[str]] | None = None
+        available_exam_codes: set[str] | None = None
+        if not skip_expensive_checks:
+            for res in results:
+                sid = str(getattr(res, "student_id", "") or "").strip()
+                if not self._student_id_has_recognition_error(sid):
+                    duplicate_ids[sid] = duplicate_ids.get(sid, 0) + 1
+            subject_scope = self._subject_student_room_scope()
+            available_exam_codes = self._available_exam_codes()
 
         row_views: list[dict[str, object]] = []
         for result in results:
@@ -14303,6 +14311,9 @@ class MainWindow(QMainWindow):
                     "NUMERIC": [int(x) for x in (cached_blank_map.get("NUMERIC", []) or [])],
                 }
                 scoped = None
+            elif skip_expensive_checks:
+                blank_map = {"MCQ": [], "TF": [], "NUMERIC": []}
+                scoped = None
             else:
                 scoped = self._scoped_result_copy(result)
                 blank_map = self._compute_blank_questions(scoped)
@@ -14314,6 +14325,8 @@ class MainWindow(QMainWindow):
                 status = forced_status
             elif can_use_cached_display:
                 status = str(getattr(result, "cached_status", "") or "OK")
+            elif skip_expensive_checks:
+                status = forced_status or "OK"
             else:
                 status_parts = self._status_parts_for_result(
                     result,
@@ -14326,6 +14339,14 @@ class MainWindow(QMainWindow):
                 content_text = str(getattr(result, "cached_content", "") or "")
                 recognized_short = str(getattr(result, "cached_recognized_short", "") or "")
                 forced_status = str(getattr(result, "cached_forced_status", "") or forced_status)
+            elif skip_expensive_checks:
+                content_text = str(getattr(result, "cached_content", "") or self._short_recognition_text_for_result(result))
+                recognized_short = str(getattr(result, "cached_recognized_short", "") or self._short_recognition_text_for_result(result))
+                setattr(result, "cached_status", status)
+                setattr(result, "cached_content", content_text)
+                setattr(result, "cached_recognized_short", recognized_short)
+                setattr(result, "cached_forced_status", forced_status)
+                setattr(result, "cached_blank_summary", dict(blank_map))
             else:
                 content_text = self._build_recognition_content_text(scoped, blank_map)
                 recognized_short = self._short_recognition_text_for_result(scoped)
@@ -14367,9 +14388,10 @@ class MainWindow(QMainWindow):
         self.scan_blank_summary = {idx: dict(item["blank_map"]) for idx, item in enumerate(row_views)}
         self.scan_forced_status_by_index = {idx: str(item["forced_status"] or "") for idx, item in enumerate(row_views) if str(item["forced_status"] or "")}
 
-        self.scan_list.setRowCount(0)
+        self.scan_list.blockSignals(True)
+        self.scan_list.setUpdatesEnabled(False)
+        self.scan_list.setRowCount(len(row_views))
         for idx, item in enumerate(row_views):
-            self.scan_list.insertRow(idx)
             sid_item = QTableWidgetItem(str(item["sid"] or "-"))
             sid_item.setData(Qt.UserRole, str(item["image_path"] or ""))
             sid_item.setData(Qt.UserRole + 1, str(item["exam_code"] or ""))
@@ -14385,6 +14407,8 @@ class MainWindow(QMainWindow):
                 status_item.setForeground(Qt.red)
             self.scan_list.setItem(idx, 6, status_item)
             self._set_scan_action_widget(idx)
+        self.scan_list.setUpdatesEnabled(True)
+        self.scan_list.blockSignals(False)
 
     def _finalize_batch_scan_display(self, refresh_statuses: bool = True) -> None:
         if not hasattr(self, "scan_list"):
