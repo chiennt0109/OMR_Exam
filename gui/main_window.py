@@ -5198,9 +5198,23 @@ class MainWindow(QMainWindow):
         if not fetched:
             return 0
         sample = next(iter(fetched.values()))
-        mcq_len = len(getattr(sample, "answers", {}) or {})
-        tf_len = 4 * len(getattr(sample, "true_false_answers", {}) or {})
-        numeric = getattr(sample, "numeric_answers", {}) or {}
+        if isinstance(sample, SubjectKey):
+            mcq_map = sample.answers if isinstance(sample.answers, dict) else {}
+            tf_map = sample.true_false_answers if isinstance(sample.true_false_answers, dict) else {}
+            numeric = sample.numeric_answers if isinstance(sample.numeric_answers, dict) else {}
+        elif isinstance(sample, dict):
+            mcq_map = sample.get("mcq_answers", sample.get("answers", {}))
+            tf_map = sample.get("true_false_answers", {})
+            numeric = sample.get("numeric_answers", {})
+            mcq_map = mcq_map if isinstance(mcq_map, dict) else {}
+            tf_map = tf_map if isinstance(tf_map, dict) else {}
+            numeric = numeric if isinstance(numeric, dict) else {}
+        else:
+            mcq_map = {}
+            tf_map = {}
+            numeric = {}
+        mcq_len = len(mcq_map)
+        tf_len = 4 * len(tf_map)
         num_len = sum(len(str(v or "")) for v in numeric.values())
         return int(mcq_len + tf_len + num_len)
 
@@ -5209,11 +5223,25 @@ class MainWindow(QMainWindow):
         if not fetched:
             return [], [], []
         sample = next(iter(fetched.values()))
-        mcq_questions = sorted(set(int(q) for q in (getattr(sample, "answers", {}) or {}).keys()))
-        tf_questions = sorted(set(int(q) for q in (getattr(sample, "true_false_answers", {}) or {}).keys()))
-        numeric_questions = sorted(set(int(q) for q in (getattr(sample, "numeric_answers", {}) or {}).keys()))
+        if isinstance(sample, SubjectKey):
+            mcq_map = sample.answers if isinstance(sample.answers, dict) else {}
+            tf_map = sample.true_false_answers if isinstance(sample.true_false_answers, dict) else {}
+            numeric_map = sample.numeric_answers if isinstance(sample.numeric_answers, dict) else {}
+        elif isinstance(sample, dict):
+            mcq_map = sample.get("mcq_answers", sample.get("answers", {}))
+            tf_map = sample.get("true_false_answers", {})
+            numeric_map = sample.get("numeric_answers", {})
+            mcq_map = mcq_map if isinstance(mcq_map, dict) else {}
+            tf_map = tf_map if isinstance(tf_map, dict) else {}
+            numeric_map = numeric_map if isinstance(numeric_map, dict) else {}
+        else:
+            mcq_map, tf_map, numeric_map = {}, {}, {}
+
+        mcq_questions = sorted(set(int(q) for q in mcq_map.keys() if str(q).strip().lstrip("-").isdigit()))
+        tf_questions = sorted(set(int(q) for q in tf_map.keys() if str(q).strip().lstrip("-").isdigit()))
+        numeric_questions = sorted(set(int(q) for q in numeric_map.keys() if str(q).strip().lstrip("-").isdigit()))
         numeric_layout = [
-            (q, len(str((getattr(sample, "numeric_answers", {}) or {}).get(q, "") or "")))
+            (q, len(str((numeric_map or {}).get(q, (numeric_map or {}).get(str(q), "")) or "")))
             for q in numeric_questions
         ]
         return mcq_questions, tf_questions, numeric_layout
