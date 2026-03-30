@@ -11746,25 +11746,31 @@ class MainWindow(QMainWindow):
             numeric_layout = [(x, 0) for x in range(next_q + 1, next_q + numeric_count + 1)]
         tf_true_chars = {"Đ", "đ", "D", "d", "T", "t", "1", "Y", "y"}
 
+        configured_answer_keys = self.database.fetch_answer_keys_for_subject(subject_key_for_results) or {}
+        imported_answer_keys = self._subject_imported_answer_keys_for_main(subject_cfg or {})
+        section_layout_cache: dict[str, tuple[list[int], list[int], list[tuple[int, int]], bool]] = {}
+
         def _section_layout_from_subject_cfg(exam_code_text: str) -> tuple[list[int], list[int], list[tuple[int, int]], bool]:
             exam_text = str(exam_code_text or "").strip()
             exam_norm = self._normalize_exam_code_text(exam_text)
+            cache_key = f"{exam_text}::{exam_norm}"
+            cached = section_layout_cache.get(cache_key)
+            if cached is not None:
+                return cached
             payload = None
 
-            configured = self.database.fetch_answer_keys_for_subject(subject_key_for_results) or {}
-            if configured:
-                payload = configured.get(exam_text)
+            if configured_answer_keys:
+                payload = configured_answer_keys.get(exam_text)
                 if payload is None:
-                    for k, v in configured.items():
+                    for k, v in configured_answer_keys.items():
                         if self._normalize_exam_code_text(str(k or "")) == exam_norm:
                             payload = v
                             break
 
             if payload is None:
-                imported = self._subject_imported_answer_keys_for_main(subject_cfg or {})
-                payload = imported.get(exam_text) if isinstance(imported, dict) else None
-                if payload is None and isinstance(imported, dict):
-                    for k, v in imported.items():
+                payload = imported_answer_keys.get(exam_text) if isinstance(imported_answer_keys, dict) else None
+                if payload is None and isinstance(imported_answer_keys, dict):
+                    for k, v in imported_answer_keys.items():
                         if self._normalize_exam_code_text(str(k or "")) == exam_norm:
                             payload = v
                             break
@@ -11798,7 +11804,9 @@ class MainWindow(QMainWindow):
                     numeric_layout.append((int(q_raw), len(str(ans or ""))))
                 except Exception:
                     pass
-            return sorted(set(mcq_q)), sorted(set(tf_q)), sorted(numeric_layout, key=lambda x: int(x[0])), True
+            parsed = (sorted(set(mcq_q)), sorted(set(tf_q)), sorted(numeric_layout, key=lambda x: int(x[0])), True)
+            section_layout_cache[cache_key] = parsed
+            return parsed
 
         def _parse_answer_string(
             raw_answer: str,
@@ -14267,6 +14275,8 @@ class MainWindow(QMainWindow):
             sid = str(getattr(res, "student_id", "") or "").strip()
             if not self._student_id_has_recognition_error(sid):
                 duplicate_ids[sid] = duplicate_ids.get(sid, 0) + 1
+        subject_scope = self._subject_student_room_scope()
+        available_exam_codes = self._available_exam_codes()
 
         row_views: list[dict[str, object]] = []
         for result in results:
@@ -14292,7 +14302,12 @@ class MainWindow(QMainWindow):
             elif can_use_cached_display:
                 status = str(getattr(result, "cached_status", "") or "OK")
             else:
-                status_parts = self._status_parts_for_result(result, duplicate_ids.get(sid, 0))
+                status_parts = self._status_parts_for_result(
+                    result,
+                    duplicate_ids.get(sid, 0),
+                    subject_scope=subject_scope,
+                    available_exam_codes=available_exam_codes,
+                )
                 status = ", ".join(status_parts) if status_parts else "OK"
             if can_use_cached_display:
                 content_text = str(getattr(result, "cached_content", "") or "")
@@ -14932,14 +14947,21 @@ class MainWindow(QMainWindow):
             parts.append(f"NUM: {num}")
         return " | ".join(parts) if parts else "-"
 
-    def _status_parts_for_row(self, sid: str, exam_code_text: str, duplicate_count: int) -> list[str]:
+    def _status_parts_for_row(
+        self,
+        sid: str,
+        exam_code_text: str,
+        duplicate_count: int,
+        subject_scope: tuple[set[str], set[str]] | None = None,
+        available_exam_codes: set[str] | None = None,
+    ) -> list[str]:
         parts: list[str] = []
         if self._student_id_has_recognition_error(sid):
             parts.append("Lỗi SBD")
         elif sid and duplicate_count > 1:
             parts.append("Trùng SBD")
         else:
-            all_sids, room_sids = self._subject_student_room_scope()
+            all_sids, room_sids = subject_scope if subject_scope is not None else self._subject_student_room_scope()
             sid_norm = self._normalized_student_id_for_match(sid)
             cfg = self._selected_batch_subject_config() or {}
             mapping_text = str(cfg.get("exam_room_sbd_mapping", "") or "").strip()
@@ -14954,7 +14976,7 @@ class MainWindow(QMainWindow):
                 parts.append("Lỗi SBD")
             elif sid and all_sids and sid_norm in all_sids and room_sids and sid_norm not in room_sids:
                 parts.append("Lỗi SBD")
-        avail_codes = self._available_exam_codes()
+        avail_codes = available_exam_codes if available_exam_codes is not None else self._available_exam_codes()
         code = (exam_code_text or "").strip()
         norm_code = self._normalize_exam_code_text(code)
         if not code or "?" in code or (avail_codes and (code not in avail_codes and norm_code not in avail_codes)):
@@ -15041,10 +15063,22 @@ class MainWindow(QMainWindow):
         name = str(name_text or "").strip()
         return name in {"", "-"}
 
-    def _status_parts_for_result(self, result, duplicate_count: int) -> list[str]:
+    def _status_parts_for_result(
+        self,
+        result,
+        duplicate_count: int,
+        subject_scope: tuple[set[str], set[str]] | None = None,
+        available_exam_codes: set[str] | None = None,
+    ) -> list[str]:
         sid = str(getattr(result, "student_id", "") or "").strip()
         exam_code_text = str(getattr(result, "exam_code", "") or "").strip()
-        parts = self._status_parts_for_row(sid, exam_code_text, duplicate_count)
+        parts = self._status_parts_for_row(
+            sid,
+            exam_code_text,
+            duplicate_count,
+            subject_scope=subject_scope,
+            available_exam_codes=available_exam_codes,
+        )
         full_name = str(getattr(result, "full_name", "") or "")
         birth_date = str(getattr(result, "birth_date", "") or "")
         if not self._student_id_has_recognition_error(sid) and (self._name_missing(full_name) or self._birth_date_missing(birth_date)):
@@ -15053,17 +15087,33 @@ class MainWindow(QMainWindow):
                 parts.append("Lỗi SBD")
         return parts
 
-    def _status_text_for_row(self, idx: int) -> str:
+    def _status_text_for_row(
+        self,
+        idx: int,
+        duplicate_count_map: dict[str, int] | None = None,
+        subject_scope: tuple[set[str], set[str]] | None = None,
+        available_exam_codes: set[str] | None = None,
+    ) -> str:
         if idx < 0 or idx >= len(self.scan_results):
             return "OK"
         res = self.scan_results[idx]
         sid = (res.student_id or "").strip()
-        dup = sum(
-            1
-            for r in self.scan_results
-            if not self._student_id_has_recognition_error((r.student_id or "").strip()) and (r.student_id or "").strip() == sid
-        ) if not self._student_id_has_recognition_error(sid) else 0
-        status_parts = self._status_parts_for_result(res, dup)
+        if self._student_id_has_recognition_error(sid):
+            dup = 0
+        elif duplicate_count_map is not None:
+            dup = int(duplicate_count_map.get(sid, 0) or 0)
+        else:
+            dup = sum(
+                1
+                for r in self.scan_results
+                if not self._student_id_has_recognition_error((r.student_id or "").strip()) and (r.student_id or "").strip() == sid
+            )
+        status_parts = self._status_parts_for_result(
+            res,
+            dup,
+            subject_scope=subject_scope,
+            available_exam_codes=available_exam_codes,
+        )
         return ", ".join(status_parts) if status_parts else "OK"
 
     def _current_batch_subject_key(self) -> str:
@@ -15129,8 +15179,20 @@ class MainWindow(QMainWindow):
         self.database.update_scan_result_payload(subject_key, str(getattr(result, "image_path", "") or ""), self._serialize_omr_result(result), note=note)
 
     def _refresh_all_statuses(self) -> None:
+        duplicate_count_map: dict[str, int] = {}
+        for res in self.scan_results:
+            sid = str(getattr(res, "student_id", "") or "").strip()
+            if not self._student_id_has_recognition_error(sid):
+                duplicate_count_map[sid] = duplicate_count_map.get(sid, 0) + 1
+        subject_scope = self._subject_student_room_scope()
+        available_exam_codes = self._available_exam_codes()
         for row_idx in range(self.scan_list.rowCount()):
-            self._refresh_row_status(row_idx)
+            self._refresh_row_status(
+                row_idx,
+                duplicate_count_map=duplicate_count_map,
+                subject_scope=subject_scope,
+                available_exam_codes=available_exam_codes,
+            )
 
     def _on_scan_cell_clicked(self, row: int, col: int) -> None:
         if row < 0:
@@ -15172,11 +15234,26 @@ class MainWindow(QMainWindow):
             status_parts.append("Lỗi SBD")
         return ", ".join(status_parts) if status_parts else "OK"
 
-    def _refresh_row_status(self, idx: int) -> None:
+    def _refresh_row_status(
+        self,
+        idx: int,
+        duplicate_count_map: dict[str, int] | None = None,
+        subject_scope: tuple[set[str], set[str]] | None = None,
+        available_exam_codes: set[str] | None = None,
+    ) -> None:
         if idx < 0 or idx >= self.scan_list.rowCount():
             return
         forced_status = self.scan_forced_status_by_index.get(idx, "")
-        status = forced_status or (self._status_text_for_row(idx) if idx < len(self.scan_results) else self._status_text_for_saved_table_row(idx))
+        status = forced_status or (
+            self._status_text_for_row(
+                idx,
+                duplicate_count_map=duplicate_count_map,
+                subject_scope=subject_scope,
+                available_exam_codes=available_exam_codes,
+            )
+            if idx < len(self.scan_results)
+            else self._status_text_for_saved_table_row(idx)
+        )
         item = QTableWidgetItem(status)
         if status != "OK":
             item.setForeground(Qt.red)
