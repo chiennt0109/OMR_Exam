@@ -5412,7 +5412,9 @@ class MainWindow(QMainWindow):
                     numeric_map[int(q_no)] = token.replace("_", "")
                     pos += int(expected_len)
             else:
-                numeric_tokens = [tok.strip() for tok in re.split(r"[,;|]+", numeric_tail) if tok and tok.strip()]
+                # Do not split by comma because decimal answers commonly use comma
+                # (e.g. 0,61 / 58,3). Use explicit field separators only.
+                numeric_tokens = [tok.strip() for tok in re.split(r"[;|]+", numeric_tail) if tok and tok.strip()]
                 if len(numeric_tokens) >= len(row_numeric_layout) and row_numeric_layout:
                     for idx_layout, (q_no, expected_len) in enumerate(row_numeric_layout):
                         token = str(numeric_tokens[idx_layout]) if idx_layout < len(numeric_tokens) else ""
