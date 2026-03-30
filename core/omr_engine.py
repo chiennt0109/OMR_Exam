@@ -56,6 +56,7 @@ class RecognitionContext:
     digit_zone_debug: dict[str, dict[str, object]] = field(default_factory=dict)
     deadline_monotonic: float = 0.0
     collect_diagnostics: bool = True
+    force_identifier_recognition: bool = False
 
     def reset(self) -> None:
         self.detected_anchors = []
@@ -267,6 +268,7 @@ class OMRProcessor:
 
         try:
             fast_mode = self._is_fast_scan_mode(template)
+            fixed_profile = self._is_fixed_scan_profile(template)
             if isinstance(image, np.ndarray):
                 src = image.copy()
             else:
@@ -278,7 +280,7 @@ class OMRProcessor:
                     result.sync_legacy_aliases()
                     return result
 
-            rotated = src if (fast_mode and self._should_skip_rotation(template)) else self._correct_rotation(src)
+            rotated = src if ((fast_mode or fixed_profile) and self._should_skip_rotation(template)) else self._correct_rotation(src)
             if self._time_budget_exceeded():
                 result.issues.append(OMRIssue("TIMEOUT", "Recognition time budget exceeded during rotation correction"))
                 setattr(result, "aligned_image", rotated)
@@ -319,6 +321,7 @@ class OMRProcessor:
                 if (
                     zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK)
                     and not self._identifier_recognition_enabled(template)
+                    and not bool(getattr(context, "force_identifier_recognition", False))
                 ):
                     continue
                 if zone.grid is not None:
@@ -363,7 +366,9 @@ class OMRProcessor:
             self._processing_deadline_monotonic = None
 
     def run_recognition_test(self, image: str | Path | np.ndarray, template: Template, context: RecognitionContext | None = None) -> OMRResult:
-        return self.recognize_sheet(image, template, context)
+        ctx = context or RecognitionContext()
+        ctx.force_identifier_recognition = True
+        return self.recognize_sheet(image, template, ctx)
 
     def extract_bubble_states(self, binary_image: np.ndarray, template: Template) -> dict[str, list[bool]]:
         states_by_zone: dict[str, list[bool]] = {}
@@ -914,6 +919,8 @@ class OMRProcessor:
         aligned_binary: np.ndarray | None = None
         fast_mode = self._is_fast_scan_mode(template)
         fixed_profile = self._is_fixed_scan_profile(template)
+        if fixed_profile:
+            fast_mode = True
         mode = str(getattr(self, "alignment_profile", "auto") or "auto").strip().lower()
         candidates: list[str] = []
         if fixed_profile:
@@ -2655,7 +2662,10 @@ class OMRProcessor:
             missing_digits = final_value.count("?")
             is_valid = len(final_value) == expected_len and missing_digits == 0
             global_score = float(expected_len - missing_digits) / float(expected_len or 1)
-            if (not is_valid or global_score < 0.85) and result is not None:
+            valid_without_ambiguity = len(final_value) == expected_len and ("?" not in final_value)
+            if not is_valid and valid_without_ambiguity:
+                is_valid = True
+            if (not is_valid or global_score < 0.60) and result is not None:
                 result.recognition_errors.append(f"{zone.zone_type.value}: LOW_CONFIDENCE")
                 if not is_valid:
                     result.recognition_errors.append(f"{zone.zone_type.value}: invalid length or ambiguous digit sequence")
@@ -2663,7 +2673,7 @@ class OMRProcessor:
                         result.recognition_errors.append(f"{zone.zone_type.value}: Lỗi SBD")
                     elif key == "exam_code":
                         result.recognition_errors.append(f"{zone.zone_type.value}: Lỗi Mã đề")
-                final_value = ""
+                    final_value = ""
         if key == "student_id" and final_value and final_value != "-":
             longest_run = 1
             current_run = 1
@@ -3109,7 +3119,14 @@ class OMRProcessor:
                 result.student_id = final_value
             else:
                 result.exam_code = final_value
-            result.confidence_scores[f"{key}:{zone.id}"] = float(np.mean(final_confs)) if final_confs else 0.0
+            confidence_value = float(np.mean(final_confs)) if final_confs else 0.0
+            result.confidence_scores[f"{key}:{zone.id}"] = confidence_value
+            result.confidence_scores[key] = max(confidence_value, float(result.confidence_scores.get(key, 0.0) or 0.0))
+            if self.debug_mode:
+                print(
+                    f"[OMR][IDENTIFIER] key={key} direct={direct_value!r} final={final_value!r} "
+                    f"conf={confidence_value:.3f} path={zone_debug.get(zone.id, {}).get('recognition_path', '-')}"
+                )
             return
         else:
             centers = self._resolve_zone_centers(working_binary, zone, template)

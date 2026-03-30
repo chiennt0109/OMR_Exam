@@ -1262,15 +1262,23 @@ class TemplateEditorWindow(QMainWindow):
 
         sid_text = str(res.student_id or "").strip() or "Không nhận diện được"
         exam_text = str(res.exam_code or "").strip() or "Không nhận diện được"
+        sid_raw = str(getattr(res, "student_id", "") or "")
+        exam_raw = str(getattr(res, "exam_code", "") or "")
         timing_text = self._format_processing_time_text(float(getattr(res, "processing_time_sec", 0.0) or 0.0))
         alignment_mode = str((getattr(res, "alignment_debug", {}) or {}).get("alignment_mode", "-") or "-")
+        sid_conf = self._identifier_confidence(res, "student_id")
+        exam_conf = self._identifier_confidence(res, "exam_code")
         id_warnings = self._identifier_warning_text(res)
         self.result_box.setPlainText(
             f"Student ID: {sid_text}\n"
             f"Exam Code: {exam_text}\n"
+            f"Student ID raw: {sid_raw or '-'}\n"
+            f"Exam Code raw: {exam_raw or '-'}\n"
+            f"Student ID confidence: {sid_conf:.3f}\n"
+            f"Exam Code confidence: {exam_conf:.3f}\n"
+            f"Identifier errors: {id_warnings}\n"
             f"Recognition time: {timing_text}\n"
             f"Alignment mode: {alignment_mode}\n"
-            f"Identifier warning: {id_warnings}\n"
             f"MCQ: {', '.join([f'Q{k}:{v}' for k, v in sorted(res.mcq_answers.items())]) or '(none)'}\n"
             f"TF: {res.true_false_answers or {}}\n"
             f"NUM: {res.numeric_answers or {}}"
@@ -1302,6 +1310,21 @@ class TemplateEditorWindow(QMainWindow):
         if not id_errs:
             return "Không có"
         return "; ".join(id_errs[:3])
+
+    @staticmethod
+    def _identifier_confidence(result, key_prefix: str) -> float:
+        scores = dict(getattr(result, "confidence_scores", {}) or {})
+        direct = scores.get(str(key_prefix), None)
+        if isinstance(direct, (int, float)):
+            return float(direct)
+        vals = [
+            float(v)
+            for k, v in scores.items()
+            if str(k or "").startswith(f"{key_prefix}:") and isinstance(v, (int, float))
+        ]
+        if not vals:
+            return 0.0
+        return max(vals)
 
     @staticmethod
     def _cv_to_qpixmap(image_bgr: np.ndarray) -> QPixmap:
