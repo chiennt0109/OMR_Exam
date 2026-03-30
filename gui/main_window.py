@@ -1967,6 +1967,13 @@ class MainWindow(QMainWindow):
         lay.addWidget(btn_delete)
         self.scan_list.setCellWidget(row, 7, holder)
 
+    def _ensure_scan_action_widget(self, row: int) -> None:
+        if row < 0 or row >= self.scan_list.rowCount():
+            return
+        if self.scan_list.cellWidget(row, 7) is not None:
+            return
+        self._set_scan_action_widget(row)
+
     def _edit_scan_row_by_index(self, row: int) -> None:
         if row < 0 or row >= self.scan_list.rowCount():
             return
@@ -14406,7 +14413,10 @@ class MainWindow(QMainWindow):
             if str(item["status"] or "OK") != "OK":
                 status_item.setForeground(Qt.red)
             self.scan_list.setItem(idx, 6, status_item)
-            self._set_scan_action_widget(idx)
+            if skip_expensive_checks:
+                self.scan_list.setItem(idx, 7, QTableWidgetItem("..."))
+            else:
+                self._set_scan_action_widget(idx)
         self.scan_list.setUpdatesEnabled(True)
         self.scan_list.blockSignals(False)
 
@@ -14883,6 +14893,7 @@ class MainWindow(QMainWindow):
         index = self.scan_list.currentRow()
         if index < 0:
             return
+        self._ensure_scan_action_widget(index)
         if 0 <= index < len(self.scan_results):
             self._update_scan_preview(index)
             self._load_selected_result_for_correction()
