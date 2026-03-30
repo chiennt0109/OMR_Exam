@@ -5628,10 +5628,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         configured_counts = self._subject_section_question_counts(subject_key_name)
@@ -5845,10 +5844,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -5971,10 +5969,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -6100,10 +6097,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -6229,10 +6225,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -6358,10 +6353,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -6487,10 +6481,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -6616,10 +6609,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -6745,10 +6737,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -6874,10 +6865,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -7003,10 +6993,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -7132,10 +7121,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -7261,10 +7249,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -7390,10 +7377,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -7519,10 +7505,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
@@ -7648,10 +7633,9 @@ class MainWindow(QMainWindow):
                         if overlap:
                             expected_by_section[sec] = overlap
                         else:
-                            # When answer-key numbering does not align with template numbering,
-                            # prioritize answer-key section size and trim by template order.
-                            count = len(key_sections[sec])
-                            expected_by_section[sec] = sorted(template_set)[: max(0, count)]
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
                     else:
                         expected_by_section[sec] = key_sections[sec]
         return expected_by_section
