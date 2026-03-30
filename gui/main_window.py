@@ -276,7 +276,15 @@ class SubjectConfigDialog(QDialog):
                 subject_key_seed = f"{seed_name}_{seed_block}" if seed_name and seed_block else ""
             if db is not None and subject_key_seed:
                 try:
-                    fetched = db.fetch_answer_keys_for_subject(subject_key_seed)
+                    scoped_seed = subject_key_seed
+                    if parent is not None and hasattr(parent, "_answer_key_scope_key"):
+                        try:
+                            scoped_seed = parent._answer_key_scope_key(subject_key_seed, str(data.get("block", "") or ""))
+                        except Exception:
+                            scoped_seed = subject_key_seed
+                    fetched = db.fetch_answer_keys_for_subject(scoped_seed)
+                    if not fetched and scoped_seed != subject_key_seed:
+                        fetched = db.fetch_answer_keys_for_subject(subject_key_seed)
                     if fetched:
                         self.answer_key_data = fetched
                 except Exception:
@@ -940,6 +948,22 @@ class NewExamDialog(QDialog):
 
         self._refresh_subject_list()
 
+    def _answer_key_scope_key(self, subject_key: str, block: str = "") -> str:
+        base = str(subject_key or "").strip()
+        if not base:
+            return ""
+        if "::" in base:
+            return base
+        session_id = str(getattr(self.parent(), "current_session_id", "") or "").strip()
+        block_text = str(block or "").strip()
+        if not block_text and "_" in base:
+            block_text = str(base.rsplit("_", 1)[-1]).strip()
+        if session_id and block_text:
+            return f"{session_id}::{base}::{block_text}"
+        if session_id:
+            return f"{session_id}::{base}"
+        return base
+
     @staticmethod
     def _normalized_student_id_for_match(student_id: str) -> str:
         sid = str(student_id or "").strip()
@@ -1249,10 +1273,11 @@ class NewExamDialog(QDialog):
         payload = dlg.payload()
         self.subject_configs.append(payload)
         try:
-            self.database.replace_answer_keys_for_subject(str(payload.get("answer_key_key", "") or ""), payload.get("imported_answer_keys", {}) or {})
+            scoped_key = self._answer_key_scope_key(str(payload.get("answer_key_key", "") or ""), str(payload.get("block", "") or ""))
+            self.database.replace_answer_keys_for_subject(scoped_key, payload.get("imported_answer_keys", {}) or {})
             self.database.log_change(
                 "answer_keys",
-                str(payload.get("answer_key_key", "") or ""),
+                scoped_key,
                 "imported_answer_keys",
                 "",
                 payload.get("imported_answer_keys", {}) or {},
@@ -1282,13 +1307,15 @@ class NewExamDialog(QDialog):
         try:
             old_subject_key = str(old_cfg.get("answer_key_key", "") or "")
             new_subject_key = str(edited.get("answer_key_key", "") or "")
-            if old_subject_key and old_subject_key != new_subject_key:
-                self.database.replace_answer_keys_for_subject(old_subject_key, {})
-            self.database.replace_answer_keys_for_subject(new_subject_key, edited.get("imported_answer_keys", {}) or {})
+            old_scoped_key = self._answer_key_scope_key(old_subject_key, str(old_cfg.get("block", "") or ""))
+            new_scoped_key = self._answer_key_scope_key(new_subject_key, str(edited.get("block", "") or ""))
+            if old_scoped_key and old_scoped_key != new_scoped_key:
+                self.database.replace_answer_keys_for_subject(old_scoped_key, {})
+            self.database.replace_answer_keys_for_subject(new_scoped_key, edited.get("imported_answer_keys", {}) or {})
             if old_cfg.get("imported_answer_keys", {}) != edited.get("imported_answer_keys", {}):
                 self.database.log_change(
                     "answer_keys",
-                    new_subject_key,
+                    new_scoped_key,
                     "imported_answer_keys",
                     old_cfg.get("imported_answer_keys", {}) or {},
                     edited.get("imported_answer_keys", {}) or {},
@@ -3619,6 +3646,31 @@ class MainWindow(QMainWindow):
             return f"{session_id}::{base}"
         return base
 
+    def _answer_key_subject_key(self, subject_key: str, subject_cfg: dict | None = None) -> str:
+        base = str(subject_key or "").strip()
+        if not base:
+            return ""
+        if "::" in base:
+            return base
+        block = ""
+        if isinstance(subject_cfg, dict):
+            block = str(subject_cfg.get("block", "") or "").strip()
+        if not block and "_" in base:
+            block = str(base.rsplit("_", 1)[-1]).strip()
+        session_id = str(self.current_session_id or "").strip()
+        if session_id and block:
+            return f"{session_id}::{base}::{block}"
+        if session_id:
+            return f"{session_id}::{base}"
+        return base
+
+    def _fetch_answer_keys_for_subject_scoped(self, subject_key: str, subject_cfg: dict | None = None) -> dict[str, dict[str, Any]]:
+        scoped = self._answer_key_subject_key(subject_key, subject_cfg)
+        rows = self.database.fetch_answer_keys_for_subject(scoped) if scoped else {}
+        if not rows and scoped and scoped != str(subject_key or "").strip():
+            rows = self.database.fetch_answer_keys_for_subject(str(subject_key or "").strip())
+        return rows or {}
+
     def _resolve_preferred_scoring_subject(self) -> str:
         if self.stack.currentIndex() == 1:
             cfg = self._selected_batch_subject_config()
@@ -3886,7 +3938,7 @@ class MainWindow(QMainWindow):
     def _load_exam_code_correction_options(self, subject_key: str, current_code: str) -> None:
         self.exam_code_correction_combo.blockSignals(True)
         self.exam_code_correction_combo.clear()
-        codes = set(self.database.fetch_answer_keys_for_subject(subject_key).keys())
+        codes = set(self._fetch_answer_keys_for_subject_scoped(subject_key).keys())
         codes.update(str(x).strip() for x in (self.imported_exam_codes or []) if str(x).strip())
         if current_code:
             codes.add(str(current_code).strip())
@@ -5232,7 +5284,7 @@ class MainWindow(QMainWindow):
         raise RuntimeError("Chỉ hỗ trợ .csv/.txt/.tsv/.xlsx")
 
     def _expected_answer_string_length_for_subject(self, subject_key: str) -> int:
-        fetched = self.database.fetch_answer_keys_for_subject(subject_key) or {}
+        fetched = self._fetch_answer_keys_for_subject_scoped(subject_key) or {}
         if not fetched:
             return 0
         sample = next(iter(fetched.values()))
@@ -5257,7 +5309,7 @@ class MainWindow(QMainWindow):
         return int(mcq_len + tf_len + num_len)
 
     def _answer_layout_for_subject(self, subject_key: str) -> tuple[list[int], list[int], list[tuple[int, int]]]:
-        fetched = self.database.fetch_answer_keys_for_subject(subject_key) or {}
+        fetched = self._fetch_answer_keys_for_subject_scoped(subject_key) or {}
         if not fetched:
             return [], [], []
         sample = next(iter(fetched.values()))
@@ -5364,7 +5416,7 @@ class MainWindow(QMainWindow):
             numeric_layout = [(x, 0) for x in range(next_q + 1, next_q + numeric_count + 1)]
         tf_true_chars = {"Đ", "đ", "D", "d", "T", "t", "1", "Y", "y"}
 
-        configured_answer_keys = self.database.fetch_answer_keys_for_subject(subject_key_for_results) or {}
+        configured_answer_keys = self._fetch_answer_keys_for_subject_scoped(subject_key_for_results, subject_cfg) or {}
         imported_answer_keys = self._subject_imported_answer_keys_for_main(subject_cfg or {})
         section_layout_cache: dict[str, tuple[list[int], list[int], list[tuple[int, int]], bool]] = {}
 
@@ -8545,7 +8597,7 @@ class MainWindow(QMainWindow):
                     key = self.answer_keys.get(subject, candidate_text)
                     if key is not None:
                         return key
-        fetched = self.database.fetch_answer_keys_for_subject(subject)
+        fetched = self._fetch_answer_keys_for_subject_scoped(subject)
         if exam_code in fetched:
             return fetched[exam_code]
         normalized = self._normalize_exam_code_text(exam_code)
@@ -9349,7 +9401,7 @@ class MainWindow(QMainWindow):
             if not subject:
                 return []
             try:
-                codes.update(str(x).strip() for x in self.database.fetch_answer_keys_for_subject(subject).keys() if str(x).strip())
+                codes.update(str(x).strip() for x in self._fetch_answer_keys_for_subject_scoped(subject).keys() if str(x).strip())
             except Exception:
                 pass
             if self.answer_keys:
@@ -9939,7 +9991,7 @@ class MainWindow(QMainWindow):
             for key_obj in self.answer_keys.keys.values():
                 if isinstance(key_obj, SubjectKey) and str(getattr(key_obj, "subject", "") or "").strip() == subject:
                     all_subject_keys.append(key_obj)
-        fetched_keys = self.database.fetch_answer_keys_for_subject(subject)
+        fetched_keys = self._fetch_answer_keys_for_subject_scoped(subject)
         for exam_code, key_obj in (fetched_keys or {}).items():
             if not isinstance(key_obj, SubjectKey):
                 continue
@@ -10168,7 +10220,7 @@ class MainWindow(QMainWindow):
         exam_codes = sorted(
             {
                 str(code or "").strip()
-                for code in (self.database.fetch_answer_keys_for_subject(subject_key) or {}).keys()
+                for code in (self._fetch_answer_keys_for_subject_scoped(subject_key) or {}).keys()
                 if str(code or "").strip()
             }
         )
@@ -10222,7 +10274,7 @@ class MainWindow(QMainWindow):
                 for key_obj in self.answer_keys.keys.values():
                     if isinstance(key_obj, SubjectKey) and str(getattr(key_obj, "subject", "") or "").strip() == subject_key:
                         all_subject_keys.append(key_obj)
-            fetched_keys = self.database.fetch_answer_keys_for_subject(subject_key)
+            fetched_keys = self._fetch_answer_keys_for_subject_scoped(subject_key)
             for exam_code, key_obj in (fetched_keys or {}).items():
                 if isinstance(key_obj, SubjectKey):
                     candidate_key = key_obj
@@ -10344,7 +10396,7 @@ class MainWindow(QMainWindow):
             key_obj = self.answer_keys.get_flexible(subject_key, code) if self.answer_keys else None
             if isinstance(key_obj, SubjectKey):
                 return key_obj
-            raw = (self.database.fetch_answer_keys_for_subject(subject_key) or {}).get(code)
+            raw = (self._fetch_answer_keys_for_subject_scoped(subject_key) or {}).get(code)
             if isinstance(raw, dict):
                 return SubjectKey(
                     subject=subject_key,
@@ -10358,7 +10410,7 @@ class MainWindow(QMainWindow):
         def _expected_questions(exam_code_text: str, res_obj: OMRResult | None = None) -> dict[str, list[int]]:
             key_obj = _answer_key_for_exam(exam_code_text)
             if not key_obj:
-                fetched = self.database.fetch_answer_keys_for_subject(subject_key) or {}
+                fetched = self._fetch_answer_keys_for_subject_scoped(subject_key) or {}
                 for _code, raw_key in fetched.items():
                     if isinstance(raw_key, SubjectKey):
                         key_obj = raw_key
