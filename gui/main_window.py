@@ -5486,8 +5486,8 @@ class MainWindow(QMainWindow):
                 row_tf_questions = list(cfg_tf_q)
             if exam_code_valid and cfg_num_layout:
                 row_numeric_layout = list(cfg_num_layout)
-            elif not exam_code_valid:
-                row_numeric_layout = []
+            # Keep default numeric layout from current subject configuration when exam code
+            # is missing/invalid, so Numeric answer string is still cut by configured lengths.
             mcq_map, tf_map, numeric_map, rebuilt_answer = _parse_answer_string(raw_answer, row_mcq_questions, row_tf_questions, row_numeric_layout)
             result.mcq_answers = mcq_map
             result.true_false_answers = tf_map
