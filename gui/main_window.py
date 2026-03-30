@@ -11111,6 +11111,9 @@ class MainWindow(QMainWindow):
         return merged
 
     def _on_batch_subject_changed(self, _index: int) -> None:
+        previous_subject_key = str(getattr(self, "active_batch_subject_key", "") or "").strip()
+        if previous_subject_key:
+            self._cache_working_batch_state(previous_subject_key)
         cfg = self._selected_batch_subject_config()
         if cfg:
             cfg = self._merge_saved_batch_snapshot(cfg)
@@ -11183,7 +11186,17 @@ class MainWindow(QMainWindow):
         if tpl_for_view:
             self.template = tpl_for_view
         self._ensure_answer_keys_for_subject(subject_key)
-        self.scan_results = self._refresh_scan_results_from_db(subject_key)
+        if self._restore_cached_working_batch_state(subject_key):
+            self._finalize_batch_scan_display(refresh_statuses=False)
+            self.scan_image_preview.setText("Đã khôi phục dữ liệu Batch Scan từ bộ nhớ tạm của môn này")
+            self._update_batch_scan_scope_summary()
+            return
+
+        cached_subject_rows = list(self.scan_results_by_subject.get(subject_key, []) or [])
+        if cached_subject_rows:
+            self.scan_results = cached_subject_rows
+        else:
+            self.scan_results = self._refresh_scan_results_from_db(subject_key)
         if self.scan_results:
             self._populate_scan_grid_from_results(self.scan_results)
             self._finalize_batch_scan_display(refresh_statuses=False)
