@@ -3433,6 +3433,7 @@ class MainWindow(QMainWindow):
                 self.database.upsert_scan_result(subject_key, self._serialize_omr_result(result))
         return subject_key, current_results
 
+    # [deduplicated] removed duplicate method block(s): _back_to_batch_scan, _build_correction_tab, _cached_subject_scans_from_config, _deserialize_omr_result, _eligible_scoring_subject_keys, _ensure_answer_keys_for_subject, _is_subject_marked_batched, _open_scoring_view, _populate_scoring_subjects, _refresh_scoring_phase_table, _resolve_preferred_scoring_subject, _run_scoring_from_panel, _save_batch_for_selected_subject, _serialize_omr_result, _show_batch_scan_panel, _show_scoring_panel, _subject_config_by_subject_key, _subject_configs_for_scoring, _subject_key_from_cfg
     def _show_batch_scan_panel(self) -> None:
         if hasattr(self, "scan_lr_split"):
             self.scan_lr_split.setVisible(True)
