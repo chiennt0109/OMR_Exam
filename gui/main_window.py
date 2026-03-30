@@ -3064,6 +3064,7 @@ class MainWindow(QMainWindow):
         self.batch_student_id_value = QLineEdit("-"); self.batch_student_id_value.setReadOnly(True)
         self.batch_scan_folder_value = QLineEdit("-"); self.batch_scan_folder_value.setReadOnly(True)
         self.batch_scan_state_value = QLineEdit("-"); self.batch_scan_state_value.setReadOnly(True)
+        self.batch_context_value = QLineEdit("-"); self.batch_context_value.setReadOnly(True)
         style = self.style()
         self.btn_batch_recognize = QPushButton("Nhận dạng")
         self.btn_batch_recognize.setIcon(style.standardIcon(QStyle.SP_MediaPlay))
@@ -3092,6 +3093,7 @@ class MainWindow(QMainWindow):
         batch_form.addRow("Vùng STUDENT ID", self.batch_student_id_value)
         batch_form.addRow("Thư mục quét", self.batch_scan_folder_value)
         batch_form.addRow("Trạng thái file", self.batch_scan_state_value)
+        batch_form.addRow("Ngữ cảnh dữ liệu", self.batch_context_value)
         batch_form.addRow("", action_row)
 
         self.filter_column = QComboBox()
@@ -3671,6 +3673,27 @@ class MainWindow(QMainWindow):
             rows = self.database.fetch_answer_keys_for_subject(str(subject_key or "").strip())
         return rows or {}
 
+    def _display_subject_label(self, cfg: dict | None) -> str:
+        if not isinstance(cfg, dict):
+            return "-"
+        exam_name = str((self.session.exam_name if self.session else "") or "").strip() or "Kỳ thi hiện tại"
+        subject_name = str(cfg.get("name", "") or "").strip() or str(self._subject_key_from_cfg(cfg) or "-")
+        block = str(cfg.get("block", "") or "").strip() or "-"
+        return f"{exam_name} | {subject_name} | Khối {block}"
+
+    def _batch_cache_subject_key(self, cfg: dict | None, include_session: bool = True) -> str:
+        if not isinstance(cfg, dict):
+            return ""
+        name = str(cfg.get("name", "") or "").strip().lower()
+        block = str(cfg.get("block", "") or "").strip().lower()
+        answer_key = str(cfg.get("answer_key_key", "") or "").strip().lower()
+        base = f"{name}::{block}::{answer_key}"
+        if include_session:
+            sid = str(self.current_session_id or "").strip().lower()
+            if sid:
+                return f"{sid}::{base}"
+        return base
+
     def _resolve_preferred_scoring_subject(self) -> str:
         if self.stack.currentIndex() == 1:
             cfg = self._selected_batch_subject_config()
@@ -3779,12 +3802,13 @@ class MainWindow(QMainWindow):
             saved_results = [self._serialize_omr_result(x) for x in current_results]
             timestamp = datetime.now().isoformat(timespec="seconds")
             updated = False
+            target_token = self._batch_cache_subject_key(subject_cfg, include_session=False)
             for item in subject_cfgs:
                 if not isinstance(item, dict):
                     continue
-                same_name_block = str(item.get("name", "")).strip() == str(subject_cfg.get("name", "")).strip() and str(item.get("block", "")).strip() == str(subject_cfg.get("block", "")).strip()
-                same_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
-                if same_name_block or same_key:
+                item_token = self._batch_cache_subject_key(item, include_session=False)
+                same_logical_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
+                if item_token == target_token or same_logical_key:
                     item["batch_saved"] = True
                     item["batch_saved_at"] = timestamp
                     item["batch_result_count"] = row_count
@@ -3826,8 +3850,9 @@ class MainWindow(QMainWindow):
                     raw = json.loads(cache_path.read_text(encoding="utf-8"))
                     if isinstance(raw, dict):
                         cache_data = raw
-                cache_key = f"{str(subject_cfg.get('name','')).strip().lower()}::{str(subject_cfg.get('block','')).strip().lower()}::{str(subject_cfg.get('answer_key_key','')).strip().lower()}"
-                cache_data[cache_key] = {
+                cache_key = self._batch_cache_subject_key(subject_cfg, include_session=True)
+                legacy_cache_key = self._batch_cache_subject_key(subject_cfg, include_session=False)
+                payload = {
                     "batch_saved": True,
                     "batch_saved_at": timestamp,
                     "batch_result_count": row_count,
@@ -3854,6 +3879,10 @@ class MainWindow(QMainWindow):
                     ],
                     "batch_saved_results": saved_results,
                 }
+                cache_data[cache_key] = payload
+                # Keep a legacy sidecar key for backward compatibility with older builds.
+                if legacy_cache_key and legacy_cache_key not in cache_data:
+                    cache_data[legacy_cache_key] = payload
                 cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
             except Exception:
                 pass
@@ -4536,7 +4565,7 @@ class MainWindow(QMainWindow):
         self.batch_subject_combo.clear()
         self.batch_subject_combo.addItem("[Chọn môn]")
         for cfg in self._effective_subject_configs_for_batch():
-            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
+            label = self._display_subject_label(cfg)
             self.batch_subject_combo.addItem(label, cfg)
         self.batch_subject_combo.blockSignals(False)
         self._on_batch_subject_changed(self.batch_subject_combo.currentIndex())
@@ -4635,6 +4664,15 @@ class MainWindow(QMainWindow):
         mode = str(self.batch_file_scope_combo.currentData() or "new_only") if hasattr(self, "batch_file_scope_combo") else "new_only"
         mode_label = "File mới" if mode == "new_only" else "Toàn bộ"
         self.batch_scan_state_value.setText(f"{mode_label} | Đã nhận diện: {recognized_count} | Chưa nhận diện: {pending_count}")
+        if hasattr(self, "batch_context_value"):
+            logical_key = self._subject_key_from_cfg(cfg) if cfg else ""
+            scoped_key = self._batch_result_subject_key(logical_key) if logical_key else "-"
+            source_hint = "database/cache scoped"
+            if cfg and bool(cfg.get("batch_saved")):
+                source_hint = "working memory/session cache"
+            self.batch_context_value.setText(
+                f"{self._display_subject_label(cfg)} | Key: {logical_key or '-'} | Scope: {scoped_key} | Nguồn: {source_hint}"
+            )
 
     @staticmethod
     def _recommended_batch_timeout_sec(template: Template | None) -> float:
@@ -4667,16 +4705,15 @@ class MainWindow(QMainWindow):
         def _norm(v: str) -> str:
             return str(v or "").strip().lower()
 
-        name = _norm(merged.get("name", ""))
-        block = _norm(merged.get("block", ""))
+        target_token = self._batch_cache_subject_key(merged, include_session=False)
         key = _norm(merged.get("answer_key_key", ""))
         found: dict | None = None
         for item in raw_cfgs:
             if not isinstance(item, dict):
                 continue
-            same_name_block = _norm(item.get("name", "")) == name and _norm(item.get("block", "")) == block
+            item_token = self._batch_cache_subject_key(item, include_session=False)
             same_key = key and _norm(item.get("answer_key_key", "")) == key
-            if same_name_block or same_key:
+            if item_token == target_token or same_key:
                 found = item
                 break
 
@@ -4691,8 +4728,11 @@ class MainWindow(QMainWindow):
             try:
                 raw = json.loads(sidecar.read_text(encoding="utf-8"))
                 if isinstance(raw, dict):
-                    cache_key = f"{_norm(merged.get('name', ''))}::{_norm(merged.get('block', ''))}::{_norm(merged.get('answer_key_key', ''))}"
-                    payload = raw.get(cache_key)
+                    cache_key_scoped = self._batch_cache_subject_key(merged, include_session=True)
+                    cache_key_legacy = self._batch_cache_subject_key(merged, include_session=False)
+                    payload = raw.get(cache_key_scoped)
+                    if payload is None:
+                        payload = raw.get(cache_key_legacy)
                     if isinstance(payload, dict):
                         merged["batch_saved_rows"] = payload.get("batch_saved_rows", [])
                         merged["batch_saved_preview"] = payload.get("batch_saved_preview", [])
@@ -4757,6 +4797,8 @@ class MainWindow(QMainWindow):
                 self.batch_student_id_value.setText("-")
                 self.batch_scan_folder_value.setText("-")
                 self.batch_scan_state_value.setText("-")
+                if hasattr(self, "batch_context_value"):
+                    self.batch_context_value.setText("-")
                 return
 
             template_path = self._normalize_template_path(str(cfg.get("template_path", "") or "")) or self._normalize_template_path(str(self.session.template_path if self.session else "")) or "-"
