@@ -3263,8 +3263,7 @@ class MainWindow(QMainWindow):
         payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
         self._open_embedded_exam_editor(session_id, session, payload)
 
-    # [deduplicated] removed duplicate method block(s): _back_to_batch_scan, _deserialize_omr_result, _serialize_omr_result, _show_batch_scan_panel, _show_scoring_panel, _subject_config_by_subject_key, _subject_configs_for_scoring
-    def _strip_transient_scan_artifacts(result: OMRResult) -> OMRResult:
+    def _strip_transient_scan_artifacts(self, result: OMRResult) -> OMRResult:
         for attr_name in [
             "aligned_image",
             "aligned_binary",
@@ -3319,7 +3318,6 @@ class MainWindow(QMainWindow):
         return out
 
 
-    # [deduplicated] removed duplicate method block(s): _cached_subject_scans_from_config, _is_subject_marked_batched
     def _refresh_scan_results_from_db(self, subject_key: str) -> list[OMRResult]:
         subject = str(subject_key or "").strip()
         if not subject:
@@ -3354,7 +3352,6 @@ class MainWindow(QMainWindow):
             f"Dashboard DB | Điểm TB: {avg_score:.2f} | Phổ điểm: {dist_text} | Top học sinh: {top_text}"
         )
 
-    # [deduplicated] removed duplicate method block(s): _eligible_scoring_subject_keys, _ensure_answer_keys_for_subject, _open_scoring_view, _populate_scoring_subjects, _refresh_scoring_phase_table, _resolve_preferred_scoring_subject, _subject_key_from_cfg
     def _load_cached_scoring_results_for_subject(self, subject_key: str) -> None:
         subject = str(subject_key or "").strip()
         if not subject or not hasattr(self, "score_preview_table"):
@@ -3418,7 +3415,6 @@ class MainWindow(QMainWindow):
             self._load_cached_scoring_results_for_subject(subject_key)
             self._refresh_dashboard_summary_from_db(subject_key)
 
-    # [deduplicated] removed duplicate method block(s): _run_scoring_from_panel
     def _sync_current_batch_subject_snapshot(self, persist_to_db: bool = True) -> tuple[str, list[OMRResult]]:
         subject_cfg = self._selected_batch_subject_config()
         if not subject_cfg or not hasattr(self, "scan_list"):
