@@ -534,6 +534,15 @@ class TemplateEditorWindow(QMainWindow):
         self.fill_threshold_spin.valueChanged.connect(self._on_fill_threshold_changed)
         self.template_toolbar.addWidget(self.fill_threshold_spin)
 
+        self.fast_mode_chk = QCheckBox("Fast mode")
+        self.fast_mode_chk.setChecked(True)
+        self.fast_mode_chk.setToolTip("Production fast path: giới hạn fallback nặng để test tốc độ thực tế.")
+        self.template_toolbar.addWidget(self.fast_mode_chk)
+        self.deep_debug_chk = QCheckBox("Deep debug")
+        self.deep_debug_chk.setChecked(False)
+        self.deep_debug_chk.setToolTip("Debug deep mode: bật các bước chậm để phân tích chất lượng nhận dạng.")
+        self.template_toolbar.addWidget(self.deep_debug_chk)
+
         self.template_toolbar.addAction(self.act_zoom_in)
         self.template_toolbar.addAction(self.act_zoom_out)
 
@@ -1247,7 +1256,14 @@ class TemplateEditorWindow(QMainWindow):
             return
 
         self._apply_recognition_settings_to_engine()
-        res = self.omr.run_recognition_test(path, self.template)
+        fast_mode = bool(self.fast_mode_chk.isChecked()) if hasattr(self, "fast_mode_chk") else True
+        deep_debug = bool(self.deep_debug_chk.isChecked()) if hasattr(self, "deep_debug_chk") else False
+        res = self.omr.run_recognition_test(
+            path,
+            self.template,
+            fast_production_test=fast_mode,
+            debug_deep=deep_debug,
+        )
         aligned = getattr(res, "aligned_image", None)
         aligned_binary = getattr(res, "aligned_binary", None)
         if aligned is None or aligned_binary is None:
@@ -1265,7 +1281,14 @@ class TemplateEditorWindow(QMainWindow):
         sid_raw = str(getattr(res, "student_id", "") or "")
         exam_raw = str(getattr(res, "exam_code", "") or "")
         timing_text = self._format_processing_time_text(float(getattr(res, "processing_time_sec", 0.0) or 0.0))
-        alignment_mode = str((getattr(res, "alignment_debug", {}) or {}).get("alignment_mode", "-") or "-")
+        alignment_debug = dict(getattr(res, "alignment_debug", {}) or {})
+        alignment_mode = str(alignment_debug.get("alignment_mode", "-") or "-")
+        quality_gate = dict(alignment_debug.get("quality_gate", {}) or {})
+        quality_score = float(quality_gate.get("quality_score", 0.0) or 0.0)
+        poor_image = bool(alignment_debug.get("poor_image", quality_gate.get("poor_scan", False)))
+        quality_reason = str(alignment_debug.get("quality_reason", quality_gate.get("reason", "")) or "-")
+        timing = dict(alignment_debug.get("timing_breakdown", {}) or {})
+        identifier_fast_fail = bool(timing.get("poor_image_fast_fail", False) and poor_image)
         sid_conf = self._identifier_confidence(res, "student_id")
         exam_conf = self._identifier_confidence(res, "exam_code")
         id_warnings = self._identifier_warning_text(res)
@@ -1279,6 +1302,16 @@ class TemplateEditorWindow(QMainWindow):
             f"Identifier errors: {id_warnings}\n"
             f"Recognition time: {timing_text}\n"
             f"Alignment mode: {alignment_mode}\n"
+            f"Quality score: {quality_score:.3f}\n"
+            f"Poor image: {'Yes' if poor_image else 'No'}\n"
+            f"Quality reason: {quality_reason}\n"
+            f"Identifier fast-fail: {'Yes' if identifier_fast_fail else 'No'}\n"
+            f"Fast mode: {'ON' if fast_mode else 'OFF'}\n"
+            f"Deep debug: {'ON' if deep_debug else 'OFF'}\n"
+            f"Timing (align/identifier/diagnostics): "
+            f"{float(timing.get('alignment_time_sec', 0.0) or 0.0):.3f}s / "
+            f"{float(timing.get('identifier_time_sec', 0.0) or 0.0):.3f}s / "
+            f"{float(timing.get('diagnostics_time_sec', 0.0) or 0.0):.3f}s\n"
             f"MCQ: {', '.join([f'Q{k}:{v}' for k, v in sorted(res.mcq_answers.items())]) or '(none)'}\n"
             f"TF: {res.true_false_answers or {}}\n"
             f"NUM: {res.numeric_answers or {}}"
@@ -1290,7 +1323,11 @@ class TemplateEditorWindow(QMainWindow):
         self.canvas.digit_zone_debug = dict(getattr(res, "digit_zone_debug", {}) or {})
         self.canvas.recognition_overlay.update(getattr(res, "bubble_states_by_zone", {}) or self.omr.extract_bubble_states(aligned_binary, self.template))
 
-        self.result_box.append(f"\nDetected anchors: {len(self.canvas.detected_anchor_points)}")
+        debug_flags = dict(getattr(res, "alignment_debug", {}) or {})
+        if bool(debug_flags.get("fast_production_mode", False)) and not bool(debug_flags.get("diagnostics_collected", True)):
+            self.result_box.append("\nDetected anchors: not collected (fast production)")
+        else:
+            self.result_box.append(f"\nDetected anchors: {len(self.canvas.detected_anchor_points)}")
 
         self.canvas.preview_mode = True
         self.canvas.update()
