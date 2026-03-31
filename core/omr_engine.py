@@ -338,6 +338,18 @@ class OMRProcessor:
         for zone in plan.sorted_zones:
             if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
                 reference_digit_points_px[zone.id] = np.array(plan.zone_centers_px.get(zone.id, np.empty((0, 2), dtype=np.float32)), dtype=np.float32)
+        anchor_expected_px: dict[str, np.ndarray] = {}
+        for idx, anc in enumerate(list(template.anchors or [])):
+            name = str(getattr(anc, "name", "") or f"A{idx+1}")
+            x = float(anc.x * template.width if anc.x <= 1.0 else anc.x)
+            y = float(anc.y * template.height if anc.y <= 1.0 else anc.y)
+            anchor_expected_px[name] = np.array([x, y], dtype=np.float32)
+        strip_anchor_groups = {
+            "header": ["A1", "A2", "A5", "A3"],
+            "mcq": ["A5", "A3", "A6", "A4"],
+            "tf": ["A6", "A4", "A7", "A10"],
+            "numeric": ["A7", "A10", "A8", "A9"],
+        }
         return {
             "calibrated_reference_size": (int(template.width), int(template.height)),
             "reference_scan_path": reference_scan_path,
@@ -351,6 +363,10 @@ class OMRProcessor:
             "scanner_locked_registration_mode": str((template.metadata or {}).get("scanner_locked_registration_mode", "translation_first") or "translation_first"),
             "scanner_locked_use_affine_if_needed": bool((template.metadata or {}).get("scanner_locked_use_affine_if_needed", True)),
             "max_registration_patches": int((template.metadata or {}).get("scanner_locked_max_registration_patches", 6) or 6),
+            # scanner-locked plan: precompiled anchors and strip groups for local transform.
+            "anchor_expected_px": anchor_expected_px,
+            "digit_anchor_expected_px": dict(anchor_expected_px),
+            "strip_anchor_groups": strip_anchor_groups,
         }
 
     def _get_scanner_locked_plan(self, template: Template) -> dict[str, object]:
@@ -728,6 +744,66 @@ class OMRProcessor:
         min_xy = np.min(mapped, axis=0)
         max_xy = np.max(mapped, axis=0)
         return (int(round(min_xy[0])), int(round(min_xy[1])), int(round(max_xy[0])), int(round(max_xy[1])))
+
+    def _locate_anchor_in_roi(self, image_gray: np.ndarray, expected_xy: np.ndarray, roi_margin: int = 26) -> dict[str, object]:
+        # ROI anchor search: local threshold + contour centroid, no full-page anchor detection.
+        h, w = image_gray.shape[:2]
+        cx, cy = float(expected_xy[0]), float(expected_xy[1])
+        m = int(max(10, roi_margin))
+        x0 = max(0, int(round(cx - m)))
+        y0 = max(0, int(round(cy - m)))
+        x1 = min(w, int(round(cx + m + 1)))
+        y1 = min(h, int(round(cy + m + 1)))
+        roi = image_gray[y0:y1, x0:x1]
+        if roi.size == 0:
+            return {"success": False, "reason": "empty_roi", "point": np.array([cx, cy], dtype=np.float32)}
+        _, th = cv2.threshold(roi, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        contours, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return {"success": False, "reason": "no_blob", "point": np.array([cx, cy], dtype=np.float32)}
+        best = max(contours, key=cv2.contourArea)
+        area = float(cv2.contourArea(best))
+        if area < 9.0:
+            return {"success": False, "reason": "blob_too_small", "point": np.array([cx, cy], dtype=np.float32)}
+        mmt = cv2.moments(best)
+        if float(mmt.get("m00", 0.0) or 0.0) <= 1e-6:
+            return {"success": False, "reason": "degenerate_blob", "point": np.array([cx, cy], dtype=np.float32)}
+        px = float((mmt["m10"] / mmt["m00"]) + x0)
+        py = float((mmt["m01"] / mmt["m00"]) + y0)
+        return {"success": True, "point": np.array([px, py], dtype=np.float32), "reason": ""}
+
+    def _estimate_strip_transforms(
+        self,
+        image_gray: np.ndarray,
+        scanner_plan: dict[str, object],
+        base_matrix: np.ndarray,
+    ) -> dict[str, np.ndarray]:
+        # strip transform: local anchor fit per band for stable scanner-locked decode.
+        anchors = dict(scanner_plan.get("anchor_expected_px", {}) or {})
+        groups = dict(scanner_plan.get("strip_anchor_groups", {}) or {})
+        roi_margin = int(((scanner_plan.get("anchor_roi_margin", 26)) or 26))
+        out: dict[str, np.ndarray] = {}
+        for band, names in groups.items():
+            src_pts: list[np.ndarray] = []
+            dst_pts: list[np.ndarray] = []
+            for nm in names:
+                exp = anchors.get(nm)
+                if exp is None:
+                    continue
+                pred = self._transform_points_affine(np.asarray([exp], dtype=np.float32), base_matrix)
+                if len(pred) == 0:
+                    continue
+                loc = self._locate_anchor_in_roi(image_gray, pred[0], roi_margin=roi_margin)
+                if not bool(loc.get("success", False)):
+                    continue
+                src_pts.append(np.asarray(exp, dtype=np.float32))
+                dst_pts.append(np.asarray(loc.get("point"), dtype=np.float32))
+            if len(src_pts) >= 2:
+                est, _ = cv2.estimateAffinePartial2D(np.asarray(src_pts, dtype=np.float32), np.asarray(dst_pts, dtype=np.float32), method=cv2.LMEDS)
+                out[band] = est.astype(np.float32) if est is not None else np.asarray(base_matrix, dtype=np.float32)
+            else:
+                out[band] = np.asarray(base_matrix, dtype=np.float32)
+        return out
 
     def _estimate_band_transform(
         self,
@@ -1110,6 +1186,7 @@ class OMRProcessor:
         tf_time_sec = 0.0
         numeric_time_sec = 0.0
         header_time_sec = 0.0
+        strip_matrices = self._estimate_strip_transforms(gray, scanner_plan, affine_matrix)
         integral = self._build_integral_sampler(aligned_binary)
         roi_decode_started = time.perf_counter()
         plan = self._get_template_runtime_plan(template)
@@ -1124,12 +1201,14 @@ class OMRProcessor:
             ):
                 continue
             z_started = time.perf_counter()
+            band_name = self._zone_band_name(zone)
+            zone_matrix = np.asarray(strip_matrices.get(band_name, affine_matrix), dtype=np.float32)
             zone_stat = self._decode_zone_scanner_locked_fast(
                 binary=aligned_binary,
                 integral=integral,
                 zone=zone,
                 scanner_plan=scanner_plan,
-                affine_matrix=affine_matrix,
+                affine_matrix=zone_matrix,
                 result=result,
             )
             elapsed = float(time.perf_counter() - z_started)
@@ -1204,10 +1283,10 @@ class OMRProcessor:
             "patch_matches": list(reg_payload.get("patch_matches", []) or []),
             "quality_gate": dict(quality_gate),
             "band_locking": {
-                "header": {"success": True},
-                "mcq": {"success": True},
-                "tf": {"success": True},
-                "numeric": {"success": True},
+                "header": {"success": True, "matrix": np.asarray(strip_matrices.get("header", affine_matrix)).tolist()},
+                "mcq": {"success": True, "matrix": np.asarray(strip_matrices.get("mcq", affine_matrix)).tolist()},
+                "tf": {"success": True, "matrix": np.asarray(strip_matrices.get("tf", affine_matrix)).tolist()},
+                "numeric": {"success": True, "matrix": np.asarray(strip_matrices.get("numeric", affine_matrix)).tolist()},
             },
             "quality_score": float(quality_gate.get("quality_score", 0.0) or 0.0),
             "poor_image": bool(poor_image),
@@ -1342,6 +1421,8 @@ class OMRProcessor:
                     dpi_message=dpi_msg,
                     original_shape=original_shape,
                 )
+                fast_timing = dict((getattr(fast_res, "alignment_debug", {}) or {}).get("timing_breakdown", {}) or {})
+                scanner_locked_match_time_sec = float(fast_timing.get("scanner_locked_match_time_sec", fast_timing.get("registration_patch_time_sec", 0.0)) or 0.0)
                 registration_ok = bool(getattr(fast_res, "_scanner_locked_registration_ok", False))
                 if registration_ok or (not self._scanner_locked_allow_full_fallback(template)):
                     return fast_res
