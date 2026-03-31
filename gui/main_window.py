@@ -4982,6 +4982,8 @@ class MainWindow(QMainWindow):
             return "Không đủ chất lượng"
         if "POOR_IMAGE" in issues or "FAST_FAIL_POOR_SCAN" in issues:
             return "Ảnh xấu"
+        if "IDENTIFIER_FAST_CAP" in issues or "STUDENT_ID_FAST_FAIL" in issues:
+            return "Giới hạn SBD"
         if "IDENTIFIER_TIMEOUT" in issues:
             return "Timeout vùng SBD"
         if "TIMEOUT" in issues:

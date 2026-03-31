@@ -534,6 +534,15 @@ class TemplateEditorWindow(QMainWindow):
         self.fill_threshold_spin.valueChanged.connect(self._on_fill_threshold_changed)
         self.template_toolbar.addWidget(self.fill_threshold_spin)
 
+        self.fast_mode_chk = QCheckBox("Fast mode")
+        self.fast_mode_chk.setChecked(True)
+        self.fast_mode_chk.setToolTip("Production fast path: giới hạn fallback nặng để test tốc độ thực tế.")
+        self.template_toolbar.addWidget(self.fast_mode_chk)
+        self.deep_debug_chk = QCheckBox("Deep debug")
+        self.deep_debug_chk.setChecked(False)
+        self.deep_debug_chk.setToolTip("Debug deep mode: bật các bước chậm để phân tích chất lượng nhận dạng.")
+        self.template_toolbar.addWidget(self.deep_debug_chk)
+
         self.template_toolbar.addAction(self.act_zoom_in)
         self.template_toolbar.addAction(self.act_zoom_out)
 
@@ -1247,7 +1256,14 @@ class TemplateEditorWindow(QMainWindow):
             return
 
         self._apply_recognition_settings_to_engine()
-        res = self.omr.run_recognition_test(path, self.template)
+        fast_mode = bool(self.fast_mode_chk.isChecked()) if hasattr(self, "fast_mode_chk") else True
+        deep_debug = bool(self.deep_debug_chk.isChecked()) if hasattr(self, "deep_debug_chk") else False
+        res = self.omr.run_recognition_test(
+            path,
+            self.template,
+            fast_production_test=fast_mode,
+            debug_deep=deep_debug,
+        )
         aligned = getattr(res, "aligned_image", None)
         aligned_binary = getattr(res, "aligned_binary", None)
         if aligned is None or aligned_binary is None:
@@ -1290,6 +1306,8 @@ class TemplateEditorWindow(QMainWindow):
             f"Poor image: {'Yes' if poor_image else 'No'}\n"
             f"Quality reason: {quality_reason}\n"
             f"Identifier fast-fail: {'Yes' if identifier_fast_fail else 'No'}\n"
+            f"Fast mode: {'ON' if fast_mode else 'OFF'}\n"
+            f"Deep debug: {'ON' if deep_debug else 'OFF'}\n"
             f"Timing (align/identifier/diagnostics): "
             f"{float(timing.get('alignment_time_sec', 0.0) or 0.0):.3f}s / "
             f"{float(timing.get('identifier_time_sec', 0.0) or 0.0):.3f}s / "
