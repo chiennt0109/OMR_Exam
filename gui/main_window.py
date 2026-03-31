@@ -7,6 +7,7 @@ import re
 from datetime import date, datetime
 from pathlib import Path
 import time
+import uuid
 
 from PySide6.QtCore import Qt, QEvent, QPointF, QTimer
 from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPixmap, QTransform, QPainter, QPen
@@ -2671,6 +2672,10 @@ class MainWindow(QMainWindow):
         if self.session_dirty:
             if not self._confirm("Dữ liệu chưa lưu", "Kỳ thi hiện tại có thay đổi chưa lưu. Vẫn đóng?"):
                 return
+        self._release_batch_runtime_state()
+        self._release_preview_resources()
+        self._release_template_cache()
+        self._release_editor_resources()
         self.session = None
         self.template = None
         self.answer_keys = None
@@ -2693,6 +2698,54 @@ class MainWindow(QMainWindow):
         self.manual_edit.clear()
         self._refresh_batch_subject_controls()
         self.stack.setCurrentIndex(0)
+
+    def _release_batch_runtime_state(self) -> None:
+        # resource cleanup / release: aggressively clear heavy per-subject runtime maps.
+        self.scan_results = []
+        self.scan_results_by_subject = {}
+        self.batch_working_state_by_subject = {}
+        self.scoring_results_by_subject = {}
+        self.scoring_phases = []
+        self.scan_files = []
+        self.score_rows = []
+        self.imported_exam_codes = []
+        self.preview_rotation_by_index = {}
+        self.preview_markers_by_index = {}
+        self.scan_forced_status_by_index = {}
+        self.scan_blank_questions = {}
+        self.scan_blank_summary = {}
+        self.scan_manual_adjustments = {}
+        self.scan_edit_history = {}
+        self.scan_last_adjustment = {}
+        self.batch_editor_return_payload = None
+        self.batch_editor_return_session_id = None
+
+    def _release_preview_resources(self) -> None:
+        if hasattr(self, "scan_image_preview"):
+            self.scan_image_preview.clear()
+            if hasattr(self.scan_image_preview, "clear_markers"):
+                self.scan_image_preview.clear_markers()
+        if hasattr(self, "result_preview"):
+            self.result_preview.clear()
+        if hasattr(self, "preview_source_pixmap"):
+            self.preview_source_pixmap = None
+
+    def _release_template_cache(self) -> None:
+        if hasattr(self, "_template_cache_by_path"):
+            self._template_cache_by_path = {}
+
+    def _release_editor_resources(self) -> None:
+        for attr in ["template_editor_embedded", "embedded_exam_dialog"]:
+            obj = getattr(self, attr, None)
+            if obj is not None:
+                try:
+                    obj.deleteLater()
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+        for attr in ["embedded_exam_session", "embedded_exam_original_payload"]:
+            if hasattr(self, attr):
+                setattr(self, attr, None)
 
     def manage_subjects(self) -> None:
         self._refresh_subject_management_tables()
@@ -3501,7 +3554,9 @@ class MainWindow(QMainWindow):
         if not key_norm:
             return None
         for cfg in self._subject_configs_for_scoring():
-            if self._subject_key_from_cfg(cfg) == key_norm:
+            canonical = self._subject_instance_key_from_cfg(cfg)
+            logical = self._logical_subject_key_from_cfg(cfg)
+            if key_norm in {canonical, logical}:
                 return cfg
         return None
 
@@ -3640,13 +3695,47 @@ class MainWindow(QMainWindow):
         return self.answer_keys is not None
 
     @staticmethod
-    def _subject_key_from_cfg(cfg: dict) -> str:
+    def _logical_subject_key_from_cfg(cfg: dict) -> str:
         key = str(cfg.get("answer_key_key", "") or "").strip()
         if key:
             return key
         name = str(cfg.get("name", "") or "").strip()
         block = str(cfg.get("block", "") or "").strip()
         return f"{name}_{block}" if name and block else (name or "General")
+
+    def _ensure_subject_instance_key(self, cfg: dict, index: int | None = None) -> str:
+        # canonical subject_instance_key: scoped runtime/storage key, stable across edits of display fields.
+        if not isinstance(cfg, dict):
+            return ""
+        existing = str(cfg.get("subject_instance_key", "") or "").strip()
+        if existing:
+            return existing
+        scope_prefix = self._session_scope_prefix() or "session"
+        logical = self._logical_subject_key_from_cfg(cfg) or "General"
+        uid = str(cfg.get("subject_uid", "") or "").strip()
+        if not uid:
+            uid = str(uuid.uuid4())
+            cfg["subject_uid"] = uid
+        suffix = f"{int(index)}" if isinstance(index, int) and index >= 0 else uid
+        value = f"{scope_prefix}::{logical}::{suffix}"
+        cfg["logical_subject_key"] = logical
+        cfg["subject_instance_key"] = value
+        return value
+
+    def _subject_instance_key_from_cfg(self, cfg: dict) -> str:
+        if not isinstance(cfg, dict):
+            return ""
+        return self._ensure_subject_instance_key(cfg)
+
+    def _current_subject_instance_key(self) -> str:
+        cfg = self._selected_batch_subject_config()
+        if not isinstance(cfg, dict):
+            return ""
+        return self._subject_instance_key_from_cfg(cfg)
+
+    def _subject_key_from_cfg(self, cfg: dict) -> str:
+        # backward compatibility shim: storage/runtime key is now subject_instance_key.
+        return self._subject_instance_key_from_cfg(cfg)
 
     def _batch_result_subject_key(self, subject_key: str) -> str:
         base = str(subject_key or "").strip()
@@ -3697,13 +3786,16 @@ class MainWindow(QMainWindow):
         if not isinstance(cfg, dict):
             return "-"
         exam_name = str((self.session.exam_name if self.session else "") or "").strip() or "Kỳ thi hiện tại"
-        subject_name = str(cfg.get("name", "") or "").strip() or str(self._subject_key_from_cfg(cfg) or "-")
+        subject_name = str(cfg.get("name", "") or "").strip() or str(self._logical_subject_key_from_cfg(cfg) or "-")
         block = str(cfg.get("block", "") or "").strip() or "-"
         return f"{exam_name} | {subject_name} | Khối {block}"
 
     def _batch_cache_subject_key(self, cfg: dict | None, include_session: bool = True) -> str:
         if not isinstance(cfg, dict):
             return ""
+        canonical = str(self._subject_instance_key_from_cfg(cfg) or "").strip().lower()
+        if canonical:
+            return canonical
         name = str(cfg.get("name", "") or "").strip().lower()
         block = str(cfg.get("block", "") or "").strip().lower()
         answer_key = str(cfg.get("answer_key_key", "") or "").strip().lower()
@@ -3744,7 +3836,7 @@ class MainWindow(QMainWindow):
             key = self._subject_key_from_cfg(cfg)
             if eligible and key not in eligible:
                 continue
-            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
+            label = self._display_subject_label(cfg)
             self.scoring_subject_combo.addItem(label, key)
         if self.scoring_subject_combo.count() == 0:
             fallback = self._resolve_preferred_scoring_subject()
@@ -4422,7 +4514,12 @@ class MainWindow(QMainWindow):
             return []
         cfg = self.session.config or {}
         raw = cfg.get("subject_configs", [])
-        return raw if isinstance(raw, list) else []
+        items = raw if isinstance(raw, list) else []
+        for idx, item in enumerate(items):
+            if isinstance(item, dict):
+                # legacy fallback / migration: promote old logical-only configs to canonical subject_instance_key.
+                self._ensure_subject_instance_key(item, idx)
+        return items
 
     def _student_profile_by_id(self, student_id: str) -> dict:
         sid = str(student_id or "").strip()
@@ -4581,12 +4678,20 @@ class MainWindow(QMainWindow):
     def _refresh_batch_subject_controls(self) -> None:
         if not hasattr(self, "batch_subject_combo"):
             return
+        current_key = str(self.batch_subject_combo.currentData() or "").strip() if self.batch_subject_combo.count() > 0 else ""
         self.batch_subject_combo.blockSignals(True)
         self.batch_subject_combo.clear()
-        self.batch_subject_combo.addItem("[Chọn môn]")
-        for cfg in self._effective_subject_configs_for_batch():
+        self.batch_subject_combo.addItem("[Chọn môn]", "")
+        for idx, cfg in enumerate(self._effective_subject_configs_for_batch()):
+            if isinstance(cfg, dict):
+                self._ensure_subject_instance_key(cfg, idx)
             label = self._display_subject_label(cfg)
-            self.batch_subject_combo.addItem(label, cfg)
+            self.batch_subject_combo.addItem(label, self._subject_instance_key_from_cfg(cfg))
+        if current_key:
+            for i in range(self.batch_subject_combo.count()):
+                if str(self.batch_subject_combo.itemData(i) or "").strip() == current_key:
+                    self.batch_subject_combo.setCurrentIndex(i)
+                    break
         self.batch_subject_combo.blockSignals(False)
         self._on_batch_subject_changed(self.batch_subject_combo.currentIndex())
 
@@ -4596,8 +4701,10 @@ class MainWindow(QMainWindow):
         idx = self.batch_subject_combo.currentIndex()
         if idx <= 0:
             return None
-        cfg = self.batch_subject_combo.itemData(idx)
-        return cfg if isinstance(cfg, dict) else None
+        key = str(self.batch_subject_combo.itemData(idx) or "").strip()
+        if not key:
+            return None
+        return self._subject_config_by_subject_key(key)
 
     def _subject_section_question_counts(self, subject_key: str = "") -> dict[str, int]:
         counts = {"MCQ": 0, "TF": 0, "NUMERIC": 0}
