@@ -438,6 +438,12 @@ class OMRProcessor:
             "poor_identifier_zone": bool(poor_identifier_zone),
             "reason": ",".join(reason_bits),
             "threshold": float(md.get("poor_image_quality_threshold", threshold) or threshold),
+            "blur_var": float(blur_var),
+            "header_density": float(header_density),
+            "usable_ratio": float(usable_ratio),
+            "match_count": int(match_count),
+            "mean_error": float(mean_error),
+            "align_score": float(align_score),
         }
 
     @staticmethod
@@ -582,8 +588,9 @@ class OMRProcessor:
         ox = float(x0 + max_loc[0] + (pw * 0.5))
         oy = float(y0 + max_loc[1] + (ph * 0.5))
         ref_center = np.array([x + (pw * 0.5), y + (ph * 0.5)], dtype=np.float32)
+        success = bool(max_val >= 0.20)
         return {
-            "success": bool(max_val >= 0.20),
+            "success": success,
             "name": str(patch_cfg.get("name", "")),
             "band": str(patch_cfg.get("band", "")),
             "score": float(max_val),
@@ -592,6 +599,7 @@ class OMRProcessor:
             "center_obs": np.array([ox, oy], dtype=np.float32),
             "dx": float(ox - ref_center[0]),
             "dy": float(oy - ref_center[1]),
+            "reason": "" if success else "low_score",
         }
 
     def _estimate_scanner_locked_transform(
@@ -636,12 +644,33 @@ class OMRProcessor:
         theta_deg = float(np.degrees(np.arctan2(float(matrix[1, 0]), float(matrix[0, 0]))))
         scale = float(np.sqrt((float(matrix[0, 0]) ** 2) + (float(matrix[1, 0]) ** 2)))
         success = len(valid) >= 2 and inlier_count >= 2
+        scores = [float(m.get("score", 0.0) or 0.0) for m in patch_matches]
+        patch_score_mean = float(np.mean(scores)) if scores else 0.0
+        patch_score_min = float(np.min(scores)) if scores else 0.0
+        patch_score_max = float(np.max(scores)) if scores else 0.0
+        per_patch = [
+            {
+                "name": str(m.get("name", "")),
+                "band": str(m.get("band", "")),
+                "score": float(m.get("score", 0.0) or 0.0),
+                "success": bool(m.get("success", False)),
+                "dx": float(m.get("dx", 0.0) or 0.0),
+                "dy": float(m.get("dy", 0.0) or 0.0),
+                "reason": str(m.get("reason", "") or ""),
+            }
+            for m in patch_matches
+        ]
         return {
             "success": bool(success),
             "matrix": matrix,
             "patch_matches": patch_matches,
             "valid_patch_count": int(len(valid)),
             "inlier_count": int(inlier_count),
+            "patch_total_count": int(len(patch_matches)),
+            "patch_score_mean": float(patch_score_mean),
+            "patch_score_min": float(patch_score_min),
+            "patch_score_max": float(patch_score_max),
+            "per_patch": per_patch,
             "registration_patch_time_sec": registration_patch_time_sec,
             "transform_fit_time_sec": transform_fit_time_sec,
             "dtheta_deg": theta_deg,
@@ -712,6 +741,22 @@ class OMRProcessor:
         return cv2.integral((binary > 0).astype(np.uint8))
 
     @staticmethod
+    def _calc_unaccounted_time(timing: dict[str, float]) -> float:
+        accounted = (
+            float(timing.get("load_time_sec", 0.0) or 0.0)
+            + float(timing.get("normalize_time_sec", 0.0) or 0.0)
+            + float(timing.get("registration_patch_time_sec", 0.0) or 0.0)
+            + float(timing.get("transform_fit_time_sec", 0.0) or 0.0)
+            + float(timing.get("header_decode_time_sec", 0.0) or 0.0)
+            + float(timing.get("mcq_decode_time_sec", 0.0) or 0.0)
+            + float(timing.get("tf_decode_time_sec", 0.0) or 0.0)
+            + float(timing.get("numeric_decode_time_sec", 0.0) or 0.0)
+            + float(timing.get("diagnostics_time_sec", 0.0) or 0.0)
+        )
+        total = float(timing.get("total_time_sec", 0.0) or 0.0)
+        return float(total - accounted)
+
+    @staticmethod
     def _sample_bubbles_fast(integral: np.ndarray, centers: np.ndarray, radius: int, shape: tuple[int, int]) -> np.ndarray:
         h, w = shape
         out = np.zeros((len(centers),), dtype=np.float32)
@@ -732,6 +777,47 @@ class OMRProcessor:
         zone: Zone,
         result: OMRResult,
     ) -> None:
+        zone_debug = dict(getattr(result, "digit_zone_debug", {}) or {})
+        rows, cols = mat.shape
+        col_logs: list[dict[str, object]] = []
+        default_digit_map = list(range(10))
+        digit_map = zone.metadata.get("digit_map", default_digit_map)
+        for c in range(cols):
+            col = np.asarray(mat[:, c], dtype=np.float32)
+            order = np.argsort(col)[::-1] if col.size else np.array([], dtype=np.int32)
+            top_i = int(order[0]) if len(order) else 0
+            second_i = int(order[1]) if len(order) > 1 else top_i
+            top_score = float(col[top_i]) if col.size else 0.0
+            second_score = float(col[second_i]) if col.size else 0.0
+            threshold_used = float(
+                max(
+                    self.empty_threshold + 0.10,
+                    min(min(self.fill_threshold, 0.52), float(np.mean(col) + (0.5 * np.std(col))) if col.size else self.fill_threshold),
+                )
+            )
+            status = "ok"
+            if len(order) > 1 and abs(top_score - second_score) <= 0.015:
+                status = "multiple_equal"
+            elif top_score < threshold_used:
+                status = "below_threshold"
+            elif (top_score - second_score) <= 0.0:
+                status = "ambiguous"
+            chosen_digit = digit_map[top_i] if top_i < len(digit_map) else top_i
+            col_logs.append(
+                {
+                    "zone_id": str(zone.id),
+                    "recognition_path": "scanner_locked_direct",
+                    "column_index": int(c),
+                    "top_score": float(top_score),
+                    "second_score": float(second_score),
+                    "margin": float(top_score - second_score),
+                    "threshold_used": float(threshold_used),
+                    "chosen_digit": str(chosen_digit),
+                    "status": str(status),
+                    "fallback_attempted": False,
+                    "fallback_kind": "",
+                }
+            )
         value, confs = self._decode_column_digits(mat, zone, zone.grid, result)
         key = "student_id" if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else "exam_code"
         if key == "student_id":
@@ -740,6 +826,12 @@ class OMRProcessor:
             result.exam_code = value
         result.confidence_scores[key] = float(np.mean(confs)) if confs else 0.0
         result.confidence_scores[f"{key}:{zone.id}"] = float(np.mean(confs)) if confs else 0.0
+        zone_debug[zone.id] = dict(zone_debug.get(zone.id, {})) | {
+            "zone_id": str(zone.id),
+            "recognition_path": "scanner_locked_direct",
+            "columns": col_logs,
+        }
+        setattr(result, "digit_zone_debug", zone_debug)
 
     def _decode_mcq_scanner_locked_fast(self, mat: np.ndarray, zone: Zone, result: OMRResult) -> None:
         grid = zone.grid
@@ -778,12 +870,12 @@ class OMRProcessor:
         scanner_plan: dict[str, object],
         affine_matrix: np.ndarray,
         result: OMRResult,
-    ) -> None:
+    ) -> dict[str, object]:
         if zone.grid is None:
-            return
+            return {"bubble_count": 0, "recognized_count": 0, "blank_count": 0, "uncertain_count": 0}
         ref_centers = np.array((scanner_plan.get("reference_zone_centers_px", {}) or {}).get(zone.id, np.empty((0, 2), dtype=np.float32)), dtype=np.float32)
         if ref_centers.size == 0:
-            return
+            return {"bubble_count": 0, "recognized_count": 0, "blank_count": 0, "uncertain_count": 0}
         # direct ROI decode: transform zone centers only, no full-page warp in fast path.
         centers = self._transform_points_affine(ref_centers, affine_matrix)
         radius = int((scanner_plan.get("per_zone_radius", {}) or {}).get(zone.id, int(zone.metadata.get("bubble_radius", 9)) or 9))
@@ -794,6 +886,9 @@ class OMRProcessor:
         if len(ratios) < need:
             ratios = np.pad(ratios, (0, need - len(ratios)), constant_values=0.0)
         mat = ratios[:need].reshape(rows, cols)
+        recognized_count = int(np.sum(mat > self.fill_threshold))
+        blank_count = int(np.sum(mat < self.empty_threshold))
+        uncertain_count = int(max(0, mat.size - recognized_count - blank_count))
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
             self._decode_identifier_scanner_locked_fast(mat, zone, result)
         elif zone.zone_type == ZoneType.MCQ_BLOCK:
@@ -802,6 +897,12 @@ class OMRProcessor:
             self._decode_tf_scanner_locked_fast(mat, zone, result)
         elif zone.zone_type == ZoneType.NUMERIC_BLOCK:
             self._decode_numeric_scanner_locked_fast(mat, zone, result)
+        return {
+            "bubble_count": int(mat.size),
+            "recognized_count": int(recognized_count),
+            "blank_count": int(blank_count),
+            "uncertain_count": int(uncertain_count),
+        }
 
     def _recognize_sheet_scanner_locked(
         self,
@@ -812,6 +913,8 @@ class OMRProcessor:
         started: float,
         load_time_sec: float,
         normalize_time_sec: float,
+        dpi_message: str,
+        original_shape: tuple[int, ...],
     ) -> OMRResult:
         # template-locked registration: patch match against reference scan, then transform points only.
         scanner_plan = self._get_scanner_locked_plan(template)
@@ -829,25 +932,51 @@ class OMRProcessor:
         registration_ok = bool(reg_payload.get("success", False))
         self._active_point_shift = (0.0, 0.0)
         setattr(result, "_scanner_locked_registration_ok", bool(registration_ok))
+        final_shape = tuple(int(v) for v in working.shape)
         if not registration_ok:
             # generic fallback hook: allow caller to run full pipeline only when registration fails.
             self._append_issue_once(result, "SCANNER_LOCK_FAIL", "Template-locked registration failed")
+            timing = {
+                "load_time_sec": float(load_time_sec),
+                "normalize_time_sec": float(normalize_time_sec),
+                "registration_patch_time_sec": float(registration_patch_time_sec),
+                "transform_fit_time_sec": float(transform_fit_time_sec),
+                "header_decode_time_sec": 0.0,
+                "mcq_decode_time_sec": 0.0,
+                "tf_decode_time_sec": 0.0,
+                "numeric_decode_time_sec": 0.0,
+                "roi_decode_time_sec": 0.0,
+                "identifier_time_sec": 0.0,
+                "identifier_fallback_time_sec": 0.0,
+                "diagnostics_time_sec": 0.0,
+                "total_time_sec": float(time.perf_counter() - started),
+            }
+            timing["unaccounted_time_sec"] = self._calc_unaccounted_time(timing)
             setattr(result, "alignment_debug", {
                 "alignment_mode": "scanner_locked_fast",
                 "recognition_mode": "scanner_locked",
+                "path_used": "scanner_locked_fast",
+                "scanner_locked_enabled": True,
                 "registration_ok": False,
+                "fallback_used": True,
+                "fallback_reason": "registration_failed",
+                "reference_scan_path": str(scanner_plan.get("reference_scan_path", "") or ""),
+                "original_shape": tuple(int(v) for v in original_shape),
+                "final_shape": final_shape,
+                "dpi_message": str(dpi_message or ""),
+                "patch_total_count": int(reg_payload.get("patch_total_count", 0) or 0),
+                "patch_valid_count": int(reg_payload.get("valid_patch_count", 0) or 0),
+                "patch_inlier_count": int(reg_payload.get("inlier_count", 0) or 0),
+                "dtheta_deg": float(reg_payload.get("dtheta_deg", 0.0) or 0.0),
+                "scale": float(reg_payload.get("scale", 1.0) or 1.0),
+                "transform_matrix": affine_matrix.tolist(),
+                "patch_score_mean": float(reg_payload.get("patch_score_mean", 0.0) or 0.0),
+                "patch_score_min": float(reg_payload.get("patch_score_min", 0.0) or 0.0),
+                "patch_score_max": float(reg_payload.get("patch_score_max", 0.0) or 0.0),
+                "per_patch": list(reg_payload.get("per_patch", []) or []),
                 "patch_matches": list(reg_payload.get("patch_matches", []) or []),
-                "timing_breakdown": {
-                    "load_time_sec": float(load_time_sec),
-                    "normalize_time_sec": float(normalize_time_sec),
-                    "registration_patch_time_sec": float(registration_patch_time_sec),
-                    "transform_fit_time_sec": float(transform_fit_time_sec),
-                    "header_decode_time_sec": 0.0,
-                    "mcq_decode_time_sec": 0.0,
-                    "tf_decode_time_sec": 0.0,
-                    "numeric_decode_time_sec": 0.0,
-                    "total_time_sec": float(time.perf_counter() - started),
-                },
+                "unaccounted_time_sec": float(timing["unaccounted_time_sec"]),
+                "timing_breakdown": timing,
             })
             result.processing_time_sec = float(time.perf_counter() - started)
             result.sync_legacy_aliases()
@@ -878,6 +1007,7 @@ class OMRProcessor:
         integral = self._build_integral_sampler(aligned_binary)
         roi_decode_started = time.perf_counter()
         plan = self._get_template_runtime_plan(template)
+        zone_metrics: list[dict[str, object]] = []
         for zone in plan.sorted_zones:
             if zone.zone_type == ZoneType.ANCHOR:
                 continue
@@ -888,7 +1018,7 @@ class OMRProcessor:
             ):
                 continue
             z_started = time.perf_counter()
-            self._decode_zone_scanner_locked_fast(
+            zone_stat = self._decode_zone_scanner_locked_fast(
                 binary=aligned_binary,
                 integral=integral,
                 zone=zone,
@@ -897,6 +1027,17 @@ class OMRProcessor:
                 result=result,
             )
             elapsed = float(time.perf_counter() - z_started)
+            zone_metrics.append(
+                {
+                    "zone_id": str(zone.id),
+                    "zone_type": str(getattr(zone.zone_type, "value", zone.zone_type)),
+                    "bubble_count": int(zone_stat.get("bubble_count", 0) or 0),
+                    "decode_time_sec": float(elapsed),
+                    "recognized_count": int(zone_stat.get("recognized_count", 0) or 0),
+                    "blank_count": int(zone_stat.get("blank_count", 0) or 0),
+                    "uncertain_count": int(zone_stat.get("uncertain_count", 0) or 0),
+                }
+            )
             if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
                 header_time_sec += elapsed
             elif zone.zone_type == ZoneType.MCQ_BLOCK:
@@ -911,35 +1052,65 @@ class OMRProcessor:
         setattr(result, "aligned_image", aligned)
         setattr(result, "aligned_binary", aligned_binary)
         setattr(result, "detected_anchors", [])
+        timing = {
+            "load_time_sec": float(load_time_sec),
+            "normalize_time_sec": float(normalize_time_sec),
+            "registration_patch_time_sec": float(registration_patch_time_sec),
+            "transform_fit_time_sec": float(transform_fit_time_sec),
+            "header_decode_time_sec": float(header_time_sec),
+            "mcq_decode_time_sec": float(mcq_time_sec),
+            "tf_decode_time_sec": float(tf_time_sec),
+            "numeric_decode_time_sec": float(numeric_time_sec),
+            "roi_decode_time_sec": float(roi_decode_time_sec),
+            "mcq_time_sec": float(mcq_time_sec),
+            "tf_time_sec": float(tf_time_sec),
+            "numeric_time_sec": float(numeric_time_sec),
+            "identifier_time_sec": float(identifier_time_sec),
+            "identifier_fallback_time_sec": float(getattr(result, "_identifier_fallback_time_sec", 0.0) or 0.0),
+            "diagnostics_time_sec": 0.0,
+            "total_time_sec": float(time.perf_counter() - started),
+            "poor_image_fast_fail": bool(poor_fast_fail),
+        }
+        timing["unaccounted_time_sec"] = self._calc_unaccounted_time(timing)
         setattr(result, "alignment_debug", {
             "alignment_mode": "scanner_locked_fast",
             "recognition_mode": "scanner_locked",
+            "path_used": "scanner_locked_fast",
+            "scanner_locked_enabled": True,
             "registration_ok": True,
+            "fallback_used": False,
+            "fallback_reason": "",
+            "reference_scan_path": str(scanner_plan.get("reference_scan_path", "") or ""),
+            "original_shape": tuple(int(v) for v in original_shape),
+            "final_shape": final_shape,
+            "dpi_message": str(dpi_message or ""),
             "transform_matrix": affine_matrix.tolist(),
+            "patch_total_count": int(reg_payload.get("patch_total_count", 0) or 0),
+            "patch_valid_count": int(reg_payload.get("valid_patch_count", 0) or 0),
+            "patch_inlier_count": int(reg_payload.get("inlier_count", 0) or 0),
+            "dtheta_deg": float(reg_payload.get("dtheta_deg", 0.0) or 0.0),
+            "scale": float(reg_payload.get("scale", 1.0) or 1.0),
+            "patch_score_mean": float(reg_payload.get("patch_score_mean", 0.0) or 0.0),
+            "patch_score_min": float(reg_payload.get("patch_score_min", 0.0) or 0.0),
+            "patch_score_max": float(reg_payload.get("patch_score_max", 0.0) or 0.0),
+            "per_patch": list(reg_payload.get("per_patch", []) or []),
             "patch_matches": list(reg_payload.get("patch_matches", []) or []),
             "quality_gate": dict(quality_gate),
+            "quality_score": float(quality_gate.get("quality_score", 0.0) or 0.0),
             "poor_image": bool(poor_image),
             "poor_identifier_zone": bool(poor_identifier_zone),
             "quality_reason": str(quality_gate.get("reason", "") or ""),
+            "blur_var": float(quality_gate.get("blur_var", 0.0) or 0.0),
+            "header_density": float(quality_gate.get("header_density", 0.0) or 0.0),
+            "usable_ratio": float(quality_gate.get("usable_ratio", 0.0) or 0.0),
+            "match_count": int(quality_gate.get("match_count", 0) or 0),
+            "mean_error": float(quality_gate.get("mean_error", 0.0) or 0.0),
+            "align_score": float(quality_gate.get("align_score", 0.0) or 0.0),
+            "zone_metrics": zone_metrics,
             "fast_production_mode": True,
             "diagnostics_collected": False,
-            "timing_breakdown": {
-                "load_time_sec": float(load_time_sec),
-                "normalize_time_sec": float(normalize_time_sec),
-                "registration_patch_time_sec": float(registration_patch_time_sec),
-                "transform_fit_time_sec": float(transform_fit_time_sec),
-                "header_decode_time_sec": float(header_time_sec),
-                "mcq_decode_time_sec": float(mcq_time_sec),
-                "tf_decode_time_sec": float(tf_time_sec),
-                "numeric_decode_time_sec": float(numeric_time_sec),
-                "roi_decode_time_sec": float(roi_decode_time_sec),
-                "mcq_time_sec": float(mcq_time_sec),
-                "tf_time_sec": float(tf_time_sec),
-                "numeric_time_sec": float(numeric_time_sec),
-                "identifier_time_sec": float(identifier_time_sec),
-                "total_time_sec": float(time.perf_counter() - started),
-                "poor_image_fast_fail": bool(poor_fast_fail),
-            },
+            "unaccounted_time_sec": float(timing["unaccounted_time_sec"]),
+            "timing_breakdown": timing,
         })
         result.processing_time_sec = float(time.perf_counter() - started)
         result.sync_legacy_aliases()
@@ -987,6 +1158,7 @@ class OMRProcessor:
             tf_time_sec = 0.0
             numeric_time_sec = 0.0
             src_load_started = time.perf_counter()
+            dpi_msg = ""
             if isinstance(image, np.ndarray):
                 src = image.copy()
             else:
@@ -998,11 +1170,13 @@ class OMRProcessor:
                     result.sync_legacy_aliases()
                     return result
             load_time_sec = float(time.perf_counter() - src_load_started)
+            original_shape = tuple(int(v) for v in src.shape) if src is not None else tuple()
 
             normalize_started = time.perf_counter()
             if src.shape[1] != template.width or src.shape[0] != template.height:
                 src = cv2.resize(src, (template.width, template.height), interpolation=cv2.INTER_LINEAR)
             normalize_time_sec = float(time.perf_counter() - normalize_started)
+            final_shape = tuple(int(v) for v in src.shape)
 
             if self._scanner_locked_mode(template) and fast_production_mode:
                 fast_res = self._recognize_sheet_scanner_locked(
@@ -1013,6 +1187,8 @@ class OMRProcessor:
                     started=started,
                     load_time_sec=load_time_sec,
                     normalize_time_sec=normalize_time_sec,
+                    dpi_message=dpi_msg,
+                    original_shape=original_shape,
                 )
                 registration_ok = bool(getattr(fast_res, "_scanner_locked_registration_ok", False))
                 if registration_ok or (not self._scanner_locked_allow_full_fallback(template)):
@@ -1075,6 +1251,7 @@ class OMRProcessor:
                 self._draw_alignment_debug(debug_overlay, template)
 
             plan = self._get_template_runtime_plan(template)
+            zone_metrics: list[dict[str, object]] = []
             for zone in plan.sorted_zones:
                 if self._time_budget_exceeded():
                     result.issues.append(OMRIssue("TIMEOUT", "Recognition time budget exceeded; skipped remaining zones"))
@@ -1090,8 +1267,30 @@ class OMRProcessor:
                 if zone.grid is not None:
                     context.semantic_grids[zone.id] = zone.grid
                 z_started = time.perf_counter()
+                err_before = len(result.recognition_errors)
+                mcq_before = len(result.mcq_answers)
+                tf_before = sum(len(v or {}) for v in result.true_false_answers.values())
+                num_before = len(result.numeric_answers)
                 self.recognize_block(aligned_binary, zone, template, result, debug_overlay)
                 z_elapsed = float(time.perf_counter() - z_started)
+                mcq_after = len(result.mcq_answers)
+                tf_after = sum(len(v or {}) for v in result.true_false_answers.values())
+                num_after = len(result.numeric_answers)
+                rec_count = max(0, (mcq_after - mcq_before) + (tf_after - tf_before) + (num_after - num_before))
+                uncertain_count = max(0, len(result.recognition_errors) - err_before)
+                bubble_count = int((zone.grid.rows * zone.grid.cols) if zone.grid is not None else 0)
+                blank_count = max(0, bubble_count - rec_count - uncertain_count)
+                zone_metrics.append(
+                    {
+                        "zone_id": str(zone.id),
+                        "zone_type": str(getattr(zone.zone_type, "value", zone.zone_type)),
+                        "bubble_count": int(bubble_count),
+                        "decode_time_sec": float(z_elapsed),
+                        "recognized_count": int(rec_count),
+                        "blank_count": int(blank_count),
+                        "uncertain_count": int(uncertain_count),
+                    }
+                )
                 if zone.zone_type == ZoneType.MCQ_BLOCK:
                     mcq_time_sec += z_elapsed
                 elif zone.zone_type == ZoneType.TRUE_FALSE_BLOCK:
@@ -1145,17 +1344,34 @@ class OMRProcessor:
             if not isinstance(getattr(result, "alignment_debug", None), dict):
                 setattr(result, "alignment_debug", {})
             result.alignment_debug["quality_gate"] = dict(quality_gate)
+            result.alignment_debug["quality_score"] = float(quality_gate.get("quality_score", 0.0) or 0.0)
             result.alignment_debug["poor_image"] = bool(poor_image)
             result.alignment_debug["poor_identifier_zone"] = bool(poor_identifier_zone)
             result.alignment_debug["quality_reason"] = quality_reason
+            result.alignment_debug["blur_var"] = float(quality_gate.get("blur_var", 0.0) or 0.0)
+            result.alignment_debug["header_density"] = float(quality_gate.get("header_density", 0.0) or 0.0)
+            result.alignment_debug["usable_ratio"] = float(quality_gate.get("usable_ratio", 0.0) or 0.0)
+            result.alignment_debug["match_count"] = int(quality_gate.get("match_count", 0) or 0)
+            result.alignment_debug["mean_error"] = float(quality_gate.get("mean_error", 0.0) or 0.0)
+            result.alignment_debug["align_score"] = float(quality_gate.get("align_score", 0.0) or 0.0)
             result.alignment_debug["fast_production_mode"] = bool(fast_production_mode)
             result.alignment_debug["diagnostics_collected"] = bool(context.collect_diagnostics)
-            result.alignment_debug["timing_breakdown"] = {
+            result.alignment_debug["zone_metrics"] = zone_metrics
+            path_used = "generic_fallback" if self._scanner_locked_mode(template) and fast_production_mode else "generic_fallback"
+            fallback_used = bool(self._scanner_locked_mode(template) and fast_production_mode)
+            fallback_reason = "registration_failed" if fallback_used else ""
+            timing = {
                 "load_time_sec": float(load_time_sec),
                 "normalize_time_sec": float(normalize_time_sec),
                 "anchor_detect_time_sec": float(anchor_detect_time_sec),
                 "alignment_time_sec": float(alignment_time_sec),
                 "scanner_locked_match_time_sec": float(scanner_locked_match_time_sec),
+                "registration_patch_time_sec": 0.0,
+                "transform_fit_time_sec": 0.0,
+                "header_decode_time_sec": 0.0,
+                "mcq_decode_time_sec": float(mcq_time_sec),
+                "tf_decode_time_sec": float(tf_time_sec),
+                "numeric_decode_time_sec": float(numeric_time_sec),
                 "scanner_locked_header_time_sec": 0.0,
                 "scanner_locked_mcq_time_sec": 0.0,
                 "scanner_locked_tf_time_sec": 0.0,
@@ -1170,6 +1386,21 @@ class OMRProcessor:
                 "poor_image_fast_fail": bool(poor_fast_fail),
                 "total_time_sec": float(result.processing_time_sec),
             }
+            timing["unaccounted_time_sec"] = self._calc_unaccounted_time(timing)
+            result.alignment_debug["path_used"] = str(path_used)
+            result.alignment_debug["scanner_locked_enabled"] = bool(self._scanner_locked_mode(template))
+            result.alignment_debug["registration_ok"] = bool(not fallback_used)
+            result.alignment_debug["fallback_used"] = bool(fallback_used)
+            result.alignment_debug["fallback_reason"] = str(fallback_reason)
+            result.alignment_debug["reference_scan_path"] = str((self._get_scanner_locked_plan(template).get("reference_scan_path", "") if self._scanner_locked_mode(template) else "") or "")
+            result.alignment_debug["original_shape"] = tuple(int(v) for v in original_shape)
+            result.alignment_debug["final_shape"] = tuple(int(v) for v in final_shape)
+            result.alignment_debug["dpi_message"] = str(dpi_msg or "")
+            result.alignment_debug["patch_total_count"] = int(result.alignment_debug.get("patch_total_count", 0) or 0)
+            result.alignment_debug["patch_valid_count"] = int(result.alignment_debug.get("patch_valid_count", 0) or 0)
+            result.alignment_debug["patch_inlier_count"] = int(result.alignment_debug.get("patch_inlier_count", 0) or 0)
+            result.alignment_debug["unaccounted_time_sec"] = float(timing["unaccounted_time_sec"])
+            result.alignment_debug["timing_breakdown"] = timing
             setattr(result, "answers", result.mcq_answers)
             result.sync_legacy_aliases()
             return result
@@ -1286,27 +1517,97 @@ class OMRProcessor:
         return max(1, min(total, target, max_auto))
 
     @staticmethod
-    def _write_batch_timing_log(log_path: Path, rows: list[tuple[int, str, float]], total_count: int) -> None:
+    def _write_batch_timing_log(log_path: Path, rows: list[dict[str, object]], total_count: int) -> None:
         try:
             log_path.parent.mkdir(parents=True, exist_ok=True)
             lines: list[str] = []
-            lines.append("idx\tfile\tseconds")
-            for idx, image_path, sec in rows:
-                lines.append(f"{idx}\t{image_path}\t{sec:.4f}")
-            valid_secs = [sec for _, _, sec in rows if sec >= 0.0]
+            lines.append(
+                "idx\tfile\tseconds\tpath_used\tregistration_ok\tfallback_used\tstudent_id_ok\texam_code_ok\t"
+                "total_time_sec\tidentifier_time_sec\tregistration_patch_time_sec\theader_decode_time_sec\tquality_score\t"
+                "patch_valid_count\tpatch_inlier_count"
+            )
+            for row in rows:
+                lines.append(
+                    f"{int(row.get('idx', 0) or 0)}\t{row.get('file', '')}\t{float(row.get('seconds', 0.0) or 0.0):.4f}\t"
+                    f"{row.get('path_used', '')}\t{int(bool(row.get('registration_ok', False)))}\t{int(bool(row.get('fallback_used', False)))}\t"
+                    f"{int(bool(row.get('student_id_ok', False)))}\t{int(bool(row.get('exam_code_ok', False)))}\t"
+                    f"{float(row.get('total_time_sec', 0.0) or 0.0):.4f}\t{float(row.get('identifier_time_sec', 0.0) or 0.0):.4f}\t"
+                    f"{float(row.get('registration_patch_time_sec', 0.0) or 0.0):.4f}\t{float(row.get('header_decode_time_sec', 0.0) or 0.0):.4f}\t"
+                    f"{float(row.get('quality_score', 0.0) or 0.0):.4f}\t{int(row.get('patch_valid_count', 0) or 0)}\t"
+                    f"{int(row.get('patch_inlier_count', 0) or 0)}"
+                )
+            valid_secs = [float(r.get("seconds", 0.0) or 0.0) for r in rows if float(r.get("seconds", 0.0) or 0.0) >= 0.0]
             if valid_secs:
                 avg = float(sum(valid_secs) / len(valid_secs))
                 est_500 = avg * 500.0
                 est_600 = avg * 600.0
+                totals = np.array([float(r.get("total_time_sec", 0.0) or 0.0) for r in rows], dtype=np.float32)
+                identifier_secs = [float(r.get("identifier_time_sec", 0.0) or 0.0) for r in rows]
+                reg_secs = [float(r.get("registration_patch_time_sec", 0.0) or 0.0) for r in rows]
+                header_secs = [float(r.get("header_decode_time_sec", 0.0) or 0.0) for r in rows]
+                success_count = sum(1 for r in rows if bool(r.get("student_id_ok", False)) and bool(r.get("exam_code_ok", False)))
+                sid_fail_count = sum(1 for r in rows if not bool(r.get("student_id_ok", False)))
+                exam_fail_count = sum(1 for r in rows if not bool(r.get("exam_code_ok", False)))
+                generic_fallback_count = sum(1 for r in rows if bool(r.get("fallback_used", False)))
+                poor_image_count = sum(1 for r in rows if bool(r.get("poor_image", False)))
+                slowest = sorted(rows, key=lambda r: float(r.get("total_time_sec", 0.0) or 0.0), reverse=True)[:20]
+                worst_identifier = sorted(rows, key=lambda r: float(r.get("identifier_time_sec", 0.0) or 0.0), reverse=True)[:20]
+                worst_registration = sorted(rows, key=lambda r: float(r.get("registration_patch_time_sec", 0.0) or 0.0), reverse=True)[:20]
                 lines.append("")
                 lines.append(f"avg_seconds_per_file\t{avg:.4f}")
                 lines.append(f"estimated_500_files_seconds\t{est_500:.2f}")
                 lines.append(f"estimated_600_files_seconds\t{est_600:.2f}")
                 lines.append(f"target_under_120_seconds_for_500\t{'YES' if est_500 <= 120.0 else 'NO'}")
+                lines.append(f"success_count\t{success_count}")
+                lines.append(f"student_id_fail_count\t{sid_fail_count}")
+                lines.append(f"exam_code_fail_count\t{exam_fail_count}")
+                lines.append(f"generic_fallback_count\t{generic_fallback_count}")
+                lines.append(f"poor_image_count\t{poor_image_count}")
+                lines.append(f"avg_total_sec\t{float(np.mean(totals)) if totals.size else 0.0:.4f}")
+                lines.append(f"p50_total_sec\t{float(np.percentile(totals, 50)) if totals.size else 0.0:.4f}")
+                lines.append(f"p90_total_sec\t{float(np.percentile(totals, 90)) if totals.size else 0.0:.4f}")
+                lines.append(f"p95_total_sec\t{float(np.percentile(totals, 95)) if totals.size else 0.0:.4f}")
+                lines.append(f"avg_identifier_sec\t{(sum(identifier_secs) / len(identifier_secs)) if identifier_secs else 0.0:.4f}")
+                lines.append(f"avg_registration_patch_sec\t{(sum(reg_secs) / len(reg_secs)) if reg_secs else 0.0:.4f}")
+                lines.append(f"avg_header_decode_sec\t{(sum(header_secs) / len(header_secs)) if header_secs else 0.0:.4f}")
+                lines.append("slowest_20_files")
+                for r in slowest:
+                    lines.append(f"- {r.get('file', '')}\t{float(r.get('total_time_sec', 0.0) or 0.0):.4f}")
+                lines.append("worst_identifier_20_files")
+                for r in worst_identifier:
+                    lines.append(f"- {r.get('file', '')}\t{float(r.get('identifier_time_sec', 0.0) or 0.0):.4f}")
+                lines.append("worst_registration_20_files")
+                for r in worst_registration:
+                    lines.append(f"- {r.get('file', '')}\t{float(r.get('registration_patch_time_sec', 0.0) or 0.0):.4f}")
             lines.append(f"total_files\t{total_count}")
             log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         except Exception:
             pass
+
+    @staticmethod
+    def _batch_timing_row(idx: int, image_path: str, seconds: float, result: OMRResult) -> dict[str, object]:
+        dbg = dict(getattr(result, "alignment_debug", {}) or {})
+        timing = dict(dbg.get("timing_breakdown", {}) or {})
+        sid = str(getattr(result, "student_id", "") or "").strip()
+        code = str(getattr(result, "exam_code", "") or "").strip()
+        return {
+            "idx": int(idx),
+            "file": str(image_path),
+            "seconds": float(seconds),
+            "path_used": str(dbg.get("path_used", dbg.get("alignment_mode", "")) or ""),
+            "registration_ok": bool(dbg.get("registration_ok", False)),
+            "fallback_used": bool(dbg.get("fallback_used", False)),
+            "student_id_ok": bool(sid and sid != "-" and "?" not in sid),
+            "exam_code_ok": bool(code and code != "-" and "?" not in code),
+            "total_time_sec": float(timing.get("total_time_sec", getattr(result, "processing_time_sec", 0.0)) or 0.0),
+            "identifier_time_sec": float(timing.get("identifier_time_sec", 0.0) or 0.0),
+            "registration_patch_time_sec": float(timing.get("registration_patch_time_sec", 0.0) or 0.0),
+            "header_decode_time_sec": float(timing.get("header_decode_time_sec", 0.0) or 0.0),
+            "quality_score": float(dbg.get("quality_score", 0.0) or 0.0),
+            "patch_valid_count": int(dbg.get("patch_valid_count", 0) or 0),
+            "patch_inlier_count": int(dbg.get("patch_inlier_count", 0) or 0),
+            "poor_image": bool(dbg.get("poor_image", False)),
+        }
 
     @staticmethod
     def _rotate_pair(image: np.ndarray, binary: np.ndarray, rotation: int, template: Template) -> tuple[np.ndarray, np.ndarray]:
@@ -1338,7 +1639,7 @@ class OMRProcessor:
         # per-file alignment diagnostics as they progress.
         self._batch_orientation_hint = None
         self._batch_orientation_hint_score = None
-        timing_rows: list[tuple[int, str, float]] = []
+        timing_rows: list[dict[str, object]] = []
         configured_workers = int(((template.metadata or {}).get("batch_workers", 0) if getattr(template, "metadata", None) else 0) or 0)
         default_workers = self._auto_batch_worker_count(total, template)
         worker_count = configured_workers if configured_workers > 0 else default_workers
@@ -1356,7 +1657,8 @@ class OMRProcessor:
                 else:
                     result = self.run_recognition_test(image_path, template, context)
                 results.append(result)
-                timing_rows.append((idx, str(image_path), float(time.perf_counter() - started)))
+                elapsed = float(time.perf_counter() - started)
+                timing_rows.append(self._batch_timing_row(idx, str(image_path), elapsed, result))
                 debug_payload = dict(getattr(result, "alignment_debug", {}) or {})
                 orient = debug_payload.get("orientation_rotation", None)
                 if isinstance(orient, (int, float)):
@@ -1388,7 +1690,10 @@ class OMRProcessor:
                 if progress_callback:
                     progress_callback(completed, total, image_path)
         for idx, image_path in enumerate(image_paths, start=1):
-            timing_rows.append((idx, str(image_path), float(ordered_secs[idx - 1])))
+            res = ordered_results[idx - 1]
+            if res is None:
+                continue
+            timing_rows.append(self._batch_timing_row(idx, str(image_path), float(ordered_secs[idx - 1]), res))
         if log_enabled:
             self._write_batch_timing_log(Path(log_path_text), timing_rows, total)
         return [res for res in ordered_results if res is not None]
