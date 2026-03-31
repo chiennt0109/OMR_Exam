@@ -3570,13 +3570,15 @@ class MainWindow(QMainWindow):
         if not subject:
             return []
         scoped_subject = self._batch_result_subject_key(subject)
+        has_session_scope = bool(str(self.current_session_id or "").strip())
         rows = self.database.fetch_scan_results_for_subject(scoped_subject)
         if not rows:
             sid = str(self.current_session_id or "").strip()
             legacy_scoped = f"{sid}::{subject}" if sid else ""
             if legacy_scoped and legacy_scoped != scoped_subject:
                 rows = self.database.fetch_scan_results_for_subject(legacy_scoped)
-        if not rows and scoped_subject != subject:
+        # Never fallback to unscoped key when current session exists to avoid cross-exam result bleed.
+        if not rows and (not has_session_scope) and scoped_subject != subject:
             # Legacy fallback (older sessions saved by raw subject key).
             rows = self.database.fetch_scan_results_for_subject(subject)
         if not rows:
@@ -3887,9 +3889,16 @@ class MainWindow(QMainWindow):
         if not isinstance(cfg, dict):
             return ""
         existing = str(cfg.get("subject_instance_key", "") or "").strip()
+        scope_prefix = self._session_scope_prefix() or "session"
+        # hard isolation guard: if a key belongs to another session scope, remap it to current session scope.
+        if existing and scope_prefix and not existing.startswith(f"{scope_prefix}::"):
+            legacy_keys = list(cfg.get("legacy_subject_instance_keys", [])) if isinstance(cfg.get("legacy_subject_instance_keys", []), list) else []
+            if existing not in legacy_keys:
+                legacy_keys.append(existing)
+            cfg["legacy_subject_instance_keys"] = legacy_keys[-10:]
+            existing = ""
         if existing:
             return existing
-        scope_prefix = self._session_scope_prefix() or "session"
         logical = self._logical_subject_key_from_cfg(cfg) or "General"
         uid = str(cfg.get("subject_uid", "") or "").strip()
         if not uid:
@@ -3954,13 +3963,15 @@ class MainWindow(QMainWindow):
     def _fetch_answer_keys_for_subject_scoped(self, subject_key: str, subject_cfg: dict | None = None) -> dict[str, dict[str, Any]]:
         scoped = self._answer_key_subject_key(subject_key, subject_cfg)
         rows = self.database.fetch_answer_keys_for_subject(scoped) if scoped else {}
+        has_session_scope = bool(str(self.current_session_id or "").strip())
         if not rows:
             sid = str(self.current_session_id or "").strip()
             block = str((subject_cfg or {}).get("block", "") or "").strip() if isinstance(subject_cfg, dict) else ""
             legacy_scoped = f"{sid}::{str(subject_key or '').strip()}::{block}" if sid and block else (f"{sid}::{str(subject_key or '').strip()}" if sid else "")
             if legacy_scoped:
                 rows = self.database.fetch_answer_keys_for_subject(legacy_scoped)
-        if not rows and scoped and scoped != str(subject_key or "").strip():
+        # Never fallback to unscoped key when current session exists to avoid cross-exam key bleed.
+        if not rows and (not has_session_scope) and scoped and scoped != str(subject_key or "").strip():
             rows = self.database.fetch_answer_keys_for_subject(str(subject_key or "").strip())
         return rows or {}
 
