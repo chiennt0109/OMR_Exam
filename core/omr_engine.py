@@ -117,6 +117,8 @@ class OMRProcessor:
         self._batch_orientation_hint_score: float | None = None
         self._template_anchor_cache: dict[tuple[int, int, int, int], np.ndarray] = {}
         self._template_plan_cache: dict[tuple[int, int, int, int, int], TemplateRuntimePlan] = {}
+        self._scanner_locked_plan_cache: dict[tuple[int, int, int, int, int], dict[str, object]] = {}
+        self._active_point_shift: tuple[float, float] = (0.0, 0.0)
 
     def _time_budget_exceeded(self) -> bool:
         deadline = self._processing_deadline_monotonic
@@ -243,6 +245,31 @@ class OMRProcessor:
         meta = getattr(template, "metadata", {}) or {}
         return str(meta.get("template_match_mode", "generic") or "generic").strip().lower()
 
+    @staticmethod
+    def _scanner_locked_mode(template: Template) -> bool:
+        meta = getattr(template, "metadata", {}) or {}
+        raw = meta.get("scanner_locked_mode", False)
+        if isinstance(raw, bool):
+            return raw
+        return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _scanner_locked_allow_full_fallback(template: Template) -> bool:
+        meta = getattr(template, "metadata", {}) or {}
+        raw = meta.get("scanner_locked_allow_full_fallback", True)
+        if isinstance(raw, bool):
+            return raw
+        return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _scanner_locked_max_shift_px(template: Template) -> float:
+        meta = getattr(template, "metadata", {}) or {}
+        raw = meta.get("scanner_locked_max_shift_px", 24.0)
+        try:
+            return max(4.0, float(raw))
+        except Exception:
+            return 24.0
+
     def _is_fixed_scan_profile(self, template: Template) -> bool:
         profile = self._scan_profile(template)
         match_mode = self._template_match_mode(template)
@@ -302,6 +329,37 @@ class OMRProcessor:
         plan = self._build_template_runtime_plan(template)
         self._template_plan_cache[key] = plan
         return plan
+
+    def _build_scanner_locked_plan(self, template: Template) -> dict[str, object]:
+        plan = self._get_template_runtime_plan(template)
+        header_h = int(round(template.height * 0.22))
+        ref_rois = list((template.metadata or {}).get("scanner_locked_reference_rois", []) or [])
+        if not ref_rois:
+            ref_rois = [
+                [0, 0, int(template.width * 0.22), max(20, int(template.height * 0.14))],
+                [int(template.width * 0.78), 0, int(template.width * 0.22), max(20, int(template.height * 0.14))],
+            ]
+        return {
+            "calibrated_reference_size": (int(template.width), int(template.height)),
+            "reference_anchor_rois": ref_rois,
+            "reference_header_roi": [0, 0, int(template.width), header_h],
+            "reference_mcq_roi": [0, header_h, int(template.width), int(template.height - header_h)],
+            "reference_tf_roi": [0, header_h, int(template.width), int(template.height - header_h)],
+            "reference_numeric_roi": [0, header_h, int(template.width), int(template.height - header_h)],
+            "scanner_locked_zone_bounds_px": dict(plan.zone_bounds_px),
+            "scanner_locked_zone_centers_px": {k: np.array(v, dtype=np.float32) for k, v in plan.zone_centers_px.items()},
+            "scanner_locked_sampling_radius": dict(plan.zone_bubble_radius),
+            "scanner_locked_reference_patches": [],
+        }
+
+    def _get_scanner_locked_plan(self, template: Template) -> dict[str, object]:
+        key = self._template_plan_key(template)
+        cached = self._scanner_locked_plan_cache.get(key)
+        if cached is not None:
+            return cached
+        built = self._build_scanner_locked_plan(template)
+        self._scanner_locked_plan_cache[key] = built
+        return built
 
     def _preprocess_fast(self, image: np.ndarray) -> dict[str, np.ndarray]:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -384,6 +442,107 @@ class OMRProcessor:
             "threshold": float(md.get("poor_image_quality_threshold", threshold) or threshold),
         }
 
+    @staticmethod
+    def _has_meaningful_result(result: OMRResult) -> bool:
+        sid = str(getattr(result, "student_id", "") or "").strip()
+        code = str(getattr(result, "exam_code", "") or "").strip()
+        has_identity = bool((sid and sid != "-") or (code and code != "-"))
+        return has_identity or bool((result.mcq_answers or {}) or (result.true_false_answers or {}) or (result.numeric_answers or {}))
+
+    def _recognize_sheet_scanner_locked(
+        self,
+        src: np.ndarray,
+        template: Template,
+        result: OMRResult,
+        context: RecognitionContext,
+        started: float,
+        load_time_sec: float,
+        normalize_time_sec: float,
+    ) -> OMRResult:
+        # scanner-locked fast path: skip full-page perspective correction and heavy anchor alignment.
+        match_started = time.perf_counter()
+        _ = self._get_scanner_locked_plan(template)
+        working = src
+        if working.shape[1] != template.width or working.shape[0] != template.height:
+            working = cv2.resize(working, (template.width, template.height), interpolation=cv2.INTER_LINEAR)
+        prep = self._preprocess_fast(working)
+        aligned = working
+        aligned_binary = prep["binary"]
+        scanner_locked_match_time_sec = float(time.perf_counter() - match_started)
+        self._active_point_shift = (0.0, 0.0)
+
+        quality_gate = self._estimate_image_quality(aligned, aligned_binary, template)
+        poor_image = bool(quality_gate.get("poor_scan", False))
+        poor_identifier_zone = bool(quality_gate.get("poor_identifier_zone", False))
+        poor_fast_fail = self._poor_image_fast_fail_enabled(template)
+        if poor_image:
+            self._append_issue_once(result, "POOR_IMAGE", "Image quality is below recognition threshold")
+        if poor_identifier_zone:
+            self._append_issue_once(result, "POOR_IDENTIFIER_ZONE", "Identifier area quality is weak")
+
+        id_timeout = self._identifier_timeout_sec_fast(template)
+        setattr(result, "_identifier_deadline_monotonic", float(time.monotonic() + id_timeout))
+        setattr(result, "_identifier_time_sec", 0.0)
+        setattr(result, "_identifier_fallback_time_sec", 0.0)
+        setattr(result, "_quality_gate", dict(quality_gate))
+        setattr(result, "_poor_image_fast_fail", bool(poor_fast_fail))
+        setattr(result, "_fast_production_mode", True)
+        setattr(result, "_debug_deep", False)
+
+        mcq_time_sec = 0.0
+        tf_time_sec = 0.0
+        numeric_time_sec = 0.0
+        roi_decode_started = time.perf_counter()
+        plan = self._get_template_runtime_plan(template)
+        for zone in plan.sorted_zones:
+            if zone.zone_type == ZoneType.ANCHOR:
+                continue
+            if (
+                zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK)
+                and not self._identifier_recognition_enabled(template)
+                and not bool(getattr(context, "force_identifier_recognition", False))
+            ):
+                continue
+            z_started = time.perf_counter()
+            self.recognize_block(aligned_binary, zone, template, result, None)
+            elapsed = float(time.perf_counter() - z_started)
+            if zone.zone_type == ZoneType.MCQ_BLOCK:
+                mcq_time_sec += elapsed
+            elif zone.zone_type == ZoneType.TRUE_FALSE_BLOCK:
+                tf_time_sec += elapsed
+            elif zone.zone_type == ZoneType.NUMERIC_BLOCK:
+                numeric_time_sec += elapsed
+        roi_decode_time_sec = float(time.perf_counter() - roi_decode_started)
+        identifier_time_sec = float(getattr(result, "_identifier_time_sec", 0.0) or 0.0)
+
+        setattr(result, "aligned_image", aligned)
+        setattr(result, "aligned_binary", aligned_binary)
+        setattr(result, "detected_anchors", [])
+        setattr(result, "alignment_debug", {
+            "alignment_mode": "scanner_locked_fast",
+            "quality_gate": dict(quality_gate),
+            "poor_image": bool(poor_image),
+            "poor_identifier_zone": bool(poor_identifier_zone),
+            "quality_reason": str(quality_gate.get("reason", "") or ""),
+            "fast_production_mode": True,
+            "diagnostics_collected": False,
+            "timing_breakdown": {
+                "load_time_sec": float(load_time_sec),
+                "normalize_time_sec": float(normalize_time_sec),
+                "scanner_locked_match_time_sec": float(scanner_locked_match_time_sec),
+                "roi_decode_time_sec": float(roi_decode_time_sec),
+                "mcq_time_sec": float(mcq_time_sec),
+                "tf_time_sec": float(tf_time_sec),
+                "numeric_time_sec": float(numeric_time_sec),
+                "identifier_time_sec": float(identifier_time_sec),
+                "total_time_sec": float(time.perf_counter() - started),
+                "poor_image_fast_fail": bool(poor_fast_fail),
+            },
+        })
+        result.processing_time_sec = float(time.perf_counter() - started)
+        result.sync_legacy_aliases()
+        return result
+
     def recognize_sheet(self, image: str | Path | np.ndarray, template: Template, context: RecognitionContext | None = None) -> OMRResult:
         started = time.perf_counter()
         image_path = str(image) if isinstance(image, (str, Path)) else "<in-memory>"
@@ -418,6 +577,14 @@ class OMRProcessor:
             diagnostics_time_sec = 0.0
             identifier_time_sec = 0.0
             identifier_fallback_time_sec = 0.0
+            load_time_sec = 0.0
+            normalize_time_sec = 0.0
+            scanner_locked_match_time_sec = 0.0
+            roi_decode_time_sec = 0.0
+            mcq_time_sec = 0.0
+            tf_time_sec = 0.0
+            numeric_time_sec = 0.0
+            src_load_started = time.perf_counter()
             if isinstance(image, np.ndarray):
                 src = image.copy()
             else:
@@ -428,6 +595,25 @@ class OMRProcessor:
                     result.issues.append(OMRIssue("FILE", "Unable to load image"))
                     result.sync_legacy_aliases()
                     return result
+            load_time_sec = float(time.perf_counter() - src_load_started)
+
+            normalize_started = time.perf_counter()
+            if src.shape[1] != template.width or src.shape[0] != template.height:
+                src = cv2.resize(src, (template.width, template.height), interpolation=cv2.INTER_LINEAR)
+            normalize_time_sec = float(time.perf_counter() - normalize_started)
+
+            if self._scanner_locked_mode(template) and fast_production_mode:
+                fast_res = self._recognize_sheet_scanner_locked(
+                    src=src,
+                    template=template,
+                    result=result,
+                    context=context,
+                    started=started,
+                    load_time_sec=load_time_sec,
+                    normalize_time_sec=normalize_time_sec,
+                )
+                if self._has_meaningful_result(fast_res) or (not self._scanner_locked_allow_full_fallback(template)):
+                    return fast_res
 
             rotated = src if ((fast_mode or fixed_profile) and self._should_skip_rotation(template)) else self._correct_rotation(src)
             if self._time_budget_exceeded():
@@ -498,7 +684,16 @@ class OMRProcessor:
                     continue
                 if zone.grid is not None:
                     context.semantic_grids[zone.id] = zone.grid
+                z_started = time.perf_counter()
                 self.recognize_block(aligned_binary, zone, template, result, debug_overlay)
+                z_elapsed = float(time.perf_counter() - z_started)
+                if zone.zone_type == ZoneType.MCQ_BLOCK:
+                    mcq_time_sec += z_elapsed
+                elif zone.zone_type == ZoneType.TRUE_FALSE_BLOCK:
+                    tf_time_sec += z_elapsed
+                elif zone.zone_type == ZoneType.NUMERIC_BLOCK:
+                    numeric_time_sec += z_elapsed
+                roi_decode_time_sec += z_elapsed
 
             if debug_overlay is not None:
                 out_dir = self.debug_dir or Path(result.image_path).parent
@@ -549,9 +744,17 @@ class OMRProcessor:
             result.alignment_debug["poor_identifier_zone"] = bool(poor_identifier_zone)
             result.alignment_debug["quality_reason"] = quality_reason
             result.alignment_debug["fast_production_mode"] = bool(fast_production_mode)
+            result.alignment_debug["diagnostics_collected"] = bool(context.collect_diagnostics)
             result.alignment_debug["timing_breakdown"] = {
+                "load_time_sec": float(load_time_sec),
+                "normalize_time_sec": float(normalize_time_sec),
                 "anchor_detect_time_sec": float(anchor_detect_time_sec),
                 "alignment_time_sec": float(alignment_time_sec),
+                "scanner_locked_match_time_sec": float(scanner_locked_match_time_sec),
+                "roi_decode_time_sec": float(roi_decode_time_sec),
+                "mcq_time_sec": float(mcq_time_sec),
+                "tf_time_sec": float(tf_time_sec),
+                "numeric_time_sec": float(numeric_time_sec),
                 "identifier_time_sec": float(identifier_time_sec),
                 "identifier_fallback_time_sec": float(identifier_fallback_time_sec),
                 "diagnostics_time_sec": float(diagnostics_time_sec),
@@ -564,6 +767,7 @@ class OMRProcessor:
         finally:
             self.alignment_profile = prev_profile
             self._processing_deadline_monotonic = None
+            self._active_point_shift = (0.0, 0.0)
 
     def recognize_sheet_production_fast(self, image: str | Path | np.ndarray, template: Template, context: RecognitionContext | None = None) -> OMRResult:
         # debug deep mode switch: this path forces production-fast behavior by default.
@@ -636,7 +840,10 @@ class OMRProcessor:
     def _run_batch_item(self, image_path: str, template: Template):
         worker = self._get_thread_batch_worker()
         started = time.perf_counter()
-        res = worker.run_recognition_test(image_path, template, RecognitionContext(collect_diagnostics=False))
+        if self._scanner_locked_mode(template):
+            res = worker.recognize_sheet_production_fast(image_path, template, RecognitionContext(collect_diagnostics=False))
+        else:
+            res = worker.run_recognition_test(image_path, template, RecognitionContext(collect_diagnostics=False))
         return res, float(time.perf_counter() - started)
 
     def _template_anchor_points_px(self, template: Template) -> np.ndarray:
@@ -735,7 +942,10 @@ class OMRProcessor:
                 context = RecognitionContext()
                 context.collect_diagnostics = False
                 started = time.perf_counter()
-                result = self.run_recognition_test(image_path, template, context)
+                if self._scanner_locked_mode(template):
+                    result = self.recognize_sheet_production_fast(image_path, template, context)
+                else:
+                    result = self.run_recognition_test(image_path, template, context)
                 results.append(result)
                 timing_rows.append((idx, str(image_path), float(time.perf_counter() - started)))
                 debug_payload = dict(getattr(result, "alignment_debug", {}) or {})
@@ -1790,6 +2000,11 @@ class OMRProcessor:
             expected = expected.copy()
             expected[:, 0] *= sx
             expected[:, 1] *= sy
+        shift_x, shift_y = self._active_point_shift
+        if expected.shape[0] and (abs(float(shift_x)) > 0.01 or abs(float(shift_y)) > 0.01):
+            expected = expected.copy()
+            expected[:, 0] += float(shift_x)
+            expected[:, 1] += float(shift_y)
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
             if zone.zone_type == ZoneType.EXAM_CODE_BLOCK:
                 modeled_expected, _ = self._digit_model_expected_points(template, zone)

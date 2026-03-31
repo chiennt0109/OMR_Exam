@@ -1323,7 +1323,11 @@ class TemplateEditorWindow(QMainWindow):
         self.canvas.digit_zone_debug = dict(getattr(res, "digit_zone_debug", {}) or {})
         self.canvas.recognition_overlay.update(getattr(res, "bubble_states_by_zone", {}) or self.omr.extract_bubble_states(aligned_binary, self.template))
 
-        self.result_box.append(f"\nDetected anchors: {len(self.canvas.detected_anchor_points)}")
+        debug_flags = dict(getattr(res, "alignment_debug", {}) or {})
+        if bool(debug_flags.get("fast_production_mode", False)) and not bool(debug_flags.get("diagnostics_collected", True)):
+            self.result_box.append("\nDetected anchors: not collected (fast production)")
+        else:
+            self.result_box.append(f"\nDetected anchors: {len(self.canvas.detected_anchor_points)}")
 
         self.canvas.preview_mode = True
         self.canvas.update()
