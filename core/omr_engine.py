@@ -159,6 +159,41 @@ class OMRProcessor:
         return bool(meta.get("skip_heavy_identifier_fallback", False))
 
     @staticmethod
+    def _poor_image_fast_fail_enabled(template: Template) -> bool:
+        meta = getattr(template, "metadata", {}) or {}
+        raw = meta.get("poor_image_fast_fail", True)
+        if isinstance(raw, bool):
+            return raw
+        return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _allow_heavy_identifier_retry_on_poor_image(template: Template) -> bool:
+        meta = getattr(template, "metadata", {}) or {}
+        raw = meta.get("allow_heavy_identifier_retry_on_poor_image", False)
+        if isinstance(raw, bool):
+            return raw
+        return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _poor_image_quality_threshold(template: Template) -> float:
+        meta = getattr(template, "metadata", {}) or {}
+        raw = meta.get("poor_image_quality_threshold", 0.42)
+        try:
+            return float(raw)
+        except Exception:
+            return 0.42
+
+    @staticmethod
+    def _identifier_timeout_sec(template: Template) -> float:
+        meta = getattr(template, "metadata", {}) or {}
+        raw = meta.get("identifier_timeout_sec", 2.0)
+        try:
+            value = float(raw)
+        except Exception:
+            value = 2.0
+        return max(0.5, value)
+
+    @staticmethod
     def _should_force_grayscale_load(template: Template) -> bool:
         meta = getattr(template, "metadata", {}) or {}
         return bool(meta.get("force_grayscale_load", False))
@@ -244,6 +279,80 @@ class OMRProcessor:
         edges = cv2.Canny(blur, 60, 160)
         return {"gray": gray, "blur": blur, "binary": binary, "edges": edges}
 
+    @staticmethod
+    def _append_issue_once(result: OMRResult, code: str, message: str, zone_id: str | None = None) -> None:
+        code_u = str(code or "").strip().upper()
+        zid = str(zone_id or "").strip()
+        for issue in (result.issues or []):
+            if str(getattr(issue, "code", "") or "").strip().upper() == code_u and str(getattr(issue, "zone_id", "") or "").strip() == zid:
+                return
+        result.issues.append(OMRIssue(code_u, message, zone_id=zone_id))
+
+    def _estimate_image_quality(
+        self,
+        aligned_image: np.ndarray,
+        aligned_binary: np.ndarray,
+        template: Template,
+    ) -> dict[str, object]:
+        md = getattr(template, "metadata", {}) or {}
+        threshold = self._poor_image_quality_threshold(template)
+        match_count = int(self._last_alignment_debug.get("used_anchor_match_count", self._last_alignment_debug.get("fast_match_count", 0)) or 0)
+        mean_error = float(self._last_alignment_debug.get("fast_mean_error", 16.0) or 16.0)
+        align_score = float(self._last_alignment_debug.get("alignment_score", 0.0) or 0.0)
+        h, w = aligned_binary.shape[:2]
+        header_zone = aligned_binary[: max(1, int(h * 0.22)), :]
+        header_density = float(np.mean(header_zone > 0)) if header_zone.size else 0.0
+        blur_var = 0.0
+        try:
+            gray = cv2.cvtColor(aligned_image, cv2.COLOR_BGR2GRAY) if len(aligned_image.shape) == 3 else aligned_image
+            blur_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        except Exception:
+            blur_var = 0.0
+        id_zones = [z for z in template.zones if z.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK)]
+        usable_ratios: list[float] = []
+        for z in id_zones:
+            centers = self._resolve_zone_centers(aligned_binary, z, template)
+            if centers is None or len(centers) == 0:
+                continue
+            within = (centers[:, 0] >= 1) & (centers[:, 0] < w - 1) & (centers[:, 1] >= 1) & (centers[:, 1] < h - 1)
+            usable_ratios.append(float(np.mean(within)))
+        usable_ratio = float(np.mean(usable_ratios)) if usable_ratios else 0.0
+
+        anchor_component = min(1.0, max(0.0, match_count / 6.0))
+        err_component = min(1.0, max(0.0, (18.0 - mean_error) / 18.0))
+        blur_component = min(1.0, max(0.0, blur_var / 120.0))
+        align_component = min(1.0, max(0.0, align_score / 180.0))
+        quality_score = float(
+            (0.28 * anchor_component)
+            + (0.20 * err_component)
+            + (0.18 * align_component)
+            + (0.16 * min(1.0, max(0.0, header_density / 0.22)))
+            + (0.10 * usable_ratio)
+            + (0.08 * blur_component)
+        )
+        poor_scan = quality_score < threshold
+        poor_identifier_zone = bool(usable_ratio < 0.55 or header_density < 0.04)
+        reason_bits: list[str] = []
+        if match_count < 3:
+            reason_bits.append("low_anchor_match")
+        if mean_error > 16.0:
+            reason_bits.append("high_alignment_error")
+        if header_density < 0.04:
+            reason_bits.append("weak_header_density")
+        if usable_ratio < 0.55:
+            reason_bits.append("weak_identifier_centers")
+        if blur_var < 18.0:
+            reason_bits.append("high_blur")
+        if not reason_bits:
+            reason_bits.append("ok")
+        return {
+            "quality_score": quality_score,
+            "poor_scan": bool(poor_scan),
+            "poor_identifier_zone": bool(poor_identifier_zone),
+            "reason": ",".join(reason_bits),
+            "threshold": float(md.get("poor_image_quality_threshold", threshold) or threshold),
+        }
+
     def recognize_sheet(self, image: str | Path | np.ndarray, template: Template, context: RecognitionContext | None = None) -> OMRResult:
         started = time.perf_counter()
         image_path = str(image) if isinstance(image, (str, Path)) else "<in-memory>"
@@ -272,6 +381,8 @@ class OMRProcessor:
             anchor_detect_time_sec = 0.0
             alignment_time_sec = 0.0
             diagnostics_time_sec = 0.0
+            identifier_time_sec = 0.0
+            identifier_fallback_time_sec = 0.0
             if isinstance(image, np.ndarray):
                 src = image.copy()
             else:
@@ -312,6 +423,23 @@ class OMRProcessor:
                 return result
             if aligned_binary is None:
                 aligned_binary = self._preprocess(aligned)["binary"]
+
+            quality_gate = self._estimate_image_quality(aligned, aligned_binary, template)
+            poor_image = bool(quality_gate.get("poor_scan", False))
+            poor_identifier_zone = bool(quality_gate.get("poor_identifier_zone", False))
+            quality_reason = str(quality_gate.get("reason", "") or "")
+            poor_fast_fail = self._poor_image_fast_fail_enabled(template)
+            if poor_image:
+                self._append_issue_once(result, "POOR_IMAGE", "Image quality is below recognition threshold")
+            if poor_identifier_zone:
+                self._append_issue_once(result, "POOR_IDENTIFIER_ZONE", "Identifier area quality is weak")
+
+            identifier_timeout_deadline = time.monotonic() + self._identifier_timeout_sec(template)
+            setattr(result, "_identifier_deadline_monotonic", float(identifier_timeout_deadline))
+            setattr(result, "_identifier_time_sec", 0.0)
+            setattr(result, "_identifier_fallback_time_sec", 0.0)
+            setattr(result, "_quality_gate", dict(quality_gate))
+            setattr(result, "_poor_image_fast_fail", bool(poor_fast_fail))
 
             debug_overlay = aligned.copy() if self.debug_mode else None
             if debug_overlay is not None:
@@ -374,12 +502,21 @@ class OMRProcessor:
             }
 
             result.processing_time_sec = time.perf_counter() - started
+            identifier_time_sec = float(getattr(result, "_identifier_time_sec", 0.0) or 0.0)
+            identifier_fallback_time_sec = float(getattr(result, "_identifier_fallback_time_sec", 0.0) or 0.0)
             if not isinstance(getattr(result, "alignment_debug", None), dict):
                 setattr(result, "alignment_debug", {})
+            result.alignment_debug["quality_gate"] = dict(quality_gate)
+            result.alignment_debug["poor_image"] = bool(poor_image)
+            result.alignment_debug["poor_identifier_zone"] = bool(poor_identifier_zone)
+            result.alignment_debug["quality_reason"] = quality_reason
             result.alignment_debug["timing_breakdown"] = {
                 "anchor_detect_time_sec": float(anchor_detect_time_sec),
                 "alignment_time_sec": float(alignment_time_sec),
+                "identifier_time_sec": float(identifier_time_sec),
+                "identifier_fallback_time_sec": float(identifier_fallback_time_sec),
                 "diagnostics_time_sec": float(diagnostics_time_sec),
+                "poor_image_fast_fail": bool(poor_fast_fail),
                 "total_time_sec": float(result.processing_time_sec),
             }
             setattr(result, "answers", result.mcq_answers)
@@ -1028,28 +1165,6 @@ class OMRProcessor:
                     self._last_alignment_debug["used_template_anchors"] = [(float(x), float(y)) for x, y in template_pts[: min(20, len(template_pts))]]
                     self._last_alignment_debug["used_anchor_match_count"] = int(match_count)
                     self._last_alignment_debug["used_anchor_profile"] = str(candidate)
-                    return fast_img, fast_bin
-            # safe fallback for fixed-form when fast accept fails.
-
-        if fixed_profile:
-            # fast alignment accept: single short path for fixed-form scan.
-            candidate = candidates[0] if candidates else "border"
-            det_started = time.perf_counter()
-            detected = self._detect_anchors_by_profile(base_binary, candidate, fast_fixed=True)
-            self._last_alignment_debug["anchor_detect_time_sec"] = float(time.perf_counter() - det_started)
-            template_pts = self._template_anchor_points_px(template)
-            if len(detected) >= 4 and len(template_pts) >= 4:
-                src_pts, dst_pts = self._match_anchor_sets(np.array(detected, dtype=np.float32), template_pts)
-                score, match_count, mean_err = self._fast_alignment_score_from_matches(src_pts, dst_pts)
-                if match_count >= 4 and mean_err <= 14.0:
-                    h = cv2.getPerspectiveTransform(self._order_points(src_pts[:4]), self._order_points(dst_pts[:4]))
-                    fast_img = cv2.warpPerspective(base_image, h, (template.width, template.height))
-                    fast_bin = cv2.warpPerspective(base_binary, h, (template.width, template.height))
-                    self._last_alignment_debug["alignment_mode"] = f"fixed_fast:{candidate}"
-                    self._last_alignment_debug["alignment_score"] = float(score)
-                    self._last_alignment_debug["fast_match_count"] = int(match_count)
-                    self._last_alignment_debug["fast_mean_error"] = float(mean_err)
-                    self._last_alignment_debug["matched_detected_anchors"] = [(float(x), float(y)) for x, y in detected[: min(12, len(detected))]]
                     return fast_img, fast_bin
             # safe fallback for fixed-form when fast accept fails.
 
@@ -3038,6 +3153,7 @@ class OMRProcessor:
         working_binary = binary
         working_image = getattr(result, "aligned_image", None)
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+            identifier_started = time.perf_counter()
             expected = self._resolve_zone_centers(working_binary, zone, template).astype(np.float32)
             bubble_radius = float(zone.metadata.get("bubble_radius", 9))
             sid_ratio_debug: dict[str, object] = {}
@@ -3071,6 +3187,20 @@ class OMRProcessor:
             )
             key = "student_id" if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else "exam_code"
             error_mark = len(result.recognition_errors)
+            quality_gate = dict(getattr(result, "_quality_gate", {}) or {})
+            poor_image = bool(quality_gate.get("poor_scan", False))
+            poor_identifier_zone = bool(quality_gate.get("poor_identifier_zone", False))
+            poor_fast_fail = bool(getattr(result, "_poor_image_fast_fail", self._poor_image_fast_fail_enabled(template)))
+            allow_heavy_on_poor = self._allow_heavy_identifier_retry_on_poor_image(template)
+            identifier_deadline = float(getattr(result, "_identifier_deadline_monotonic", 0.0) or 0.0)
+
+            def identifier_budget_ok(min_left: float = 0.0) -> bool:
+                if self._time_budget_exceeded():
+                    return False
+                if identifier_deadline > 0.0 and (time.monotonic() + min_left) > identifier_deadline:
+                    return False
+                return True
+
             direct_value, direct_confs, direct_centers, direct_mat, direct_debug = self._decode_identifier_zone_from_centers(
                 working_binary,
                 zone,
@@ -3087,11 +3217,21 @@ class OMRProcessor:
                 result=result,
             )
             direct_conf_mean = float(np.mean(final_confs or [0.0]))
-            fallback_budget_ok = not self._time_budget_exceeded()
-            allow_fallbacks = fallback_budget_ok and not (bool(final_value) and direct_conf_mean >= 0.55)
+            fallback_budget_ok = identifier_budget_ok(0.12)
+            poor_blocks_heavy = poor_fast_fail and poor_image and (not allow_heavy_on_poor)
+            allow_fallbacks = fallback_budget_ok and (not poor_blocks_heavy) and not (bool(final_value) and direct_conf_mean >= 0.55)
+            if poor_blocks_heavy:
+                self._append_issue_once(result, "FAST_FAIL_POOR_SCAN", "Skipped heavy identifier fallback due to poor image", zone_id=zone.id)
+                result.recognition_errors.append(f"{zone.zone_type.value}: skipped heavy fallback due to poor image")
             axis_final = ""
             axis_debug: dict[str, object] = {}
-            axis_needed = allow_fallbacks and ((not final_value) or (direct_conf_mean < 0.32))
+            axis_needed = (
+                allow_fallbacks
+                and (not poor_image)
+                and (not poor_identifier_zone)
+                and identifier_budget_ok(0.10)
+                and ((not final_value) or (direct_conf_mean < 0.32))
+            )
             if axis_needed:
                 axis_value, axis_confs, axis_debug = self._decode_identifier_by_anchor_axis(
                     working_binary,
@@ -3114,8 +3254,11 @@ class OMRProcessor:
                 allow_fallbacks
                 and
                 key == "student_id"
+                and (not poor_image)
                 and not final_value
                 and sid_base_guided is not None
+                and identifier_budget_ok(0.16)
+                and direct_conf_mean < 0.35
             ):
                 sid_ratio_guided, sid_ratio_debug = self._adjust_identifier_points_by_anchor_distance(
                     working_binary,
@@ -3172,12 +3315,15 @@ class OMRProcessor:
                 "col_lines": final_col_lines,
                 "col_segments": [],
                 "recognition_path": "axis_projection" if bool(axis_final) else "direct",
+                "poor_image": bool(poor_image),
+                "poor_identifier_zone": bool(poor_identifier_zone),
             }
             skip_sampling_fallback = bool(
                 (key == "exam_code" and exam_digit_model_applied)
                 or (self._is_fast_scan_mode(template) and self._should_skip_heavy_identifier_fallback(template))
+                or (poor_fast_fail and poor_image and (not allow_heavy_on_poor))
             )
-            if allow_fallbacks and not final_value and not skip_sampling_fallback:
+            if allow_fallbacks and not final_value and not skip_sampling_fallback and identifier_budget_ok(0.18) and not poor_identifier_zone:
                 rows, cols = 10, max(1, grid.cols)
                 source_img = self._preprocess_digit_sampling(working_image if working_image is not None else working_binary)
                 bbox = self._digit_zone_bbox(zone, source_img.shape[:2])
@@ -3221,6 +3367,12 @@ class OMRProcessor:
                     final_value = "-"
             elif not final_value and skip_sampling_fallback:
                 final_value = "-"
+            elif not final_value and not identifier_budget_ok():
+                self._append_issue_once(result, "IDENTIFIER_TIMEOUT", "Identifier timeout budget exceeded", zone_id=zone.id)
+                result.recognition_errors.append(f"{zone.zone_type.value}: identifier timeout budget exceeded")
+                final_value = "-"
+            if key == "student_id" and poor_image and (not final_value or direct_conf_mean < 0.30):
+                final_value = "-"
             setattr(result, "digit_zone_debug", zone_debug)
             if self.debug_mode and working_image is not None:
                 digit_overlay = working_image.copy()
@@ -3252,6 +3404,10 @@ class OMRProcessor:
                     f"[OMR][IDENTIFIER] key={key} direct={direct_value!r} final={final_value!r} "
                     f"conf={confidence_value:.3f} path={zone_debug.get(zone.id, {}).get('recognition_path', '-')}"
                 )
+            consumed = float(time.perf_counter() - identifier_started)
+            setattr(result, "_identifier_time_sec", float(getattr(result, "_identifier_time_sec", 0.0) or 0.0) + consumed)
+            if axis_needed or bool(sid_ratio_debug.get("student_ratio_retry_attempted")) or used_sampling:
+                setattr(result, "_identifier_fallback_time_sec", float(getattr(result, "_identifier_fallback_time_sec", 0.0) or 0.0) + consumed)
             return
         else:
             centers = self._resolve_zone_centers(working_binary, zone, template)

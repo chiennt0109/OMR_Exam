@@ -1265,7 +1265,14 @@ class TemplateEditorWindow(QMainWindow):
         sid_raw = str(getattr(res, "student_id", "") or "")
         exam_raw = str(getattr(res, "exam_code", "") or "")
         timing_text = self._format_processing_time_text(float(getattr(res, "processing_time_sec", 0.0) or 0.0))
-        alignment_mode = str((getattr(res, "alignment_debug", {}) or {}).get("alignment_mode", "-") or "-")
+        alignment_debug = dict(getattr(res, "alignment_debug", {}) or {})
+        alignment_mode = str(alignment_debug.get("alignment_mode", "-") or "-")
+        quality_gate = dict(alignment_debug.get("quality_gate", {}) or {})
+        quality_score = float(quality_gate.get("quality_score", 0.0) or 0.0)
+        poor_image = bool(alignment_debug.get("poor_image", quality_gate.get("poor_scan", False)))
+        quality_reason = str(alignment_debug.get("quality_reason", quality_gate.get("reason", "")) or "-")
+        timing = dict(alignment_debug.get("timing_breakdown", {}) or {})
+        identifier_fast_fail = bool(timing.get("poor_image_fast_fail", False) and poor_image)
         sid_conf = self._identifier_confidence(res, "student_id")
         exam_conf = self._identifier_confidence(res, "exam_code")
         id_warnings = self._identifier_warning_text(res)
@@ -1279,6 +1286,14 @@ class TemplateEditorWindow(QMainWindow):
             f"Identifier errors: {id_warnings}\n"
             f"Recognition time: {timing_text}\n"
             f"Alignment mode: {alignment_mode}\n"
+            f"Quality score: {quality_score:.3f}\n"
+            f"Poor image: {'Yes' if poor_image else 'No'}\n"
+            f"Quality reason: {quality_reason}\n"
+            f"Identifier fast-fail: {'Yes' if identifier_fast_fail else 'No'}\n"
+            f"Timing (align/identifier/diagnostics): "
+            f"{float(timing.get('alignment_time_sec', 0.0) or 0.0):.3f}s / "
+            f"{float(timing.get('identifier_time_sec', 0.0) or 0.0):.3f}s / "
+            f"{float(timing.get('diagnostics_time_sec', 0.0) or 0.0):.3f}s\n"
             f"MCQ: {', '.join([f'Q{k}:{v}' for k, v in sorted(res.mcq_answers.items())]) or '(none)'}\n"
             f"TF: {res.true_false_answers or {}}\n"
             f"NUM: {res.numeric_answers or {}}"

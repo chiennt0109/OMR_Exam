@@ -4974,6 +4974,31 @@ class MainWindow(QMainWindow):
         return not MainWindow._result_has_meaningful_recognition(result)
 
     @staticmethod
+    def _preferred_forced_status(result) -> str:
+        issues = [str(getattr(issue, "code", "") or "").strip().upper() for issue in (getattr(result, "issues", []) or [])]
+        if "FILE" in issues:
+            return "Lỗi file ảnh"
+        if "POOR_IDENTIFIER_ZONE" in issues:
+            return "Không đủ chất lượng"
+        if "POOR_IMAGE" in issues or "FAST_FAIL_POOR_SCAN" in issues:
+            return "Ảnh xấu"
+        if "IDENTIFIER_TIMEOUT" in issues:
+            return "Timeout vùng SBD"
+        if "TIMEOUT" in issues:
+            return "Timeout nhận dạng"
+        if not MainWindow._result_has_meaningful_recognition(result):
+            return "Lỗi file ảnh"
+        return ""
+
+    @staticmethod
+    def _result_is_poor_image(result) -> bool:
+        issues = [str(getattr(issue, "code", "") or "").strip().upper() for issue in (getattr(result, "issues", []) or [])]
+        if "POOR_IMAGE" in issues or "FAST_FAIL_POOR_SCAN" in issues:
+            return True
+        alignment_debug = dict(getattr(result, "alignment_debug", {}) or {})
+        return bool(alignment_debug.get("poor_image", False))
+
+    @staticmethod
     def _recognition_quality_score(result) -> int:
         sid = str(getattr(result, "student_id", "") or "").strip()
         code = str(getattr(result, "exam_code", "") or "").strip()
@@ -5017,6 +5042,13 @@ class MainWindow(QMainWindow):
             return raw
         text = str(raw or "").strip().lower()
         return text in {"1", "true", "yes", "on"}
+
+    def _skip_retry_for_poor_images(self) -> bool:
+        template_md = (self.template.metadata if self.template and isinstance(self.template.metadata, dict) else {})
+        raw = template_md.get("batch_skip_retry_for_poor_images", True)
+        if isinstance(raw, bool):
+            return raw
+        return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
     def _try_reprocess_result_rotated_180(self, result):
         image_path = str(getattr(result, "image_path", "") or "").strip()
@@ -5230,7 +5262,8 @@ class MainWindow(QMainWindow):
                 original_identity = self._has_valid_identity(result)
 
                 # Keep batch behavior aligned with Template Editor by default (no auto-rotation retry).
-                need_retry_180 = self._allow_batch_auto_rotate_retry() and ((not original_identity) or (not original_meaningful))
+                skip_retry_on_poor = self._skip_retry_for_poor_images() and self._result_is_poor_image(result)
+                need_retry_180 = self._allow_batch_auto_rotate_retry() and (not skip_retry_on_poor) and ((not original_identity) or (not original_meaningful))
                 if need_retry_180:
                     retried, improved = self._try_reprocess_result_rotated_180(result)
                     # Accept 180° retry only when quality is strictly improved, otherwise keep original orientation.
@@ -5238,9 +5271,11 @@ class MainWindow(QMainWindow):
                         result = retried
                         self.preview_rotation_by_index[idx] = (int(self.preview_rotation_by_index.get(idx, 0) or 0) + 180) % 360
 
-                if self._should_force_image_error_status(result):
-                    # Keep raw recognition data for consistency with single-image re-recognition,
-                    # but only mark image-file error when recognition is truly unusable/file-loading failed.
+                preferred_status = self._preferred_forced_status(result)
+                if preferred_status:
+                    # Keep raw recognition data (answers + identifiers) and only override status text.
+                    forced_status = preferred_status
+                elif self._should_force_image_error_status(result):
                     forced_status = "Lỗi file ảnh"
 
                 if forced_status:
