@@ -1423,6 +1423,10 @@ class MainWindow(QMainWindow):
         self.batch_editor_return_payload: dict | None = None
         self.batch_editor_return_session_id: str | None = None
         self._current_batch_data_source: str = "empty"
+        self._route_history: list[dict] = []
+        self._current_route_name: str = "exam_list"
+        self._current_route_context: dict = {}
+        self._suspend_route_history_push: bool = False
 
         self.omr_processor = OMRProcessor()
         self.scoring_engine = ScoringEngine()
@@ -2215,7 +2219,7 @@ class MainWindow(QMainWindow):
         dlg.rejected.connect(self._close_embedded_exam_editor)
         self.embedded_exam_dialog = dlg
         self.exam_editor_layout.addWidget(dlg)
-        self.stack.setCurrentIndex(5)
+        self._navigate_to("exam_editor", context={"session_id": session_id}, push_current=True, require_confirm=False, reason="open_exam_editor")
 
     def _save_embedded_exam_editor(self) -> bool:
         if not self.embedded_exam_dialog or not self.embedded_exam_session_id:
@@ -2284,7 +2288,7 @@ class MainWindow(QMainWindow):
         self.embedded_exam_session = None
         self.embedded_exam_session_id = None
         self.embedded_exam_original_payload = None
-        self.stack.setCurrentIndex(0)
+        self._navigate_back(default_route="exam_list")
 
     @staticmethod
     def _payload_changed(a: dict | None, b: dict | None) -> bool:
@@ -2751,7 +2755,7 @@ class MainWindow(QMainWindow):
     def manage_subjects(self) -> None:
         self._refresh_subject_management_tables()
         self._set_subject_management_mode("subjects")
-        self.stack.setCurrentIndex(2)
+        self._navigate_to("subject_management", context={"session_id": self.current_session_id}, push_current=True, require_confirm=False, reason="manage_subjects")
 
     def action_create_session(self) -> None:
         if not self._confirm_before_switching_work("kỳ thi mới"):
@@ -2833,6 +2837,8 @@ class MainWindow(QMainWindow):
             self.template_module_menu.addAction(self.ribbon_close_template_action)
 
     def _handle_stack_changed(self, index: int) -> None:
+        route_name = self._stack_index_to_route_name(index)
+        self._current_route_name = route_name
         subject_management_visible = index == 2
         template_library_visible = index == 3
         template_editor_visible = index == 4
@@ -2881,6 +2887,68 @@ class MainWindow(QMainWindow):
         if hasattr(self, "act_close_template_module"):
             self.act_close_template_module.setVisible(template_visible)
 
+    def _route_to_stack_index(self, route_name: str) -> int:
+        mapping = {
+            "exam_list": 0,
+            "workspace_batch_scan": 1,
+            "workspace_scoring": 1,
+            "subject_management": 2,
+            "template_library": 3,
+            "template_editor": 4,
+            "exam_editor": 5,
+        }
+        return int(mapping.get(str(route_name or "").strip(), 0))
+
+    def _stack_index_to_route_name(self, index: int) -> str:
+        if int(index) == 1 and hasattr(self, "scoring_panel") and self.scoring_panel.isVisible():
+            return "workspace_scoring"
+        mapping = {0: "exam_list", 1: "workspace_batch_scan", 2: "subject_management", 3: "template_library", 4: "template_editor", 5: "exam_editor"}
+        return str(mapping.get(int(index), "exam_list"))
+
+    def _push_route_history(self, name: str, context: dict | None = None) -> None:
+        if self._suspend_route_history_push:
+            return
+        entry = {"name": str(name or "exam_list"), "context": dict(context or {})}
+        if self._route_history and self._route_history[-1] == entry:
+            return
+        self._route_history.append(entry)
+
+    def _navigate_to(
+        self,
+        route_name: str,
+        *,
+        context: dict | None = None,
+        push_current: bool = True,
+        require_confirm: bool = True,
+        reason: str = "",
+    ) -> bool:
+        # route-based navigation + confirm before destructive/switch action.
+        target = str(route_name or "exam_list").strip() or "exam_list"
+        if require_confirm and target != self._current_route_name:
+            if not self._confirm_before_switching_work(reason or target):
+                return False
+        if push_current:
+            self._push_route_history(self._current_route_name, self._current_route_context)
+        self._current_route_name = target
+        self._current_route_context = dict(context or {})
+        self.stack.setCurrentIndex(self._route_to_stack_index(target))
+        if target == "workspace_batch_scan":
+            self._show_batch_scan_panel()
+        elif target == "workspace_scoring":
+            self._show_scoring_panel()
+        return True
+
+    def _navigate_back(self, default_route: str = "exam_list") -> None:
+        target = self._route_history.pop() if self._route_history else {"name": default_route, "context": {}}
+        print(f"[Route] back target={target.get('name')}")
+        self._navigate_to(
+            str(target.get("name", default_route) or default_route),
+            context=dict(target.get("context", {}) or {}),
+            push_current=False,
+            require_confirm=False,
+            reason="back",
+        )
+
     def action_manage_subjects(self) -> None:
         self.manage_subjects()
 
@@ -2915,7 +2983,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Batch Scan", "Kỳ thi hiện tại chưa có môn thi để nhận dạng.")
             return
         if self.stack.currentIndex() != 1:
-            self.stack.setCurrentIndex(1)
+            self._navigate_to("workspace_batch_scan", context={"session_id": self.current_session_id}, push_current=True, require_confirm=False, reason="open_batch_scan")
         self._refresh_batch_subject_controls()
         self._show_batch_scan_panel()
         if hasattr(self, "batch_subject_combo") and self.batch_subject_combo.currentIndex() <= 0 and self.batch_subject_combo.count() > 1:
@@ -3312,7 +3380,7 @@ class MainWindow(QMainWindow):
 
     def _close_batch_scan_view(self) -> None:
         if self.batch_editor_return_payload is None:
-            self.stack.setCurrentIndex(0)
+            self._navigate_back(default_route="exam_list")
             return
 
         payload = dict(self.batch_editor_return_payload)
@@ -3321,16 +3389,16 @@ class MainWindow(QMainWindow):
         self.batch_editor_return_session_id = None
 
         if not session_id:
-            self.stack.setCurrentIndex(0)
+            self._navigate_back(default_route="exam_list")
             return
         p = self._session_path_from_id(session_id)
         if not p.exists():
-            self.stack.setCurrentIndex(0)
+            self._navigate_back(default_route="exam_list")
             return
         try:
             session = ExamSession.load_json(p)
         except Exception:
-            self.stack.setCurrentIndex(0)
+            self._navigate_back(default_route="exam_list")
             return
         cfg = session.config or {}
         payload["subject_configs"] = cfg.get("subject_configs", payload.get("subject_configs", []))
@@ -3535,17 +3603,19 @@ class MainWindow(QMainWindow):
             self.scan_lr_split.setVisible(True)
         if hasattr(self, "scoring_panel"):
             self.scoring_panel.setVisible(False)
+        self._current_route_name = "workspace_batch_scan"
 
     def _show_scoring_panel(self) -> None:
         if hasattr(self, "scan_lr_split"):
             self.scan_lr_split.setVisible(False)
         if hasattr(self, "scoring_panel"):
             self.scoring_panel.setVisible(True)
+        self._current_route_name = "workspace_scoring"
 
     def _back_to_batch_scan(self) -> None:
-        if not self._confirm_before_switching_work("Batch Scan"):
+        # workspace sub-route
+        if not self._navigate_to("workspace_batch_scan", context={"session_id": self.current_session_id}, push_current=False, require_confirm=True, reason="back_to_batch"):
             return
-        self._show_batch_scan_panel()
 
     def _subject_configs_for_scoring(self) -> list[dict]:
         return self._effective_subject_configs_for_batch()
@@ -3870,7 +3940,7 @@ class MainWindow(QMainWindow):
         if not self._eligible_scoring_subject_keys():
             QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
             return
-        self.stack.setCurrentIndex(1)
+        self._navigate_to("workspace_scoring", context={"session_id": self.current_session_id}, push_current=True, require_confirm=False, reason="open_scoring")
         selected_subject = self._resolve_preferred_scoring_subject()
         self._populate_scoring_subjects(selected_subject)
         self._refresh_scoring_phase_table()
@@ -4410,13 +4480,13 @@ class MainWindow(QMainWindow):
         self.template_editor_embedded = None
         self.template_editor_mode = "library"
         self._refresh_template_library()
-        self.stack.setCurrentIndex(3)
+        self._navigate_to("template_library", context={"session_id": self.current_session_id}, push_current=False, require_confirm=False, reason="close_template_editor")
         return True
 
     def _close_template_module(self) -> bool:
         if self.template_editor_embedded:
             return self._close_embedded_template_editor()
-        self.stack.setCurrentIndex(0)
+        self._navigate_back(default_route="exam_list")
         return True
 
     def _save_template_repository(self) -> None:
@@ -4521,7 +4591,7 @@ class MainWindow(QMainWindow):
     def open_template_editor(self) -> None:
         self._refresh_template_library()
         self.template_editor_mode = "library"
-        self.stack.setCurrentIndex(3)
+        self._navigate_to("template_library", context={"session_id": self.current_session_id}, push_current=True, require_confirm=False, reason="open_template_library")
 
     def _subject_configs_in_session(self) -> list[dict]:
         if not self.session:
