@@ -7,6 +7,7 @@ import re
 from datetime import date, datetime
 from pathlib import Path
 import time
+import uuid
 
 from PySide6.QtCore import Qt, QEvent, QPointF, QTimer
 from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPixmap, QTransform, QPainter, QPen
@@ -1421,6 +1422,7 @@ class MainWindow(QMainWindow):
         self.subject_edit_index: int | None = None
         self.batch_editor_return_payload: dict | None = None
         self.batch_editor_return_session_id: str | None = None
+        self._current_batch_data_source: str = "empty"
 
         self.omr_processor = OMRProcessor()
         self.scoring_engine = ScoringEngine()
@@ -2671,6 +2673,10 @@ class MainWindow(QMainWindow):
         if self.session_dirty:
             if not self._confirm("Dữ liệu chưa lưu", "Kỳ thi hiện tại có thay đổi chưa lưu. Vẫn đóng?"):
                 return
+        self._release_batch_runtime_state()
+        self._release_preview_resources()
+        self._release_template_cache()
+        self._release_editor_resources()
         self.session = None
         self.template = None
         self.answer_keys = None
@@ -2693,6 +2699,54 @@ class MainWindow(QMainWindow):
         self.manual_edit.clear()
         self._refresh_batch_subject_controls()
         self.stack.setCurrentIndex(0)
+
+    def _release_batch_runtime_state(self) -> None:
+        # resource cleanup / release: aggressively clear heavy per-subject runtime maps.
+        self.scan_results = []
+        self.scan_results_by_subject = {}
+        self.batch_working_state_by_subject = {}
+        self.scoring_results_by_subject = {}
+        self.scoring_phases = []
+        self.scan_files = []
+        self.score_rows = []
+        self.imported_exam_codes = []
+        self.preview_rotation_by_index = {}
+        self.preview_markers_by_index = {}
+        self.scan_forced_status_by_index = {}
+        self.scan_blank_questions = {}
+        self.scan_blank_summary = {}
+        self.scan_manual_adjustments = {}
+        self.scan_edit_history = {}
+        self.scan_last_adjustment = {}
+        self.batch_editor_return_payload = None
+        self.batch_editor_return_session_id = None
+
+    def _release_preview_resources(self) -> None:
+        if hasattr(self, "scan_image_preview"):
+            self.scan_image_preview.clear()
+            if hasattr(self.scan_image_preview, "clear_markers"):
+                self.scan_image_preview.clear_markers()
+        if hasattr(self, "result_preview"):
+            self.result_preview.clear()
+        if hasattr(self, "preview_source_pixmap"):
+            self.preview_source_pixmap = None
+
+    def _release_template_cache(self) -> None:
+        if hasattr(self, "_template_cache_by_path"):
+            self._template_cache_by_path = {}
+
+    def _release_editor_resources(self) -> None:
+        for attr in ["template_editor_embedded", "embedded_exam_dialog"]:
+            obj = getattr(self, attr, None)
+            if obj is not None:
+                try:
+                    obj.deleteLater()
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+        for attr in ["embedded_exam_session", "embedded_exam_original_payload"]:
+            if hasattr(self, attr):
+                setattr(self, attr, None)
 
     def manage_subjects(self) -> None:
         self._refresh_subject_management_tables()
@@ -3500,9 +3554,21 @@ class MainWindow(QMainWindow):
         key_norm = str(subject_key or "").strip()
         if not key_norm:
             return None
+        exact_match: dict | None = None
+        logical_matches: list[dict] = []
         for cfg in self._subject_configs_for_scoring():
-            if self._subject_key_from_cfg(cfg) == key_norm:
-                return cfg
+            canonical = self._subject_instance_key_from_cfg(cfg)
+            logical = self._logical_subject_key_from_cfg(cfg)
+            if key_norm == canonical:
+                exact_match = cfg
+                break
+            if key_norm == logical:
+                logical_matches.append(cfg)
+        if exact_match is not None:
+            return exact_match
+        # legacy fallback / migration: only allow logical-key lookup when unambiguous.
+        if len(logical_matches) == 1:
+            return logical_matches[0]
         return None
 
     @staticmethod
@@ -3640,13 +3706,50 @@ class MainWindow(QMainWindow):
         return self.answer_keys is not None
 
     @staticmethod
-    def _subject_key_from_cfg(cfg: dict) -> str:
+    def _logical_subject_key_from_cfg(cfg: dict) -> str:
         key = str(cfg.get("answer_key_key", "") or "").strip()
         if key:
             return key
         name = str(cfg.get("name", "") or "").strip()
         block = str(cfg.get("block", "") or "").strip()
         return f"{name}_{block}" if name and block else (name or "General")
+
+    def _ensure_subject_instance_key(self, cfg: dict, index: int | None = None) -> str:
+        # canonical subject_instance_key: scoped runtime/storage key, stable across edits of display fields.
+        if not isinstance(cfg, dict):
+            return ""
+        existing = str(cfg.get("subject_instance_key", "") or "").strip()
+        if existing:
+            return existing
+        scope_prefix = self._session_scope_prefix() or "session"
+        logical = self._logical_subject_key_from_cfg(cfg) or "General"
+        uid = str(cfg.get("subject_uid", "") or "").strip()
+        if not uid:
+            uid = str(uuid.uuid4())
+            cfg["subject_uid"] = uid
+        suffix = f"{int(index)}" if isinstance(index, int) and index >= 0 else uid
+        value = f"{scope_prefix}::{logical}::{suffix}"
+        cfg["logical_subject_key"] = logical
+        cfg["subject_instance_key"] = value
+        return value
+
+    def _subject_instance_key_from_cfg(self, cfg: dict) -> str:
+        if not isinstance(cfg, dict):
+            return ""
+        return self._ensure_subject_instance_key(cfg)
+
+    def _current_subject_instance_key(self) -> str:
+        cfg = self._selected_batch_subject_config()
+        if not isinstance(cfg, dict):
+            return ""
+        return self._subject_instance_key_from_cfg(cfg)
+
+    def _current_batch_runtime_key(self) -> str:
+        return self._batch_runtime_key(self._current_subject_instance_key())
+
+    def _subject_key_from_cfg(self, cfg: dict) -> str:
+        # backward compatibility shim: storage/runtime key is now subject_instance_key.
+        return self._subject_instance_key_from_cfg(cfg)
 
     def _batch_result_subject_key(self, subject_key: str) -> str:
         base = str(subject_key or "").strip()
@@ -3697,13 +3800,16 @@ class MainWindow(QMainWindow):
         if not isinstance(cfg, dict):
             return "-"
         exam_name = str((self.session.exam_name if self.session else "") or "").strip() or "Kỳ thi hiện tại"
-        subject_name = str(cfg.get("name", "") or "").strip() or str(self._subject_key_from_cfg(cfg) or "-")
+        subject_name = str(cfg.get("name", "") or "").strip() or str(self._logical_subject_key_from_cfg(cfg) or "-")
         block = str(cfg.get("block", "") or "").strip() or "-"
         return f"{exam_name} | {subject_name} | Khối {block}"
 
     def _batch_cache_subject_key(self, cfg: dict | None, include_session: bool = True) -> str:
         if not isinstance(cfg, dict):
             return ""
+        canonical = str(self._subject_instance_key_from_cfg(cfg) or "").strip().lower()
+        if canonical:
+            return canonical
         name = str(cfg.get("name", "") or "").strip().lower()
         block = str(cfg.get("block", "") or "").strip().lower()
         answer_key = str(cfg.get("answer_key_key", "") or "").strip().lower()
@@ -3744,7 +3850,7 @@ class MainWindow(QMainWindow):
             key = self._subject_key_from_cfg(cfg)
             if eligible and key not in eligible:
                 continue
-            label = f"{cfg.get('name', '-')}-Khối {cfg.get('block', '-')}"
+            label = self._display_subject_label(cfg)
             self.scoring_subject_combo.addItem(label, key)
         if self.scoring_subject_combo.count() == 0:
             fallback = self._resolve_preferred_scoring_subject()
@@ -4422,7 +4528,12 @@ class MainWindow(QMainWindow):
             return []
         cfg = self.session.config or {}
         raw = cfg.get("subject_configs", [])
-        return raw if isinstance(raw, list) else []
+        items = raw if isinstance(raw, list) else []
+        for idx, item in enumerate(items):
+            if isinstance(item, dict):
+                # legacy fallback / migration: promote old logical-only configs to canonical subject_instance_key.
+                self._ensure_subject_instance_key(item, idx)
+        return items
 
     def _student_profile_by_id(self, student_id: str) -> dict:
         sid = str(student_id or "").strip()
@@ -4581,12 +4692,20 @@ class MainWindow(QMainWindow):
     def _refresh_batch_subject_controls(self) -> None:
         if not hasattr(self, "batch_subject_combo"):
             return
+        current_key = str(self.batch_subject_combo.currentData() or "").strip() if self.batch_subject_combo.count() > 0 else ""
         self.batch_subject_combo.blockSignals(True)
         self.batch_subject_combo.clear()
-        self.batch_subject_combo.addItem("[Chọn môn]")
-        for cfg in self._effective_subject_configs_for_batch():
+        self.batch_subject_combo.addItem("[Chọn môn]", "")
+        for idx, cfg in enumerate(self._effective_subject_configs_for_batch()):
+            if isinstance(cfg, dict):
+                self._ensure_subject_instance_key(cfg, idx)
             label = self._display_subject_label(cfg)
-            self.batch_subject_combo.addItem(label, cfg)
+            self.batch_subject_combo.addItem(label, self._subject_instance_key_from_cfg(cfg))
+        if current_key:
+            for i in range(self.batch_subject_combo.count()):
+                if str(self.batch_subject_combo.itemData(i) or "").strip() == current_key:
+                    self.batch_subject_combo.setCurrentIndex(i)
+                    break
         self.batch_subject_combo.blockSignals(False)
         self._on_batch_subject_changed(self.batch_subject_combo.currentIndex())
 
@@ -4596,8 +4715,10 @@ class MainWindow(QMainWindow):
         idx = self.batch_subject_combo.currentIndex()
         if idx <= 0:
             return None
-        cfg = self.batch_subject_combo.itemData(idx)
-        return cfg if isinstance(cfg, dict) else None
+        key = str(self.batch_subject_combo.itemData(idx) or "").strip()
+        if not key:
+            return None
+        return self._subject_config_by_subject_key(key)
 
     def _subject_section_question_counts(self, subject_key: str = "") -> dict[str, int]:
         counts = {"MCQ": 0, "TF": 0, "NUMERIC": 0}
@@ -4646,7 +4767,8 @@ class MainWindow(QMainWindow):
 
     def _recognized_image_paths_for_subject(self, subject_key: str) -> set[str]:
         key = str(subject_key or "").strip()
-        rows = list(self.scan_results_by_subject.get(self._batch_result_subject_key(key)) or [])
+        runtime_key = self._batch_runtime_key(key)
+        rows = list(self.scan_results_by_subject.get(runtime_key) or [])
         if not rows and key:
             rows = list(self._refresh_scan_results_from_db(key) or [])
         return {
@@ -4677,21 +4799,20 @@ class MainWindow(QMainWindow):
         if cfg:
             cfg = self._merge_saved_batch_snapshot(cfg)
         all_paths = self._configured_scan_file_paths(cfg)
-        subject_key = self._subject_key_from_cfg(cfg) if cfg else ""
-        recognized = self._recognized_image_paths_for_subject(subject_key)
+        logical_key = self._logical_subject_key_from_cfg(cfg) if cfg else ""
+        instance_key = self._subject_instance_key_from_cfg(cfg) if cfg else ""
+        runtime_key = self._batch_runtime_key(instance_key) if instance_key else ""
+        recognized = self._recognized_image_paths_for_subject(instance_key)
         recognized_count = sum(1 for path in all_paths if path in recognized)
         pending_count = max(0, len(all_paths) - recognized_count)
         mode = str(self.batch_file_scope_combo.currentData() or "new_only") if hasattr(self, "batch_file_scope_combo") else "new_only"
         mode_label = "File mới" if mode == "new_only" else "Toàn bộ"
         self.batch_scan_state_value.setText(f"{mode_label} | Đã nhận diện: {recognized_count} | Chưa nhận diện: {pending_count}")
         if hasattr(self, "batch_context_value"):
-            logical_key = self._subject_key_from_cfg(cfg) if cfg else ""
-            scoped_key = self._batch_result_subject_key(logical_key) if logical_key else "-"
-            source_hint = "database/cache scoped"
-            if cfg and bool(cfg.get("batch_saved")):
-                source_hint = "working memory/session cache"
             self.batch_context_value.setText(
-                f"{self._display_subject_label(cfg)} | Key: {logical_key or '-'} | Scope: {scoped_key} | Nguồn: {source_hint}"
+                f"{self._display_subject_label(cfg)} | Logical: {logical_key or '-'} | "
+                f"SubjectInstance: {instance_key or '-'} | Runtime: {runtime_key or '-'} | "
+                f"Nguồn: {self._current_batch_data_source}"
             )
 
     @staticmethod
@@ -4725,16 +4846,24 @@ class MainWindow(QMainWindow):
         def _norm(v: str) -> str:
             return str(v or "").strip().lower()
 
+        target_instance = str(self._subject_instance_key_from_cfg(merged) or "").strip()
         target_token = self._batch_cache_subject_key(merged, include_session=False)
         key = _norm(merged.get("answer_key_key", ""))
         found: dict | None = None
         for item in raw_cfgs:
             if not isinstance(item, dict):
                 continue
+            item_instance = str(self._subject_instance_key_from_cfg(item) or "").strip()
             item_token = self._batch_cache_subject_key(item, include_session=False)
-            same_key = key and _norm(item.get("answer_key_key", "")) == key
+            if target_instance and item_instance == target_instance:
+                found = item
+                break
+            # legacy fallback: old sessions might not have canonical subject_instance_key yet.
+            same_key = (not target_instance) and key and _norm(item.get("answer_key_key", "")) == key
             if item_token == target_token or same_key:
                 found = item
+                if target_instance:
+                    continue
                 break
 
         if found:
@@ -4769,47 +4898,20 @@ class MainWindow(QMainWindow):
             return
         self._switching_batch_subject = True
         try:
-            previous_subject_key = str(getattr(self, "active_batch_subject_key", "") or "").strip()
-            if previous_subject_key:
-                self._cache_working_batch_state(previous_subject_key)
+            previous_runtime_key = str(getattr(self, "active_batch_subject_key", "") or "").strip()
+            if previous_runtime_key:
+                print(f"[BatchSubject] cache old_runtime_key={previous_runtime_key}")
+                self._cache_working_batch_state(previous_runtime_key)
             cfg = self._selected_batch_subject_config()
             if cfg:
                 cfg = self._merge_saved_batch_snapshot(cfg)
-                self.active_batch_subject_key = self._subject_key_from_cfg(cfg)
+                self.active_batch_subject_key = self._batch_runtime_key(cfg)
+                print(f"[BatchSubject] switching new_runtime_key={self.active_batch_subject_key}")
             else:
                 self.active_batch_subject_key = None
 
-            # Reset lightweight UI state once; avoid nested reload loops.
-            self.scan_results = []
-            self.scan_files = []
-            self.scan_blank_questions.clear()
-            self.scan_blank_summary.clear()
-            self.scan_manual_adjustments.clear()
-            self.scan_edit_history.clear()
-            self.scan_last_adjustment.clear()
-            self.scan_forced_status_by_index.clear()
-            if hasattr(self, "scan_list"):
-                self.scan_list.setRowCount(0)
-            if hasattr(self, "scan_result_preview"):
-                self.scan_result_preview.setRowCount(0)
-            if hasattr(self, "error_list"):
-                self.error_list.clear()
-            if hasattr(self, "result_preview"):
-                self.result_preview.clear()
-            if hasattr(self, "manual_edit"):
-                self.manual_edit.clear()
-            if hasattr(self, "progress"):
-                self.progress.setValue(0)
-            if hasattr(self, "scan_image_preview"):
-                self.preview_source_pixmap = QPixmap()
-                self.scan_image_preview.setPixmap(QPixmap())
-                self.scan_image_preview.setText("Chọn bài thi ở danh sách bên trái")
-                self.scan_image_preview.clear_markers()
-                if hasattr(self, "btn_zoom_reset"):
-                    self.preview_zoom_factor = 1.0
-                    self.btn_zoom_reset.setText("100%")
-            if hasattr(self, "btn_save_batch_subject"):
-                self.btn_save_batch_subject.setEnabled(False)
+            # reset stale subject UI before any restore/load.
+            self._reset_batch_subject_ui_state()
 
             if not cfg:
                 self.batch_template_value.setText("-")
@@ -4819,6 +4921,7 @@ class MainWindow(QMainWindow):
                 self.batch_scan_state_value.setText("-")
                 if hasattr(self, "batch_context_value"):
                     self.batch_context_value.setText("-")
+                self._current_batch_data_source = "empty"
                 return
 
             template_path = self._normalize_template_path(str(cfg.get("template_path", "") or "")) or self._normalize_template_path(str(self.session.template_path if self.session else "")) or "-"
@@ -4849,31 +4952,46 @@ class MainWindow(QMainWindow):
             self._update_batch_scan_scope_summary()
 
             subject_key = self._subject_key_from_cfg(cfg)
+            runtime_key = self._batch_runtime_key(subject_key)
             if subject_key not in self._answer_keys_ready_subjects:
                 self._ensure_answer_keys_for_subject(subject_key)
                 self._answer_keys_ready_subjects.add(subject_key)
 
-            if self._restore_cached_working_batch_state(subject_key):
+            if self._restore_cached_working_batch_state(runtime_key):
+                self._current_batch_data_source = "working_memory"
                 self._finalize_batch_scan_display(refresh_statuses=False)
                 self.scan_image_preview.setText("Đã khôi phục dữ liệu Batch Scan từ bộ nhớ tạm của môn này")
                 self._update_batch_scan_scope_summary()
                 return
 
-            cached_subject_rows = list(self.scan_results_by_subject.get(self._batch_result_subject_key(subject_key), []) or [])
-            self.scan_results = cached_subject_rows if cached_subject_rows else self._refresh_scan_results_from_db(subject_key)
+            cached_subject_rows = list(self.scan_results_by_subject.get(runtime_key, []) or [])
+            if cached_subject_rows:
+                self.scan_results = cached_subject_rows
+                self._current_batch_data_source = "in_memory_subject_cache"
+            else:
+                self.scan_results = self._refresh_scan_results_from_db(subject_key)
+                self._current_batch_data_source = "database" if self.scan_results else "empty"
             if self.scan_results:
                 self._populate_scan_grid_from_results(self.scan_results, skip_expensive_checks=True)
                 self._finalize_batch_scan_display(refresh_statuses=False)
+                if self.scan_list.rowCount() > 0:
+                    self.scan_list.selectRow(0)
+                    self.scan_list.setCurrentCell(0, 0)
+                    self._on_scan_selected()
                 self.scan_image_preview.setText("Đã nạp kết quả Batch Scan từ nguồn dữ liệu chuẩn trong cơ sở dữ liệu cho môn này")
             elif bool(cfg.get("batch_saved")):
+                self._current_batch_data_source = "saved_snapshot"
                 self.scan_image_preview.setText(
                     f"Môn này đã lưu Batch ({cfg.get('batch_saved_at', '-')}) - Số bài: {cfg.get('batch_result_count', '-')}."
                 )
+            else:
+                self._current_batch_data_source = "empty"
+            self._update_batch_scan_scope_summary()
         finally:
             self._switching_batch_subject = False
 
     def _cache_working_batch_state(self, subject_key: str) -> None:
-        key = self._batch_result_subject_key(subject_key)
+        key = self._batch_runtime_key(subject_key)
         if not key or not hasattr(self, "scan_list"):
             return
 
@@ -4904,17 +5022,33 @@ class MainWindow(QMainWindow):
                     }
                 )
 
+        selected_row = self.scan_list.currentRow() if hasattr(self, "scan_list") else -1
+        selected_image_path = ""
+        if 0 <= selected_row < self.scan_list.rowCount():
+            item = self.scan_list.item(selected_row, 0)
+            selected_image_path = str(item.data(Qt.UserRole) if item else "")
         self.batch_working_state_by_subject[key] = {
+            "runtime_key": key,
             "scan_results": list(self.scan_results_by_subject.get(key, self.scan_results or [])),
             "rows": rows,
             "preview": preview_rows,
+            "selected_row": int(selected_row),
+            "selected_image_path": selected_image_path,
+            "preview_rotation_by_index": dict(getattr(self, "preview_rotation_by_index", {}) or {}),
+            "preview_markers_by_index": dict(getattr(self, "preview_markers_by_index", {}) or {}),
         }
 
     def _restore_cached_working_batch_state(self, subject_key: str) -> bool:
-        key = self._batch_result_subject_key(subject_key)
+        key = self._batch_runtime_key(subject_key)
         cached = self.batch_working_state_by_subject.get(key)
         if not isinstance(cached, dict):
             return False
+        if str(cached.get("runtime_key", "") or "") not in {"", key}:
+            return False
+        if hasattr(self, "scan_list"):
+            self.scan_list.setRowCount(0)
+        if hasattr(self, "scan_result_preview"):
+            self.scan_result_preview.setRowCount(0)
 
         self.scan_results = list(cached.get("scan_results", []))
         self.scan_results_by_subject[key] = list(self.scan_results)
@@ -4948,9 +5082,87 @@ class MainWindow(QMainWindow):
             self.scan_result_preview.setItem(r, 0, QTableWidgetItem(str(row.get("label", ""))))
             self.scan_result_preview.setItem(r, 1, QTableWidgetItem(str(row.get("value", ""))))
 
+        self.preview_rotation_by_index = dict(cached.get("preview_rotation_by_index", {}) or {})
+        self.preview_markers_by_index = dict(cached.get("preview_markers_by_index", {}) or {})
+        selected_image_path = str(cached.get("selected_image_path", "") or "")
+        selected_row = int(cached.get("selected_row", 0) or 0)
+        picked_row = -1
+        if selected_image_path and hasattr(self, "scan_list"):
+            for r in range(self.scan_list.rowCount()):
+                item = self.scan_list.item(r, 0)
+                if str(item.data(Qt.UserRole) if item else "") == selected_image_path:
+                    picked_row = r
+                    break
+        if picked_row < 0:
+            picked_row = selected_row if 0 <= selected_row < self.scan_list.rowCount() else (0 if self.scan_list.rowCount() > 0 else -1)
+        if picked_row >= 0 and hasattr(self, "scan_list"):
+            self.scan_list.selectRow(picked_row)
+            # restored current subject state
+            self.scan_list.setCurrentCell(picked_row, 0)
+            self._on_scan_selected()
+        else:
+            self._clear_batch_preview_panels()
+
         if hasattr(self, "btn_save_batch_subject") and self.scan_list.rowCount() > 0:
             self.btn_save_batch_subject.setEnabled(True)
         return self.scan_list.rowCount() > 0
+
+    def _batch_runtime_key(self, subject_key_or_cfg) -> str:
+        # canonical runtime key for batch UI caches/scans.
+        if isinstance(subject_key_or_cfg, dict):
+            subject_key = self._subject_instance_key_from_cfg(subject_key_or_cfg)
+        else:
+            subject_key = str(subject_key_or_cfg or "").strip()
+        return self._normalize_subject_runtime_key(subject_key)
+
+    def _normalize_subject_runtime_key(self, key: str) -> str:
+        key_text = str(key or "").strip()
+        if not key_text:
+            return ""
+        scope_prefix = self._session_scope_prefix()
+        if scope_prefix and key_text.startswith(f"{scope_prefix}::"):
+            return key_text
+        return self._batch_result_subject_key(key_text)
+
+    def _clear_batch_preview_panels(self) -> None:
+        if hasattr(self, "scan_result_preview"):
+            self.scan_result_preview.setRowCount(0)
+        if hasattr(self, "result_preview"):
+            self.result_preview.clear()
+        if hasattr(self, "manual_edit"):
+            self.manual_edit.clear()
+        if hasattr(self, "scan_image_preview"):
+            self.scan_image_preview.clear()
+            self.scan_image_preview.setText("Chọn bài thi ở danh sách bên trái")
+            if hasattr(self.scan_image_preview, "clear_markers"):
+                self.scan_image_preview.clear_markers()
+
+    def _reset_batch_subject_ui_state(self) -> None:
+        # reset stale subject UI
+        self.scan_results = []
+        self.scan_files = []
+        self.scan_blank_questions.clear()
+        self.scan_blank_summary.clear()
+        self.scan_manual_adjustments.clear()
+        self.scan_edit_history.clear()
+        self.scan_last_adjustment.clear()
+        self.scan_forced_status_by_index.clear()
+        self.preview_rotation_by_index.clear()
+        self.preview_markers_by_index.clear()
+        if hasattr(self, "scan_list"):
+            self.scan_list.clearSelection()
+            self.scan_list.setRowCount(0)
+        self._clear_batch_preview_panels()
+        if hasattr(self, "error_list"):
+            self.error_list.clear()
+        if hasattr(self, "progress"):
+            self.progress.setValue(0)
+        self.preview_source_pixmap = QPixmap()
+        self.preview_zoom_factor = 1.0
+        if hasattr(self, "btn_zoom_reset"):
+            self.btn_zoom_reset.setText("100%")
+        if hasattr(self, "btn_save_batch_subject"):
+            self.btn_save_batch_subject.setEnabled(False)
 
     @staticmethod
     def _has_valid_identity(result) -> bool:
@@ -4972,6 +5184,37 @@ class MainWindow(QMainWindow):
         if any(str(getattr(issue, "code", "") or "").upper() == "FILE" for issue in issues):
             return True
         return not MainWindow._result_has_meaningful_recognition(result)
+
+    @staticmethod
+    def _preferred_forced_status(result) -> str:
+        issues = [str(getattr(issue, "code", "") or "").strip().upper() for issue in (getattr(result, "issues", []) or [])]
+        if "FILE" in issues:
+            return "Lỗi file ảnh"
+        if "POOR_IDENTIFIER_ZONE" in issues:
+            return "Không đủ chất lượng"
+        if "POOR_IMAGE" in issues or "FAST_FAIL_POOR_SCAN" in issues:
+            return "Ảnh xấu"
+        if "IDENTIFIER_FAST_CAP" in issues or "STUDENT_ID_FAST_FAIL" in issues:
+            return "Giới hạn SBD"
+        if "SCANNER_LOCK_FAIL" in issues:
+            return "Scanner lock fail"
+        if "SAFE_FALLBACK_USED" in issues:
+            return "Safe fallback used"
+        if "IDENTIFIER_TIMEOUT" in issues:
+            return "Timeout vùng SBD"
+        if "TIMEOUT" in issues:
+            return "Timeout nhận dạng"
+        if not MainWindow._result_has_meaningful_recognition(result):
+            return "Lỗi file ảnh"
+        return ""
+
+    @staticmethod
+    def _result_is_poor_image(result) -> bool:
+        issues = [str(getattr(issue, "code", "") or "").strip().upper() for issue in (getattr(result, "issues", []) or [])]
+        if "POOR_IMAGE" in issues or "FAST_FAIL_POOR_SCAN" in issues:
+            return True
+        alignment_debug = dict(getattr(result, "alignment_debug", {}) or {})
+        return bool(alignment_debug.get("poor_image", False))
 
     @staticmethod
     def _recognition_quality_score(result) -> int:
@@ -5017,6 +5260,13 @@ class MainWindow(QMainWindow):
             return raw
         text = str(raw or "").strip().lower()
         return text in {"1", "true", "yes", "on"}
+
+    def _skip_retry_for_poor_images(self) -> bool:
+        template_md = (self.template.metadata if self.template and isinstance(self.template.metadata, dict) else {})
+        raw = template_md.get("batch_skip_retry_for_poor_images", True)
+        if isinstance(raw, bool):
+            return raw
+        return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
     def _try_reprocess_result_rotated_180(self, result):
         image_path = str(getattr(result, "image_path", "") or "").strip()
@@ -5230,7 +5480,8 @@ class MainWindow(QMainWindow):
                 original_identity = self._has_valid_identity(result)
 
                 # Keep batch behavior aligned with Template Editor by default (no auto-rotation retry).
-                need_retry_180 = self._allow_batch_auto_rotate_retry() and ((not original_identity) or (not original_meaningful))
+                skip_retry_on_poor = self._skip_retry_for_poor_images() and self._result_is_poor_image(result)
+                need_retry_180 = self._allow_batch_auto_rotate_retry() and (not skip_retry_on_poor) and ((not original_identity) or (not original_meaningful))
                 if need_retry_180:
                     retried, improved = self._try_reprocess_result_rotated_180(result)
                     # Accept 180° retry only when quality is strictly improved, otherwise keep original orientation.
@@ -5238,9 +5489,11 @@ class MainWindow(QMainWindow):
                         result = retried
                         self.preview_rotation_by_index[idx] = (int(self.preview_rotation_by_index.get(idx, 0) or 0) + 180) % 360
 
-                if self._should_force_image_error_status(result):
-                    # Keep raw recognition data for consistency with single-image re-recognition,
-                    # but only mark image-file error when recognition is truly unusable/file-loading failed.
+                preferred_status = self._preferred_forced_status(result)
+                if preferred_status:
+                    # Keep raw recognition data (answers + identifiers) and only override status text.
+                    forced_status = preferred_status
+                elif self._should_force_image_error_status(result):
                     forced_status = "Lỗi file ảnh"
 
                 if forced_status:

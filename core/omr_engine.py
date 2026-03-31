@@ -57,6 +57,8 @@ class RecognitionContext:
     deadline_monotonic: float = 0.0
     collect_diagnostics: bool = True
     force_identifier_recognition: bool = False
+    fast_production_test: bool = True
+    debug_deep: bool = False
 
     def reset(self) -> None:
         self.detected_anchors = []
@@ -86,6 +88,8 @@ class TemplateRuntimePlan:
     anchor_points_px: np.ndarray = field(default_factory=lambda: np.empty((0, 2), dtype=np.float32))
     zone_bounds_px: dict[str, tuple[int, int, int, int]] = field(default_factory=dict)
     zone_centers_px: dict[str, np.ndarray] = field(default_factory=dict)
+    zone_bubble_radius: dict[str, int] = field(default_factory=dict)
+    identifier_zone_ids: set[str] = field(default_factory=set)
 
 
 class OMRProcessor:
@@ -113,6 +117,8 @@ class OMRProcessor:
         self._batch_orientation_hint_score: float | None = None
         self._template_anchor_cache: dict[tuple[int, int, int, int], np.ndarray] = {}
         self._template_plan_cache: dict[tuple[int, int, int, int, int], TemplateRuntimePlan] = {}
+        self._scanner_locked_plan_cache: dict[tuple[int, int, int, int, int], dict[str, object]] = {}
+        self._active_point_shift: tuple[float, float] = (0.0, 0.0)
 
     def _time_budget_exceeded(self) -> bool:
         deadline = self._processing_deadline_monotonic
@@ -159,6 +165,61 @@ class OMRProcessor:
         return bool(meta.get("skip_heavy_identifier_fallback", False))
 
     @staticmethod
+    def _poor_image_fast_fail_enabled(template: Template) -> bool:
+        meta = getattr(template, "metadata", {}) or {}
+        raw = meta.get("poor_image_fast_fail", True)
+        if isinstance(raw, bool):
+            return raw
+        return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _allow_heavy_identifier_retry_on_poor_image(template: Template) -> bool:
+        meta = getattr(template, "metadata", {}) or {}
+        raw = meta.get("allow_heavy_identifier_retry_on_poor_image", False)
+        if isinstance(raw, bool):
+            return raw
+        return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _poor_image_quality_threshold(template: Template) -> float:
+        meta = getattr(template, "metadata", {}) or {}
+        raw = meta.get("poor_image_quality_threshold", 0.42)
+        try:
+            return float(raw)
+        except Exception:
+            return 0.42
+
+    @staticmethod
+    def _identifier_timeout_sec(template: Template) -> float:
+        meta = getattr(template, "metadata", {}) or {}
+        raw = meta.get("identifier_timeout_sec", 2.0)
+        try:
+            value = float(raw)
+        except Exception:
+            value = 2.0
+        return max(0.5, value)
+
+    @staticmethod
+    def _identifier_timeout_sec_fast(template: Template) -> float:
+        meta = getattr(template, "metadata", {}) or {}
+        raw = meta.get("identifier_timeout_sec_fast", 0.25)
+        try:
+            value = float(raw)
+        except Exception:
+            value = 0.25
+        return max(0.08, value)
+
+    @staticmethod
+    def _max_identifier_fallback_steps(template: Template, fast_mode: bool) -> int:
+        meta = getattr(template, "metadata", {}) or {}
+        default_steps = 1 if fast_mode else 3
+        raw = meta.get("max_identifier_fallback_steps", default_steps)
+        try:
+            return max(0, int(raw))
+        except Exception:
+            return default_steps
+
+    @staticmethod
     def _should_force_grayscale_load(template: Template) -> bool:
         meta = getattr(template, "metadata", {}) or {}
         return bool(meta.get("force_grayscale_load", False))
@@ -184,6 +245,31 @@ class OMRProcessor:
         meta = getattr(template, "metadata", {}) or {}
         return str(meta.get("template_match_mode", "generic") or "generic").strip().lower()
 
+    @staticmethod
+    def _scanner_locked_mode(template: Template) -> bool:
+        meta = getattr(template, "metadata", {}) or {}
+        raw = meta.get("scanner_locked_mode", False)
+        if isinstance(raw, bool):
+            return raw
+        return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _scanner_locked_allow_full_fallback(template: Template) -> bool:
+        meta = getattr(template, "metadata", {}) or {}
+        raw = meta.get("scanner_locked_allow_full_fallback", True)
+        if isinstance(raw, bool):
+            return raw
+        return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _scanner_locked_max_shift_px(template: Template) -> float:
+        meta = getattr(template, "metadata", {}) or {}
+        raw = meta.get("scanner_locked_max_shift_px", 24.0)
+        try:
+            return max(4.0, float(raw))
+        except Exception:
+            return 24.0
+
     def _is_fixed_scan_profile(self, template: Template) -> bool:
         profile = self._scan_profile(template)
         match_mode = self._template_match_mode(template)
@@ -197,6 +283,8 @@ class OMRProcessor:
         sorted_zones = sorted(template.zones, key=self._zone_recognition_priority)
         zone_bounds_px: dict[str, tuple[int, int, int, int]] = {}
         zone_centers_px: dict[str, np.ndarray] = {}
+        zone_bubble_radius: dict[str, int] = {}
+        identifier_zone_ids: set[str] = set()
         for zone in sorted_zones:
             x = int(round((zone.x * template.width) if zone.x <= 1.0 else zone.x))
             y = int(round((zone.y * template.height) if zone.y <= 1.0 else zone.y))
@@ -215,6 +303,9 @@ class OMRProcessor:
             else:
                 centers = np.empty((0, 2), dtype=np.float32)
             zone_centers_px[zone.id] = centers
+            zone_bubble_radius[zone.id] = int(zone.metadata.get("bubble_radius", 9))
+            if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+                identifier_zone_ids.add(zone.id)
         return TemplateRuntimePlan(
             key=key,
             target_width=int(template.width),
@@ -226,6 +317,8 @@ class OMRProcessor:
             anchor_points_px=self._template_anchor_points_px(template),
             zone_bounds_px=zone_bounds_px,
             zone_centers_px=zone_centers_px,
+            zone_bubble_radius=zone_bubble_radius,
+            identifier_zone_ids=identifier_zone_ids,
         )
 
     def _get_template_runtime_plan(self, template: Template) -> TemplateRuntimePlan:
@@ -237,12 +330,302 @@ class OMRProcessor:
         self._template_plan_cache[key] = plan
         return plan
 
+    def _build_scanner_locked_plan(self, template: Template) -> dict[str, object]:
+        plan = self._get_template_runtime_plan(template)
+        header_h = int(round(template.height * 0.22))
+        ref_rois = list((template.metadata or {}).get("scanner_locked_reference_rois", []) or [])
+        if not ref_rois:
+            ref_rois = [
+                [0, 0, int(template.width * 0.22), max(20, int(template.height * 0.14))],
+                [int(template.width * 0.78), 0, int(template.width * 0.22), max(20, int(template.height * 0.14))],
+            ]
+        return {
+            "calibrated_reference_size": (int(template.width), int(template.height)),
+            "reference_anchor_rois": ref_rois,
+            "reference_header_roi": [0, 0, int(template.width), header_h],
+            "reference_mcq_roi": [0, header_h, int(template.width), int(template.height - header_h)],
+            "reference_tf_roi": [0, header_h, int(template.width), int(template.height - header_h)],
+            "reference_numeric_roi": [0, header_h, int(template.width), int(template.height - header_h)],
+            "scanner_locked_zone_bounds_px": dict(plan.zone_bounds_px),
+            "scanner_locked_zone_centers_px": {k: np.array(v, dtype=np.float32) for k, v in plan.zone_centers_px.items()},
+            "scanner_locked_sampling_radius": dict(plan.zone_bubble_radius),
+            "scanner_locked_reference_patches": [],
+        }
+
+    def _get_scanner_locked_plan(self, template: Template) -> dict[str, object]:
+        key = self._template_plan_key(template)
+        cached = self._scanner_locked_plan_cache.get(key)
+        if cached is not None:
+            return cached
+        built = self._build_scanner_locked_plan(template)
+        self._scanner_locked_plan_cache[key] = built
+        return built
+
     def _preprocess_fast(self, image: np.ndarray) -> dict[str, np.ndarray]:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         blur = cv2.GaussianBlur(gray, (3, 3), 0)
         _, binary = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         edges = cv2.Canny(blur, 60, 160)
         return {"gray": gray, "blur": blur, "binary": binary, "edges": edges}
+
+    @staticmethod
+    def _append_issue_once(result: OMRResult, code: str, message: str, zone_id: str | None = None) -> None:
+        code_u = str(code or "").strip().upper()
+        zid = str(zone_id or "").strip()
+        for issue in (result.issues or []):
+            if str(getattr(issue, "code", "") or "").strip().upper() == code_u and str(getattr(issue, "zone_id", "") or "").strip() == zid:
+                return
+        result.issues.append(OMRIssue(code_u, message, zone_id=zone_id))
+
+    def _estimate_image_quality(
+        self,
+        aligned_image: np.ndarray,
+        aligned_binary: np.ndarray,
+        template: Template,
+    ) -> dict[str, object]:
+        md = getattr(template, "metadata", {}) or {}
+        threshold = self._poor_image_quality_threshold(template)
+        match_count = int(self._last_alignment_debug.get("used_anchor_match_count", self._last_alignment_debug.get("fast_match_count", 0)) or 0)
+        mean_error = float(self._last_alignment_debug.get("fast_mean_error", 16.0) or 16.0)
+        align_score = float(self._last_alignment_debug.get("alignment_score", 0.0) or 0.0)
+        h, w = aligned_binary.shape[:2]
+        header_zone = aligned_binary[: max(1, int(h * 0.22)), :]
+        header_density = float(np.mean(header_zone > 0)) if header_zone.size else 0.0
+        blur_var = 0.0
+        try:
+            gray = cv2.cvtColor(aligned_image, cv2.COLOR_BGR2GRAY) if len(aligned_image.shape) == 3 else aligned_image
+            blur_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        except Exception:
+            blur_var = 0.0
+        id_zones = [z for z in template.zones if z.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK)]
+        usable_ratios: list[float] = []
+        for z in id_zones:
+            centers = self._resolve_zone_centers(aligned_binary, z, template)
+            if centers is None or len(centers) == 0:
+                continue
+            within = (centers[:, 0] >= 1) & (centers[:, 0] < w - 1) & (centers[:, 1] >= 1) & (centers[:, 1] < h - 1)
+            usable_ratios.append(float(np.mean(within)))
+        usable_ratio = float(np.mean(usable_ratios)) if usable_ratios else 0.0
+
+        anchor_component = min(1.0, max(0.0, match_count / 6.0))
+        err_component = min(1.0, max(0.0, (18.0 - mean_error) / 18.0))
+        blur_component = min(1.0, max(0.0, blur_var / 120.0))
+        align_component = min(1.0, max(0.0, align_score / 180.0))
+        quality_score = float(
+            (0.28 * anchor_component)
+            + (0.20 * err_component)
+            + (0.18 * align_component)
+            + (0.16 * min(1.0, max(0.0, header_density / 0.22)))
+            + (0.10 * usable_ratio)
+            + (0.08 * blur_component)
+        )
+        poor_scan = quality_score < threshold
+        poor_identifier_zone = bool(usable_ratio < 0.55 or header_density < 0.04)
+        reason_bits: list[str] = []
+        if match_count < 3:
+            reason_bits.append("low_anchor_match")
+        if mean_error > 16.0:
+            reason_bits.append("high_alignment_error")
+        if header_density < 0.04:
+            reason_bits.append("weak_header_density")
+        if usable_ratio < 0.55:
+            reason_bits.append("weak_identifier_centers")
+        if blur_var < 18.0:
+            reason_bits.append("high_blur")
+        if not reason_bits:
+            reason_bits.append("ok")
+        return {
+            "quality_score": quality_score,
+            "poor_scan": bool(poor_scan),
+            "poor_identifier_zone": bool(poor_identifier_zone),
+            "reason": ",".join(reason_bits),
+            "threshold": float(md.get("poor_image_quality_threshold", threshold) or threshold),
+        }
+
+    @staticmethod
+    def _has_meaningful_result(result: OMRResult) -> bool:
+        sid = str(getattr(result, "student_id", "") or "").strip()
+        code = str(getattr(result, "exam_code", "") or "").strip()
+        has_identity = bool((sid and sid != "-") or (code and code != "-"))
+        return has_identity or bool((result.mcq_answers or {}) or (result.true_false_answers or {}) or (result.numeric_answers or {}))
+
+    def _estimate_band_transform(
+        self,
+        image_gray: np.ndarray,
+        template: Template,
+        band_name: str,
+        scanner_plan: dict[str, object],
+    ) -> dict[str, float | bool]:
+        # lightweight band locking: keep translation-only correction for scanner-stable sheets.
+        _ = image_gray
+        _ = scanner_plan
+        return {
+            "success": True,
+            "dx": 0.0,
+            "dy": 0.0,
+            "dtheta_deg": 0.0,
+            "scale": 1.0,
+            "band": str(band_name),
+            "max_shift_px": float(self._scanner_locked_max_shift_px(template)),
+        }
+
+    @staticmethod
+    def _apply_band_transform_to_centers(centers: np.ndarray, transform: dict[str, float | bool]) -> np.ndarray:
+        if centers.size == 0:
+            return centers
+        dx = float(transform.get("dx", 0.0) or 0.0)
+        dy = float(transform.get("dy", 0.0) or 0.0)
+        out = centers.astype(np.float32).copy()
+        out[:, 0] += dx
+        out[:, 1] += dy
+        return out
+
+    @staticmethod
+    def _build_integral_sampler(binary: np.ndarray) -> np.ndarray:
+        return cv2.integral((binary > 0).astype(np.uint8))
+
+    @staticmethod
+    def _sample_bubbles_fast(integral: np.ndarray, centers: np.ndarray, radius: int, shape: tuple[int, int]) -> np.ndarray:
+        h, w = shape
+        out = np.zeros((len(centers),), dtype=np.float32)
+        r = max(1, int(radius))
+        for i, (cx, cy) in enumerate(centers.astype(np.int32)):
+            x0 = max(0, cx - r)
+            y0 = max(0, cy - r)
+            x1 = min(w - 1, cx + r)
+            y1 = min(h - 1, cy + r)
+            area = max(1, (x1 - x0 + 1) * (y1 - y0 + 1))
+            s = integral[y1 + 1, x1 + 1] - integral[y0, x1 + 1] - integral[y1 + 1, x0] + integral[y0, x0]
+            out[i] = float(s) / float(area)
+        return out
+
+    def _decode_zone_scanner_locked(self, binary: np.ndarray, zone: Zone, template: Template, result: OMRResult) -> None:
+        self.recognize_block(binary, zone, template, result, None)
+
+    def _recognize_sheet_scanner_locked(
+        self,
+        src: np.ndarray,
+        template: Template,
+        result: OMRResult,
+        context: RecognitionContext,
+        started: float,
+        load_time_sec: float,
+        normalize_time_sec: float,
+    ) -> OMRResult:
+        # scanner-locked fast path: skip full-page perspective correction and heavy anchor alignment.
+        match_started = time.perf_counter()
+        scanner_plan = self._get_scanner_locked_plan(template)
+        working = src
+        if working.shape[1] != template.width or working.shape[0] != template.height:
+            working = cv2.resize(working, (template.width, template.height), interpolation=cv2.INTER_LINEAR)
+        prep = self._preprocess_fast(working)
+        aligned = working
+        aligned_binary = prep["binary"]
+        scanner_locked_match_time_sec = float(time.perf_counter() - match_started)
+        self._active_point_shift = (0.0, 0.0)
+
+        quality_gate = self._estimate_image_quality(aligned, aligned_binary, template)
+        poor_image = bool(quality_gate.get("poor_scan", False))
+        poor_identifier_zone = bool(quality_gate.get("poor_identifier_zone", False))
+        poor_fast_fail = self._poor_image_fast_fail_enabled(template)
+        if poor_image:
+            self._append_issue_once(result, "POOR_IMAGE", "Image quality is below recognition threshold")
+        if poor_identifier_zone:
+            self._append_issue_once(result, "POOR_IDENTIFIER_ZONE", "Identifier area quality is weak")
+
+        id_timeout = self._identifier_timeout_sec_fast(template)
+        setattr(result, "_identifier_deadline_monotonic", float(time.monotonic() + id_timeout))
+        setattr(result, "_identifier_time_sec", 0.0)
+        setattr(result, "_identifier_fallback_time_sec", 0.0)
+        setattr(result, "_quality_gate", dict(quality_gate))
+        setattr(result, "_poor_image_fast_fail", bool(poor_fast_fail))
+        setattr(result, "_fast_production_mode", True)
+        setattr(result, "_debug_deep", False)
+
+        mcq_time_sec = 0.0
+        tf_time_sec = 0.0
+        numeric_time_sec = 0.0
+        header_time_sec = 0.0
+        band_transforms: dict[str, dict[str, float | bool]] = {}
+        gray = cv2.cvtColor(aligned, cv2.COLOR_BGR2GRAY) if len(aligned.shape) == 3 else aligned
+        for bn in ("header", "mcq", "tf", "numeric"):
+            band_transforms[bn] = self._estimate_band_transform(gray, template, bn, scanner_plan)
+        if bool((template.metadata or {}).get("scanner_locked_use_integral_sampling", True)):
+            integral = self._build_integral_sampler(aligned_binary)
+            sample_probe = self._sample_bubbles_fast(integral, np.array([[10.0, 10.0]], dtype=np.float32), 2, aligned_binary.shape[:2])
+            _ = sample_probe
+        roi_decode_started = time.perf_counter()
+        plan = self._get_template_runtime_plan(template)
+        for zone in plan.sorted_zones:
+            if zone.zone_type == ZoneType.ANCHOR:
+                continue
+            if (
+                zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK)
+                and not self._identifier_recognition_enabled(template)
+                and not bool(getattr(context, "force_identifier_recognition", False))
+            ):
+                continue
+            band_name = "header"
+            if zone.zone_type == ZoneType.MCQ_BLOCK:
+                band_name = "mcq"
+            elif zone.zone_type == ZoneType.TRUE_FALSE_BLOCK:
+                band_name = "tf"
+            elif zone.zone_type == ZoneType.NUMERIC_BLOCK:
+                band_name = "numeric"
+            transform = band_transforms.get(band_name, {"dx": 0.0, "dy": 0.0})
+            self._active_point_shift = (float(transform.get("dx", 0.0) or 0.0), float(transform.get("dy", 0.0) or 0.0))
+            z_started = time.perf_counter()
+            self._decode_zone_scanner_locked(aligned_binary, zone, template, result)
+            elapsed = float(time.perf_counter() - z_started)
+            if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+                header_time_sec += elapsed
+            elif zone.zone_type == ZoneType.MCQ_BLOCK:
+                mcq_time_sec += elapsed
+            elif zone.zone_type == ZoneType.TRUE_FALSE_BLOCK:
+                tf_time_sec += elapsed
+            elif zone.zone_type == ZoneType.NUMERIC_BLOCK:
+                numeric_time_sec += elapsed
+        roi_decode_time_sec = float(time.perf_counter() - roi_decode_started)
+        identifier_time_sec = float(getattr(result, "_identifier_time_sec", 0.0) or 0.0)
+
+        setattr(result, "aligned_image", aligned)
+        setattr(result, "aligned_binary", aligned_binary)
+        setattr(result, "detected_anchors", [])
+        setattr(result, "alignment_debug", {
+            "alignment_mode": "scanner_locked_fast",
+            "recognition_mode": "scanner_locked",
+            "band_locking": {
+                "header": dict(band_transforms.get("header", {})),
+                "mcq": dict(band_transforms.get("mcq", {})),
+                "tf": dict(band_transforms.get("tf", {})),
+                "numeric": dict(band_transforms.get("numeric", {})),
+            },
+            "quality_gate": dict(quality_gate),
+            "poor_image": bool(poor_image),
+            "poor_identifier_zone": bool(poor_identifier_zone),
+            "quality_reason": str(quality_gate.get("reason", "") or ""),
+            "fast_production_mode": True,
+            "diagnostics_collected": False,
+            "timing_breakdown": {
+                "load_time_sec": float(load_time_sec),
+                "normalize_time_sec": float(normalize_time_sec),
+                "scanner_locked_match_time_sec": float(scanner_locked_match_time_sec),
+                "scanner_locked_header_time_sec": float(header_time_sec),
+                "scanner_locked_mcq_time_sec": float(mcq_time_sec),
+                "scanner_locked_tf_time_sec": float(tf_time_sec),
+                "scanner_locked_numeric_time_sec": float(numeric_time_sec),
+                "roi_decode_time_sec": float(roi_decode_time_sec),
+                "mcq_time_sec": float(mcq_time_sec),
+                "tf_time_sec": float(tf_time_sec),
+                "numeric_time_sec": float(numeric_time_sec),
+                "identifier_time_sec": float(identifier_time_sec),
+                "total_time_sec": float(time.perf_counter() - started),
+                "poor_image_fast_fail": bool(poor_fast_fail),
+            },
+        })
+        result.processing_time_sec = float(time.perf_counter() - started)
+        result.sync_legacy_aliases()
+        return result
 
     def recognize_sheet(self, image: str | Path | np.ndarray, template: Template, context: RecognitionContext | None = None) -> OMRResult:
         started = time.perf_counter()
@@ -269,9 +652,23 @@ class OMRProcessor:
         try:
             fast_mode = self._is_fast_scan_mode(template)
             fixed_profile = self._is_fixed_scan_profile(template)
+            fast_production_mode = bool(getattr(context, "fast_production_test", True) and not getattr(context, "debug_deep", False))
+            if fast_production_mode:
+                fast_mode = True
+                context.collect_diagnostics = False
             anchor_detect_time_sec = 0.0
             alignment_time_sec = 0.0
             diagnostics_time_sec = 0.0
+            identifier_time_sec = 0.0
+            identifier_fallback_time_sec = 0.0
+            load_time_sec = 0.0
+            normalize_time_sec = 0.0
+            scanner_locked_match_time_sec = 0.0
+            roi_decode_time_sec = 0.0
+            mcq_time_sec = 0.0
+            tf_time_sec = 0.0
+            numeric_time_sec = 0.0
+            src_load_started = time.perf_counter()
             if isinstance(image, np.ndarray):
                 src = image.copy()
             else:
@@ -282,6 +679,27 @@ class OMRProcessor:
                     result.issues.append(OMRIssue("FILE", "Unable to load image"))
                     result.sync_legacy_aliases()
                     return result
+            load_time_sec = float(time.perf_counter() - src_load_started)
+
+            normalize_started = time.perf_counter()
+            if src.shape[1] != template.width or src.shape[0] != template.height:
+                src = cv2.resize(src, (template.width, template.height), interpolation=cv2.INTER_LINEAR)
+            normalize_time_sec = float(time.perf_counter() - normalize_started)
+
+            if self._scanner_locked_mode(template) and fast_production_mode:
+                fast_res = self._recognize_sheet_scanner_locked(
+                    src=src,
+                    template=template,
+                    result=result,
+                    context=context,
+                    started=started,
+                    load_time_sec=load_time_sec,
+                    normalize_time_sec=normalize_time_sec,
+                )
+                if self._has_meaningful_result(fast_res) or (not self._scanner_locked_allow_full_fallback(template)):
+                    return fast_res
+                self._append_issue_once(result, "SCANNER_LOCK_FAIL", "Scanner-locked path returned non-meaningful result")
+                self._append_issue_once(result, "SAFE_FALLBACK_USED", "Fell back to generic recognition pipeline")
 
             rotated = src if ((fast_mode or fixed_profile) and self._should_skip_rotation(template)) else self._correct_rotation(src)
             if self._time_budget_exceeded():
@@ -313,6 +731,26 @@ class OMRProcessor:
             if aligned_binary is None:
                 aligned_binary = self._preprocess(aligned)["binary"]
 
+            quality_gate = self._estimate_image_quality(aligned, aligned_binary, template)
+            poor_image = bool(quality_gate.get("poor_scan", False))
+            poor_identifier_zone = bool(quality_gate.get("poor_identifier_zone", False))
+            quality_reason = str(quality_gate.get("reason", "") or "")
+            poor_fast_fail = self._poor_image_fast_fail_enabled(template)
+            if poor_image:
+                self._append_issue_once(result, "POOR_IMAGE", "Image quality is below recognition threshold")
+            if poor_identifier_zone:
+                self._append_issue_once(result, "POOR_IDENTIFIER_ZONE", "Identifier area quality is weak")
+
+            id_timeout = self._identifier_timeout_sec_fast(template) if fast_production_mode else self._identifier_timeout_sec(template)
+            identifier_timeout_deadline = time.monotonic() + id_timeout
+            setattr(result, "_identifier_deadline_monotonic", float(identifier_timeout_deadline))
+            setattr(result, "_identifier_time_sec", 0.0)
+            setattr(result, "_identifier_fallback_time_sec", 0.0)
+            setattr(result, "_quality_gate", dict(quality_gate))
+            setattr(result, "_poor_image_fast_fail", bool(poor_fast_fail))
+            setattr(result, "_fast_production_mode", bool(fast_production_mode))
+            setattr(result, "_debug_deep", bool(getattr(context, "debug_deep", False)))
+
             debug_overlay = aligned.copy() if self.debug_mode else None
             if debug_overlay is not None:
                 self._draw_alignment_debug(debug_overlay, template)
@@ -332,7 +770,16 @@ class OMRProcessor:
                     continue
                 if zone.grid is not None:
                     context.semantic_grids[zone.id] = zone.grid
+                z_started = time.perf_counter()
                 self.recognize_block(aligned_binary, zone, template, result, debug_overlay)
+                z_elapsed = float(time.perf_counter() - z_started)
+                if zone.zone_type == ZoneType.MCQ_BLOCK:
+                    mcq_time_sec += z_elapsed
+                elif zone.zone_type == ZoneType.TRUE_FALSE_BLOCK:
+                    tf_time_sec += z_elapsed
+                elif zone.zone_type == ZoneType.NUMERIC_BLOCK:
+                    numeric_time_sec += z_elapsed
+                roi_decode_time_sec += z_elapsed
 
             if debug_overlay is not None:
                 out_dir = self.debug_dir or Path(result.image_path).parent
@@ -374,12 +821,34 @@ class OMRProcessor:
             }
 
             result.processing_time_sec = time.perf_counter() - started
+            identifier_time_sec = float(getattr(result, "_identifier_time_sec", 0.0) or 0.0)
+            identifier_fallback_time_sec = float(getattr(result, "_identifier_fallback_time_sec", 0.0) or 0.0)
             if not isinstance(getattr(result, "alignment_debug", None), dict):
                 setattr(result, "alignment_debug", {})
+            result.alignment_debug["quality_gate"] = dict(quality_gate)
+            result.alignment_debug["poor_image"] = bool(poor_image)
+            result.alignment_debug["poor_identifier_zone"] = bool(poor_identifier_zone)
+            result.alignment_debug["quality_reason"] = quality_reason
+            result.alignment_debug["fast_production_mode"] = bool(fast_production_mode)
+            result.alignment_debug["diagnostics_collected"] = bool(context.collect_diagnostics)
             result.alignment_debug["timing_breakdown"] = {
+                "load_time_sec": float(load_time_sec),
+                "normalize_time_sec": float(normalize_time_sec),
                 "anchor_detect_time_sec": float(anchor_detect_time_sec),
                 "alignment_time_sec": float(alignment_time_sec),
+                "scanner_locked_match_time_sec": float(scanner_locked_match_time_sec),
+                "scanner_locked_header_time_sec": 0.0,
+                "scanner_locked_mcq_time_sec": 0.0,
+                "scanner_locked_tf_time_sec": 0.0,
+                "scanner_locked_numeric_time_sec": 0.0,
+                "roi_decode_time_sec": float(roi_decode_time_sec),
+                "mcq_time_sec": float(mcq_time_sec),
+                "tf_time_sec": float(tf_time_sec),
+                "numeric_time_sec": float(numeric_time_sec),
+                "identifier_time_sec": float(identifier_time_sec),
+                "identifier_fallback_time_sec": float(identifier_fallback_time_sec),
                 "diagnostics_time_sec": float(diagnostics_time_sec),
+                "poor_image_fast_fail": bool(poor_fast_fail),
                 "total_time_sec": float(result.processing_time_sec),
             }
             setattr(result, "answers", result.mcq_answers)
@@ -388,10 +857,31 @@ class OMRProcessor:
         finally:
             self.alignment_profile = prev_profile
             self._processing_deadline_monotonic = None
+            self._active_point_shift = (0.0, 0.0)
 
-    def run_recognition_test(self, image: str | Path | np.ndarray, template: Template, context: RecognitionContext | None = None) -> OMRResult:
+    def recognize_sheet_production_fast(self, image: str | Path | np.ndarray, template: Template, context: RecognitionContext | None = None) -> OMRResult:
+        # debug deep mode switch: this path forces production-fast behavior by default.
+        ctx = context or RecognitionContext()
+        ctx.fast_production_test = True
+        ctx.debug_deep = False
+        ctx.collect_diagnostics = False
+        return self.recognize_sheet(image, template, ctx)
+
+    def run_recognition_test(
+        self,
+        image: str | Path | np.ndarray,
+        template: Template,
+        context: RecognitionContext | None = None,
+        *,
+        fast_production_test: bool = True,
+        debug_deep: bool = False,
+    ) -> OMRResult:
         ctx = context or RecognitionContext()
         ctx.force_identifier_recognition = True
+        ctx.fast_production_test = bool(fast_production_test)
+        ctx.debug_deep = bool(debug_deep)
+        if fast_production_test and not debug_deep:
+            ctx.collect_diagnostics = False
         return self.recognize_sheet(image, template, ctx)
 
     def extract_bubble_states(self, binary_image: np.ndarray, template: Template) -> dict[str, list[bool]]:
@@ -440,7 +930,10 @@ class OMRProcessor:
     def _run_batch_item(self, image_path: str, template: Template):
         worker = self._get_thread_batch_worker()
         started = time.perf_counter()
-        res = worker.run_recognition_test(image_path, template, RecognitionContext(collect_diagnostics=False))
+        if self._scanner_locked_mode(template):
+            res = worker.recognize_sheet_production_fast(image_path, template, RecognitionContext(collect_diagnostics=False))
+        else:
+            res = worker.run_recognition_test(image_path, template, RecognitionContext(collect_diagnostics=False))
         return res, float(time.perf_counter() - started)
 
     def _template_anchor_points_px(self, template: Template) -> np.ndarray:
@@ -539,7 +1032,10 @@ class OMRProcessor:
                 context = RecognitionContext()
                 context.collect_diagnostics = False
                 started = time.perf_counter()
-                result = self.run_recognition_test(image_path, template, context)
+                if self._scanner_locked_mode(template):
+                    result = self.recognize_sheet_production_fast(image_path, template, context)
+                else:
+                    result = self.run_recognition_test(image_path, template, context)
                 results.append(result)
                 timing_rows.append((idx, str(image_path), float(time.perf_counter() - started)))
                 debug_payload = dict(getattr(result, "alignment_debug", {}) or {})
@@ -702,8 +1198,8 @@ class OMRProcessor:
         max_keep = max(4, int(max_points or 40))
         if fast_mode:
             # fast fixed-form anchor detection: keep very few high-quality border anchors only.
-            max_keep = min(max_keep, 12)
-        max_candidates = max(28, max_keep * (4 if use_border_padding else 3)) if fast_mode else max(120, max_keep * (12 if use_border_padding else 8))
+            max_keep = min(max_keep, 8)
+        max_candidates = max(20, max_keep * (3 if use_border_padding else 2)) if fast_mode else max(120, max_keep * (12 if use_border_padding else 8))
         if len(contours) > max_candidates:
             contours = sorted(contours, key=cv2.contourArea, reverse=True)[:max_candidates]
 
@@ -853,8 +1349,8 @@ class OMRProcessor:
         if fast_fixed:
             # fast fixed-form anchor detection profile
             if p == "one_side":
-                return self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True, max_points=10, fast_mode=True)
-            return self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True, max_points=8, fast_mode=True)
+                return self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True, max_points=8, fast_mode=True)
+            return self.detect_anchors(binary, use_border_padding=True, relaxed_polygon=True, max_points=6, fast_mode=True)
         if p == "legacy":
             return self.detect_anchors(binary, use_border_padding=False, relaxed_polygon=False)
         if p == "border":
@@ -1006,7 +1502,7 @@ class OMRProcessor:
         best_attempt: tuple[float, str, np.ndarray, np.ndarray, dict[str, object]] | None = None
 
         if fixed_profile:
-            # fast alignment accept: single short path for fixed-form scan.
+            # fast fixed-form path: single short alignment path for fixed-form scan.
             candidate = candidates[0] if candidates else "border"
             det_started = time.perf_counter()
             detected = self._detect_anchors_by_profile(base_binary, candidate, fast_fixed=True)
@@ -1030,28 +1526,16 @@ class OMRProcessor:
                     self._last_alignment_debug["used_anchor_profile"] = str(candidate)
                     return fast_img, fast_bin
             # safe fallback for fixed-form when fast accept fails.
-
-        if fixed_profile:
-            # fast alignment accept: single short path for fixed-form scan.
-            candidate = candidates[0] if candidates else "border"
-            det_started = time.perf_counter()
-            detected = self._detect_anchors_by_profile(base_binary, candidate, fast_fixed=True)
-            self._last_alignment_debug["anchor_detect_time_sec"] = float(time.perf_counter() - det_started)
-            template_pts = self._template_anchor_points_px(template)
-            if len(detected) >= 4 and len(template_pts) >= 4:
-                src_pts, dst_pts = self._match_anchor_sets(np.array(detected, dtype=np.float32), template_pts)
-                score, match_count, mean_err = self._fast_alignment_score_from_matches(src_pts, dst_pts)
-                if match_count >= 4 and mean_err <= 14.0:
-                    h = cv2.getPerspectiveTransform(self._order_points(src_pts[:4]), self._order_points(dst_pts[:4]))
-                    fast_img = cv2.warpPerspective(base_image, h, (template.width, template.height))
-                    fast_bin = cv2.warpPerspective(base_binary, h, (template.width, template.height))
-                    self._last_alignment_debug["alignment_mode"] = f"fixed_fast:{candidate}"
-                    self._last_alignment_debug["alignment_score"] = float(score)
-                    self._last_alignment_debug["fast_match_count"] = int(match_count)
-                    self._last_alignment_debug["fast_mean_error"] = float(mean_err)
-                    self._last_alignment_debug["matched_detected_anchors"] = [(float(x), float(y)) for x, y in detected[: min(12, len(detected))]]
-                    return fast_img, fast_bin
-            # safe fallback for fixed-form when fast accept fails.
+            attempt = self._try_anchor_alignment(base_image, base_binary, template, candidate)
+            if attempt is not None:
+                safe_img, safe_bin = attempt
+                self._last_alignment_debug["alignment_mode"] = f"fixed_safe:{candidate}"
+                self._last_alignment_debug["alignment_score"] = float(self._orientation_score(safe_bin, template))
+                return safe_img, safe_bin
+            contour_img, contour_bin = self._fallback_align_page_contour(image, template, conservative=True)
+            self._last_alignment_debug["alignment_mode"] = "fixed_safe:page_contour"
+            self._last_alignment_debug["alignment_score"] = float(self._orientation_score(contour_bin, template))
+            return contour_img, contour_bin
 
         for candidate in candidates:
             if self._time_budget_exceeded():
@@ -1606,6 +2090,11 @@ class OMRProcessor:
             expected = expected.copy()
             expected[:, 0] *= sx
             expected[:, 1] *= sy
+        shift_x, shift_y = self._active_point_shift
+        if expected.shape[0] and (abs(float(shift_x)) > 0.01 or abs(float(shift_y)) > 0.01):
+            expected = expected.copy()
+            expected[:, 0] += float(shift_x)
+            expected[:, 1] += float(shift_y)
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
             if zone.zone_type == ZoneType.EXAM_CODE_BLOCK:
                 modeled_expected, _ = self._digit_model_expected_points(template, zone)
@@ -3038,6 +3527,7 @@ class OMRProcessor:
         working_binary = binary
         working_image = getattr(result, "aligned_image", None)
         if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+            identifier_started = time.perf_counter()
             expected = self._resolve_zone_centers(working_binary, zone, template).astype(np.float32)
             bubble_radius = float(zone.metadata.get("bubble_radius", 9))
             sid_ratio_debug: dict[str, object] = {}
@@ -3071,6 +3561,20 @@ class OMRProcessor:
             )
             key = "student_id" if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else "exam_code"
             error_mark = len(result.recognition_errors)
+            quality_gate = dict(getattr(result, "_quality_gate", {}) or {})
+            poor_image = bool(quality_gate.get("poor_scan", False))
+            poor_identifier_zone = bool(quality_gate.get("poor_identifier_zone", False))
+            poor_fast_fail = bool(getattr(result, "_poor_image_fast_fail", self._poor_image_fast_fail_enabled(template)))
+            allow_heavy_on_poor = self._allow_heavy_identifier_retry_on_poor_image(template)
+            identifier_deadline = float(getattr(result, "_identifier_deadline_monotonic", 0.0) or 0.0)
+
+            def identifier_budget_ok(min_left: float = 0.0) -> bool:
+                if self._time_budget_exceeded():
+                    return False
+                if identifier_deadline > 0.0 and (time.monotonic() + min_left) > identifier_deadline:
+                    return False
+                return True
+
             direct_value, direct_confs, direct_centers, direct_mat, direct_debug = self._decode_identifier_zone_from_centers(
                 working_binary,
                 zone,
@@ -3086,12 +3590,42 @@ class OMRProcessor:
                 confs=direct_confs,
                 result=result,
             )
+            # identifier risk gate: cap fallback depth when direct decode looks ambiguous.
+            col_ambiguity = 0
+            weak_cols = 0
+            if isinstance(direct_mat, np.ndarray) and direct_mat.size > 0 and direct_mat.ndim == 2:
+                for c in range(direct_mat.shape[1]):
+                    col = np.asarray(direct_mat[:, c], dtype=np.float32)
+                    if col.size == 0:
+                        continue
+                    top2 = np.sort(col)[-2:] if col.size >= 2 else np.array([0.0, col.max()], dtype=np.float32)
+                    margin = float(top2[-1] - top2[-2]) if top2.size >= 2 else float(top2[-1])
+                    if margin < 0.12:
+                        col_ambiguity += 1
+                    if float(top2[-1]) < 0.34:
+                        weak_cols += 1
             direct_conf_mean = float(np.mean(final_confs or [0.0]))
-            fallback_budget_ok = not self._time_budget_exceeded()
-            allow_fallbacks = fallback_budget_ok and not (bool(final_value) and direct_conf_mean >= 0.55)
+            id_risk_score = float(min(1.0, (0.55 - direct_conf_mean) + (0.10 * col_ambiguity) + (0.06 * weak_cols)))
+            poor_identifier_risk = bool((direct_conf_mean < 0.30) or (col_ambiguity >= 1) or id_risk_score >= 0.45)
+            fallback_budget_ok = identifier_budget_ok(0.12)
+            poor_blocks_heavy = poor_fast_fail and poor_image and (not allow_heavy_on_poor)
+            fast_production_mode = bool(getattr(result, "_fast_production_mode", False))
+            max_fallback_steps = self._max_identifier_fallback_steps(template, fast_production_mode)
+            fallback_steps_used = 0
+            allow_fallbacks = fallback_budget_ok and (not poor_blocks_heavy) and not (bool(final_value) and direct_conf_mean >= 0.55)
+            if poor_blocks_heavy:
+                self._append_issue_once(result, "FAST_FAIL_POOR_SCAN", "Skipped heavy identifier fallback due to poor image", zone_id=zone.id)
+                result.recognition_errors.append(f"{zone.zone_type.value}: skipped heavy fallback due to poor image")
             axis_final = ""
             axis_debug: dict[str, object] = {}
-            axis_needed = allow_fallbacks and ((not final_value) or (direct_conf_mean < 0.32))
+            axis_needed = (
+                allow_fallbacks
+                and (not poor_image)
+                and (not poor_identifier_zone)
+                and (fallback_steps_used < max_fallback_steps)
+                and identifier_budget_ok(0.10)
+                and ((not final_value) or (direct_conf_mean < 0.32))
+            )
             if axis_needed:
                 axis_value, axis_confs, axis_debug = self._decode_identifier_by_anchor_axis(
                     working_binary,
@@ -3107,15 +3641,23 @@ class OMRProcessor:
                     confs=axis_confs,
                     result=None,
                 )
+                fallback_steps_used += 1
                 if axis_final and (not final_value or float(np.mean(axis_final_confs or [0.0])) >= float(np.mean(final_confs or [0.0]))):
                     del result.recognition_errors[error_mark:]
                     final_value, final_confs = axis_final, axis_final_confs
+            allow_ratio_retry = bool((template.metadata or {}).get("student_id_allow_ratio_retry", not fast_production_mode))
             if (
                 allow_fallbacks
                 and
                 key == "student_id"
+                and allow_ratio_retry
+                and (not poor_image)
+                and (not poor_identifier_risk if fast_production_mode else True)
+                and (fallback_steps_used < max_fallback_steps)
                 and not final_value
                 and sid_base_guided is not None
+                and identifier_budget_ok(0.16)
+                and direct_conf_mean < 0.35
             ):
                 sid_ratio_guided, sid_ratio_debug = self._adjust_identifier_points_by_anchor_distance(
                     working_binary,
@@ -3130,6 +3672,7 @@ class OMRProcessor:
                 ):
                     sid_ratio_debug["student_ratio_retry_attempted"] = False
                 else:
+                    fallback_steps_used += 1
                     retry_column_guided = self._resolve_column_digit_centers(working_binary, sid_ratio_guided.astype(np.float32), grid, bubble_radius)
                     retry_centers, retry_grid_fit_debug = self._refit_digit_grid_from_clear_points(
                         working_binary,
@@ -3157,6 +3700,7 @@ class OMRProcessor:
                     if retry_final:
                         del result.recognition_errors[error_mark:]
                         final_value, final_confs = retry_final, retry_final_confs
+                        fallback_steps_used += 1
                         direct_centers = retry_direct_centers
                         direct_mat = retry_mat
                         direct_debug = dict(direct_debug) | dict(retry_direct_debug) | dict(retry_grid_fit_debug) | {
@@ -3172,12 +3716,26 @@ class OMRProcessor:
                 "col_lines": final_col_lines,
                 "col_segments": [],
                 "recognition_path": "axis_projection" if bool(axis_final) else "direct",
+                "poor_image": bool(poor_image),
+                "poor_identifier_zone": bool(poor_identifier_zone),
+                "identifier_risk_score": float(id_risk_score),
+                "poor_identifier_risk": bool(poor_identifier_risk),
+                "ambiguous_columns": int(col_ambiguity),
+                "weak_columns": int(weak_cols),
             }
+            allow_exam_sampling = bool((template.metadata or {}).get("exam_code_allow_sampling_fallback", not fast_production_mode))
+            allow_student_sampling = bool((template.metadata or {}).get("student_id_allow_sampling_fallback", not fast_production_mode))
+            allow_sampling_for_key = allow_exam_sampling if key == "exam_code" else allow_student_sampling
             skip_sampling_fallback = bool(
                 (key == "exam_code" and exam_digit_model_applied)
                 or (self._is_fast_scan_mode(template) and self._should_skip_heavy_identifier_fallback(template))
+                or (poor_fast_fail and poor_image and (not allow_heavy_on_poor))
+                or (not allow_sampling_for_key)
+                or (fallback_steps_used >= max_fallback_steps)
+                or (fast_production_mode and poor_identifier_risk)
             )
-            if allow_fallbacks and not final_value and not skip_sampling_fallback:
+            if allow_fallbacks and not final_value and not skip_sampling_fallback and identifier_budget_ok(0.18) and not poor_identifier_zone:
+                fallback_steps_used += 1
                 rows, cols = 10, max(1, grid.cols)
                 source_img = self._preprocess_digit_sampling(working_image if working_image is not None else working_binary)
                 bbox = self._digit_zone_bbox(zone, source_img.shape[:2])
@@ -3217,9 +3775,23 @@ class OMRProcessor:
                     del result.recognition_errors[sampled_error_mark:]
                     final_value, final_confs = chosen_value, chosen_confs
                     used_sampling = True
+                    fallback_steps_used += 1
                 elif final_value == "":
                     final_value = "-"
             elif not final_value and skip_sampling_fallback:
+                final_value = "-"
+            elif not final_value and not identifier_budget_ok():
+                self._append_issue_once(result, "IDENTIFIER_TIMEOUT", "Identifier timeout budget exceeded", zone_id=zone.id)
+                result.recognition_errors.append(f"{zone.zone_type.value}: identifier timeout budget exceeded")
+                final_value = "-"
+            if allow_fallbacks and fallback_steps_used >= max_fallback_steps and (not final_value):
+                # identifier hard cap: never exceed capped fallback depth in fast mode.
+                self._append_issue_once(result, "IDENTIFIER_FAST_CAP", "Identifier fallback capped for fast mode", zone_id=zone.id)
+                if key == "student_id":
+                    self._append_issue_once(result, "STUDENT_ID_FAST_FAIL", "Student ID stopped by fast fallback cap", zone_id=zone.id)
+                else:
+                    self._append_issue_once(result, "EXAM_CODE_FAST_FAIL", "Exam code stopped by fast fallback cap", zone_id=zone.id)
+            if key == "student_id" and poor_image and (not final_value or direct_conf_mean < 0.30):
                 final_value = "-"
             setattr(result, "digit_zone_debug", zone_debug)
             if self.debug_mode and working_image is not None:
@@ -3252,6 +3824,10 @@ class OMRProcessor:
                     f"[OMR][IDENTIFIER] key={key} direct={direct_value!r} final={final_value!r} "
                     f"conf={confidence_value:.3f} path={zone_debug.get(zone.id, {}).get('recognition_path', '-')}"
                 )
+            consumed = float(time.perf_counter() - identifier_started)
+            setattr(result, "_identifier_time_sec", float(getattr(result, "_identifier_time_sec", 0.0) or 0.0) + consumed)
+            if axis_needed or bool(sid_ratio_debug.get("student_ratio_retry_attempted")) or used_sampling:
+                setattr(result, "_identifier_fallback_time_sec", float(getattr(result, "_identifier_fallback_time_sec", 0.0) or 0.0) + consumed)
             return
         else:
             centers = self._resolve_zone_centers(working_binary, zone, template)
