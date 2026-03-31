@@ -945,6 +945,9 @@ class NewExamDialog(QDialog):
         lay.addLayout(row)
 
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        cancel_btn = bb.button(QDialogButtonBox.Cancel)
+        if cancel_btn is not None:
+            cancel_btn.setText("Đóng")
         bb.accepted.connect(self._validate_and_accept)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
@@ -1466,6 +1469,7 @@ class MainWindow(QMainWindow):
         self.embedded_exam_session_id: str | None = None
         self.embedded_exam_session: ExamSession | None = None
         self.embedded_exam_original_payload: dict | None = None
+        self.embedded_exam_is_new: bool = False
         self.preview_zoom_factor = 1.0
         self.preview_source_pixmap = QPixmap()
         self.preview_rotation_by_index: dict[int, int] = {}
@@ -1826,7 +1830,7 @@ class MainWindow(QMainWindow):
         btn_save = QPushButton("Save")
         btn_save.clicked.connect(self._save_subject_management)
         btn_back = QPushButton("Đóng")
-        btn_back.clicked.connect(lambda: self.stack.setCurrentIndex(0))
+        btn_back.clicked.connect(lambda: self._navigate_to("exam_list", context={}, push_current=False, require_confirm=True, reason="close_subject_management"))
         for btn in [btn_add, btn_edit, btn_delete, btn_save, btn_back]:
             btn_row.addWidget(btn)
         btn_row.addStretch()
@@ -2232,7 +2236,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Sửa kỳ thi", f"Không thể sửa kỳ thi\n{exc}")
 
-    def _open_embedded_exam_editor(self, session_id: str, session: ExamSession, payload: dict) -> None:
+    def _open_embedded_exam_editor(self, session_id: str, session: ExamSession, payload: dict, *, is_new: bool = False) -> None:
         while self.exam_editor_layout.count():
             item = self.exam_editor_layout.takeAt(0)
             w = item.widget()
@@ -2242,6 +2246,7 @@ class MainWindow(QMainWindow):
         self.embedded_exam_session_id = session_id
         self.embedded_exam_session = session
         self.embedded_exam_original_payload = dict(payload)
+        self.embedded_exam_is_new = bool(is_new)
 
         dlg = NewExamDialog(
             self.subject_catalog,
@@ -2266,11 +2271,22 @@ class MainWindow(QMainWindow):
         self._register_templates_from_payload(edited)
         session_id = self.embedded_exam_session_id
         saved_payload = self.database.fetch_exam_session(session_id)
-        if not saved_payload:
+        if not saved_payload and not self.embedded_exam_is_new:
             QMessageBox.warning(self, "Sửa kỳ thi", "Không tìm thấy kỳ thi trong kho lưu trữ hệ thống.")
             return False
         try:
-            session = ExamSession.from_dict(saved_payload)
+            if saved_payload:
+                session = ExamSession.from_dict(saved_payload)
+            else:
+                session = ExamSession(
+                    exam_name=str(edited.get("exam_name", "") or "").strip() or "Kỳ thi",
+                    exam_date=str(date.today()),
+                    subjects=[],
+                    template_path=str(edited.get("common_template", "") or ""),
+                    answer_key_path="",
+                    students=[],
+                    config={},
+                )
             session.exam_name = edited.get("exam_name", session.exam_name)
             session.template_path = edited.get("common_template", session.template_path)
             session.subjects = [
@@ -2304,6 +2320,7 @@ class MainWindow(QMainWindow):
             }
             self.database.save_exam_session(session_id, session.exam_name, session.to_dict())
             self.embedded_exam_original_payload = edited
+            self.embedded_exam_is_new = False
             self.session = session
             self.current_session_id = session_id
             self.current_session_path = self._session_path_from_id(session_id)
@@ -2326,7 +2343,8 @@ class MainWindow(QMainWindow):
         self.embedded_exam_session = None
         self.embedded_exam_session_id = None
         self.embedded_exam_original_payload = None
-        self._navigate_back(default_route="exam_list")
+        self.embedded_exam_is_new = False
+        self._navigate_to("exam_list", context={}, push_current=False, require_confirm=False, reason="close_exam_editor")
 
     @staticmethod
     def _payload_changed(a: dict | None, b: dict | None) -> bool:
@@ -2513,7 +2531,27 @@ class MainWindow(QMainWindow):
             self._refresh_session_info()
             self._refresh_batch_subject_controls()
             self._refresh_scoring_phase_table()
-            self.stack.setCurrentIndex(1)
+            cfg = self.session.config or {}
+            editor_payload = {
+                "exam_name": self.session.exam_name,
+                "common_template": self.session.template_path,
+                "scan_root": cfg.get("scan_root", ""),
+                "student_list_path": cfg.get("student_list_path", ""),
+                "students": [
+                    {
+                        "student_id": s.student_id,
+                        "name": s.name,
+                        "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
+                        "class_name": str((s.extra or {}).get("class_name", "") or ""),
+                        "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
+                    }
+                    for s in (self.session.students or [])
+                ],
+                "scan_mode": cfg.get("scan_mode", "Ảnh trong thư mục gốc"),
+                "paper_part_count": cfg.get("paper_part_count", 3),
+                "subject_configs": cfg.get("subject_configs", []),
+            }
+            self._open_embedded_exam_editor(path.stem, self.session, editor_payload)
             QMessageBox.information(self, "Open session", "Đã mở kỳ thi thành công.")
         except Exception as exc:
             QMessageBox.warning(self, "Open session", f"Không thể mở kỳ thi:\n{exc}")
@@ -2811,15 +2849,35 @@ class MainWindow(QMainWindow):
             return
         if not self._confirm("Tạo kỳ thi mới", "Bạn có chắc muốn tạo kỳ thi mới?"):
             return
-        dlg = NewExamDialog(self.subject_catalog, self.block_catalog, parent=self, template_repo=self.template_repo)
-        if dlg.exec() != QDialog.Accepted:
-            return
-        self.create_session(dlg.payload())
-        # Persist immediately so the new exam appears in the list right after Save.
-        self.save_session()
-        # Saving/creating an exam should not force users into Batch Scan immediately.
-        # Keep them on the exam list screen after save.
-        self.stack.setCurrentIndex(0)
+        session_id = self._generate_session_id("new_exam")
+        payload = {
+            "exam_name": "",
+            "common_template": "",
+            "scan_root": "",
+            "student_list_path": "",
+            "students": [],
+            "scan_mode": "Ảnh trong thư mục gốc",
+            "paper_part_count": 3,
+            "subject_configs": [],
+        }
+        draft = ExamSession(
+            exam_name="Kỳ thi mới",
+            exam_date=str(date.today()),
+            subjects=[],
+            template_path="",
+            answer_key_path="",
+            students=[],
+            config={
+                "scan_mode": "Ảnh trong thư mục gốc",
+                "scan_root": "",
+                "student_list_path": "",
+                "paper_part_count": 3,
+                "subject_configs": [],
+                "subject_catalog": self.subject_catalog,
+                "block_catalog": self.block_catalog,
+            },
+        )
+        self._open_embedded_exam_editor(session_id, draft, payload, is_new=True)
 
     def action_open_session(self) -> None:
         if not self._confirm_before_switching_work("kỳ thi khác"):
@@ -2988,7 +3046,19 @@ class MainWindow(QMainWindow):
         return True
 
     def _navigate_back(self, default_route: str = "exam_list") -> None:
-        target = self._route_history.pop() if self._route_history else {"name": default_route, "context": {}}
+        if self._route_history:
+            target = self._route_history.pop()
+        else:
+            parent_map = {
+                "subject_management": "exam_list",
+                "template_library": "exam_list",
+                "template_editor": "template_library",
+                "exam_editor": "exam_list",
+                "workspace_scoring": "workspace_batch_scan",
+                "workspace_batch_scan": "exam_editor" if self.current_session_id else "exam_list",
+            }
+            fallback_name = parent_map.get(self._current_route_name, default_route)
+            target = {"name": fallback_name, "context": {"session_id": self.current_session_id} if self.current_session_id else {}}
         print(f"[Route] back target={target.get('name')}")
         self._navigate_to(
             str(target.get("name", default_route) or default_route),
@@ -3489,22 +3559,14 @@ class MainWindow(QMainWindow):
         ctx = dict(self._current_route_context or {})
         origin = str(ctx.get("origin", "") or "")
         target = "exam_list"
-        if origin == "workspace_scoring":
-            target = "workspace_scoring"
-        elif self.embedded_exam_dialog and self.current_session_id:
+        if self.embedded_exam_dialog and self.current_session_id:
             target = "exam_editor"
         elif self.current_session_id:
             target = "exam_editor"
+        elif origin == "workspace_scoring":
+            # keep deterministic fallback when context was opened from scoring but exam context is gone.
+            target = "exam_list"
         print(f"[BatchClose] return_target={target}")
-        if target == "workspace_scoring":
-            self._navigate_to(
-                "workspace_scoring",
-                context={"session_id": self.current_session_id, "origin": "workspace_batch_scan"},
-                push_current=False,
-                require_confirm=False,
-                reason="close_batch_back_to_scoring",
-            )
-            return
         if target == "exam_editor":
             if self._open_current_session_in_exam_editor():
                 return
@@ -4654,7 +4716,7 @@ class MainWindow(QMainWindow):
     def _close_template_module(self) -> bool:
         if self.template_editor_embedded:
             return self._close_embedded_template_editor()
-        self._navigate_back(default_route="exam_list")
+        self._navigate_to("exam_list", context={}, push_current=False, require_confirm=False, reason="close_template_library")
         return True
 
     def _save_template_repository(self) -> None:
