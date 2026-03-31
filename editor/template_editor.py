@@ -1294,6 +1294,9 @@ class TemplateEditorWindow(QMainWindow):
         sid_conf = self._identifier_confidence(res, "student_id")
         exam_conf = self._identifier_confidence(res, "exam_code")
         id_warnings = self._identifier_warning_text(res)
+        timing_lines = []
+        for k in sorted(timing.keys()):
+            timing_lines.append(f"  - {k}: {timing.get(k)}")
         self.result_box.setPlainText(
             f"Student ID: {sid_text}\n"
             f"Exam Code: {exam_text}\n"
@@ -1312,10 +1315,7 @@ class TemplateEditorWindow(QMainWindow):
             f"Band locking: {'/'.join([k for k in ['header','mcq','tf','numeric'] if k in band_locking]) or '-'}\n"
             f"Fast mode: {'ON' if fast_mode else 'OFF'}\n"
             f"Deep debug: {'ON' if deep_debug else 'OFF'}\n"
-            f"Timing (align/identifier/diagnostics): "
-            f"{float(timing.get('alignment_time_sec', 0.0) or 0.0):.3f}s / "
-            f"{float(timing.get('identifier_time_sec', 0.0) or 0.0):.3f}s / "
-            f"{float(timing.get('diagnostics_time_sec', 0.0) or 0.0):.3f}s\n"
+            f"Timing breakdown:\n{chr(10).join(timing_lines)}\n"
             f"MCQ: {', '.join([f'Q{k}:{v}' for k, v in sorted(res.mcq_answers.items())]) or '(none)'}\n"
             f"TF: {res.true_false_answers or {}}\n"
             f"NUM: {res.numeric_answers or {}}"
