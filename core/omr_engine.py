@@ -332,24 +332,22 @@ class OMRProcessor:
 
     def _build_scanner_locked_plan(self, template: Template) -> dict[str, object]:
         plan = self._get_template_runtime_plan(template)
-        header_h = int(round(template.height * 0.22))
-        ref_rois = list((template.metadata or {}).get("scanner_locked_reference_rois", []) or [])
-        if not ref_rois:
-            ref_rois = [
-                [0, 0, int(template.width * 0.22), max(20, int(template.height * 0.14))],
-                [int(template.width * 0.78), 0, int(template.width * 0.22), max(20, int(template.height * 0.14))],
-            ]
+        reference_gray, reference_scan_path = self._extract_reference_scan_gray(template)
+        registration_patches = self._build_registration_patches(template, reference_gray)
+        reference_digit_points_px: dict[str, np.ndarray] = {}
+        for zone in plan.sorted_zones:
+            if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+                reference_digit_points_px[zone.id] = np.array(plan.zone_centers_px.get(zone.id, np.empty((0, 2), dtype=np.float32)), dtype=np.float32)
         return {
             "calibrated_reference_size": (int(template.width), int(template.height)),
-            "reference_anchor_rois": ref_rois,
-            "reference_header_roi": [0, 0, int(template.width), header_h],
-            "reference_mcq_roi": [0, header_h, int(template.width), int(template.height - header_h)],
-            "reference_tf_roi": [0, header_h, int(template.width), int(template.height - header_h)],
-            "reference_numeric_roi": [0, header_h, int(template.width), int(template.height - header_h)],
-            "scanner_locked_zone_bounds_px": dict(plan.zone_bounds_px),
-            "scanner_locked_zone_centers_px": {k: np.array(v, dtype=np.float32) for k, v in plan.zone_centers_px.items()},
-            "scanner_locked_sampling_radius": dict(plan.zone_bubble_radius),
-            "scanner_locked_reference_patches": [],
+            "reference_scan_path": reference_scan_path,
+            "reference_gray": reference_gray,
+            "reference_zone_bounds_px": dict(plan.zone_bounds_px),
+            "reference_zone_centers_px": {k: np.array(v, dtype=np.float32) for k, v in plan.zone_centers_px.items()},
+            "reference_digit_points_px": reference_digit_points_px,
+            "registration_patches": registration_patches,
+            "per_zone_radius": dict(plan.zone_bubble_radius),
+            "identifier_zone_ids": set(plan.identifier_zone_ids),
         }
 
     def _get_scanner_locked_plan(self, template: Template) -> dict[str, object]:
@@ -449,6 +447,224 @@ class OMRProcessor:
         has_identity = bool((sid and sid != "-") or (code and code != "-"))
         return has_identity or bool((result.mcq_answers or {}) or (result.true_false_answers or {}) or (result.numeric_answers or {}))
 
+    def _extract_reference_scan_gray(self, template: Template) -> tuple[np.ndarray | None, str]:
+        meta = getattr(template, "metadata", {}) or {}
+        raw_path = (
+            meta.get("scanner_locked_reference_scan_path")
+            or meta.get("reference_scan_path")
+            or meta.get("scanner_reference_scan")
+            or ""
+        )
+        scan_path = str(raw_path or "").strip()
+        if not scan_path:
+            return None, ""
+        candidates = [Path(scan_path)]
+        if not Path(scan_path).is_absolute():
+            candidates.append(Path.cwd() / scan_path)
+        image_gray = None
+        used_path = ""
+        for cand in candidates:
+            if not cand.exists():
+                continue
+            loaded = cv2.imread(str(cand), cv2.IMREAD_GRAYSCALE)
+            if loaded is None:
+                continue
+            image_gray = loaded
+            used_path = str(cand)
+            break
+        if image_gray is None:
+            return None, scan_path
+        if image_gray.shape[1] != int(template.width) or image_gray.shape[0] != int(template.height):
+            image_gray = cv2.resize(image_gray, (int(template.width), int(template.height)), interpolation=cv2.INTER_LINEAR)
+        return image_gray, used_path
+
+    @staticmethod
+    def _zone_band_name(zone: Zone) -> str:
+        if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+            return "header"
+        if zone.zone_type == ZoneType.MCQ_BLOCK:
+            return "mcq"
+        if zone.zone_type == ZoneType.TRUE_FALSE_BLOCK:
+            return "tf"
+        if zone.zone_type == ZoneType.NUMERIC_BLOCK:
+            return "numeric"
+        return "other"
+
+    def _build_registration_patches(self, template: Template, reference_gray: np.ndarray | None) -> list[dict[str, object]]:
+        if reference_gray is None:
+            return []
+        plan = self._get_template_runtime_plan(template)
+        zone_bounds = dict(plan.zone_bounds_px)
+        groups: dict[str, list[tuple[int, int, int, int]]] = {"header": [], "mcq": [], "tf": [], "numeric": []}
+        for zone in plan.sorted_zones:
+            if zone.id not in zone_bounds:
+                continue
+            band = self._zone_band_name(zone)
+            if band in groups:
+                groups[band].append(tuple(zone_bounds[zone.id]))
+        def union_rect(rects: list[tuple[int, int, int, int]]) -> tuple[int, int, int, int] | None:
+            if not rects:
+                return None
+            x0 = min(r[0] for r in rects)
+            y0 = min(r[1] for r in rects)
+            x1 = max(r[2] for r in rects)
+            y1 = max(r[3] for r in rects)
+            return (x0, y0, x1, y1)
+        bands = {k: union_rect(v) for k, v in groups.items()}
+        h, w = reference_gray.shape[:2]
+        patch_specs: list[tuple[str, str, tuple[int, int, int, int], float]] = []
+        if bands.get("header"):
+            x0, y0, x1, y1 = bands["header"]  # type: ignore[index]
+            pw = max(40, int((x1 - x0) * 0.28))
+            ph = max(36, int((y1 - y0) * 0.55))
+            patch_specs.append(("header_left_patch", "header", (x0, y0, pw, ph), 1.2))
+            patch_specs.append(("header_right_patch", "header", (max(x0, x1 - pw), y0, pw, ph), 1.2))
+        if bands.get("mcq"):
+            x0, y0, x1, y1 = bands["mcq"]  # type: ignore[index]
+            pw = max(48, int((x1 - x0) * 0.20))
+            ph = max(48, int((y1 - y0) * 0.20))
+            patch_specs.append(("mcq_left_patch", "mcq", (x0, y0, pw, ph), 1.0))
+            patch_specs.append(("mcq_right_patch", "mcq", (max(x0, x1 - pw), y0, pw, ph), 1.0))
+        if bands.get("tf"):
+            x0, y0, x1, y1 = bands["tf"]  # type: ignore[index]
+            pw = max(48, int((x1 - x0) * 0.22))
+            ph = max(42, int((y1 - y0) * 0.22))
+            patch_specs.append(("tf_patch", "tf", (x0, y0, pw, ph), 0.9))
+        if bands.get("numeric"):
+            x0, y0, x1, y1 = bands["numeric"]  # type: ignore[index]
+            pw = max(48, int((x1 - x0) * 0.22))
+            ph = max(42, int((y1 - y0) * 0.22))
+            patch_specs.append(("numeric_patch", "numeric", (x0, y0, pw, ph), 0.9))
+        fallback_specs = [
+            ("fallback_top_center", "header", (int(w * 0.36), int(h * 0.04), int(w * 0.20), int(h * 0.08)), 0.5),
+            ("fallback_mid_center", "mcq", (int(w * 0.35), int(h * 0.38), int(w * 0.20), int(h * 0.10)), 0.5),
+        ]
+        patch_specs.extend(fallback_specs)
+        patches: list[dict[str, object]] = []
+        margin_default = int((template.metadata or {}).get("scanner_locked_patch_search_margin", 24) or 24)
+        for name, band, (x, y, pw, ph), weight in patch_specs:
+            x = int(np.clip(x, 0, max(0, w - 2)))
+            y = int(np.clip(y, 0, max(0, h - 2)))
+            pw = int(np.clip(pw, 16, max(16, w - x)))
+            ph = int(np.clip(ph, 16, max(16, h - y)))
+            patch = reference_gray[y : y + ph, x : x + pw]
+            if patch.size == 0:
+                continue
+            patches.append(
+                {
+                    "name": name,
+                    "band": band,
+                    "bbox": [int(x), int(y), int(pw), int(ph)],
+                    "search_margin": int(margin_default),
+                    "weight": float(weight),
+                    "image": patch.copy(),
+                    "center_ref": np.array([x + (pw * 0.5), y + (ph * 0.5)], dtype=np.float32),
+                }
+            )
+        return patches
+
+    def _match_registration_patch(self, image_gray: np.ndarray, patch_cfg: dict[str, object]) -> dict[str, object]:
+        ref_patch = patch_cfg.get("image")
+        if not isinstance(ref_patch, np.ndarray) or ref_patch.size == 0:
+            return {"success": False, "reason": "empty_patch", "name": patch_cfg.get("name", "")}
+        h, w = image_gray.shape[:2]
+        x, y, pw, ph = [int(v) for v in (patch_cfg.get("bbox") or [0, 0, 0, 0])]
+        margin = int(patch_cfg.get("search_margin", 24) or 24)
+        x0 = max(0, x - margin)
+        y0 = max(0, y - margin)
+        x1 = min(w, x + pw + margin)
+        y1 = min(h, y + ph + margin)
+        search = image_gray[y0:y1, x0:x1]
+        if search.size == 0 or search.shape[0] < ph or search.shape[1] < pw:
+            return {"success": False, "reason": "search_small", "name": patch_cfg.get("name", "")}
+        res = cv2.matchTemplate(search, ref_patch, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+        ox = float(x0 + max_loc[0] + (pw * 0.5))
+        oy = float(y0 + max_loc[1] + (ph * 0.5))
+        ref_center = np.array([x + (pw * 0.5), y + (ph * 0.5)], dtype=np.float32)
+        return {
+            "success": bool(max_val >= 0.20),
+            "name": str(patch_cfg.get("name", "")),
+            "band": str(patch_cfg.get("band", "")),
+            "score": float(max_val),
+            "weight": float(patch_cfg.get("weight", 1.0) or 1.0),
+            "center_ref": ref_center,
+            "center_obs": np.array([ox, oy], dtype=np.float32),
+            "dx": float(ox - ref_center[0]),
+            "dy": float(oy - ref_center[1]),
+        }
+
+    def _estimate_scanner_locked_transform(
+        self,
+        image_gray: np.ndarray,
+        scanner_plan: dict[str, object],
+    ) -> dict[str, object]:
+        match_started = time.perf_counter()
+        patches = list(scanner_plan.get("registration_patches", []) or [])
+        patch_matches: list[dict[str, object]] = []
+        for cfg in patches:
+            patch_matches.append(self._match_registration_patch(image_gray, cfg))
+        registration_patch_time_sec = float(time.perf_counter() - match_started)
+        valid = [m for m in patch_matches if bool(m.get("success", False))]
+        fit_started = time.perf_counter()
+        matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
+        inlier_count = 0
+        if len(valid) >= 2:
+            src_pts = np.array([m["center_ref"] for m in valid], dtype=np.float32)
+            dst_pts = np.array([m["center_obs"] for m in valid], dtype=np.float32)
+            est, inliers = cv2.estimateAffinePartial2D(
+                src_pts,
+                dst_pts,
+                method=cv2.RANSAC,
+                ransacReprojThreshold=3.0,
+                maxIters=1000,
+            )
+            if est is not None:
+                matrix = est.astype(np.float32)
+                inlier_count = int(np.sum(inliers)) if inliers is not None else len(valid)
+            else:
+                dx = float(np.mean([float(v.get("dx", 0.0) or 0.0) for v in valid]))
+                dy = float(np.mean([float(v.get("dy", 0.0) or 0.0) for v in valid]))
+                matrix = np.array([[1.0, 0.0, dx], [0.0, 1.0, dy]], dtype=np.float32)
+                inlier_count = len(valid)
+        elif len(valid) == 1:
+            dx = float(valid[0].get("dx", 0.0) or 0.0)
+            dy = float(valid[0].get("dy", 0.0) or 0.0)
+            matrix = np.array([[1.0, 0.0, dx], [0.0, 1.0, dy]], dtype=np.float32)
+            inlier_count = 1
+        transform_fit_time_sec = float(time.perf_counter() - fit_started)
+        theta_deg = float(np.degrees(np.arctan2(float(matrix[1, 0]), float(matrix[0, 0]))))
+        scale = float(np.sqrt((float(matrix[0, 0]) ** 2) + (float(matrix[1, 0]) ** 2)))
+        success = len(valid) >= 2 and inlier_count >= 2
+        return {
+            "success": bool(success),
+            "matrix": matrix,
+            "patch_matches": patch_matches,
+            "valid_patch_count": int(len(valid)),
+            "inlier_count": int(inlier_count),
+            "registration_patch_time_sec": registration_patch_time_sec,
+            "transform_fit_time_sec": transform_fit_time_sec,
+            "dtheta_deg": theta_deg,
+            "scale": scale,
+        }
+
+    @staticmethod
+    def _transform_points_affine(points: np.ndarray, matrix: np.ndarray) -> np.ndarray:
+        if points is None or len(points) == 0:
+            return np.empty((0, 2), dtype=np.float32)
+        pts = np.asarray(points, dtype=np.float32).reshape(-1, 1, 2)
+        out = cv2.transform(pts, np.asarray(matrix, dtype=np.float32)).reshape(-1, 2)
+        return out.astype(np.float32)
+
+    @staticmethod
+    def _transform_rect_affine(rect: tuple[int, int, int, int], matrix: np.ndarray) -> tuple[int, int, int, int]:
+        x0, y0, x1, y1 = rect
+        corners = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=np.float32)
+        mapped = cv2.transform(corners.reshape(-1, 1, 2), np.asarray(matrix, dtype=np.float32)).reshape(-1, 2)
+        min_xy = np.min(mapped, axis=0)
+        max_xy = np.max(mapped, axis=0)
+        return (int(round(min_xy[0])), int(round(min_xy[1])), int(round(max_xy[0])), int(round(max_xy[1])))
+
     def _estimate_band_transform(
         self,
         image_gray: np.ndarray,
@@ -456,15 +672,26 @@ class OMRProcessor:
         band_name: str,
         scanner_plan: dict[str, object],
     ) -> dict[str, float | bool]:
-        # lightweight band locking: keep translation-only correction for scanner-stable sheets.
-        _ = image_gray
-        _ = scanner_plan
+        reg = self._estimate_scanner_locked_transform(image_gray, scanner_plan)
+        matrix = np.asarray(reg.get("matrix"), dtype=np.float32)
+        cx = float(template.width) * 0.5
+        cy = float(template.height) * 0.5
+        if str(band_name) == "header":
+            cy = float(template.height) * 0.12
+        elif str(band_name) == "mcq":
+            cy = float(template.height) * 0.50
+        elif str(band_name) == "tf":
+            cy = float(template.height) * 0.65
+        elif str(band_name) == "numeric":
+            cy = float(template.height) * 0.80
+        src = np.array([[[cx, cy]]], dtype=np.float32)
+        dst = cv2.transform(src, matrix).reshape(2)
         return {
-            "success": True,
-            "dx": 0.0,
-            "dy": 0.0,
-            "dtheta_deg": 0.0,
-            "scale": 1.0,
+            "success": bool(reg.get("success", False)),
+            "dx": float(dst[0] - cx),
+            "dy": float(dst[1] - cy),
+            "dtheta_deg": float(reg.get("dtheta_deg", 0.0) or 0.0),
+            "scale": float(reg.get("scale", 1.0) or 1.0),
             "band": str(band_name),
             "max_shift_px": float(self._scanner_locked_max_shift_px(template)),
         }
@@ -499,8 +726,82 @@ class OMRProcessor:
             out[i] = float(s) / float(area)
         return out
 
-    def _decode_zone_scanner_locked(self, binary: np.ndarray, zone: Zone, template: Template, result: OMRResult) -> None:
-        self.recognize_block(binary, zone, template, result, None)
+    def _decode_identifier_scanner_locked_fast(
+        self,
+        mat: np.ndarray,
+        zone: Zone,
+        result: OMRResult,
+    ) -> None:
+        value, confs = self._decode_column_digits(mat, zone, zone.grid, result)
+        key = "student_id" if zone.zone_type == ZoneType.STUDENT_ID_BLOCK else "exam_code"
+        if key == "student_id":
+            result.student_id = value
+        else:
+            result.exam_code = value
+        result.confidence_scores[key] = float(np.mean(confs)) if confs else 0.0
+        result.confidence_scores[f"{key}:{zone.id}"] = float(np.mean(confs)) if confs else 0.0
+
+    def _decode_mcq_scanner_locked_fast(self, mat: np.ndarray, zone: Zone, result: OMRResult) -> None:
+        grid = zone.grid
+        if grid is None:
+            return
+        rows, cols = mat.shape
+        labels = grid.options if grid.options else [chr(65 + i) for i in range(cols)]
+        confs: list[float] = []
+        q_count = min(grid.question_count or rows, rows)
+        for r in range(q_count):
+            qno = grid.question_start + r
+            row_scores = mat[r, :]
+            best_idx, confidence, reason = self._pick_best_mcq_option(row_scores, self.fill_threshold)
+            if best_idx is None:
+                result.recognition_errors.append(f"MCQ Q{qno}: {reason or 'uncertain'}")
+                continue
+            result.mcq_answers[qno] = labels[best_idx]
+            confs.append(confidence)
+        result.confidence_scores[f"mcq:{zone.id}"] = float(np.mean(confs)) if confs else 0.0
+
+    def _decode_tf_scanner_locked_fast(self, mat: np.ndarray, zone: Zone, result: OMRResult) -> None:
+        if zone.grid is None:
+            return
+        self._decode_true_false(mat, zone, zone.grid, result)
+
+    def _decode_numeric_scanner_locked_fast(self, mat: np.ndarray, zone: Zone, result: OMRResult) -> None:
+        if zone.grid is None:
+            return
+        self._decode_numeric(mat, zone, zone.grid, result)
+
+    def _decode_zone_scanner_locked_fast(
+        self,
+        binary: np.ndarray,
+        integral: np.ndarray,
+        zone: Zone,
+        scanner_plan: dict[str, object],
+        affine_matrix: np.ndarray,
+        result: OMRResult,
+    ) -> None:
+        if zone.grid is None:
+            return
+        ref_centers = np.array((scanner_plan.get("reference_zone_centers_px", {}) or {}).get(zone.id, np.empty((0, 2), dtype=np.float32)), dtype=np.float32)
+        if ref_centers.size == 0:
+            return
+        # direct ROI decode: transform zone centers only, no full-page warp in fast path.
+        centers = self._transform_points_affine(ref_centers, affine_matrix)
+        radius = int((scanner_plan.get("per_zone_radius", {}) or {}).get(zone.id, int(zone.metadata.get("bubble_radius", 9)) or 9))
+        ratios = self._sample_bubbles_fast(integral, centers, radius, binary.shape[:2])
+        rows = max(1, int(getattr(zone.grid, "rows", 1) or 1))
+        cols = max(1, int(getattr(zone.grid, "cols", 1) or 1))
+        need = rows * cols
+        if len(ratios) < need:
+            ratios = np.pad(ratios, (0, need - len(ratios)), constant_values=0.0)
+        mat = ratios[:need].reshape(rows, cols)
+        if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+            self._decode_identifier_scanner_locked_fast(mat, zone, result)
+        elif zone.zone_type == ZoneType.MCQ_BLOCK:
+            self._decode_mcq_scanner_locked_fast(mat, zone, result)
+        elif zone.zone_type == ZoneType.TRUE_FALSE_BLOCK:
+            self._decode_tf_scanner_locked_fast(mat, zone, result)
+        elif zone.zone_type == ZoneType.NUMERIC_BLOCK:
+            self._decode_numeric_scanner_locked_fast(mat, zone, result)
 
     def _recognize_sheet_scanner_locked(
         self,
@@ -512,17 +813,45 @@ class OMRProcessor:
         load_time_sec: float,
         normalize_time_sec: float,
     ) -> OMRResult:
-        # scanner-locked fast path: skip full-page perspective correction and heavy anchor alignment.
-        match_started = time.perf_counter()
+        # template-locked registration: patch match against reference scan, then transform points only.
         scanner_plan = self._get_scanner_locked_plan(template)
         working = src
         if working.shape[1] != template.width or working.shape[0] != template.height:
             working = cv2.resize(working, (template.width, template.height), interpolation=cv2.INTER_LINEAR)
         prep = self._preprocess_fast(working)
+        gray = prep["gray"]
         aligned = working
         aligned_binary = prep["binary"]
-        scanner_locked_match_time_sec = float(time.perf_counter() - match_started)
+        reg_payload = self._estimate_scanner_locked_transform(gray, scanner_plan)
+        registration_patch_time_sec = float(reg_payload.get("registration_patch_time_sec", 0.0) or 0.0)
+        transform_fit_time_sec = float(reg_payload.get("transform_fit_time_sec", 0.0) or 0.0)
+        affine_matrix = np.asarray(reg_payload.get("matrix"), dtype=np.float32)
+        registration_ok = bool(reg_payload.get("success", False))
         self._active_point_shift = (0.0, 0.0)
+        setattr(result, "_scanner_locked_registration_ok", bool(registration_ok))
+        if not registration_ok:
+            # generic fallback hook: allow caller to run full pipeline only when registration fails.
+            self._append_issue_once(result, "SCANNER_LOCK_FAIL", "Template-locked registration failed")
+            setattr(result, "alignment_debug", {
+                "alignment_mode": "scanner_locked_fast",
+                "recognition_mode": "scanner_locked",
+                "registration_ok": False,
+                "patch_matches": list(reg_payload.get("patch_matches", []) or []),
+                "timing_breakdown": {
+                    "load_time_sec": float(load_time_sec),
+                    "normalize_time_sec": float(normalize_time_sec),
+                    "registration_patch_time_sec": float(registration_patch_time_sec),
+                    "transform_fit_time_sec": float(transform_fit_time_sec),
+                    "header_decode_time_sec": 0.0,
+                    "mcq_decode_time_sec": 0.0,
+                    "tf_decode_time_sec": 0.0,
+                    "numeric_decode_time_sec": 0.0,
+                    "total_time_sec": float(time.perf_counter() - started),
+                },
+            })
+            result.processing_time_sec = float(time.perf_counter() - started)
+            result.sync_legacy_aliases()
+            return result
 
         quality_gate = self._estimate_image_quality(aligned, aligned_binary, template)
         poor_image = bool(quality_gate.get("poor_scan", False))
@@ -546,14 +875,7 @@ class OMRProcessor:
         tf_time_sec = 0.0
         numeric_time_sec = 0.0
         header_time_sec = 0.0
-        band_transforms: dict[str, dict[str, float | bool]] = {}
-        gray = cv2.cvtColor(aligned, cv2.COLOR_BGR2GRAY) if len(aligned.shape) == 3 else aligned
-        for bn in ("header", "mcq", "tf", "numeric"):
-            band_transforms[bn] = self._estimate_band_transform(gray, template, bn, scanner_plan)
-        if bool((template.metadata or {}).get("scanner_locked_use_integral_sampling", True)):
-            integral = self._build_integral_sampler(aligned_binary)
-            sample_probe = self._sample_bubbles_fast(integral, np.array([[10.0, 10.0]], dtype=np.float32), 2, aligned_binary.shape[:2])
-            _ = sample_probe
+        integral = self._build_integral_sampler(aligned_binary)
         roi_decode_started = time.perf_counter()
         plan = self._get_template_runtime_plan(template)
         for zone in plan.sorted_zones:
@@ -565,17 +887,15 @@ class OMRProcessor:
                 and not bool(getattr(context, "force_identifier_recognition", False))
             ):
                 continue
-            band_name = "header"
-            if zone.zone_type == ZoneType.MCQ_BLOCK:
-                band_name = "mcq"
-            elif zone.zone_type == ZoneType.TRUE_FALSE_BLOCK:
-                band_name = "tf"
-            elif zone.zone_type == ZoneType.NUMERIC_BLOCK:
-                band_name = "numeric"
-            transform = band_transforms.get(band_name, {"dx": 0.0, "dy": 0.0})
-            self._active_point_shift = (float(transform.get("dx", 0.0) or 0.0), float(transform.get("dy", 0.0) or 0.0))
             z_started = time.perf_counter()
-            self._decode_zone_scanner_locked(aligned_binary, zone, template, result)
+            self._decode_zone_scanner_locked_fast(
+                binary=aligned_binary,
+                integral=integral,
+                zone=zone,
+                scanner_plan=scanner_plan,
+                affine_matrix=affine_matrix,
+                result=result,
+            )
             elapsed = float(time.perf_counter() - z_started)
             if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
                 header_time_sec += elapsed
@@ -594,12 +914,9 @@ class OMRProcessor:
         setattr(result, "alignment_debug", {
             "alignment_mode": "scanner_locked_fast",
             "recognition_mode": "scanner_locked",
-            "band_locking": {
-                "header": dict(band_transforms.get("header", {})),
-                "mcq": dict(band_transforms.get("mcq", {})),
-                "tf": dict(band_transforms.get("tf", {})),
-                "numeric": dict(band_transforms.get("numeric", {})),
-            },
+            "registration_ok": True,
+            "transform_matrix": affine_matrix.tolist(),
+            "patch_matches": list(reg_payload.get("patch_matches", []) or []),
             "quality_gate": dict(quality_gate),
             "poor_image": bool(poor_image),
             "poor_identifier_zone": bool(poor_identifier_zone),
@@ -609,11 +926,12 @@ class OMRProcessor:
             "timing_breakdown": {
                 "load_time_sec": float(load_time_sec),
                 "normalize_time_sec": float(normalize_time_sec),
-                "scanner_locked_match_time_sec": float(scanner_locked_match_time_sec),
-                "scanner_locked_header_time_sec": float(header_time_sec),
-                "scanner_locked_mcq_time_sec": float(mcq_time_sec),
-                "scanner_locked_tf_time_sec": float(tf_time_sec),
-                "scanner_locked_numeric_time_sec": float(numeric_time_sec),
+                "registration_patch_time_sec": float(registration_patch_time_sec),
+                "transform_fit_time_sec": float(transform_fit_time_sec),
+                "header_decode_time_sec": float(header_time_sec),
+                "mcq_decode_time_sec": float(mcq_time_sec),
+                "tf_decode_time_sec": float(tf_time_sec),
+                "numeric_decode_time_sec": float(numeric_time_sec),
                 "roi_decode_time_sec": float(roi_decode_time_sec),
                 "mcq_time_sec": float(mcq_time_sec),
                 "tf_time_sec": float(tf_time_sec),
@@ -696,9 +1014,10 @@ class OMRProcessor:
                     load_time_sec=load_time_sec,
                     normalize_time_sec=normalize_time_sec,
                 )
-                if self._has_meaningful_result(fast_res) or (not self._scanner_locked_allow_full_fallback(template)):
+                registration_ok = bool(getattr(fast_res, "_scanner_locked_registration_ok", False))
+                if registration_ok or (not self._scanner_locked_allow_full_fallback(template)):
                     return fast_res
-                self._append_issue_once(result, "SCANNER_LOCK_FAIL", "Scanner-locked path returned non-meaningful result")
+                self._append_issue_once(result, "SCANNER_LOCK_FAIL", "Scanner-locked registration failed; fallback to generic path")
                 self._append_issue_once(result, "SAFE_FALLBACK_USED", "Fell back to generic recognition pipeline")
 
             rotated = src if ((fast_mode or fixed_profile) and self._should_skip_rotation(template)) else self._correct_rotation(src)
