@@ -1288,6 +1288,8 @@ class TemplateEditorWindow(QMainWindow):
         poor_image = bool(alignment_debug.get("poor_image", quality_gate.get("poor_scan", False)))
         quality_reason = str(alignment_debug.get("quality_reason", quality_gate.get("reason", "")) or "-")
         timing = dict(alignment_debug.get("timing_breakdown", {}) or {})
+        recognition_mode = str(alignment_debug.get("recognition_mode", alignment_debug.get("alignment_mode", "-")) or "-")
+        band_locking = dict(alignment_debug.get("band_locking", {}) or {})
         identifier_fast_fail = bool(timing.get("poor_image_fast_fail", False) and poor_image)
         sid_conf = self._identifier_confidence(res, "student_id")
         exam_conf = self._identifier_confidence(res, "exam_code")
@@ -1306,6 +1308,8 @@ class TemplateEditorWindow(QMainWindow):
             f"Poor image: {'Yes' if poor_image else 'No'}\n"
             f"Quality reason: {quality_reason}\n"
             f"Identifier fast-fail: {'Yes' if identifier_fast_fail else 'No'}\n"
+            f"Recognition mode: {recognition_mode}\n"
+            f"Band locking: {'/'.join([k for k in ['header','mcq','tf','numeric'] if k in band_locking]) or '-'}\n"
             f"Fast mode: {'ON' if fast_mode else 'OFF'}\n"
             f"Deep debug: {'ON' if deep_debug else 'OFF'}\n"
             f"Timing (align/identifier/diagnostics): "

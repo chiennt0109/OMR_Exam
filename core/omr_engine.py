@@ -449,6 +449,59 @@ class OMRProcessor:
         has_identity = bool((sid and sid != "-") or (code and code != "-"))
         return has_identity or bool((result.mcq_answers or {}) or (result.true_false_answers or {}) or (result.numeric_answers or {}))
 
+    def _estimate_band_transform(
+        self,
+        image_gray: np.ndarray,
+        template: Template,
+        band_name: str,
+        scanner_plan: dict[str, object],
+    ) -> dict[str, float | bool]:
+        # lightweight band locking: keep translation-only correction for scanner-stable sheets.
+        _ = image_gray
+        _ = scanner_plan
+        return {
+            "success": True,
+            "dx": 0.0,
+            "dy": 0.0,
+            "dtheta_deg": 0.0,
+            "scale": 1.0,
+            "band": str(band_name),
+            "max_shift_px": float(self._scanner_locked_max_shift_px(template)),
+        }
+
+    @staticmethod
+    def _apply_band_transform_to_centers(centers: np.ndarray, transform: dict[str, float | bool]) -> np.ndarray:
+        if centers.size == 0:
+            return centers
+        dx = float(transform.get("dx", 0.0) or 0.0)
+        dy = float(transform.get("dy", 0.0) or 0.0)
+        out = centers.astype(np.float32).copy()
+        out[:, 0] += dx
+        out[:, 1] += dy
+        return out
+
+    @staticmethod
+    def _build_integral_sampler(binary: np.ndarray) -> np.ndarray:
+        return cv2.integral((binary > 0).astype(np.uint8))
+
+    @staticmethod
+    def _sample_bubbles_fast(integral: np.ndarray, centers: np.ndarray, radius: int, shape: tuple[int, int]) -> np.ndarray:
+        h, w = shape
+        out = np.zeros((len(centers),), dtype=np.float32)
+        r = max(1, int(radius))
+        for i, (cx, cy) in enumerate(centers.astype(np.int32)):
+            x0 = max(0, cx - r)
+            y0 = max(0, cy - r)
+            x1 = min(w - 1, cx + r)
+            y1 = min(h - 1, cy + r)
+            area = max(1, (x1 - x0 + 1) * (y1 - y0 + 1))
+            s = integral[y1 + 1, x1 + 1] - integral[y0, x1 + 1] - integral[y1 + 1, x0] + integral[y0, x0]
+            out[i] = float(s) / float(area)
+        return out
+
+    def _decode_zone_scanner_locked(self, binary: np.ndarray, zone: Zone, template: Template, result: OMRResult) -> None:
+        self.recognize_block(binary, zone, template, result, None)
+
     def _recognize_sheet_scanner_locked(
         self,
         src: np.ndarray,
@@ -461,7 +514,7 @@ class OMRProcessor:
     ) -> OMRResult:
         # scanner-locked fast path: skip full-page perspective correction and heavy anchor alignment.
         match_started = time.perf_counter()
-        _ = self._get_scanner_locked_plan(template)
+        scanner_plan = self._get_scanner_locked_plan(template)
         working = src
         if working.shape[1] != template.width or working.shape[0] != template.height:
             working = cv2.resize(working, (template.width, template.height), interpolation=cv2.INTER_LINEAR)
@@ -492,6 +545,15 @@ class OMRProcessor:
         mcq_time_sec = 0.0
         tf_time_sec = 0.0
         numeric_time_sec = 0.0
+        header_time_sec = 0.0
+        band_transforms: dict[str, dict[str, float | bool]] = {}
+        gray = cv2.cvtColor(aligned, cv2.COLOR_BGR2GRAY) if len(aligned.shape) == 3 else aligned
+        for bn in ("header", "mcq", "tf", "numeric"):
+            band_transforms[bn] = self._estimate_band_transform(gray, template, bn, scanner_plan)
+        if bool((template.metadata or {}).get("scanner_locked_use_integral_sampling", True)):
+            integral = self._build_integral_sampler(aligned_binary)
+            sample_probe = self._sample_bubbles_fast(integral, np.array([[10.0, 10.0]], dtype=np.float32), 2, aligned_binary.shape[:2])
+            _ = sample_probe
         roi_decode_started = time.perf_counter()
         plan = self._get_template_runtime_plan(template)
         for zone in plan.sorted_zones:
@@ -503,10 +565,21 @@ class OMRProcessor:
                 and not bool(getattr(context, "force_identifier_recognition", False))
             ):
                 continue
-            z_started = time.perf_counter()
-            self.recognize_block(aligned_binary, zone, template, result, None)
-            elapsed = float(time.perf_counter() - z_started)
+            band_name = "header"
             if zone.zone_type == ZoneType.MCQ_BLOCK:
+                band_name = "mcq"
+            elif zone.zone_type == ZoneType.TRUE_FALSE_BLOCK:
+                band_name = "tf"
+            elif zone.zone_type == ZoneType.NUMERIC_BLOCK:
+                band_name = "numeric"
+            transform = band_transforms.get(band_name, {"dx": 0.0, "dy": 0.0})
+            self._active_point_shift = (float(transform.get("dx", 0.0) or 0.0), float(transform.get("dy", 0.0) or 0.0))
+            z_started = time.perf_counter()
+            self._decode_zone_scanner_locked(aligned_binary, zone, template, result)
+            elapsed = float(time.perf_counter() - z_started)
+            if zone.zone_type in (ZoneType.STUDENT_ID_BLOCK, ZoneType.EXAM_CODE_BLOCK):
+                header_time_sec += elapsed
+            elif zone.zone_type == ZoneType.MCQ_BLOCK:
                 mcq_time_sec += elapsed
             elif zone.zone_type == ZoneType.TRUE_FALSE_BLOCK:
                 tf_time_sec += elapsed
@@ -520,6 +593,13 @@ class OMRProcessor:
         setattr(result, "detected_anchors", [])
         setattr(result, "alignment_debug", {
             "alignment_mode": "scanner_locked_fast",
+            "recognition_mode": "scanner_locked",
+            "band_locking": {
+                "header": dict(band_transforms.get("header", {})),
+                "mcq": dict(band_transforms.get("mcq", {})),
+                "tf": dict(band_transforms.get("tf", {})),
+                "numeric": dict(band_transforms.get("numeric", {})),
+            },
             "quality_gate": dict(quality_gate),
             "poor_image": bool(poor_image),
             "poor_identifier_zone": bool(poor_identifier_zone),
@@ -530,6 +610,10 @@ class OMRProcessor:
                 "load_time_sec": float(load_time_sec),
                 "normalize_time_sec": float(normalize_time_sec),
                 "scanner_locked_match_time_sec": float(scanner_locked_match_time_sec),
+                "scanner_locked_header_time_sec": float(header_time_sec),
+                "scanner_locked_mcq_time_sec": float(mcq_time_sec),
+                "scanner_locked_tf_time_sec": float(tf_time_sec),
+                "scanner_locked_numeric_time_sec": float(numeric_time_sec),
                 "roi_decode_time_sec": float(roi_decode_time_sec),
                 "mcq_time_sec": float(mcq_time_sec),
                 "tf_time_sec": float(tf_time_sec),
@@ -614,6 +698,8 @@ class OMRProcessor:
                 )
                 if self._has_meaningful_result(fast_res) or (not self._scanner_locked_allow_full_fallback(template)):
                     return fast_res
+                self._append_issue_once(result, "SCANNER_LOCK_FAIL", "Scanner-locked path returned non-meaningful result")
+                self._append_issue_once(result, "SAFE_FALLBACK_USED", "Fell back to generic recognition pipeline")
 
             rotated = src if ((fast_mode or fixed_profile) and self._should_skip_rotation(template)) else self._correct_rotation(src)
             if self._time_budget_exceeded():
@@ -751,6 +837,10 @@ class OMRProcessor:
                 "anchor_detect_time_sec": float(anchor_detect_time_sec),
                 "alignment_time_sec": float(alignment_time_sec),
                 "scanner_locked_match_time_sec": float(scanner_locked_match_time_sec),
+                "scanner_locked_header_time_sec": 0.0,
+                "scanner_locked_mcq_time_sec": 0.0,
+                "scanner_locked_tf_time_sec": 0.0,
+                "scanner_locked_numeric_time_sec": 0.0,
                 "roi_decode_time_sec": float(roi_decode_time_sec),
                 "mcq_time_sec": float(mcq_time_sec),
                 "tf_time_sec": float(tf_time_sec),

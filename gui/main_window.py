@@ -4984,6 +4984,10 @@ class MainWindow(QMainWindow):
             return "Ảnh xấu"
         if "IDENTIFIER_FAST_CAP" in issues or "STUDENT_ID_FAST_FAIL" in issues:
             return "Giới hạn SBD"
+        if "SCANNER_LOCK_FAIL" in issues:
+            return "Scanner lock fail"
+        if "SAFE_FALLBACK_USED" in issues:
+            return "Safe fallback used"
         if "IDENTIFIER_TIMEOUT" in issues:
             return "Timeout vùng SBD"
         if "TIMEOUT" in issues:
