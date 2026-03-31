@@ -920,6 +920,8 @@ class NewExamDialog(QDialog):
         self.subject_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.subject_table.setShowGrid(True)
         self.subject_table.setGridStyle(Qt.SolidLine)
+        # double click navigation: open subject editor directly from row.
+        self.subject_table.cellDoubleClicked.connect(self._handle_subject_table_double_click)
         hdr = self.subject_table.horizontalHeader()
         hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
@@ -1161,6 +1163,13 @@ class NewExamDialog(QDialog):
     def _current_subject_index(self) -> int:
         idx = self.subject_table.currentRow()
         return idx if 0 <= idx < len(self.subject_configs) else -1
+
+    def _handle_subject_table_double_click(self, row: int, col: int) -> None:
+        print(f"[DblClick] subject_table row={row} col={col} -> edit_subject")
+        if row < 0 or row >= len(self.subject_configs):
+            return
+        self.subject_table.selectRow(row)
+        self._edit_subject()
 
     def _trigger_subject_batch_scan(self, idx: int) -> None:
         if idx < 0 or idx >= len(self.subject_configs):
@@ -1511,6 +1520,8 @@ class MainWindow(QMainWindow):
         self.template_library_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.template_library_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.template_library_table.itemSelectionChanged.connect(self._handle_template_library_selection)
+        # double click navigation: open selected template directly.
+        self.template_library_table.cellDoubleClicked.connect(self._handle_template_library_double_click)
         left_layout.addWidget(self.template_library_table)
         split.addWidget(left)
 
@@ -1764,6 +1775,8 @@ class MainWindow(QMainWindow):
         hdr.setSectionResizeMode(6, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(7, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(8, QHeaderView.ResizeToContents)
+        # double click navigation: open selected exam directly.
+        self.exam_list_table.cellDoubleClicked.connect(self._handle_exam_list_double_click)
         layout.addWidget(self.exam_list_table)
         return w
 
@@ -1985,6 +1998,31 @@ class MainWindow(QMainWindow):
             return None
         sid = item.data(Qt.UserRole)
         return str(sid) if sid else None
+
+    def _handle_exam_list_double_click(self, row: int, col: int) -> None:
+        # double click navigation: route row double click to exam editor action.
+        print(f"[DblClick] exam_list row={row} col={col} -> edit_registry_session")
+        sid = self._session_id_for_row(row)
+        if not sid:
+            return
+        self.exam_list_table.selectRow(row)
+        self._edit_registry_session_by_id(sid)
+
+    def _handle_template_library_double_click(self, row: int, col: int) -> None:
+        # double click navigation: route row double click to template edit action.
+        print(f"[DblClick] template_library row={row} col={col} -> edit_template")
+        if row < 0:
+            return
+        self.template_library_table.selectRow(row)
+        self._edit_selected_template()
+
+    def _handle_scan_list_double_click(self, row: int, col: int) -> None:
+        # double click navigation: route row double click to scan edit action.
+        print(f"[DblClick] scan_list row={row} col={col} -> edit_scan")
+        if row < 0 or row >= self.scan_list.rowCount():
+            return
+        self.scan_list.selectRow(row)
+        self._open_edit_selected_scan()
 
     def _make_row_icon_button(self, icon, tooltip: str, cb):
         btn = QPushButton()
@@ -2380,7 +2418,18 @@ class MainWindow(QMainWindow):
         self._refresh_session_info()
         self._refresh_batch_subject_controls()
         self.batch_subject_combo.setCurrentIndex(max(1, selected_subject_index + 1))
-        self.stack.setCurrentIndex(1)
+        selected_instance_key = self._subject_instance_key_from_cfg(subject_cfg)
+        self._navigate_to(
+            "workspace_batch_scan",
+            context={
+                "session_id": session_id,
+                "origin": "exam_editor",
+                "selected_subject_instance_key": selected_instance_key,
+            },
+            push_current=True,
+            require_confirm=False,
+            reason="open_batch_from_exam_editor",
+        )
 
     def _delete_selected_registry_session(self) -> None:
         row = self.exam_list_table.currentRow()
@@ -2983,7 +3032,13 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Batch Scan", "Kỳ thi hiện tại chưa có môn thi để nhận dạng.")
             return
         if self.stack.currentIndex() != 1:
-            self._navigate_to("workspace_batch_scan", context={"session_id": self.current_session_id}, push_current=True, require_confirm=False, reason="open_batch_scan")
+            self._navigate_to(
+                "workspace_batch_scan",
+                context={"session_id": self.current_session_id, "origin": self._current_route_name},
+                push_current=True,
+                require_confirm=False,
+                reason="open_batch_scan",
+            )
         self._refresh_batch_subject_controls()
         self._show_batch_scan_panel()
         if hasattr(self, "batch_subject_combo") and self.batch_subject_combo.currentIndex() <= 0 and self.batch_subject_combo.count() > 1:
@@ -3246,7 +3301,8 @@ class MainWindow(QMainWindow):
         self.scan_list.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeToContents)
         self.scan_list.horizontalHeader().sectionClicked.connect(self._on_scan_header_clicked)
         self.scan_list.itemSelectionChanged.connect(self._on_scan_selected)
-        self.scan_list.cellDoubleClicked.connect(self._open_edit_selected_scan)
+        # double click navigation: open selected scan directly.
+        self.scan_list.cellDoubleClicked.connect(self._handle_scan_list_double_click)
         self.scan_list.cellClicked.connect(self._on_scan_cell_clicked)
         self.progress = QProgressBar()
 
@@ -3379,44 +3435,80 @@ class MainWindow(QMainWindow):
         return w
 
     def _close_batch_scan_view(self) -> None:
-        if self.batch_editor_return_payload is None:
-            self._navigate_back(default_route="exam_list")
-            return
+        route_ctx = dict(self._current_route_context or {})
+        print(f"[BatchClose] route={self._current_route_name} context={route_ctx}")
+        if self._has_batch_unsaved_changes():
+            choice = self._prompt_save_changes_word_style(
+                "Batch Scan chưa lưu",
+                "Bạn có thay đổi chưa lưu cho môn hiện tại. Bạn muốn lưu trước khi đóng không?",
+            )
+            if choice == "cancel":
+                return
+            if choice == "save" and not self._save_batch_for_selected_subject():
+                return
+        self._return_to_current_exam_from_batch_scan()
 
-        payload = dict(self.batch_editor_return_payload)
-        session_id = self.batch_editor_return_session_id
-        self.batch_editor_return_payload = None
-        self.batch_editor_return_session_id = None
+    def _has_batch_unsaved_changes(self) -> bool:
+        return bool(hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled())
 
-        if not session_id:
-            self._navigate_back(default_route="exam_list")
-            return
-        p = self._session_path_from_id(session_id)
-        if not p.exists():
-            self._navigate_back(default_route="exam_list")
-            return
+    def _open_current_session_in_exam_editor(self) -> bool:
+        # return to current exam on batch close: open current runtime session, avoid stale batch return payload.
+        if not self.current_session_id:
+            return False
+        payload = self.database.fetch_exam_session(self.current_session_id) or {}
+        if not payload:
+            return False
         try:
-            session = ExamSession.load_json(p)
+            session = ExamSession.from_dict(payload)
         except Exception:
-            self._navigate_back(default_route="exam_list")
-            return
+            return False
         cfg = session.config or {}
-        payload["subject_configs"] = cfg.get("subject_configs", payload.get("subject_configs", []))
-        payload["scan_root"] = cfg.get("scan_root", payload.get("scan_root", ""))
-        payload["student_list_path"] = cfg.get("student_list_path", payload.get("student_list_path", ""))
-        payload["students"] = [
-            {
-                "student_id": s.student_id,
-                "name": s.name,
-                "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
-                "class_name": str((s.extra or {}).get("class_name", "") or ""),
-                "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
-            }
-            for s in (session.students or [])
-        ]
-        payload["scan_mode"] = cfg.get("scan_mode", payload.get("scan_mode", "Ảnh trong thư mục gốc"))
-        payload["paper_part_count"] = cfg.get("paper_part_count", payload.get("paper_part_count", 3))
-        self._open_embedded_exam_editor(session_id, session, payload)
+        editor_payload = {
+            "exam_name": session.exam_name,
+            "common_template": session.template_path,
+            "scan_root": cfg.get("scan_root", ""),
+            "student_list_path": cfg.get("student_list_path", ""),
+            "students": [
+                {
+                    "student_id": s.student_id,
+                    "name": s.name,
+                    "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
+                    "class_name": str((s.extra or {}).get("class_name", "") or ""),
+                    "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
+                }
+                for s in (session.students or [])
+            ],
+            "scan_mode": cfg.get("scan_mode", "Ảnh trong thư mục gốc"),
+            "paper_part_count": cfg.get("paper_part_count", 3),
+            "subject_configs": cfg.get("subject_configs", []),
+        }
+        self._open_embedded_exam_editor(self.current_session_id, session, editor_payload)
+        return True
+
+    def _return_to_current_exam_from_batch_scan(self) -> None:
+        ctx = dict(self._current_route_context or {})
+        origin = str(ctx.get("origin", "") or "")
+        target = "exam_list"
+        if origin == "workspace_scoring":
+            target = "workspace_scoring"
+        elif self.embedded_exam_dialog and self.current_session_id:
+            target = "exam_editor"
+        elif self.current_session_id:
+            target = "exam_editor"
+        print(f"[BatchClose] return_target={target}")
+        if target == "workspace_scoring":
+            self._navigate_to(
+                "workspace_scoring",
+                context={"session_id": self.current_session_id, "origin": "workspace_batch_scan"},
+                push_current=False,
+                require_confirm=False,
+                reason="close_batch_back_to_scoring",
+            )
+            return
+        if target == "exam_editor":
+            if self._open_current_session_in_exam_editor():
+                return
+        self._navigate_back(default_route="exam_list")
 
     def _strip_transient_scan_artifacts(self, result: OMRResult) -> OMRResult:
         for attr_name in [
@@ -3614,7 +3706,13 @@ class MainWindow(QMainWindow):
 
     def _back_to_batch_scan(self) -> None:
         # workspace sub-route
-        if not self._navigate_to("workspace_batch_scan", context={"session_id": self.current_session_id}, push_current=False, require_confirm=True, reason="back_to_batch"):
+        if not self._navigate_to(
+            "workspace_batch_scan",
+            context={"session_id": self.current_session_id, "origin": "workspace_scoring"},
+            push_current=False,
+            require_confirm=True,
+            reason="back_to_batch",
+        ):
             return
 
     def _subject_configs_for_scoring(self) -> list[dict]:
@@ -3968,133 +4066,192 @@ class MainWindow(QMainWindow):
 
 
 
-    def _save_batch_for_selected_subject(self) -> None:
+    def _resolve_current_session_subject_configs_for_update(self) -> tuple[list[dict], str]:
+        # batch save source of truth: prefer runtime session currently opened in app.
+        if self.session and isinstance(self.session.config, dict):
+            cfgs = self.session.config.get("subject_configs", [])
+            if isinstance(cfgs, list):
+                return cfgs, "runtime"
+        if self.current_session_id:
+            payload = self.database.fetch_exam_session(self.current_session_id) or {}
+            if isinstance(payload, dict) and payload:
+                try:
+                    db_session = ExamSession.from_dict(payload)
+                    if db_session and isinstance(db_session.config, dict):
+                        cfgs = db_session.config.get("subject_configs", [])
+                        if isinstance(cfgs, list):
+                            self.session = db_session
+                            self.current_session_path = self._session_path_from_id(self.current_session_id)
+                            return cfgs, "database"
+                except Exception:
+                    pass
+        session_path = self.current_session_path
+        if not session_path and self.current_session_id:
+            candidate = self._session_path_from_id(self.current_session_id)
+            if candidate.exists():
+                session_path = candidate
+        if session_path and session_path.exists():
+            try:
+                fallback = ExamSession.load_json(session_path)
+                if isinstance(fallback.config, dict):
+                    cfgs = fallback.config.get("subject_configs", [])
+                    if isinstance(cfgs, list):
+                        if not self.session:
+                            self.session = fallback
+                        return cfgs, "file_fallback"
+            except Exception:
+                pass
+        return [], "empty"
+
+    def _find_subject_config_index_for_batch_save(self, subject_cfg: dict, subject_cfgs: list[dict]) -> int:
+        # canonical subject match: subject_instance_key > subject_uid > runtime_key > legacy logical (unambiguous).
+        selected_instance = str(self._subject_instance_key_from_cfg(subject_cfg) or "").strip()
+        selected_uid = str(subject_cfg.get("subject_uid", "") or "").strip()
+        selected_runtime = str(self._batch_runtime_key(selected_instance) or "").strip()
+        selected_logical = str(self._logical_subject_key_from_cfg(subject_cfg) or "").strip().lower()
+        if selected_instance:
+            for idx, item in enumerate(subject_cfgs):
+                if str(self._subject_instance_key_from_cfg(item) or "").strip() == selected_instance:
+                    return idx
+        if selected_uid:
+            for idx, item in enumerate(subject_cfgs):
+                if str(item.get("subject_uid", "") or "").strip() == selected_uid:
+                    return idx
+        if selected_runtime:
+            for idx, item in enumerate(subject_cfgs):
+                item_instance = str(self._subject_instance_key_from_cfg(item) or "").strip()
+                if item_instance and str(self._batch_runtime_key(item_instance) or "").strip() == selected_runtime:
+                    return idx
+        if selected_logical:
+            matches = [
+                idx for idx, item in enumerate(subject_cfgs)
+                if str(self._logical_subject_key_from_cfg(item) or "").strip().lower() == selected_logical
+            ]
+            if len(matches) == 1:
+                return matches[0]
+        return -1
+
+    def _persist_current_session_subject_configs(self, subject_cfgs: list[dict]) -> bool:
+        if not self.current_session_id:
+            return False
+        if self.session is None:
+            self.session = ExamSession(exam_name="Kỳ thi", exam_date=str(date.today()))
+        self.session.config = {**(self.session.config or {}), "subject_configs": list(subject_cfgs)}
+        try:
+            self.database.save_exam_session(self.current_session_id, self.session.exam_name, self.session.to_dict())
+            self.current_session_path = self._session_path_from_id(self.current_session_id)
+        except Exception:
+            return False
+        if self.current_session_path:
+            try:
+                self.session.save_json(self.current_session_path)
+            except Exception:
+                pass
+        return True
+
+    def _save_batch_for_selected_subject(self) -> bool:
         subject_cfg = self._selected_batch_subject_config()
         if not subject_cfg:
             QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
-            return
+            return False
         row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
         if row_count <= 0:
             QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
-            return
-
-        session_path = self.current_session_path
-        if not session_path and self.batch_editor_return_session_id:
-            p = self._session_path_from_id(self.batch_editor_return_session_id)
-            if p.exists():
-                session_path = p
-        if not session_path:
-            QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy kỳ thi để lưu trạng thái Batch theo môn.")
-            return
-
+            return False
+        if not self.current_session_id:
+            QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy kỳ thi hiện tại để lưu trạng thái Batch theo môn.")
+            return False
         try:
-            ses = ExamSession.load_json(session_path)
-            cfg = ses.config or {}
-            subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
+            selected_instance = self._ensure_subject_instance_key(subject_cfg)
+            subject_cfgs, source = self._resolve_current_session_subject_configs_for_update()
+            print(f"[BatchSave] source={source} selected_subject_instance_key={selected_instance}")
+            if not subject_cfgs:
+                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy danh sách môn trong kỳ thi hiện tại để cập nhật.")
+                return False
+            for idx, item in enumerate(subject_cfgs):
+                if isinstance(item, dict):
+                    self._ensure_subject_instance_key(item, idx)
+            matched_idx = self._find_subject_config_index_for_batch_save(subject_cfg, subject_cfgs)
+            print(f"[BatchSave] matched_subject_index={matched_idx}")
+
             subject_key, current_results = self._sync_current_batch_subject_snapshot(persist_to_db=True)
             if not subject_key:
                 QMessageBox.warning(self, "Lưu Batch", "Không xác định được môn Batch hiện tại để lưu.")
-                return
+                return False
             saved_results = [self._serialize_omr_result(x) for x in current_results]
             timestamp = datetime.now().isoformat(timespec="seconds")
-            updated = False
-            target_token = self._batch_cache_subject_key(subject_cfg, include_session=False)
-            for item in subject_cfgs:
-                if not isinstance(item, dict):
-                    continue
-                item_token = self._batch_cache_subject_key(item, include_session=False)
-                same_logical_key = str(self._subject_key_from_cfg(item)).strip() == str(subject_key).strip()
-                if item_token == target_token or same_logical_key:
-                    item["batch_saved"] = True
-                    item["batch_saved_at"] = timestamp
-                    item["batch_result_count"] = row_count
-                    item["batch_saved_rows"] = [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ]
-                    item["batch_saved_preview"] = [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ]
-                    item["batch_saved_results"] = saved_results
-                    updated = True
-                    break
-            if not updated:
-                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
-                return
-            ses.config = {**cfg, "subject_configs": subject_cfgs}
-            ses.save_json(session_path)
-
-            # Write sidecar cache to ensure grids can be restored even if subject config is trimmed elsewhere.
-            try:
-                cache_path = session_path.with_suffix(".batch_cache.json")
-                cache_data = {}
-                if cache_path.exists():
-                    raw = json.loads(cache_path.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        cache_data = raw
-                cache_key = self._batch_cache_subject_key(subject_cfg, include_session=True)
-                legacy_cache_key = self._batch_cache_subject_key(subject_cfg, include_session=False)
-                payload = {
-                    "batch_saved": True,
-                    "batch_saved_at": timestamp,
-                    "batch_result_count": row_count,
-                    "batch_saved_rows": [
-                        {
-                            "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                            "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                            "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                            "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                            "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                            "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                            "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                            "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                            "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                        }
-                        for r in range(self.scan_list.rowCount())
-                    ],
-                    "batch_saved_preview": [
-                        {
-                            "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
-                            "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
-                        }
-                        for r in range(self.scan_result_preview.rowCount())
-                    ],
-                    "batch_saved_results": saved_results,
+            batch_rows_payload = [
+                {
+                    "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
+                    "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
+                    "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
+                    "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                    "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                    "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
+                    "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
+                    "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
+                    "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
                 }
-                cache_data[cache_key] = payload
-                # Keep a legacy sidecar key for backward compatibility with older builds.
-                if legacy_cache_key and legacy_cache_key not in cache_data:
-                    cache_data[legacy_cache_key] = payload
-                cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                pass
+                for r in range(self.scan_list.rowCount())
+            ]
+            batch_preview_payload = [
+                {
+                    "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
+                    "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
+                }
+                for r in range(self.scan_result_preview.rowCount())
+            ]
 
-            if self.session:
-                self.session.config = {**(self.session.config or {}), "subject_configs": subject_cfgs}
-            self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(current_results)
+            if matched_idx < 0:
+                available_instances = [str((x or {}).get("subject_instance_key", "") or "") for x in subject_cfgs if isinstance(x, dict)]
+                available_logicals = [str(self._logical_subject_key_from_cfg(x) or "") for x in subject_cfgs if isinstance(x, dict)]
+                print(
+                    "[BatchSave] match_failed "
+                    f"selected_instance={selected_instance} available_instances={available_instances} "
+                    f"selected_logical={self._logical_subject_key_from_cfg(subject_cfg)} available_logicals={available_logicals}"
+                )
+                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
+                return False
+
+            target = subject_cfgs[matched_idx]
+            target["subject_instance_key"] = selected_instance
+            if not str(target.get("subject_uid", "") or "").strip():
+                target["subject_uid"] = str(subject_cfg.get("subject_uid", "") or str(uuid.uuid4()))
+            target["batch_saved"] = True
+            target["batch_saved_at"] = timestamp
+            target["batch_result_count"] = row_count
+            target["batch_saved_rows"] = batch_rows_payload
+            target["batch_saved_preview"] = batch_preview_payload
+            target["batch_saved_results"] = saved_results
+
+            if self.session and isinstance(self.session.config, dict):
+                runtime_cfgs = self.session.config.get("subject_configs", [])
+                if isinstance(runtime_cfgs, list) and 0 <= matched_idx < len(runtime_cfgs) and isinstance(runtime_cfgs[matched_idx], dict):
+                    runtime_cfgs[matched_idx].update(target)
+                self.session.config["subject_configs"] = subject_cfgs
+
+            if not self._persist_current_session_subject_configs(subject_cfgs):
+                QMessageBox.warning(self, "Lưu Batch", "Không thể lưu dữ liệu kỳ thi hiện tại vào hệ thống.")
+                return False
+
             if isinstance(self.batch_editor_return_payload, dict):
                 self.batch_editor_return_payload["subject_configs"] = subject_cfgs
-            # Update lightweight UI state only; do not trigger full subject/grid reload after save.
-            self.batch_answer_codes_value.setText(", ".join(sorted((subject_cfg.get("imported_answer_keys") or {}).keys())) or "-")
+            self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(current_results)
+            self.batch_working_state_by_subject[self._batch_runtime_key(subject_key)] = {
+                "results": list(current_results),
+                "rows": batch_rows_payload,
+                "preview": batch_preview_payload,
+                "saved_at": timestamp,
+            }
+            self._upsert_session_registry(self.current_session_id, self.session.exam_name if self.session else None)
+            self._refresh_exam_list()
             self._update_batch_scan_scope_summary()
             self.btn_save_batch_subject.setEnabled(False)
             QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
+            return True
         except Exception as exc:
             QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu trạng thái Batch\n{exc}")
+            return False
 
 
     def _build_correction_tab(self) -> QWidget:
