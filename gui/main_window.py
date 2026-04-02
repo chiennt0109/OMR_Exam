@@ -322,6 +322,7 @@ class SubjectConfigDialog(QDialog):
         room_map_lay.addWidget(self.exam_room_mapping_selector)
         room_map_lay.addWidget(self.exam_room_mapping_hint)
         room_map_lay.addWidget(self.btn_import_exam_room_mapping, alignment=Qt.AlignLeft)
+        self._restore_exam_room_mapping_from_data(data, seed_room)
         self.answer_codes = QLineEdit(", ".join(sorted((data.get("imported_answer_keys") or {}).keys()))); self.answer_codes.setReadOnly(True)
         self.answer_summary = QTextEdit()
         self.answer_summary.setReadOnly(True)
@@ -423,6 +424,57 @@ class SubjectConfigDialog(QDialog):
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
+
+    @staticmethod
+    def _normalize_exam_room_sid_values(raw_values: object) -> list[str]:
+        tokens: list[str] = []
+        if isinstance(raw_values, str):
+            tokens = re.split(r"[,\n;]+", raw_values)
+        elif isinstance(raw_values, (list, tuple, set)):
+            tokens = [str(x) for x in raw_values]
+        else:
+            return []
+        clean = [str(x or "").strip() for x in tokens if str(x or "").strip()]
+        return sorted(set(clean))
+
+    def _restore_exam_room_mapping_from_data(self, data: dict, seed_room: str = "") -> None:
+        rebuilt: dict[str, list[str]] = {}
+        mapping_by_room_seed = data.get("exam_room_sbd_mapping_by_room", {})
+        if isinstance(mapping_by_room_seed, dict) and mapping_by_room_seed:
+            for room_key, values in mapping_by_room_seed.items():
+                room_text = str(room_key or "").strip()
+                if not room_text:
+                    continue
+                normalized_values = self._normalize_exam_room_sid_values(values)
+                if normalized_values:
+                    rebuilt[room_text] = normalized_values
+
+        if not rebuilt:
+            mapping_seed = str(data.get("exam_room_sbd_mapping", "") or "").strip()
+            normalized_values = self._normalize_exam_room_sid_values(mapping_seed)
+            if normalized_values:
+                room_key = str(seed_room or "").strip() or "[Không rõ phòng]"
+                rebuilt[room_key] = normalized_values
+
+        self._exam_room_mapping_cache = dict(rebuilt)
+        self._refresh_exam_room_mapping_selector()
+
+        preferred_room = str(seed_room or "").strip()
+        if preferred_room and preferred_room in self._exam_room_mapping_cache:
+            self.exam_room_name.setCurrentText(preferred_room)
+            idx = self.exam_room_mapping_selector.findData(preferred_room)
+            if idx >= 0:
+                self.exam_room_mapping_selector.setCurrentIndex(idx)
+        elif self._exam_room_mapping_cache:
+            if not self.exam_room_name.currentText().strip():
+                first_room = sorted(self._exam_room_mapping_cache.keys())[0]
+                self.exam_room_name.setCurrentText(first_room)
+            current_room = self.exam_room_name.currentText().strip()
+            idx = self.exam_room_mapping_selector.findData(current_room)
+            if idx >= 0:
+                self.exam_room_mapping_selector.setCurrentIndex(idx)
+        if not self._exam_room_mapping_cache:
+            self.exam_room_mapping_hint.setText("Chưa nạp mapping SBD/phòng.")
 
     def _update_paper_parts(self) -> None:
         tpl = self.template_path.text().strip() or self.common_template_path
@@ -553,30 +605,6 @@ class SubjectConfigDialog(QDialog):
         self.answer_codes.setText(", ".join(sorted(self.answer_key_data.keys())))
         self.answer_key.setText(path)
         self._refresh_answer_key_summary()
-        mapping_by_room_seed = data.get("exam_room_sbd_mapping_by_room", {})
-        if isinstance(mapping_by_room_seed, dict) and mapping_by_room_seed:
-            rebuilt: dict[str, list[str]] = {}
-            for room_key, vals in mapping_by_room_seed.items():
-                room_text = str(room_key or "").strip()
-                if not room_text:
-                    continue
-                chunks: list[str] = []
-                if isinstance(vals, (list, tuple, set)):
-                    chunks = [str(x).strip() for x in vals if str(x).strip()]
-                elif isinstance(vals, str):
-                    chunks = [x.strip() for x in vals.replace(";", ",").replace("\n", ",").split(",") if x.strip()]
-                if chunks:
-                    rebuilt[room_text] = sorted(set(chunks))
-            if rebuilt:
-                self._exam_room_mapping_cache = rebuilt
-                self._refresh_exam_room_mapping_selector()
-        else:
-            mapping_seed = str(data.get("exam_room_sbd_mapping", "") or "").strip()
-            if mapping_seed:
-                seed_sids = [x.strip() for x in mapping_seed.replace(";", ",").replace("\n", ",").split(",") if x.strip()]
-                key = seed_room or "[Không rõ phòng]"
-                self._exam_room_mapping_cache[key] = sorted(set(seed_sids))
-                self._refresh_exam_room_mapping_selector()
         self._update_total_score()
         QMessageBox.information(self, "Import đáp án", "Đã gắn toàn bộ mã đề của file đáp án cho môn đang cấu hình.")
 
