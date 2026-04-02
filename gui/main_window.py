@@ -3387,10 +3387,10 @@ class MainWindow(QMainWindow):
         batch_form.addRow("", action_row)
 
         self.filter_column = QComboBox()
-        self.filter_column.addItems(["STUDENT ID", "Phòng thi", "Họ tên", "Ngày sinh", "Nội dung", "Status"])
+        self.filter_column.addItems(["Tất cả", "STUDENT ID", "Phòng thi", "Mã đề", "Họ tên", "Ngày sinh", "Nội dung", "Status"])
         self.filter_column.currentTextChanged.connect(self._apply_scan_filter)
         self.search_value = QLineEdit()
-        self.search_value.setPlaceholderText("Filter theo tiêu đề bảng đang chọn")
+        self.search_value.setPlaceholderText("Tìm trong cột đã chọn hoặc toàn bảng")
         self.search_value.textChanged.connect(self._apply_scan_filter)
 
         search_row = QHBoxLayout()
@@ -3638,6 +3638,7 @@ class MainWindow(QMainWindow):
         return self._deserialize_omr_result(self._serialize_omr_result(result))
 
     def _collect_current_subject_results_for_save(self, subject_key: str) -> list[OMRResult]:
+        # scan_list columns: 0 sid, 1 room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
         key = str(subject_key or "").strip()
         base_results = list(self.scan_results_by_subject.get(self._batch_result_subject_key(key)) or self.scan_results or [])
         row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
@@ -3664,8 +3665,8 @@ class MainWindow(QMainWindow):
             res.student_id = "" if sid_text == "-" else sid_text
             res.exam_code = exam_code
             if hasattr(self, "scan_list"):
-                res.full_name = str(self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "")
-                res.birth_date = str(self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "")
+                res.full_name = str(self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "")
+                res.birth_date = str(self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "")
             res.sync_legacy_aliases()
             out.append(res)
 
@@ -4404,10 +4405,10 @@ class MainWindow(QMainWindow):
             batch_rows_payload = [
                 {
                     "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                    "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                    "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                    "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                    "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                    "full_name": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
+                    "birth_date": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                    "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                    "status": self.scan_list.item(r, 6).text() if self.scan_list.item(r, 6) else "-",
                     "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                     "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                     "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -8631,18 +8632,60 @@ class MainWindow(QMainWindow):
             self._load_selected_result_for_correction()
 
     def _apply_scan_filter(self) -> None:
-        value = self.search_value.text().strip().lower()
-        col = self.filter_column.currentIndex()
+        def _normalize(text: str) -> str:
+            return " ".join(str(text or "").strip().lower().split())
+
+        value = _normalize(self.search_value.text())
+        col = self._scan_filter_column_from_combo_index(self.filter_column.currentIndex())
         for i in range(self.scan_list.rowCount()):
-            item = self.scan_list.item(i, col)
-            cell = (item.text() if item else "").lower()
-            show = value in cell if value else True
-            self.scan_list.setRowHidden(i, not show)
+            if not value:
+                self.scan_list.setRowHidden(i, False)
+                continue
+            if col is None:
+                searchable = []
+                for j in range(0, 7):
+                    item = self.scan_list.item(i, j)
+                    searchable.append(_normalize(item.text() if item else ""))
+                cell = " | ".join(searchable)
+            else:
+                item = self.scan_list.item(i, col)
+                cell = _normalize(item.text() if item else "")
+            self.scan_list.setRowHidden(i, value not in cell)
 
     def _on_scan_header_clicked(self, section: int) -> None:
-        if 0 <= section < self.filter_column.count():
-            self.filter_column.setCurrentIndex(section)
-            self._apply_scan_filter()
+        combo_index = self._scan_filter_combo_index_from_header_section(section)
+        if combo_index is None:
+            return
+        if 0 <= combo_index < self.filter_column.count():
+            self.filter_column.setCurrentIndex(combo_index)
+        self._apply_scan_filter()
+
+    @staticmethod
+    def _scan_filter_column_from_combo_index(combo_index: int) -> int | None:
+        mapping = {
+            0: None,  # Tất cả
+            1: 0,     # STUDENT ID
+            2: 1,     # Phòng thi
+            3: 2,     # Mã đề
+            4: 3,     # Họ tên
+            5: 4,     # Ngày sinh
+            6: 5,     # Nội dung
+            7: 6,     # Status
+        }
+        return mapping.get(int(combo_index), None)
+
+    @staticmethod
+    def _scan_filter_combo_index_from_header_section(section: int) -> int | None:
+        mapping = {
+            0: 1,  # STUDENT ID
+            1: 2,  # Phòng thi
+            2: 3,  # Mã đề
+            3: 4,  # Họ tên
+            4: 5,  # Ngày sinh
+            5: 6,  # Nội dung
+            6: 7,  # Status
+        }
+        return mapping.get(int(section), None)
 
     def eventFilter(self, obj, event):
         if hasattr(self, "scan_image_scroll") and obj == self.scan_image_scroll.viewport() and event.type() == QEvent.Wheel:
@@ -8854,8 +8897,10 @@ class MainWindow(QMainWindow):
                 scan_list.setItem(idx, 3, QTableWidgetItem(str(item["full_name"] or "-")))
                 scan_list.setItem(idx, 4, QTableWidgetItem(str(item["birth_date"] or "-")))
                 scan_list.setItem(idx, 5, QTableWidgetItem(str(item["content"] or "")))
-                status_item = QTableWidgetItem(str(item["status"] or "OK"))
-                if str(item["status"] or "OK") != "OK":
+                full_status = str(item["status"] or "OK")
+                status_item = QTableWidgetItem(self._compact_status_text(full_status, max_len=150))
+                status_item.setToolTip(full_status)
+                if full_status != "OK":
                     status_item.setForeground(Qt.red)
                 scan_list.setItem(idx, 6, status_item)
                 if skip_expensive_checks:
@@ -9462,14 +9507,14 @@ class MainWindow(QMainWindow):
         duplicate_count: int,
         subject_scope: tuple[set[str], set[str]] | None = None,
         available_exam_codes: set[str] | None = None,
+        result: OMRResult | None = None,
     ) -> list[str]:
         sid_text = str(sid or "").strip()
-        has_sid_error = False
         has_duplicate = False
-        has_exam_code_error = False
+        status_parts: list[str] = []
 
         if self._student_id_has_recognition_error(sid_text):
-            has_sid_error = True
+            status_parts.append("SBD không nhận dạng")
             has_duplicate = duplicate_count > 1
         else:
             has_duplicate = duplicate_count > 1
@@ -9479,29 +9524,37 @@ class MainWindow(QMainWindow):
             cfg = self._selected_batch_subject_config() or {}
 
             if not self._has_valid_student_reference(sid_text):
-                has_sid_error = True
+                status_parts.append("SBD không có trong danh sách")
             elif all_sids and sid_norm not in all_sids:
-                has_sid_error = True
+                status_parts.append("SBD không có trong danh sách")
             else:
                 room_text = self._subject_room_for_student_id(sid_text, cfg)
                 if self._is_missing_room_for_status(room_text):
-                    has_sid_error = True
+                    status_parts.append("Thiếu phòng thi")
                 elif room_sids and sid_norm not in room_sids:
-                    has_sid_error = True
-                elif self._is_missing_name_for_status(str(profile.get("name", "") or "")):
-                    has_sid_error = True
+                    status_parts.append("SBD không thuộc phòng thi môn")
+                if self._is_missing_name_for_status(str(profile.get("name", "") or "")):
+                    status_parts.append("Thiếu họ tên")
 
         if not self._is_valid_exam_code_for_subject(exam_code_text, available_exam_codes=available_exam_codes):
-            has_exam_code_error = True
-
-        ordered: list[str] = []
-        if has_sid_error:
-            ordered.append("Lỗi SBD")
+            status_parts.append("Mã đề không hợp lệ")
         if has_duplicate:
-            ordered.append("Trùng SBD")
-        if has_exam_code_error:
-            ordered.append("Lỗi Mã đề")
-        return ordered
+            status_parts.append("Trùng SBD")
+
+        if result is not None:
+            mismatch_parts = self._count_mismatch_status_parts(result)
+            if mismatch_parts:
+                status_parts.extend(mismatch_parts[:2])
+            rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
+            issue_codes = [str(getattr(issue, "code", "") or "").strip().upper() for issue in (getattr(result, "issues", []) or [])]
+            if rec_errors or issue_codes:
+                if any(code in {"ANCHOR_MISSING", "ANCHOR_FAIL", "SCANNER_LOCK_FAIL"} for code in issue_codes):
+                    status_parts.append("Lỗi nhận dạng anchor")
+                elif any(code in {"POOR_IDENTIFIER_ZONE", "STUDENT_ID_FAST_FAIL", "EXAM_CODE_FAST_FAIL"} for code in issue_codes):
+                    status_parts.append("Lỗi nhận dạng vùng header")
+                else:
+                    status_parts.append("Lỗi nhận dạng")
+        return list(dict.fromkeys([x for x in status_parts if str(x or "").strip()]))
 
     def _subject_student_room_scope(self) -> tuple[set[str], set[str]]:
         all_sids: set[str] = set()
@@ -9632,6 +9685,7 @@ class MainWindow(QMainWindow):
             duplicate_count,
             subject_scope=subject_scope,
             available_exam_codes=available_exam_codes,
+            result=result,
         )
 
     def _status_text_for_row(
@@ -9775,6 +9829,13 @@ class MainWindow(QMainWindow):
         status_parts = self._status_parts_for_row("" if self._student_id_has_recognition_error(sid) else sid, exam_code_text, dup)
         return ", ".join(status_parts) if status_parts else "OK"
 
+    @staticmethod
+    def _compact_status_text(status_text: str, max_len: int = 150) -> str:
+        text = str(status_text or "").strip()
+        if len(text) <= max_len:
+            return text
+        return text[: max(0, max_len - 3)].rstrip() + "..."
+
     def _refresh_row_status(
         self,
         idx: int,
@@ -9795,8 +9856,11 @@ class MainWindow(QMainWindow):
             if idx < len(self.scan_results)
             else self._status_text_for_saved_table_row(idx)
         )
-        item = QTableWidgetItem(status)
-        if status != "OK":
+        full_status = str(status or "OK")
+        display_status = self._compact_status_text(full_status, max_len=150)
+        item = QTableWidgetItem(display_status)
+        item.setToolTip(full_status)
+        if full_status != "OK":
             item.setForeground(Qt.red)
         self.scan_list.setItem(idx, 6, item)
 
@@ -9977,7 +10041,7 @@ class MainWindow(QMainWindow):
         if idx >= len(self.scan_results):
             sid_item_existing = self.scan_list.item(idx, 0)
             sid = sid_item_existing.text() if sid_item_existing else "-"
-            content = self.scan_list.item(idx, 4).text() if self.scan_list.item(idx, 4) else "-"
+            content = self.scan_list.item(idx, 5).text() if self.scan_list.item(idx, 5) else "-"
             exam_code = str(sid_item_existing.data(Qt.UserRole + 1) if sid_item_existing else "").strip()
             if not exam_code:
                 for r in range(self.scan_result_preview.rowCount()):
@@ -10015,7 +10079,7 @@ class MainWindow(QMainWindow):
             sid_item.setData(Qt.UserRole + 1, new_exam_code)
             sid_item.setData(Qt.UserRole + 2, old_recognized_short)
             self.scan_list.setItem(idx, 0, sid_item)
-            self.scan_list.setItem(idx, 4, QTableWidgetItem(txt_content.toPlainText().strip() or "-"))
+            self.scan_list.setItem(idx, 5, QTableWidgetItem(txt_content.toPlainText().strip() or "-"))
             self._refresh_row_status(idx)
             for r in range(self.scan_result_preview.rowCount()):
                 k = self.scan_result_preview.item(r, 0)
