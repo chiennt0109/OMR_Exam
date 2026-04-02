@@ -516,6 +516,9 @@ class TemplateEditorWindow(QMainWindow):
 
         self.template_toolbar.addWidget(QLabel(" Alignment: "))
         self.align_profile_combo = QComboBox()
+        # Scanner-locked should be the default alignment mode for this editor,
+        # because templates are authored from a fixed reference scan.
+        self.align_profile_combo.addItem("Scanner locked", "scanner_locked")
         self.align_profile_combo.addItem("Auto", "auto")
         self.align_profile_combo.addItem("Legacy", "legacy")
         self.align_profile_combo.addItem("Border", "border")
@@ -533,15 +536,6 @@ class TemplateEditorWindow(QMainWindow):
         self.fill_threshold_spin.setToolTip("Tăng để giảm nhận nhầm vết mờ/vết tẩy; giảm nếu bỏ sót nét tô nhẹ.")
         self.fill_threshold_spin.valueChanged.connect(self._on_fill_threshold_changed)
         self.template_toolbar.addWidget(self.fill_threshold_spin)
-
-        self.fast_mode_chk = QCheckBox("Fast mode")
-        self.fast_mode_chk.setChecked(True)
-        self.fast_mode_chk.setToolTip("Production fast path: giới hạn fallback nặng để test tốc độ thực tế.")
-        self.template_toolbar.addWidget(self.fast_mode_chk)
-        self.deep_debug_chk = QCheckBox("Deep debug")
-        self.deep_debug_chk.setChecked(False)
-        self.deep_debug_chk.setToolTip("Debug deep mode: bật các bước chậm để phân tích chất lượng nhận dạng.")
-        self.template_toolbar.addWidget(self.deep_debug_chk)
 
         self.template_toolbar.addAction(self.act_zoom_in)
         self.template_toolbar.addAction(self.act_zoom_out)
@@ -1256,14 +1250,7 @@ class TemplateEditorWindow(QMainWindow):
             return
 
         self._apply_recognition_settings_to_engine()
-        fast_mode = bool(self.fast_mode_chk.isChecked()) if hasattr(self, "fast_mode_chk") else True
-        deep_debug = bool(self.deep_debug_chk.isChecked()) if hasattr(self, "deep_debug_chk") else False
-        res = self.omr.run_recognition_test(
-            path,
-            self.template,
-            fast_production_test=fast_mode,
-            debug_deep=deep_debug,
-        )
+        res = self.omr.run_recognition_test(path, self.template)
         aligned = getattr(res, "aligned_image", None)
         aligned_binary = getattr(res, "aligned_binary", None)
         if aligned is None or aligned_binary is None:
@@ -1281,22 +1268,10 @@ class TemplateEditorWindow(QMainWindow):
         sid_raw = str(getattr(res, "student_id", "") or "")
         exam_raw = str(getattr(res, "exam_code", "") or "")
         timing_text = self._format_processing_time_text(float(getattr(res, "processing_time_sec", 0.0) or 0.0))
-        alignment_debug = dict(getattr(res, "alignment_debug", {}) or {})
-        alignment_mode = str(alignment_debug.get("alignment_mode", "-") or "-")
-        quality_gate = dict(alignment_debug.get("quality_gate", {}) or {})
-        quality_score = float(quality_gate.get("quality_score", 0.0) or 0.0)
-        poor_image = bool(alignment_debug.get("poor_image", quality_gate.get("poor_scan", False)))
-        quality_reason = str(alignment_debug.get("quality_reason", quality_gate.get("reason", "")) or "-")
-        timing = dict(alignment_debug.get("timing_breakdown", {}) or {})
-        recognition_mode = str(alignment_debug.get("recognition_mode", alignment_debug.get("alignment_mode", "-")) or "-")
-        band_locking = dict(alignment_debug.get("band_locking", {}) or {})
-        identifier_fast_fail = bool(timing.get("poor_image_fast_fail", False) and poor_image)
+        alignment_mode = str((getattr(res, "alignment_debug", {}) or {}).get("alignment_mode", "-") or "-")
         sid_conf = self._identifier_confidence(res, "student_id")
         exam_conf = self._identifier_confidence(res, "exam_code")
         id_warnings = self._identifier_warning_text(res)
-        timing_lines = []
-        for k in sorted(timing.keys()):
-            timing_lines.append(f"  - {k}: {timing.get(k)}")
         self.result_box.setPlainText(
             f"Student ID: {sid_text}\n"
             f"Exam Code: {exam_text}\n"
@@ -1307,15 +1282,6 @@ class TemplateEditorWindow(QMainWindow):
             f"Identifier errors: {id_warnings}\n"
             f"Recognition time: {timing_text}\n"
             f"Alignment mode: {alignment_mode}\n"
-            f"Quality score: {quality_score:.3f}\n"
-            f"Poor image: {'Yes' if poor_image else 'No'}\n"
-            f"Quality reason: {quality_reason}\n"
-            f"Identifier fast-fail: {'Yes' if identifier_fast_fail else 'No'}\n"
-            f"Recognition mode: {recognition_mode}\n"
-            f"Band locking: {'/'.join([k for k in ['header','mcq','tf','numeric'] if k in band_locking]) or '-'}\n"
-            f"Fast mode: {'ON' if fast_mode else 'OFF'}\n"
-            f"Deep debug: {'ON' if deep_debug else 'OFF'}\n"
-            f"Timing breakdown:\n{chr(10).join(timing_lines)}\n"
             f"MCQ: {', '.join([f'Q{k}:{v}' for k, v in sorted(res.mcq_answers.items())]) or '(none)'}\n"
             f"TF: {res.true_false_answers or {}}\n"
             f"NUM: {res.numeric_answers or {}}"
@@ -1327,11 +1293,7 @@ class TemplateEditorWindow(QMainWindow):
         self.canvas.digit_zone_debug = dict(getattr(res, "digit_zone_debug", {}) or {})
         self.canvas.recognition_overlay.update(getattr(res, "bubble_states_by_zone", {}) or self.omr.extract_bubble_states(aligned_binary, self.template))
 
-        debug_flags = dict(getattr(res, "alignment_debug", {}) or {})
-        if bool(debug_flags.get("fast_production_mode", False)) and not bool(debug_flags.get("diagnostics_collected", True)):
-            self.result_box.append("\nDetected anchors: not collected (fast production)")
-        else:
-            self.result_box.append(f"\nDetected anchors: {len(self.canvas.detected_anchor_points)}")
+        self.result_box.append(f"\nDetected anchors: {len(self.canvas.detected_anchor_points)}")
 
         self.canvas.preview_mode = True
         self.canvas.update()
@@ -1400,8 +1362,15 @@ class TemplateEditorWindow(QMainWindow):
             path, _ = QFileDialog.getSaveFileName(self, "Save Template", path or "template.json", "JSON (*.json)")
         if path:
             if self.template is not None:
-                self.template.metadata["alignment_profile"] = str(self.align_profile_combo.currentData() or "auto")
+                # Always persist scanner-locked metadata so production recognition
+                # can immediately use the fixed-template fast path.
+                self.template.metadata["alignment_profile"] = "scanner_locked"
                 self.template.metadata["fill_threshold"] = float(self.fill_threshold_spin.value())
+                self.template.metadata["scanner_locked_mode"] = True
+                self.template.metadata["scanner_locked_reference_scan_path"] = str(
+                    self.template.image_path or self.template.metadata.get("scanner_locked_reference_scan_path", "")
+                )
+                self.template.metadata.setdefault("scanner_locked_allow_full_fallback", False)
                 self.template.name = str(Path(path).stem)
             self.template.save_json(path)
             self.template_file_path = path
@@ -1443,7 +1412,14 @@ class TemplateEditorWindow(QMainWindow):
     def _on_alignment_profile_changed(self, _idx: int) -> None:
         if self.template is None:
             return
-        self.template.metadata["alignment_profile"] = str(self.align_profile_combo.currentData() or "auto")
+        mode = str(self.align_profile_combo.currentData() or "scanner_locked")
+        self.template.metadata["alignment_profile"] = mode
+        if mode == "scanner_locked":
+            self.template.metadata["scanner_locked_mode"] = True
+            self.template.metadata["scanner_locked_reference_scan_path"] = str(
+                self.template.image_path or self.template.metadata.get("scanner_locked_reference_scan_path", "")
+            )
+            self.template.metadata.setdefault("scanner_locked_allow_full_fallback", False)
         self._mark_dirty()
 
     def _on_fill_threshold_changed(self, value: float) -> None:
@@ -1453,8 +1429,16 @@ class TemplateEditorWindow(QMainWindow):
         self._mark_dirty()
 
     def _apply_recognition_settings_to_engine(self) -> None:
-        self.omr.alignment_profile = str(self.align_profile_combo.currentData() or "auto")
+        # Force the engine to use the fixed-template path authored by this editor.
+        self.omr.alignment_profile = "scanner_locked"
         self.omr.fill_threshold = float(max(0.05, min(0.95, float(self.fill_threshold_spin.value()))))
+        if self.template is not None:
+            self.template.metadata["alignment_profile"] = "scanner_locked"
+            self.template.metadata["scanner_locked_mode"] = True
+            self.template.metadata["scanner_locked_reference_scan_path"] = str(
+                self.template.image_path or self.template.metadata.get("scanner_locked_reference_scan_path", "")
+            )
+            self.template.metadata.setdefault("scanner_locked_allow_full_fallback", False)
 
     def _sync_recognition_settings_from_template(self) -> None:
         self._sync_alignment_profile_from_template()
@@ -1476,11 +1460,22 @@ class TemplateEditorWindow(QMainWindow):
     def _sync_alignment_profile_from_template(self) -> None:
         if self.template is None or not hasattr(self, "align_profile_combo"):
             return
-        mode = str((self.template.metadata or {}).get("alignment_profile", "auto") or "auto")
-        idx = self.align_profile_combo.findData(mode)
+        meta = self.template.metadata or {}
+        mode = str(meta.get("alignment_profile", "scanner_locked") or "scanner_locked")
+        # Any legacy template without explicit scanner-locked metadata is upgraded
+        # in-memory so saving will make the fast path available immediately.
+        if not bool(meta.get("scanner_locked_mode", False)):
+            meta["scanner_locked_mode"] = True
+        if not str(meta.get("scanner_locked_reference_scan_path", "") or "").strip() and getattr(self.template, "image_path", None):
+            meta["scanner_locked_reference_scan_path"] = str(self.template.image_path)
+        meta["alignment_profile"] = "scanner_locked"
+        self.template.metadata = meta
+        idx = self.align_profile_combo.findData("scanner_locked")
         if idx < 0:
             idx = 0
+        self.align_profile_combo.blockSignals(True)
         self.align_profile_combo.setCurrentIndex(idx)
+        self.align_profile_combo.blockSignals(False)
 
     def run_template_quality_check(self) -> None:
         if not self.template:
