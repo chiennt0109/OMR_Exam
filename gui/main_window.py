@@ -3406,9 +3406,9 @@ class MainWindow(QMainWindow):
         self.scan_list.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.scan_list.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.scan_list.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.scan_list.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
-        self.scan_list.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        self.scan_list.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
+        self.scan_list.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.scan_list.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
+        self.scan_list.horizontalHeader().setSectionResizeMode(6, QHeaderView.Stretch)
         self.scan_list.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeToContents)
         self.scan_list.horizontalHeader().sectionClicked.connect(self._on_scan_header_clicked)
         self.scan_list.itemSelectionChanged.connect(self._on_scan_selected)
@@ -8809,6 +8809,16 @@ class MainWindow(QMainWindow):
             sid = str(result.student_id or "").strip()
             exam_code_text = str(result.exam_code or "").strip()
             image_path = str(result.image_path or "")
+            subject_cfg = self._selected_batch_subject_config() or {}
+            room_text = ""
+            if sid:
+                room_text = str(self._subject_room_for_student_id(sid, subject_cfg) or "").strip()
+            if not room_text:
+                room_text = str(getattr(result, "exam_room", "") or "").strip()
+            if not room_text:
+                profile = self._student_profile_by_id(sid) if sid else {}
+                room_text = str((profile or {}).get("exam_room", "") or "").strip()
+            setattr(result, "exam_room", room_text)
             forced_status = str(forced_status_by_image.get(image_path, "") or "")
             if forced_status:
                 status = forced_status
@@ -8825,11 +8835,11 @@ class MainWindow(QMainWindow):
                 )
                 status = ", ".join(status_parts) if status_parts else "OK"
             if can_use_cached_display:
-                content_text = str(getattr(result, "cached_content", "") or "")
+                content_text = self._build_recognition_content_text(result if scoped is None else scoped, blank_map)
                 recognized_short = str(getattr(result, "cached_recognized_short", "") or "")
                 forced_status = str(getattr(result, "cached_forced_status", "") or forced_status)
             elif skip_expensive_checks:
-                content_text = str(getattr(result, "cached_content", "") or self._short_recognition_text_for_result(result))
+                content_text = self._build_recognition_content_text(result, blank_map)
                 recognized_short = str(getattr(result, "cached_recognized_short", "") or self._short_recognition_text_for_result(result))
                 setattr(result, "cached_status", status)
                 setattr(result, "cached_content", content_text)
@@ -8852,6 +8862,7 @@ class MainWindow(QMainWindow):
                     "exam_code": exam_code_text,
                     "full_name": str(getattr(result, "full_name", "") or "-"),
                     "birth_date": str(getattr(result, "birth_date", "") or "-"),
+                    "exam_room": room_text,
                     "blank_map": blank_map,
                     "content": content_text,
                     "status": status,
@@ -8892,11 +8903,14 @@ class MainWindow(QMainWindow):
                 sid_item.setData(Qt.UserRole + 1, str(item["exam_code"] or ""))
                 sid_item.setData(Qt.UserRole + 2, str(item["recognized_short"] or ""))
                 scan_list.setItem(idx, 0, sid_item)
-                scan_list.setItem(idx, 1, QTableWidgetItem(str(getattr(item["result"], "exam_room", "") or "-")))
+                scan_list.setItem(idx, 1, QTableWidgetItem(str(item.get("exam_room", "") or "-")))
                 scan_list.setItem(idx, 2, QTableWidgetItem(str(item["exam_code"] or "-")))
                 scan_list.setItem(idx, 3, QTableWidgetItem(str(item["full_name"] or "-")))
                 scan_list.setItem(idx, 4, QTableWidgetItem(str(item["birth_date"] or "-")))
-                scan_list.setItem(idx, 5, QTableWidgetItem(str(item["content"] or "")))
+                content_full = str(item["content"] or "")
+                content_item = QTableWidgetItem(content_full)
+                content_item.setToolTip(content_full)
+                scan_list.setItem(idx, 5, content_item)
                 full_status = str(item["status"] or "OK")
                 status_item = QTableWidgetItem(self._compact_status_text(full_status, max_len=150))
                 status_item.setToolTip(full_status)
@@ -8907,6 +8921,9 @@ class MainWindow(QMainWindow):
                     scan_list.setItem(idx, 7, QTableWidgetItem("..."))
                 else:
                     self._set_scan_action_widget(idx)
+            scan_list.resizeRowsToContents()
+            for fit_col in [0, 1, 2, 3, 4, 7]:
+                scan_list.resizeColumnToContents(fit_col)
         finally:
             self._end_scan_grid_update()
 
@@ -8955,19 +8972,29 @@ class MainWindow(QMainWindow):
         scoped = self._scoped_result_copy(result)
         sid = (result.student_id or "").strip()
         exam_code_text = (result.exam_code or "").strip()
+        room_text = str(self._subject_room_for_student_id(sid) or "").strip() if sid else ""
+        if not room_text:
+            room_text = str(getattr(result, "exam_room", "") or "").strip()
+        if not room_text and sid:
+            profile = self._student_profile_by_id(sid)
+            room_text = str((profile or {}).get("exam_room", "") or "").strip()
+        setattr(result, "exam_room", room_text)
         sid_item = QTableWidgetItem(sid or "-")
         sid_item.setData(Qt.UserRole, str(result.image_path))
         sid_item.setData(Qt.UserRole + 1, exam_code_text)
         sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(scoped))
         self.scan_list.setItem(idx, 0, sid_item)
-        self.scan_list.setItem(idx, 1, QTableWidgetItem(str(getattr(result, "exam_room", "") or "-")))
+        self.scan_list.setItem(idx, 1, QTableWidgetItem(room_text or "-"))
         self.scan_list.setItem(idx, 2, QTableWidgetItem((result.exam_code or "").strip() or "-"))
         self.scan_list.setItem(idx, 3, QTableWidgetItem(str(getattr(result, "full_name", "") or "-")))
         self.scan_list.setItem(idx, 4, QTableWidgetItem(str(getattr(result, "birth_date", "") or "-")))
+        content_text = self._build_recognition_content_text(scoped, self.scan_blank_summary.get(idx, {"MCQ": [], "TF": [], "NUMERIC": []}))
+        content_item = QTableWidgetItem(content_text)
+        content_item.setToolTip(content_text)
         self.scan_list.setItem(
             idx,
             5,
-            QTableWidgetItem(self._build_recognition_content_text(scoped, self.scan_blank_summary.get(idx, {"MCQ": [], "TF": [], "NUMERIC": []}))),
+            content_item,
         )
 
     def _current_scan_results_snapshot(self) -> list[OMRResult]:
@@ -9542,9 +9569,6 @@ class MainWindow(QMainWindow):
             status_parts.append("Trùng SBD")
 
         if result is not None:
-            mismatch_parts = self._count_mismatch_status_parts(result)
-            if mismatch_parts:
-                status_parts.extend(mismatch_parts[:2])
             rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
             issue_codes = [str(getattr(issue, "code", "") or "").strip().upper() for issue in (getattr(result, "issues", []) or [])]
             if rec_errors or issue_codes:
