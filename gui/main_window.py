@@ -3965,6 +3965,8 @@ class MainWindow(QMainWindow):
             "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
             "full_name": str(getattr(result, "full_name", "") or ""),
             "birth_date": str(getattr(result, "birth_date", "") or ""),
+            "exam_room": str(getattr(result, "exam_room", "") or ""),
+            "class_name": str(getattr(result, "class_name", "") or ""),
             "cached_status": str(getattr(result, "cached_status", "") or ""),
             "cached_content": str(getattr(result, "cached_content", "") or ""),
             "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
@@ -3988,6 +3990,8 @@ class MainWindow(QMainWindow):
         )
         setattr(result, "full_name", str(payload.get("full_name", "") or ""))
         setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
+        setattr(result, "exam_room", str(payload.get("exam_room", "") or ""))
+        setattr(result, "class_name", str(payload.get("class_name", "") or ""))
         setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
         setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
         setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
@@ -5053,7 +5057,10 @@ class MainWindow(QMainWindow):
         setattr(result, "full_name", str(profile.get("name", "") or ""))
         setattr(result, "birth_date", self._format_birth_date_mmddyyyy(str(profile.get("birth_date", "") or "")))
         setattr(result, "class_name", str(profile.get("class_name", "") or ""))
-        setattr(result, "exam_room", self._subject_room_for_student_id(sid))
+        exam_room = str(self._subject_room_for_student_id(sid) or "").strip()
+        if not exam_room:
+            exam_room = str(profile.get("exam_room", "") or "").strip()
+        setattr(result, "exam_room", exam_room)
         if row_idx is not None and 0 <= row_idx < self.scan_list.rowCount():
             self.scan_list.setItem(row_idx, 1, QTableWidgetItem(str(getattr(result, "exam_room", "") or "-")))
             self.scan_list.setItem(row_idx, 3, QTableWidgetItem(str(getattr(result, "full_name", "") or "-")))
@@ -5441,6 +5448,7 @@ class MainWindow(QMainWindow):
             self._switching_batch_subject = False
 
     def _cache_working_batch_state(self, subject_key: str) -> None:
+        # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
         key = self._batch_runtime_key(subject_key)
         if not key or not hasattr(self, "scan_list"):
             return
@@ -5489,6 +5497,7 @@ class MainWindow(QMainWindow):
         }
 
     def _restore_cached_working_batch_state(self, subject_key: str) -> bool:
+        # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
         key = self._batch_runtime_key(subject_key)
         cached = self.batch_working_state_by_subject.get(key)
         if not isinstance(cached, dict):
@@ -5513,12 +5522,21 @@ class MainWindow(QMainWindow):
             sid_item.setData(Qt.UserRole + 1, str(row.get("exam_code", "") or ""))
             sid_item.setData(Qt.UserRole + 2, str(row.get("recognized_short", "") or ""))
             self.scan_list.setItem(r, 0, sid_item)
-            self.scan_list.setItem(r, 1, QTableWidgetItem(str(row.get("exam_room", "-") or "-")))
+            sid_text = str(row.get("student_id", "") or "").strip()
+            room_text = str(row.get("exam_room", "") or "").strip()
+            if sid_text and (not room_text or room_text == "-"):
+                room_text = str(self._subject_room_for_student_id(sid_text) or "").strip()
+            self.scan_list.setItem(r, 1, QTableWidgetItem(room_text or "-"))
             self.scan_list.setItem(r, 2, QTableWidgetItem(str(row.get("exam_code", "-") or "-")))
             self.scan_list.setItem(r, 3, QTableWidgetItem(str(row.get("full_name", "-"))))
             self.scan_list.setItem(r, 4, QTableWidgetItem(str(row.get("birth_date", "-"))))
-            self.scan_list.setItem(r, 5, QTableWidgetItem(str(row.get("content", "-"))))
-            st = QTableWidgetItem(str(row.get("status", "-")))
+            content_text = str(row.get("content", "-"))
+            content_item = QTableWidgetItem(content_text)
+            content_item.setToolTip(content_text)
+            self.scan_list.setItem(r, 5, content_item)
+            status_text = str(row.get("status", "-"))
+            st = QTableWidgetItem(self._compact_status_text(status_text))
+            st.setToolTip(status_text)
             if st.text() != "OK":
                 st.setForeground(Qt.red)
             self.scan_list.setItem(r, 6, st)
@@ -8776,6 +8794,7 @@ class MainWindow(QMainWindow):
         refresh_statuses: bool = False,
         rebuild_error_list: bool = False,
     ) -> None:
+        # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
         forced_status_by_image = forced_status_by_image or {}
         duplicate_ids: dict[str, int] = {}
         subject_scope: tuple[set[str], set[str]] | None = None
@@ -8967,8 +8986,10 @@ class MainWindow(QMainWindow):
         self._on_scan_selected()
 
     def _update_scan_row_from_result(self, idx: int, result) -> None:
+        # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
         if idx < 0 or idx >= self.scan_list.rowCount():
             return
+        self._refresh_student_profile_for_result(result)
         scoped = self._scoped_result_copy(result)
         sid = (result.student_id or "").strip()
         exam_code_text = (result.exam_code or "").strip()
@@ -8998,6 +9019,7 @@ class MainWindow(QMainWindow):
         )
 
     def _current_scan_results_snapshot(self) -> list[OMRResult]:
+        # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
         base = list(self.scan_results or [])
         if not hasattr(self, "scan_list"):
             return base
@@ -9027,6 +9049,7 @@ class MainWindow(QMainWindow):
         return out
 
     def _build_result_from_saved_table_row(self, idx: int) -> OMRResult | None:
+        # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
         if idx < 0 or idx >= self.scan_list.rowCount():
             return None
         sid_item = self.scan_list.item(idx, 0)
@@ -9038,7 +9061,10 @@ class MainWindow(QMainWindow):
             student_id = ""
         exam_code = str(sid_item.data(Qt.UserRole + 1) if sid_item else "").strip()
         result = OMRResult(image_path=image_path, student_id=student_id, exam_code=exam_code)
-        result.exam_room = str(self.scan_list.item(idx, 1).text() if self.scan_list.item(idx, 1) else "")
+        room_text = str(self.scan_list.item(idx, 1).text() if self.scan_list.item(idx, 1) else "").strip()
+        if not room_text and student_id:
+            room_text = str(self._subject_room_for_student_id(student_id) or "").strip()
+        result.exam_room = room_text
         result.full_name = str(self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else "")
         result.birth_date = str(self.scan_list.item(idx, 4).text() if self.scan_list.item(idx, 4) else "")
         result.sync_legacy_aliases()
@@ -10079,7 +10105,37 @@ class MainWindow(QMainWindow):
             lay = QVBoxLayout(dlg)
             form = QFormLayout()
             inp_sid = QLineEdit(sid)
-            inp_code = QLineEdit(exam_code)
+            inp_code = QComboBox()
+            inp_code.setEditable(True)
+            inp_code.setInsertPolicy(QComboBox.NoInsert)
+            subject_cfg = self._selected_batch_subject_config() or {}
+            subject_key = self._current_batch_subject_key()
+            valid_codes: set[str] = set()
+            imported = subject_cfg.get("imported_answer_keys", {}) if isinstance(subject_cfg.get("imported_answer_keys", {}), dict) else {}
+            valid_codes.update(str(x).strip() for x in imported.keys() if str(x).strip())
+            try:
+                valid_codes.update(str(x).strip() for x in self._fetch_answer_keys_for_subject_scoped(subject_key).keys() if str(x).strip())
+            except Exception:
+                pass
+            if self.answer_keys:
+                valid_codes.update(
+                    str(item.exam_code).strip()
+                    for item in self.answer_keys.keys.values()
+                    if str(getattr(item, "subject", "") or "").strip() == str(subject_key or "").strip() and str(getattr(item, "exam_code", "") or "").strip()
+                )
+            if exam_code:
+                valid_codes.add(exam_code)
+            if valid_codes:
+                for code in sorted(valid_codes):
+                    inp_code.addItem(code, code)
+            else:
+                inp_code.addItem("-", "-")
+            if exam_code:
+                idx_code = inp_code.findData(exam_code)
+                if idx_code >= 0:
+                    inp_code.setCurrentIndex(idx_code)
+                else:
+                    inp_code.setEditText(exam_code)
             txt_content = QTextEdit(content)
             form.addRow("Student ID", inp_sid)
             form.addRow("Exam Code", inp_code)
@@ -10097,19 +10153,25 @@ class MainWindow(QMainWindow):
             old_img = str(old_item.data(Qt.UserRole) if old_item else "")
             old_exam_code = str(old_item.data(Qt.UserRole + 1) if old_item else "").strip()
             old_recognized_short = str(old_item.data(Qt.UserRole + 2) if old_item else "")
-            new_exam_code = inp_code.text().strip() or old_exam_code
+            new_exam_code = str(inp_code.currentData() or inp_code.currentText() or "").strip() or old_exam_code
             sid_item = QTableWidgetItem(inp_sid.text().strip() or "-")
             sid_item.setData(Qt.UserRole, old_img)
             sid_item.setData(Qt.UserRole + 1, new_exam_code)
             sid_item.setData(Qt.UserRole + 2, old_recognized_short)
             self.scan_list.setItem(idx, 0, sid_item)
+            self.scan_list.setItem(idx, 2, QTableWidgetItem(new_exam_code or "-"))
             self.scan_list.setItem(idx, 5, QTableWidgetItem(txt_content.toPlainText().strip() or "-"))
+            rebuilt = self._build_result_from_saved_table_row(idx)
+            if rebuilt is not None:
+                self._refresh_student_profile_for_result(rebuilt, idx)
             self._refresh_row_status(idx)
             for r in range(self.scan_result_preview.rowCount()):
                 k = self.scan_result_preview.item(r, 0)
                 if k and k.text().strip().lower() in {"exam code", "mã đề"}:
                     self.scan_result_preview.setItem(r, 1, QTableWidgetItem(new_exam_code or "-"))
                     break
+            if self.scan_list.currentRow() == idx:
+                self._update_scan_preview_from_saved_row(idx)
             self.btn_save_batch_subject.setEnabled(True)
             invalidated = self._invalidate_scoring_for_student_ids(
                 [old_sid, inp_sid.text().strip()],
@@ -10283,11 +10345,19 @@ class MainWindow(QMainWindow):
                     values.append(sid_text)
             return sorted(set(values))
 
-        def _valid_exam_codes(subject_key: str, current_code: str = "") -> list[str]:
+        def _configured_exam_codes_for_subject_cfg(subject_cfg: dict | None) -> list[str]:
+            codes: set[str] = set()
+            cfg = subject_cfg if isinstance(subject_cfg, dict) else {}
+            imported = cfg.get("imported_answer_keys", {}) if isinstance(cfg.get("imported_answer_keys", {}), dict) else {}
+            codes.update(str(x).strip() for x in imported.keys() if str(x).strip())
+            return sorted(codes)
+
+        def _valid_exam_codes(subject_key: str, current_code: str = "", subject_cfg: dict | None = None) -> list[str]:
             codes: set[str] = set()
             subject = str(subject_key or "").strip()
             if not subject:
                 return []
+            codes.update(_configured_exam_codes_for_subject_cfg(subject_cfg))
             try:
                 codes.update(str(x).strip() for x in self._fetch_answer_keys_for_subject_scoped(subject).keys() if str(x).strip())
             except Exception:
@@ -10298,12 +10368,15 @@ class MainWindow(QMainWindow):
                     for item in self.answer_keys.keys.values()
                     if str(getattr(item, "subject", "") or "").strip() == subject and str(getattr(item, "exam_code", "") or "").strip()
                 )
+            if str(current_code or "").strip():
+                codes.add(str(current_code or "").strip())
             return sorted(codes)
 
         def _populate_exam_code_combo(combo: QComboBox, subject_key: str, current_code: str) -> None:
             combo.blockSignals(True)
             combo.clear()
-            valid_codes = _valid_exam_codes(subject_key, current_code)
+            subject_cfg_local = self._selected_batch_subject_config() or {}
+            valid_codes = _valid_exam_codes(subject_key, current_code, subject_cfg_local)
             selected_code = str(current_code or "").strip()
             selected_is_valid = bool(selected_code and selected_code in valid_codes)
             if not selected_is_valid:
