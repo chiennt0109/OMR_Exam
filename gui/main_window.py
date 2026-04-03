@@ -3350,6 +3350,7 @@ class MainWindow(QMainWindow):
         api_row.addWidget(self.batch_api_file_value, 1)
         api_row.addWidget(self.btn_pick_batch_api_file)
         self.batch_template_value = QLineEdit("-"); self.batch_template_value.setReadOnly(True)
+        self.batch_template_path_value = "-"
         self.batch_answer_codes_value = QLineEdit("-"); self.batch_answer_codes_value.setReadOnly(True)
         self.batch_student_id_value = QLineEdit("-"); self.batch_student_id_value.setReadOnly(True)
         self.batch_scan_folder_value = QLineEdit("-"); self.batch_scan_folder_value.setReadOnly(True)
@@ -3380,10 +3381,7 @@ class MainWindow(QMainWindow):
         batch_form.addRow("API bài thi", api_row)
         batch_form.addRow("Mẫu giấy dùng", self.batch_template_value)
         batch_form.addRow("Mã đề", self.batch_answer_codes_value)
-        batch_form.addRow("Vùng STUDENT ID", self.batch_student_id_value)
         batch_form.addRow("Thư mục quét", self.batch_scan_folder_value)
-        batch_form.addRow("Trạng thái file", self.batch_scan_state_value)
-        batch_form.addRow("Ngữ cảnh dữ liệu", self.batch_context_value)
         batch_form.addRow("", action_row)
 
         self.filter_column = QComboBox()
@@ -3475,9 +3473,13 @@ class MainWindow(QMainWindow):
         self.scan_lr_split = QSplitter(Qt.Horizontal)
         self.scan_lr_split.addWidget(left)
         self.scan_lr_split.addWidget(right)
-        self.scan_lr_split.setStretchFactor(0, 6)
-        self.scan_lr_split.setStretchFactor(1, 4)
-        self.scan_lr_split.setSizes([720, 480])
+        self.scan_lr_split.setStretchFactor(0, 68)
+        self.scan_lr_split.setStretchFactor(1, 32)
+        self.scan_lr_split.setSizes([680, 320])
+        self.batch_scan_status_bottom = QLabel("Trạng thái file: - | Lọc: 0/0")
+        self.batch_scan_status_bottom.setWordWrap(False)
+        self.batch_scan_status_bottom.setFixedHeight(22)
+        self.batch_scan_status_bottom.setStyleSheet("QLabel { padding: 2px 8px; color: #444; }")
 
         # Create scoring widgets with explicit parent to avoid lifecycle issues
         # on some PySide6 builds (preventing "Internal C++ object ... already deleted").
@@ -3545,6 +3547,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self.progress)
         layout.addWidget(self.scan_lr_split)
+        layout.addWidget(self.batch_scan_status_bottom)
         layout.addWidget(self.scoring_panel)
         self.scoring_panel.setVisible(False)
         return w
@@ -5310,12 +5313,25 @@ class MainWindow(QMainWindow):
         mode = str(self.batch_file_scope_combo.currentData() or "new_only") if hasattr(self, "batch_file_scope_combo") else "new_only"
         mode_label = "File mới" if mode == "new_only" else "Toàn bộ"
         self.batch_scan_state_value.setText(f"{mode_label} | Đã nhận diện: {recognized_count} | Chưa nhận diện: {pending_count}")
+        self._update_batch_scan_bottom_status_text()
         if hasattr(self, "batch_context_value"):
             self.batch_context_value.setText(
                 f"{self._display_subject_label(cfg)} | Logical: {logical_key or '-'} | "
                 f"SubjectInstance: {instance_key or '-'} | Runtime: {runtime_key or '-'} | "
                 f"Nguồn: {self._current_batch_data_source}"
             )
+
+    def _update_batch_scan_bottom_status_text(self) -> None:
+        if not hasattr(self, "batch_scan_status_bottom"):
+            return
+        total_rows = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
+        visible_rows = total_rows
+        if hasattr(self, "scan_list"):
+            visible_rows = sum(1 for r in range(total_rows) if not self.scan_list.isRowHidden(r))
+        file_status = str(self.batch_scan_state_value.text() if hasattr(self, "batch_scan_state_value") else "-").strip() or "-"
+        bar_text = f"Trạng thái file: {file_status} | Lọc: {visible_rows}/{total_rows}"
+        self.batch_scan_status_bottom.setText(bar_text)
+        self.batch_scan_status_bottom.setToolTip(bar_text)
 
     @staticmethod
     def _recommended_batch_timeout_sec(template: Template | None) -> float:
@@ -5420,6 +5436,7 @@ class MainWindow(QMainWindow):
         cfg = self._merge_saved_batch_snapshot(subject_cfg or {}) if isinstance(subject_cfg, dict) else {}
         if not cfg:
             self.batch_template_value.setText("-")
+            self.batch_template_path_value = "-"
             self.batch_answer_codes_value.setText("-")
             self.batch_student_id_value.setText("-")
             self.batch_scan_folder_value.setText("-")
@@ -5439,7 +5456,9 @@ class MainWindow(QMainWindow):
         template_path = self._normalize_template_path(str(cfg.get("template_path", "") or "")) or self._normalize_template_path(str(self.session.template_path if self.session else "")) or "-"
         scan_folder = str(cfg.get("scan_folder", "") or ((self.session.config or {}).get("scan_root", "") if self.session else "") or "-")
         codes = ", ".join(sorted((cfg.get("imported_answer_keys") or {}).keys())) or "-"
-        self.batch_template_value.setText(template_path)
+        self.batch_template_path_value = template_path
+        template_display = Path(template_path).stem if template_path and template_path != "-" else "-"
+        self.batch_template_value.setText(template_display)
         self.batch_answer_codes_value.setText(codes)
         self.batch_scan_folder_value.setText(scan_folder)
 
@@ -5757,6 +5776,7 @@ class MainWindow(QMainWindow):
             self.btn_zoom_reset.setText("100%")
         if hasattr(self, "btn_save_batch_subject"):
             self.btn_save_batch_subject.setEnabled(False)
+        self._update_batch_scan_bottom_status_text()
 
     @staticmethod
     def _has_valid_identity(result) -> bool:
@@ -5915,7 +5935,16 @@ class MainWindow(QMainWindow):
         setattr(self, "_active_template_path", str(pth.resolve()))
         self._apply_template_recognition_settings(self.template, sync_mode_selector=False)
         print(f"[Recognize] image={image_path} template={path_text} source={source_tag or 'unknown'}")
-        result = self.omr_processor.recognize_sheet_production_fast(image_path, self.template, RecognitionContext(collect_diagnostics=False))
+        # Keep batch recognition aligned with Template Editor's "Test Recognition" path:
+        # run_recognition_test(..., fast_production_test=True) keeps fast production behavior
+        # but also forces identifier recognition to reduce SID/ExamCode drift between screens.
+        result = self.omr_processor.run_recognition_test(
+            image_path,
+            self.template,
+            RecognitionContext(collect_diagnostics=False),
+            fast_production_test=True,
+            debug_deep=False,
+        )
         result.sync_legacy_aliases()
         if allow_retry:
             retried, improved = self._try_reprocess_result_rotated_180(result, template_path=path_text, source_tag=f"{source_tag}_retry180")
@@ -6026,6 +6055,8 @@ class MainWindow(QMainWindow):
                         except Exception:
                             pass
 
+        if not subject_template_path:
+            subject_template_path = self._normalize_template_path(str(getattr(self, "batch_template_path_value", "") or ""))
         if not subject_template_path and hasattr(self, "batch_template_value"):
             subject_template_path = self._normalize_template_path(self.batch_template_value.text().strip())
         if (not scan_folder or scan_folder == "-") and hasattr(self, "batch_scan_folder_value"):
@@ -8741,6 +8772,7 @@ class MainWindow(QMainWindow):
                 item = self.scan_list.item(i, col)
                 cell = _normalize(item.text() if item else "")
             self.scan_list.setRowHidden(i, value not in cell)
+        self._update_batch_scan_bottom_status_text()
 
     def _on_scan_header_clicked(self, section: int) -> None:
         combo_index = self._scan_filter_combo_index_from_header_section(section)
@@ -8883,8 +8915,6 @@ class MainWindow(QMainWindow):
         for result in results:
             self._refresh_student_profile_for_result(result)
             scoped = self._scoped_result_copy(result)
-            cached_blank_map = getattr(result, "cached_blank_summary", None)
-            can_use_cached_display = isinstance(cached_blank_map, dict)
             sid = str(result.student_id or "").strip()
             exam_code_text = str(result.exam_code or "").strip()
             image_path = str(result.image_path or "")
@@ -8903,7 +8933,7 @@ class MainWindow(QMainWindow):
             status_override = ""
             if forced_status:
                 status_override = forced_status
-            elif can_use_cached_display or skip_expensive_checks:
+            elif skip_expensive_checks:
                 status_override = str(getattr(result, "cached_status", "") or "OK")
             payload = self._build_scan_row_payload_from_result(
                 result,
@@ -9592,18 +9622,14 @@ class MainWindow(QMainWindow):
     def _update_scan_preview_from_saved_row(self, row: int) -> None:
         sid = self.scan_list.item(row, 0).text() if self.scan_list.item(row, 0) else "-"
         exam_code_cell = self.scan_list.item(row, 2).text() if self.scan_list.item(row, 2) else "-"
-        full_name = self.scan_list.item(row, 3).text() if self.scan_list.item(row, 3) else "-"
-        birth = self.scan_list.item(row, 4).text() if self.scan_list.item(row, 4) else "-"
         content = self.scan_list.item(row, 5).text() if self.scan_list.item(row, 5) else "-"
         status = self.scan_list.item(row, 6).text() if self.scan_list.item(row, 6) else "-"
         img_path = ""
         exam_code = ""
-        recognized_short = ""
         item0 = self.scan_list.item(row, 0)
         if item0:
             img_path = str(item0.data(Qt.UserRole) or "")
             exam_code = str(item0.data(Qt.UserRole + 1) or "")
-            recognized_short = str(item0.data(Qt.UserRole + 2) or "")
 
         pix = QPixmap(img_path) if img_path else QPixmap()
         if pix.isNull():
@@ -9628,15 +9654,11 @@ class MainWindow(QMainWindow):
             self.scan_image_preview.clear_markers()
 
         rows = [
+            ("File ảnh", Path(str(img_path or "")).name or "-"),
             ("STUDENT ID", sid),
-            ("Họ tên", full_name),
-            ("Ngày sinh", birth),
             ("Mã đề", exam_code or exam_code_cell or "-"),
-            ("Xoay tạm", f"{int(self.preview_rotation_by_index.get(row, 0) or 0)%360}°"),
-            ("Nhận dạng ngắn", self._compact_value(recognized_short or "-", 220)),
             ("Nội dung", self._compact_value(content, 220)),
             ("Status", status),
-            ("Ảnh", img_path or "-"),
         ]
         self.scan_result_preview.setRowCount(0)
         for r, (k, v) in enumerate(rows):
@@ -10166,19 +10188,13 @@ class MainWindow(QMainWindow):
             self.scan_image_preview.set_overlay_markers(self._recognition_overlay_positions_for_result(result))
             self.scan_image_preview.set_markers(self._marker_positions_for_result(result))
 
-        rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
         preview_result = self._scoped_result_copy(result)
         blank_map = self.scan_blank_summary.get(index) or self._compute_blank_questions(preview_result)
         section_counts = self._subject_section_question_counts(self._current_batch_subject_key())
         rows = [
+            ("File ảnh", img_path.name),
             ("STUDENT ID", result.student_id or "-"),
-            ("Họ tên", str(getattr(result, "full_name", "") or "-")),
-            ("Ngày sinh", str(getattr(result, "birth_date", "") or "-")),
             ("Exam code", result.exam_code or "-"),
-            ("Xoay tạm", f"{int(self.preview_rotation_by_index.get(index, 0) or 0)%360}°"),
-            ("Nhận dạng ngắn", self._compact_value(self._short_recognition_text_for_result(preview_result), 220)),
-            ("Issues", "; ".join(f"{i.code}:{i.message}" for i in result.issues) or "-"),
-            ("Recognition errors", "; ".join(rec_errors) or "-"),
         ]
         if section_counts.get("MCQ", 0) > 0:
             rows.extend([
