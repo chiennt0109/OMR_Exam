@@ -8583,6 +8583,7 @@ class MainWindow(QMainWindow):
         row_views: list[dict[str, object]] = []
         for result in results:
             self._refresh_student_profile_for_result(result)
+            scoped = self._scoped_result_copy(result)
             cached_blank_map = getattr(result, "cached_blank_summary", None)
             can_use_cached_display = isinstance(cached_blank_map, dict)
             sid = str(result.student_id or "").strip()
