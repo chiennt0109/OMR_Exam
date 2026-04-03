@@ -51,7 +51,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.answer_key_importer import ImportedAnswerKey, ImportedAnswerKeyPackage, import_answer_key
-from core.omr_engine import OMRProcessor, OMRResult
+from core.omr_engine import OMRProcessor, OMRResult, RecognitionContext
 from core.scoring_engine import ScoreResult, ScoringEngine
 from editor.template_editor import TemplateEditorWindow
 from gui.import_answer_key_dialog import ImportAnswerKeyDialog
@@ -322,6 +322,7 @@ class SubjectConfigDialog(QDialog):
         room_map_lay.addWidget(self.exam_room_mapping_selector)
         room_map_lay.addWidget(self.exam_room_mapping_hint)
         room_map_lay.addWidget(self.btn_import_exam_room_mapping, alignment=Qt.AlignLeft)
+        self._restore_exam_room_mapping_from_data(data, seed_room)
         self.answer_codes = QLineEdit(", ".join(sorted((data.get("imported_answer_keys") or {}).keys()))); self.answer_codes.setReadOnly(True)
         self.answer_summary = QTextEdit()
         self.answer_summary.setReadOnly(True)
@@ -423,6 +424,57 @@ class SubjectConfigDialog(QDialog):
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
+
+    @staticmethod
+    def _normalize_exam_room_sid_values(raw_values: object) -> list[str]:
+        tokens: list[str] = []
+        if isinstance(raw_values, str):
+            tokens = re.split(r"[,\n;]+", raw_values)
+        elif isinstance(raw_values, (list, tuple, set)):
+            tokens = [str(x) for x in raw_values]
+        else:
+            return []
+        clean = [str(x or "").strip() for x in tokens if str(x or "").strip()]
+        return sorted(set(clean))
+
+    def _restore_exam_room_mapping_from_data(self, data: dict, seed_room: str = "") -> None:
+        rebuilt: dict[str, list[str]] = {}
+        mapping_by_room_seed = data.get("exam_room_sbd_mapping_by_room", {})
+        if isinstance(mapping_by_room_seed, dict) and mapping_by_room_seed:
+            for room_key, values in mapping_by_room_seed.items():
+                room_text = str(room_key or "").strip()
+                if not room_text:
+                    continue
+                normalized_values = self._normalize_exam_room_sid_values(values)
+                if normalized_values:
+                    rebuilt[room_text] = normalized_values
+
+        if not rebuilt:
+            mapping_seed = str(data.get("exam_room_sbd_mapping", "") or "").strip()
+            normalized_values = self._normalize_exam_room_sid_values(mapping_seed)
+            if normalized_values:
+                room_key = str(seed_room or "").strip() or "[Không rõ phòng]"
+                rebuilt[room_key] = normalized_values
+
+        self._exam_room_mapping_cache = dict(rebuilt)
+        self._refresh_exam_room_mapping_selector()
+
+        preferred_room = str(seed_room or "").strip()
+        if preferred_room and preferred_room in self._exam_room_mapping_cache:
+            self.exam_room_name.setCurrentText(preferred_room)
+            idx = self.exam_room_mapping_selector.findData(preferred_room)
+            if idx >= 0:
+                self.exam_room_mapping_selector.setCurrentIndex(idx)
+        elif self._exam_room_mapping_cache:
+            if not self.exam_room_name.currentText().strip():
+                first_room = sorted(self._exam_room_mapping_cache.keys())[0]
+                self.exam_room_name.setCurrentText(first_room)
+            current_room = self.exam_room_name.currentText().strip()
+            idx = self.exam_room_mapping_selector.findData(current_room)
+            if idx >= 0:
+                self.exam_room_mapping_selector.setCurrentIndex(idx)
+        if not self._exam_room_mapping_cache:
+            self.exam_room_mapping_hint.setText("Chưa nạp mapping SBD/phòng.")
 
     def _update_paper_parts(self) -> None:
         tpl = self.template_path.text().strip() or self.common_template_path
@@ -553,30 +605,6 @@ class SubjectConfigDialog(QDialog):
         self.answer_codes.setText(", ".join(sorted(self.answer_key_data.keys())))
         self.answer_key.setText(path)
         self._refresh_answer_key_summary()
-        mapping_by_room_seed = data.get("exam_room_sbd_mapping_by_room", {})
-        if isinstance(mapping_by_room_seed, dict) and mapping_by_room_seed:
-            rebuilt: dict[str, list[str]] = {}
-            for room_key, vals in mapping_by_room_seed.items():
-                room_text = str(room_key or "").strip()
-                if not room_text:
-                    continue
-                chunks: list[str] = []
-                if isinstance(vals, (list, tuple, set)):
-                    chunks = [str(x).strip() for x in vals if str(x).strip()]
-                elif isinstance(vals, str):
-                    chunks = [x.strip() for x in vals.replace(";", ",").replace("\n", ",").split(",") if x.strip()]
-                if chunks:
-                    rebuilt[room_text] = sorted(set(chunks))
-            if rebuilt:
-                self._exam_room_mapping_cache = rebuilt
-                self._refresh_exam_room_mapping_selector()
-        else:
-            mapping_seed = str(data.get("exam_room_sbd_mapping", "") or "").strip()
-            if mapping_seed:
-                seed_sids = [x.strip() for x in mapping_seed.replace(";", ",").replace("\n", ",").split(",") if x.strip()]
-                key = seed_room or "[Không rõ phòng]"
-                self._exam_room_mapping_cache[key] = sorted(set(seed_sids))
-                self._refresh_exam_room_mapping_selector()
         self._update_total_score()
         QMessageBox.information(self, "Import đáp án", "Đã gắn toàn bộ mã đề của file đáp án cho môn đang cấu hình.")
 
@@ -1424,6 +1452,7 @@ class MainWindow(QMainWindow):
         self.score_rows = []
         self.scoring_results_by_subject: dict[str, dict[str, dict]] = {}
         self.scoring_phases: list[dict] = []
+        self._scoring_dirty_subjects: set[str] = set()
         self.imported_exam_codes: list[str] = []
         self.active_batch_subject_key: str | None = None
         self.subject_catalog: list[str] = ["Toán", "Ngữ văn", "Tiếng Anh", "Vật lý", "Hóa học", "Sinh học"]
@@ -1678,6 +1707,15 @@ class MainWindow(QMainWindow):
     def _save_current_work(self) -> bool:
         if self.stack.currentIndex() == 5 and self.embedded_exam_dialog:
             return bool(self._save_embedded_exam_editor())
+
+        if self._current_route_name == "workspace_scoring":
+            subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
+            if subject_key and (subject_key in self._scoring_dirty_subjects or bool(self.scoring_results_by_subject.get(subject_key, {}))):
+                rows = list((self.scoring_results_by_subject.get(subject_key, {}) or {}).values())
+                mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
+                note = self.scoring_phase_note.text().strip() if hasattr(self, "scoring_phase_note") else ""
+                self._persist_scoring_results_for_subject(subject_key, rows, mode, note, mark_saved=True)
+                self._refresh_scoring_state_label(subject_key)
 
         if hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled():
             self._save_batch_for_selected_subject()
@@ -2496,6 +2534,7 @@ class MainWindow(QMainWindow):
             cfg = self.session.config or {}
             self.scoring_phases = list(cfg.get("scoring_phases", [])) if isinstance(cfg.get("scoring_phases", []), list) else []
             self.scoring_results_by_subject = dict(cfg.get("scoring_results", {})) if isinstance(cfg.get("scoring_results", {}), dict) else {}
+            self._scoring_dirty_subjects = set()
             self.scan_results_by_subject = {}
             self.batch_working_state_by_subject = {}
             for sc in (cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []):
@@ -2776,6 +2815,7 @@ class MainWindow(QMainWindow):
         self.batch_working_state_by_subject = {}
         self.scoring_phases = []
         self.scoring_results_by_subject = {}
+        self._scoring_dirty_subjects = set()
         self.scan_results_by_subject = {}
         self.current_session_path = None
         self.current_session_id = None
@@ -2798,6 +2838,7 @@ class MainWindow(QMainWindow):
         self.batch_working_state_by_subject = {}
         self.scoring_results_by_subject = {}
         self.scoring_phases = []
+        self._scoring_dirty_subjects = set()
         self.scan_files = []
         self.score_rows = []
         self.imported_exam_codes = []
@@ -3346,10 +3387,10 @@ class MainWindow(QMainWindow):
         batch_form.addRow("", action_row)
 
         self.filter_column = QComboBox()
-        self.filter_column.addItems(["STUDENT ID", "Phòng thi", "Họ tên", "Ngày sinh", "Nội dung", "Status"])
+        self.filter_column.addItems(["Tất cả", "STUDENT ID", "Phòng thi", "Mã đề", "Họ tên", "Ngày sinh", "Nội dung", "Status"])
         self.filter_column.currentTextChanged.connect(self._apply_scan_filter)
         self.search_value = QLineEdit()
-        self.search_value.setPlaceholderText("Filter theo tiêu đề bảng đang chọn")
+        self.search_value.setPlaceholderText("Tìm trong cột đã chọn hoặc toàn bảng")
         self.search_value.textChanged.connect(self._apply_scan_filter)
 
         search_row = QHBoxLayout()
@@ -3365,9 +3406,9 @@ class MainWindow(QMainWindow):
         self.scan_list.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.scan_list.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.scan_list.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.scan_list.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
-        self.scan_list.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        self.scan_list.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
+        self.scan_list.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.scan_list.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
+        self.scan_list.horizontalHeader().setSectionResizeMode(6, QHeaderView.Stretch)
         self.scan_list.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeToContents)
         self.scan_list.horizontalHeader().sectionClicked.connect(self._on_scan_header_clicked)
         self.scan_list.itemSelectionChanged.connect(self._on_scan_selected)
@@ -3465,6 +3506,7 @@ class MainWindow(QMainWindow):
         self.btn_scoring_run.clicked.connect(self._run_scoring_from_panel)
         self.btn_scoring_save = QPushButton("Lưu điểm")
         self.btn_scoring_save.clicked.connect(self._save_current_work)
+        self.btn_scoring_save.setEnabled(False)
         self.btn_scoring_back = QPushButton("Quay lại Batch Scan")
         self.btn_scoring_back.clicked.connect(self._back_to_batch_scan)
         scoring_top = QHBoxLayout()
@@ -3489,10 +3531,13 @@ class MainWindow(QMainWindow):
 
         self.dashboard_summary_label = QLabel("Dashboard DB: chưa có dữ liệu.")
         self.dashboard_summary_label.setWordWrap(True)
+        self.scoring_state_label = QLabel("Trạng thái chấm điểm: Chưa lưu")
+        self.scoring_state_label.setWordWrap(True)
 
         scoring_panel_layout = QVBoxLayout(self.scoring_panel)
         scoring_panel_layout.setContentsMargins(0, 0, 0, 0)
         scoring_panel_layout.addLayout(scoring_top)
+        scoring_panel_layout.addWidget(self.scoring_state_label)
         scoring_panel_layout.addWidget(self.dashboard_summary_label)
         scoring_panel_layout.addWidget(self.score_preview_table, 7)
         scoring_panel_layout.addWidget(QLabel("Lịch sử pha chấm điểm"))
@@ -3593,6 +3638,7 @@ class MainWindow(QMainWindow):
         return self._deserialize_omr_result(self._serialize_omr_result(result))
 
     def _collect_current_subject_results_for_save(self, subject_key: str) -> list[OMRResult]:
+        # scan_list columns: 0 sid, 1 room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
         key = str(subject_key or "").strip()
         base_results = list(self.scan_results_by_subject.get(self._batch_result_subject_key(key)) or self.scan_results or [])
         row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
@@ -3619,8 +3665,8 @@ class MainWindow(QMainWindow):
             res.student_id = "" if sid_text == "-" else sid_text
             res.exam_code = exam_code
             if hasattr(self, "scan_list"):
-                res.full_name = str(self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "")
-                res.birth_date = str(self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "")
+                res.full_name = str(self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "")
+                res.birth_date = str(self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "")
             res.sync_legacy_aliases()
             out.append(res)
 
@@ -3672,35 +3718,134 @@ class MainWindow(QMainWindow):
             f"Dashboard DB | Điểm TB: {avg_score:.2f} | Phổ điểm: {dist_text} | Top học sinh: {top_text}"
         )
 
+    def _subject_scoring_state(self, subject_key: str) -> dict:
+        cfg = self._subject_config_by_subject_key(subject_key) or {}
+        return {
+            "scoring_saved": bool(cfg.get("scoring_saved", False)),
+            "scoring_saved_at": str(cfg.get("scoring_saved_at", "") or ""),
+            "scoring_result_count": int(cfg.get("scoring_result_count", 0) or 0),
+            "scoring_phase_last_note": str(cfg.get("scoring_phase_last_note", "") or ""),
+            "scoring_last_mode": str(cfg.get("scoring_last_mode", "") or ""),
+        }
+
+    def _refresh_scoring_state_label(self, subject_key: str) -> None:
+        if not hasattr(self, "scoring_state_label"):
+            return
+        state = self._subject_scoring_state(subject_key)
+        saved_flag = bool(state.get("scoring_saved", False)) and subject_key not in self._scoring_dirty_subjects
+        status_text = "Đã lưu" if saved_flag else "Chưa lưu"
+        saved_at = str(state.get("scoring_saved_at", "") or "-")
+        count = int(state.get("scoring_result_count", 0) or 0)
+        mode = str(state.get("scoring_last_mode", "") or "-")
+        note = str(state.get("scoring_phase_last_note", "") or "-")
+        self.scoring_state_label.setText(
+            f"Trạng thái: {status_text} | Lần lưu cuối: {saved_at} | Số bài đã chấm: {count} | Cơ chế: {mode} | Ghi chú: {note}"
+        )
+        if hasattr(self, "btn_scoring_save"):
+            self.btn_scoring_save.setEnabled((subject_key in self._scoring_dirty_subjects) or (not saved_flag and count > 0))
+
+    def _set_subject_scoring_metadata(self, subject_key: str, updates: dict) -> None:
+        cfg = self._subject_config_by_subject_key(subject_key)
+        if not isinstance(cfg, dict):
+            return
+        cfg.update(dict(updates or {}))
+        if self.session and isinstance(self.session.config, dict):
+            self.session_dirty = True
+
+    def _mark_subject_scoring_saved(self, subject_key: str, count: int, mode: str, note: str) -> None:
+        # persisted scoring state
+        now_text = datetime.now().isoformat(timespec="seconds")
+        self._set_subject_scoring_metadata(subject_key, {
+            "scoring_saved": True,
+            "scoring_saved_at": now_text,
+            "scoring_result_count": int(count or 0),
+            "scoring_phase_last_note": str(note or ""),
+            "scoring_last_mode": str(mode or ""),
+        })
+        self._scoring_dirty_subjects.discard(subject_key)
+        self._refresh_scoring_state_label(subject_key)
+
+    def _clear_subject_scoring_saved_state(self, subject_key: str, count: int = 0, mode: str = "", note: str = "") -> None:
+        self._set_subject_scoring_metadata(subject_key, {
+            "scoring_saved": False,
+            "scoring_saved_at": "",
+            "scoring_result_count": int(count or 0),
+            "scoring_phase_last_note": str(note or ""),
+            "scoring_last_mode": str(mode or ""),
+        })
+        self._scoring_dirty_subjects.add(subject_key)
+        self._refresh_scoring_state_label(subject_key)
+
+    def _persist_scoring_results_for_subject(self, subject_key: str, rows: list[dict], mode: str, note: str, *, mark_saved: bool) -> None:
+        # scoring dirty/save lifecycle
+        subject = str(subject_key or "").strip()
+        if not subject:
+            return
+        packed: dict[str, dict] = {}
+        for row in (rows or []):
+            sid_key = str((row or {}).get("student_id", "") or "").strip()
+            if sid_key:
+                packed[sid_key] = dict(row or {})
+        self.scoring_results_by_subject[subject] = packed
+        try:
+            self.database.conn.execute("DELETE FROM scores WHERE subject_key = ?", (subject,))
+            for payload in packed.values():
+                self.database.upsert_score_row(subject, str(payload.get("student_id", "") or ""), str(payload.get("exam_code", "") or ""), dict(payload))
+        except Exception:
+            pass
+        if self.session:
+            cfg = dict(self.session.config or {})
+            cfg["scoring_results"] = dict(self.scoring_results_by_subject)
+            cfg["scoring_phases"] = list(self.scoring_phases)
+            self.session.config = cfg
+            self.session_dirty = True
+            self._persist_session_quietly()
+        if mark_saved:
+            self._mark_subject_scoring_saved(subject, len(packed), mode, note)
+        else:
+            self._clear_subject_scoring_saved_state(subject, len(packed), mode, note)
+
+    def _load_scoring_results_for_subject_from_storage(self, subject_key: str) -> dict[str, dict]:
+        # load scoring from storage instead of recompute
+        subject = str(subject_key or "").strip()
+        if not subject:
+            return {}
+        cached = self.scoring_results_by_subject.get(subject)
+        if isinstance(cached, dict) and cached:
+            return dict(cached)
+        db_rows = self.database.fetch_scores_for_subject(subject) or []
+        loaded: dict[str, dict] = {}
+        for payload in db_rows:
+            if not isinstance(payload, dict):
+                continue
+            sid_key = str(payload.get("student_id", "") or "").strip()
+            if sid_key:
+                loaded[sid_key] = dict(payload)
+        if loaded:
+            self.scoring_results_by_subject[subject] = dict(loaded)
+            return loaded
+        cfg_rows = {}
+        if self.session and isinstance(self.session.config, dict):
+            cfg_rows = (self.session.config.get("scoring_results", {}) or {}).get(subject, {})
+        if isinstance(cfg_rows, dict):
+            loaded = {str(k): dict(v) for k, v in cfg_rows.items() if isinstance(v, dict)}
+            if loaded:
+                self.scoring_results_by_subject[subject] = dict(loaded)
+        return loaded
+
     def _load_cached_scoring_results_for_subject(self, subject_key: str) -> None:
         subject = str(subject_key or "").strip()
         if not subject or not hasattr(self, "score_preview_table"):
             return
-        cached_rows = (self.scoring_results_by_subject.get(subject, {}) or {})
+        cached_rows = self._load_scoring_results_for_subject_from_storage(subject)
         loaded_rows = []
         for sid, payload in cached_rows.items():
             if not isinstance(payload, dict):
                 continue
-            loaded_rows.append(
-                ScoreResult(
-                    student_id=str(payload.get("student_id", sid) or sid),
-                    name=str(payload.get("name", "") or ""),
-                    subject=str(payload.get("subject", subject) or subject),
-                    exam_code=str(payload.get("exam_code", "") or ""),
-                    correct=int(payload.get("correct", 0) or 0),
-                    wrong=int(payload.get("wrong", 0) or 0),
-                    blank=int(payload.get("blank", 0) or 0),
-                    score=float(payload.get("score", 0.0) or 0.0),
-                    mcq_correct=int(payload.get("mcq_correct", 0) or 0),
-                    tf_correct=int(payload.get("tf_correct", 0) or 0),
-                    numeric_correct=int(payload.get("numeric_correct", 0) or 0),
-                    bonus_full_credit_count=int(payload.get("bonus_full_credit_count", 0) or 0),
-                    bonus_full_credit_points=float(payload.get("bonus_full_credit_points", 0.0) or 0.0),
-                    mcq_compare=str(payload.get("mcq_compare", "") or ""),
-                    tf_compare=str(payload.get("tf_compare", "") or ""),
-                    numeric_compare=str(payload.get("numeric_compare", "") or ""),
-                )
-            )
+            payload_with_defaults = dict(payload)
+            payload_with_defaults.setdefault("student_id", str(sid))
+            payload_with_defaults.setdefault("subject", subject)
+            loaded_rows.append(self.scoring_engine.score_result_from_dict(payload_with_defaults))
 
         loaded_rows.sort(key=lambda row: str(row.student_id or ""))
         self.score_rows = list(loaded_rows)
@@ -3727,11 +3872,13 @@ class MainWindow(QMainWindow):
             self.score_preview_table.setItem(i, 14, QTableWidgetItem(str(getattr(r, "mcq_compare", ""))))
             self.score_preview_table.setItem(i, 15, QTableWidgetItem(str(getattr(r, "tf_compare", ""))))
             self.score_preview_table.setItem(i, 16, QTableWidgetItem(str(getattr(r, "numeric_compare", ""))))
+        self._refresh_scoring_state_label(subject)
 
     def _handle_scoring_subject_changed(self, _index: int) -> None:
         subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
         if subject_key:
             self._apply_subject_section_visibility(subject_key)
+            # load scoring from storage instead of recompute
             self._load_cached_scoring_results_for_subject(subject_key)
             self._refresh_dashboard_summary_from_db(subject_key)
 
@@ -3818,6 +3965,8 @@ class MainWindow(QMainWindow):
             "debug_image_path": str(getattr(result, "debug_image_path", "") or ""),
             "full_name": str(getattr(result, "full_name", "") or ""),
             "birth_date": str(getattr(result, "birth_date", "") or ""),
+            "exam_room": str(getattr(result, "exam_room", "") or ""),
+            "class_name": str(getattr(result, "class_name", "") or ""),
             "cached_status": str(getattr(result, "cached_status", "") or ""),
             "cached_content": str(getattr(result, "cached_content", "") or ""),
             "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
@@ -3841,6 +3990,8 @@ class MainWindow(QMainWindow):
         )
         setattr(result, "full_name", str(payload.get("full_name", "") or ""))
         setattr(result, "birth_date", str(payload.get("birth_date", "") or ""))
+        setattr(result, "exam_room", str(payload.get("exam_room", "") or ""))
+        setattr(result, "class_name", str(payload.get("class_name", "") or ""))
         setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
         setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
         setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
@@ -4117,6 +4268,7 @@ class MainWindow(QMainWindow):
         self._refresh_scoring_phase_table()
         self._load_cached_scoring_results_for_subject(selected_subject)
         self._refresh_dashboard_summary_from_db(selected_subject)
+        self._refresh_scoring_state_label(selected_subject)
         self._show_scoring_panel()
 
     def _refresh_scoring_phase_table(self) -> None:
@@ -4136,6 +4288,7 @@ class MainWindow(QMainWindow):
         mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
         note = self.scoring_phase_note.text().strip() if hasattr(self, "scoring_phase_note") else ""
         self.calculate_scores(subject_key=subject_key or self._resolve_preferred_scoring_subject(), mode=mode, note=note)
+        self._refresh_scoring_state_label(subject_key or self._resolve_preferred_scoring_subject())
 
 
 
@@ -4256,10 +4409,11 @@ class MainWindow(QMainWindow):
             batch_rows_payload = [
                 {
                     "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                    "full_name": self.scan_list.item(r, 2).text() if self.scan_list.item(r, 2) else "-",
-                    "birth_date": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                    "content": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                    "status": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                    "exam_room": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
+                    "full_name": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
+                    "birth_date": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                    "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                    "status": self.scan_list.item(r, 6).text() if self.scan_list.item(r, 6) else "-",
                     "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                     "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                     "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
@@ -4782,6 +4936,7 @@ class MainWindow(QMainWindow):
         )
         self.scoring_phases = []
         self.scoring_results_by_subject = {}
+        self._scoring_dirty_subjects = set()
         self.batch_working_state_by_subject = {}
         if common_template and Path(common_template).exists():
             try:
@@ -4903,7 +5058,10 @@ class MainWindow(QMainWindow):
         setattr(result, "full_name", str(profile.get("name", "") or ""))
         setattr(result, "birth_date", self._format_birth_date_mmddyyyy(str(profile.get("birth_date", "") or "")))
         setattr(result, "class_name", str(profile.get("class_name", "") or ""))
-        setattr(result, "exam_room", self._subject_room_for_student_id(sid))
+        exam_room = str(self._subject_room_for_student_id(sid) or "").strip()
+        if not exam_room:
+            exam_room = str(profile.get("exam_room", "") or "").strip()
+        setattr(result, "exam_room", exam_room)
         if row_idx is not None and 0 <= row_idx < self.scan_list.rowCount():
             self.scan_list.setItem(row_idx, 1, QTableWidgetItem(str(getattr(result, "exam_room", "") or "-")))
             self.scan_list.setItem(row_idx, 3, QTableWidgetItem(str(getattr(result, "full_name", "") or "-")))
@@ -5291,6 +5449,7 @@ class MainWindow(QMainWindow):
             self._switching_batch_subject = False
 
     def _cache_working_batch_state(self, subject_key: str) -> None:
+        # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
         key = self._batch_runtime_key(subject_key)
         if not key or not hasattr(self, "scan_list"):
             return
@@ -5339,6 +5498,7 @@ class MainWindow(QMainWindow):
         }
 
     def _restore_cached_working_batch_state(self, subject_key: str) -> bool:
+        # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
         key = self._batch_runtime_key(subject_key)
         cached = self.batch_working_state_by_subject.get(key)
         if not isinstance(cached, dict):
@@ -5363,12 +5523,21 @@ class MainWindow(QMainWindow):
             sid_item.setData(Qt.UserRole + 1, str(row.get("exam_code", "") or ""))
             sid_item.setData(Qt.UserRole + 2, str(row.get("recognized_short", "") or ""))
             self.scan_list.setItem(r, 0, sid_item)
-            self.scan_list.setItem(r, 1, QTableWidgetItem(str(row.get("exam_room", "-") or "-")))
+            sid_text = str(row.get("student_id", "") or "").strip()
+            room_text = str(row.get("exam_room", "") or "").strip()
+            if sid_text and (not room_text or room_text == "-"):
+                room_text = str(self._subject_room_for_student_id(sid_text) or "").strip()
+            self.scan_list.setItem(r, 1, QTableWidgetItem(room_text or "-"))
             self.scan_list.setItem(r, 2, QTableWidgetItem(str(row.get("exam_code", "-") or "-")))
             self.scan_list.setItem(r, 3, QTableWidgetItem(str(row.get("full_name", "-"))))
             self.scan_list.setItem(r, 4, QTableWidgetItem(str(row.get("birth_date", "-"))))
-            self.scan_list.setItem(r, 5, QTableWidgetItem(str(row.get("content", "-"))))
-            st = QTableWidgetItem(str(row.get("status", "-")))
+            content_text = str(row.get("content", "-"))
+            content_item = QTableWidgetItem(content_text)
+            content_item.setToolTip(content_text)
+            self.scan_list.setItem(r, 5, content_item)
+            status_text = str(row.get("status", "-"))
+            st = QTableWidgetItem(self._compact_status_text(status_text))
+            st.setToolTip(status_text)
             if st.text() != "OK":
                 st.setForeground(Qt.red)
             self.scan_list.setItem(r, 6, st)
@@ -5568,6 +5737,28 @@ class MainWindow(QMainWindow):
             return raw
         return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
+    def _recognize_single_image(self, image_path: str, *, allow_retry: bool = False, context_tag: str = ""):
+        # unified recognition entry point
+        if not self.template:
+            raise RuntimeError("Template chưa sẵn sàng để nhận dạng.")
+        result = self.omr_processor.recognize_sheet_production_fast(image_path, self.template, RecognitionContext(collect_diagnostics=False))
+        result.sync_legacy_aliases()
+        if allow_retry:
+            retried, improved = self._try_reprocess_result_rotated_180(result)
+            if improved:
+                result = retried
+        result.sync_legacy_aliases()
+        subject_key = self._current_batch_subject_key() or self._resolve_preferred_scoring_subject()
+        result.answer_string = self._build_answer_string_for_result(result, subject_key)
+        blank_map = self._compute_blank_questions(self._scoped_result_copy(result))
+        cached_status = ", ".join(self._status_parts_for_result(result, 1)) or "OK"
+        setattr(result, "cached_status", cached_status)
+        setattr(result, "cached_content", self._build_recognition_content_text(result, blank_map))
+        setattr(result, "cached_recognized_short", self._short_recognition_text_for_result(result))
+        if context_tag:
+            setattr(result, "cached_forced_status", str(context_tag))
+        return result
+
     def _try_reprocess_result_rotated_180(self, result):
         image_path = str(getattr(result, "image_path", "") or "").strip()
         if not image_path or not Path(image_path).exists() or not self.template:
@@ -5580,7 +5771,7 @@ class MainWindow(QMainWindow):
         if not rotated.save(temp_path):
             return result, False
         try:
-            alt = self.omr_processor.run_recognition_test(temp_path, self.template)
+            alt = self._recognize_single_image(temp_path, allow_retry=False, context_tag="retry_180")
         finally:
             try:
                 Path(temp_path).unlink(missing_ok=True)
@@ -5772,8 +5963,16 @@ class MainWindow(QMainWindow):
                     duplicate_ids[sid_existing] = duplicate_ids.get(sid_existing, 0) + 1
 
             base_count = len(self.scan_results)
-            new_results = self.omr_processor.process_batch(file_paths, self.template, on_progress)
-            for offset, result in enumerate(new_results):
+            new_results: list[OMRResult] = []
+            total = len(file_paths)
+            for offset, image_path in enumerate(file_paths):
+                on_progress(offset + 1, total, image_path)
+                result = self._recognize_single_image(
+                    str(image_path),
+                    allow_retry=False,
+                    context_tag="batch_scan",
+                )
+                new_results.append(result)
                 idx = base_count + offset
                 forced_status = ""
                 original_meaningful = self._result_has_meaningful_recognition(result)
@@ -6442,7 +6641,13 @@ class MainWindow(QMainWindow):
             self.progress.setValue(current)
             QApplication.processEvents()
 
-        self.scan_results = self.omr_processor.process_batch(file_paths, self.template, on_progress)
+        self.scan_results = []
+        total = len(file_paths)
+        for offset, image_path in enumerate(file_paths):
+            on_progress(offset + 1, total, str(image_path))
+            self.scan_results.append(
+                self._recognize_single_image(str(image_path), allow_retry=False, context_tag="batch_scan_api")
+            )
         subject_key_for_results = self._subject_key_from_cfg(subject_cfg) if subject_cfg else self._resolve_preferred_scoring_subject()
         self.scan_list.setRowCount(0)
         duplicate_ids: dict[str, int] = {}
@@ -8446,18 +8651,60 @@ class MainWindow(QMainWindow):
             self._load_selected_result_for_correction()
 
     def _apply_scan_filter(self) -> None:
-        value = self.search_value.text().strip().lower()
-        col = self.filter_column.currentIndex()
+        def _normalize(text: str) -> str:
+            return " ".join(str(text or "").strip().lower().split())
+
+        value = _normalize(self.search_value.text())
+        col = self._scan_filter_column_from_combo_index(self.filter_column.currentIndex())
         for i in range(self.scan_list.rowCount()):
-            item = self.scan_list.item(i, col)
-            cell = (item.text() if item else "").lower()
-            show = value in cell if value else True
-            self.scan_list.setRowHidden(i, not show)
+            if not value:
+                self.scan_list.setRowHidden(i, False)
+                continue
+            if col is None:
+                searchable = []
+                for j in range(0, 7):
+                    item = self.scan_list.item(i, j)
+                    searchable.append(_normalize(item.text() if item else ""))
+                cell = " | ".join(searchable)
+            else:
+                item = self.scan_list.item(i, col)
+                cell = _normalize(item.text() if item else "")
+            self.scan_list.setRowHidden(i, value not in cell)
 
     def _on_scan_header_clicked(self, section: int) -> None:
-        if 0 <= section < self.filter_column.count():
-            self.filter_column.setCurrentIndex(section)
-            self._apply_scan_filter()
+        combo_index = self._scan_filter_combo_index_from_header_section(section)
+        if combo_index is None:
+            return
+        if 0 <= combo_index < self.filter_column.count():
+            self.filter_column.setCurrentIndex(combo_index)
+        self._apply_scan_filter()
+
+    @staticmethod
+    def _scan_filter_column_from_combo_index(combo_index: int) -> int | None:
+        mapping = {
+            0: None,  # Tất cả
+            1: 0,     # STUDENT ID
+            2: 1,     # Phòng thi
+            3: 2,     # Mã đề
+            4: 3,     # Họ tên
+            5: 4,     # Ngày sinh
+            6: 5,     # Nội dung
+            7: 6,     # Status
+        }
+        return mapping.get(int(combo_index), None)
+
+    @staticmethod
+    def _scan_filter_combo_index_from_header_section(section: int) -> int | None:
+        mapping = {
+            0: 1,  # STUDENT ID
+            1: 2,  # Phòng thi
+            2: 3,  # Mã đề
+            3: 4,  # Họ tên
+            4: 5,  # Ngày sinh
+            5: 6,  # Nội dung
+            6: 7,  # Status
+        }
+        return mapping.get(int(section), None)
 
     def eventFilter(self, obj, event):
         if hasattr(self, "scan_image_scroll") and obj == self.scan_image_scroll.viewport() and event.type() == QEvent.Wheel:
@@ -8548,6 +8795,7 @@ class MainWindow(QMainWindow):
         refresh_statuses: bool = False,
         rebuild_error_list: bool = False,
     ) -> None:
+        # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
         forced_status_by_image = forced_status_by_image or {}
         duplicate_ids: dict[str, int] = {}
         subject_scope: tuple[set[str], set[str]] | None = None
@@ -8581,6 +8829,17 @@ class MainWindow(QMainWindow):
             sid = str(result.student_id or "").strip()
             exam_code_text = str(result.exam_code or "").strip()
             image_path = str(result.image_path or "")
+            subject_cfg = self._selected_batch_subject_config() or {}
+            room_text = ""
+            if sid:
+                room_text = str(self._subject_room_for_student_id(sid, subject_cfg) or "").strip()
+            if not room_text:
+                room_text = str(getattr(result, "exam_room", "") or "").strip()
+            if not room_text:
+                profile = self._student_profile_by_id(sid) if sid else {}
+                room_text = str((profile or {}).get("exam_room", "") or "").strip()
+            setattr(result, "exam_room", room_text)
+            print(f"[GridPopulate] sid={sid} room={room_text} exam_code={exam_code_text}")
             forced_status = str(forced_status_by_image.get(image_path, "") or "")
             if forced_status:
                 status = forced_status
@@ -8597,11 +8856,11 @@ class MainWindow(QMainWindow):
                 )
                 status = ", ".join(status_parts) if status_parts else "OK"
             if can_use_cached_display:
-                content_text = str(getattr(result, "cached_content", "") or "")
+                content_text = self._build_recognition_content_text(result if scoped is None else scoped, blank_map)
                 recognized_short = str(getattr(result, "cached_recognized_short", "") or "")
                 forced_status = str(getattr(result, "cached_forced_status", "") or forced_status)
             elif skip_expensive_checks:
-                content_text = str(getattr(result, "cached_content", "") or self._short_recognition_text_for_result(result))
+                content_text = self._build_recognition_content_text(result, blank_map)
                 recognized_short = str(getattr(result, "cached_recognized_short", "") or self._short_recognition_text_for_result(result))
                 setattr(result, "cached_status", status)
                 setattr(result, "cached_content", content_text)
@@ -8624,6 +8883,7 @@ class MainWindow(QMainWindow):
                     "exam_code": exam_code_text,
                     "full_name": str(getattr(result, "full_name", "") or "-"),
                     "birth_date": str(getattr(result, "birth_date", "") or "-"),
+                    "exam_room": room_text,
                     "blank_map": blank_map,
                     "content": content_text,
                     "status": status,
@@ -8664,19 +8924,27 @@ class MainWindow(QMainWindow):
                 sid_item.setData(Qt.UserRole + 1, str(item["exam_code"] or ""))
                 sid_item.setData(Qt.UserRole + 2, str(item["recognized_short"] or ""))
                 scan_list.setItem(idx, 0, sid_item)
-                scan_list.setItem(idx, 1, QTableWidgetItem(str(getattr(item["result"], "exam_room", "") or "-")))
+                scan_list.setItem(idx, 1, QTableWidgetItem(str(item.get("exam_room", "") or "-")))
                 scan_list.setItem(idx, 2, QTableWidgetItem(str(item["exam_code"] or "-")))
                 scan_list.setItem(idx, 3, QTableWidgetItem(str(item["full_name"] or "-")))
                 scan_list.setItem(idx, 4, QTableWidgetItem(str(item["birth_date"] or "-")))
-                scan_list.setItem(idx, 5, QTableWidgetItem(str(item["content"] or "")))
-                status_item = QTableWidgetItem(str(item["status"] or "OK"))
-                if str(item["status"] or "OK") != "OK":
+                content_full = str(item["content"] or "")
+                content_item = QTableWidgetItem(content_full)
+                content_item.setToolTip(content_full)
+                scan_list.setItem(idx, 5, content_item)
+                full_status = str(item["status"] or "OK")
+                status_item = QTableWidgetItem(self._compact_status_text(full_status, max_len=150))
+                status_item.setToolTip(full_status)
+                if full_status != "OK":
                     status_item.setForeground(Qt.red)
                 scan_list.setItem(idx, 6, status_item)
                 if skip_expensive_checks:
                     scan_list.setItem(idx, 7, QTableWidgetItem("..."))
                 else:
                     self._set_scan_action_widget(idx)
+            scan_list.resizeRowsToContents()
+            for fit_col in [0, 1, 2, 3, 4, 7]:
+                scan_list.resizeColumnToContents(fit_col)
         finally:
             self._end_scan_grid_update()
 
@@ -8720,27 +8988,40 @@ class MainWindow(QMainWindow):
         self._on_scan_selected()
 
     def _update_scan_row_from_result(self, idx: int, result) -> None:
+        # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
         if idx < 0 or idx >= self.scan_list.rowCount():
             return
+        self._refresh_student_profile_for_result(result)
         scoped = self._scoped_result_copy(result)
         sid = (result.student_id or "").strip()
         exam_code_text = (result.exam_code or "").strip()
+        room_text = str(self._subject_room_for_student_id(sid) or "").strip() if sid else ""
+        if not room_text:
+            room_text = str(getattr(result, "exam_room", "") or "").strip()
+        if not room_text and sid:
+            profile = self._student_profile_by_id(sid)
+            room_text = str((profile or {}).get("exam_room", "") or "").strip()
+        setattr(result, "exam_room", room_text)
         sid_item = QTableWidgetItem(sid or "-")
         sid_item.setData(Qt.UserRole, str(result.image_path))
         sid_item.setData(Qt.UserRole + 1, exam_code_text)
         sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(scoped))
         self.scan_list.setItem(idx, 0, sid_item)
-        self.scan_list.setItem(idx, 1, QTableWidgetItem(str(getattr(result, "exam_room", "") or "-")))
+        self.scan_list.setItem(idx, 1, QTableWidgetItem(room_text or "-"))
         self.scan_list.setItem(idx, 2, QTableWidgetItem((result.exam_code or "").strip() or "-"))
         self.scan_list.setItem(idx, 3, QTableWidgetItem(str(getattr(result, "full_name", "") or "-")))
         self.scan_list.setItem(idx, 4, QTableWidgetItem(str(getattr(result, "birth_date", "") or "-")))
+        content_text = self._build_recognition_content_text(scoped, self.scan_blank_summary.get(idx, {"MCQ": [], "TF": [], "NUMERIC": []}))
+        content_item = QTableWidgetItem(content_text)
+        content_item.setToolTip(content_text)
         self.scan_list.setItem(
             idx,
             5,
-            QTableWidgetItem(self._build_recognition_content_text(scoped, self.scan_blank_summary.get(idx, {"MCQ": [], "TF": [], "NUMERIC": []}))),
+            content_item,
         )
 
     def _current_scan_results_snapshot(self) -> list[OMRResult]:
+        # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
         base = list(self.scan_results or [])
         if not hasattr(self, "scan_list"):
             return base
@@ -8770,6 +9051,7 @@ class MainWindow(QMainWindow):
         return out
 
     def _build_result_from_saved_table_row(self, idx: int) -> OMRResult | None:
+        # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
         if idx < 0 or idx >= self.scan_list.rowCount():
             return None
         sid_item = self.scan_list.item(idx, 0)
@@ -8781,7 +9063,10 @@ class MainWindow(QMainWindow):
             student_id = ""
         exam_code = str(sid_item.data(Qt.UserRole + 1) if sid_item else "").strip()
         result = OMRResult(image_path=image_path, student_id=student_id, exam_code=exam_code)
-        result.exam_room = str(self.scan_list.item(idx, 1).text() if self.scan_list.item(idx, 1) else "")
+        room_text = str(self.scan_list.item(idx, 1).text() if self.scan_list.item(idx, 1) else "").strip()
+        if not room_text and student_id:
+            room_text = str(self._subject_room_for_student_id(student_id) or "").strip()
+        result.exam_room = room_text
         result.full_name = str(self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else "")
         result.birth_date = str(self.scan_list.item(idx, 4).text() if self.scan_list.item(idx, 4) else "")
         result.sync_legacy_aliases()
@@ -9023,7 +9308,7 @@ class MainWindow(QMainWindow):
                 return
             process_path = temp_rotated_path
 
-        new_result = self.omr_processor.process_image(process_path, self.template)
+        new_result = self._recognize_single_image(process_path, allow_retry=False, context_tag="rerecognize_selected")
         if temp_rotated_path:
             try:
                 Path(temp_rotated_path).unlink(missing_ok=True)
@@ -9277,14 +9562,14 @@ class MainWindow(QMainWindow):
         duplicate_count: int,
         subject_scope: tuple[set[str], set[str]] | None = None,
         available_exam_codes: set[str] | None = None,
+        result: OMRResult | None = None,
     ) -> list[str]:
         sid_text = str(sid or "").strip()
-        has_sid_error = False
         has_duplicate = False
-        has_exam_code_error = False
+        status_parts: list[str] = []
 
         if self._student_id_has_recognition_error(sid_text):
-            has_sid_error = True
+            status_parts.append("SBD không nhận dạng")
             has_duplicate = duplicate_count > 1
         else:
             has_duplicate = duplicate_count > 1
@@ -9294,29 +9579,52 @@ class MainWindow(QMainWindow):
             cfg = self._selected_batch_subject_config() or {}
 
             if not self._has_valid_student_reference(sid_text):
-                has_sid_error = True
+                status_parts.append("SBD không có trong danh sách")
             elif all_sids and sid_norm not in all_sids:
-                has_sid_error = True
+                status_parts.append("SBD không có trong danh sách")
             else:
                 room_text = self._subject_room_for_student_id(sid_text, cfg)
+                print(f"[StatusCheck] sid={sid_text} room={room_text} room_missing={self._is_missing_room_for_status(room_text)}")
                 if self._is_missing_room_for_status(room_text):
-                    has_sid_error = True
+                    status_parts.append("Thiếu phòng thi")
                 elif room_sids and sid_norm not in room_sids:
-                    has_sid_error = True
-                elif self._is_missing_name_for_status(str(profile.get("name", "") or "")):
-                    has_sid_error = True
+                    status_parts.append("SBD không thuộc phòng thi môn")
+                if self._is_missing_name_for_status(str(profile.get("name", "") or "")):
+                    status_parts.append("Thiếu họ tên")
 
         if not self._is_valid_exam_code_for_subject(exam_code_text, available_exam_codes=available_exam_codes):
-            has_exam_code_error = True
-
-        ordered: list[str] = []
-        if has_sid_error:
-            ordered.append("Lỗi SBD")
+            status_parts.append("Mã đề không hợp lệ")
         if has_duplicate:
-            ordered.append("Trùng SBD")
-        if has_exam_code_error:
-            ordered.append("Lỗi Mã đề")
-        return ordered
+            status_parts.append("Trùng SBD")
+
+        if result is not None:
+            rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
+            issue_codes = [str(getattr(issue, "code", "") or "").strip().upper() for issue in (getattr(result, "issues", []) or [])]
+            if rec_errors or issue_codes:
+                if any(code in {"ANCHOR_MISSING", "ANCHOR_FAIL", "SCANNER_LOCK_FAIL"} for code in issue_codes):
+                    status_parts.append("Lỗi nhận dạng anchor")
+                elif any(code in {"POOR_IDENTIFIER_ZONE", "STUDENT_ID_FAST_FAIL", "EXAM_CODE_FAST_FAIL"} for code in issue_codes):
+                    status_parts.append("Lỗi nhận dạng vùng header")
+                else:
+                    status_parts.append("Lỗi nhận dạng")
+        return list(dict.fromkeys([x for x in status_parts if str(x or "").strip()]))
+
+    def _normalized_exam_room_mapping_by_room(self, cfg: dict) -> dict[str, set[str]]:
+        normalized: dict[str, set[str]] = {}
+        mapping_by_room = cfg.get("exam_room_sbd_mapping_by_room", {}) if isinstance(cfg.get("exam_room_sbd_mapping_by_room", {}), dict) else {}
+        for room_key, vals in mapping_by_room.items():
+            room_text = str(room_key or "").strip()
+            if not room_text:
+                continue
+            raw_vals: list[str] = []
+            if isinstance(vals, (list, tuple, set)):
+                raw_vals.extend(str(x).strip() for x in vals if str(x).strip())
+            elif isinstance(vals, str):
+                raw_vals.extend(x.strip() for x in vals.replace(";", ",").replace("\n", ",").split(",") if x.strip())
+            normalized_vals = {self._normalized_student_id_for_match(x) for x in raw_vals if x}
+            if normalized_vals:
+                normalized[room_text] = normalized_vals
+        return normalized
 
     def _subject_student_room_scope(self) -> tuple[set[str], set[str]]:
         all_sids: set[str] = set()
@@ -9328,27 +9636,19 @@ class MainWindow(QMainWindow):
         room_name = str(cfg.get("exam_room_name", "") or "").strip()
         room_name_norm = self._normalized_room_for_match(room_name)
         mapping_text = str(cfg.get("exam_room_sbd_mapping", "") or "").strip()
-        mapping_by_room = cfg.get("exam_room_sbd_mapping_by_room", {}) if isinstance(cfg.get("exam_room_sbd_mapping_by_room", {}), dict) else {}
+        mapping_by_room = self._normalized_exam_room_mapping_by_room(cfg)
         room_sids: set[str] = set()
-        if mapping_by_room and room_name:
-            selected_vals: list[str] = []
-            for room_key, vals in mapping_by_room.items():
-                if self._normalized_room_for_match(str(room_key or "")) != room_name_norm:
-                    continue
-                if isinstance(vals, (list, tuple, set)):
-                    selected_vals.extend(str(x).strip() for x in vals if str(x).strip())
-                elif isinstance(vals, str):
-                    selected_vals.extend(x.strip() for x in vals.replace(";", ",").replace("\n", ",").split(",") if x.strip())
-            room_sids = {self._normalized_student_id_for_match(x) for x in selected_vals if x}
-            # Fallback when cấu hình phòng thi môn bị lệch: nếu không tìm được room đúng tên
-            # trong mapping_by_room thì lấy theo phòng của danh sách thí sinh.
-            if not room_sids:
-                for s in (self.session.students if self.session else []):
-                    sid = str(getattr(s, "student_id", "") or "").strip()
-                    extra = getattr(s, "extra", {}) or {}
-                    exam_room = str(extra.get("exam_room", "") or "").strip()
-                    if sid and exam_room and self._normalized_room_for_match(exam_room) == room_name_norm:
-                        room_sids.add(self._normalized_student_id_for_match(sid))
+        if mapping_by_room:
+            matched_rooms = [room for room in mapping_by_room.keys() if self._normalized_room_for_match(room) == room_name_norm] if room_name else []
+            if not matched_rooms and len(mapping_by_room) == 1:
+                matched_rooms = [next(iter(mapping_by_room.keys()))]
+            if matched_rooms:
+                for room in matched_rooms:
+                    room_sids.update(mapping_by_room.get(room, set()))
+            elif not room_name:
+                # exam_room_name trống: dùng union của toàn bộ mapping để tránh false negative.
+                for values in mapping_by_room.values():
+                    room_sids.update(values)
         elif mapping_text:
             chunks = [x.strip() for x in mapping_text.replace(";", ",").replace("\n", ",").split(",")]
             room_sids = {self._normalized_student_id_for_match(x) for x in chunks if x}
@@ -9366,27 +9666,34 @@ class MainWindow(QMainWindow):
         if not sid_norm:
             return ""
         cfg = subject_cfg if isinstance(subject_cfg, dict) else (self._selected_batch_subject_config() or {})
-        mapping_by_room = cfg.get("exam_room_sbd_mapping_by_room", {}) if isinstance(cfg.get("exam_room_sbd_mapping_by_room", {}), dict) else {}
+        mapping_by_room = self._normalized_exam_room_mapping_by_room(cfg)
+        print(f"[RoomResolve] sid={sid} sid_norm={sid_norm} exam_room_name={cfg.get('exam_room_name','')} mapping_rooms={list(mapping_by_room.keys())}")
         if mapping_by_room:
-            for room_key, vals in mapping_by_room.items():
-                raw_vals: list[str] = []
-                if isinstance(vals, (list, tuple, set)):
-                    raw_vals.extend(str(x).strip() for x in vals if str(x).strip())
-                elif isinstance(vals, str):
-                    raw_vals.extend(x.strip() for x in vals.replace(";", ",").replace("\n", ",").split(",") if x.strip())
-                normalized_vals = {self._normalized_student_id_for_match(x) for x in raw_vals if x}
-                if sid_norm in normalized_vals:
-                    return str(room_key or "").strip()
+            matched_rooms = [room for room, sids in mapping_by_room.items() if sid_norm in sids]
+            if matched_rooms:
+                preferred_room = str(cfg.get("exam_room_name", "") or "").strip()
+                preferred_norm = self._normalized_room_for_match(preferred_room)
+                if preferred_norm:
+                    for room in matched_rooms:
+                        if self._normalized_room_for_match(room) == preferred_norm:
+                            print(f"[RoomResolve] resolved_room={room}")
+                            return str(room or "").strip()
+                picked = sorted(matched_rooms, key=lambda x: self._normalized_room_for_match(x))[0]
+                print(f"[RoomResolve] resolved_room={picked}")
+                return str(picked or "").strip()
 
         room_name = str(cfg.get("exam_room_name", "") or "").strip()
         mapping_text = str(cfg.get("exam_room_sbd_mapping", "") or "").strip()
         if room_name and mapping_text:
             chunks = [x.strip() for x in mapping_text.replace(";", ",").replace("\n", ",").split(",") if x.strip()]
             if sid_norm in {self._normalized_student_id_for_match(x) for x in chunks if x}:
+                print(f"[RoomResolve] resolved_room={room_name}")
                 return room_name
 
         prof = self._student_profile_by_id(sid)
-        return str(prof.get("exam_room", "") or "")
+        fallback_room = str(prof.get("exam_room", "") or "")
+        print(f"[RoomResolve] resolved_room={fallback_room}")
+        return fallback_room
 
     @staticmethod
     def _student_id_has_recognition_error(student_id: str) -> bool:
@@ -9447,6 +9754,7 @@ class MainWindow(QMainWindow):
             duplicate_count,
             subject_scope=subject_scope,
             available_exam_codes=available_exam_codes,
+            result=result,
         )
 
     def _status_text_for_row(
@@ -9590,6 +9898,13 @@ class MainWindow(QMainWindow):
         status_parts = self._status_parts_for_row("" if self._student_id_has_recognition_error(sid) else sid, exam_code_text, dup)
         return ", ".join(status_parts) if status_parts else "OK"
 
+    @staticmethod
+    def _compact_status_text(status_text: str, max_len: int = 150) -> str:
+        text = str(status_text or "").strip()
+        if len(text) <= max_len:
+            return text
+        return text[: max(0, max_len - 3)].rstrip() + "..."
+
     def _refresh_row_status(
         self,
         idx: int,
@@ -9610,8 +9925,11 @@ class MainWindow(QMainWindow):
             if idx < len(self.scan_results)
             else self._status_text_for_saved_table_row(idx)
         )
-        item = QTableWidgetItem(status)
-        if status != "OK":
+        full_status = str(status or "OK")
+        display_status = self._compact_status_text(full_status, max_len=150)
+        item = QTableWidgetItem(display_status)
+        item.setToolTip(full_status)
+        if full_status != "OK":
             item.setForeground(Qt.red)
         self.scan_list.setItem(idx, 6, item)
 
@@ -9792,7 +10110,7 @@ class MainWindow(QMainWindow):
         if idx >= len(self.scan_results):
             sid_item_existing = self.scan_list.item(idx, 0)
             sid = sid_item_existing.text() if sid_item_existing else "-"
-            content = self.scan_list.item(idx, 4).text() if self.scan_list.item(idx, 4) else "-"
+            content = self.scan_list.item(idx, 5).text() if self.scan_list.item(idx, 5) else "-"
             exam_code = str(sid_item_existing.data(Qt.UserRole + 1) if sid_item_existing else "").strip()
             if not exam_code:
                 for r in range(self.scan_result_preview.rowCount()):
@@ -9806,7 +10124,37 @@ class MainWindow(QMainWindow):
             lay = QVBoxLayout(dlg)
             form = QFormLayout()
             inp_sid = QLineEdit(sid)
-            inp_code = QLineEdit(exam_code)
+            inp_code = QComboBox()
+            inp_code.setEditable(True)
+            inp_code.setInsertPolicy(QComboBox.NoInsert)
+            subject_cfg = self._selected_batch_subject_config() or {}
+            subject_key = self._current_batch_subject_key()
+            valid_codes: set[str] = set()
+            imported = subject_cfg.get("imported_answer_keys", {}) if isinstance(subject_cfg.get("imported_answer_keys", {}), dict) else {}
+            valid_codes.update(str(x).strip() for x in imported.keys() if str(x).strip())
+            try:
+                valid_codes.update(str(x).strip() for x in self._fetch_answer_keys_for_subject_scoped(subject_key).keys() if str(x).strip())
+            except Exception:
+                pass
+            if self.answer_keys:
+                valid_codes.update(
+                    str(item.exam_code).strip()
+                    for item in self.answer_keys.keys.values()
+                    if str(getattr(item, "subject", "") or "").strip() == str(subject_key or "").strip() and str(getattr(item, "exam_code", "") or "").strip()
+                )
+            if exam_code:
+                valid_codes.add(exam_code)
+            if valid_codes:
+                for code in sorted(valid_codes):
+                    inp_code.addItem(code, code)
+            else:
+                inp_code.addItem("-", "-")
+            if exam_code:
+                idx_code = inp_code.findData(exam_code)
+                if idx_code >= 0:
+                    inp_code.setCurrentIndex(idx_code)
+                else:
+                    inp_code.setEditText(exam_code)
             txt_content = QTextEdit(content)
             form.addRow("Student ID", inp_sid)
             form.addRow("Exam Code", inp_code)
@@ -9824,19 +10172,25 @@ class MainWindow(QMainWindow):
             old_img = str(old_item.data(Qt.UserRole) if old_item else "")
             old_exam_code = str(old_item.data(Qt.UserRole + 1) if old_item else "").strip()
             old_recognized_short = str(old_item.data(Qt.UserRole + 2) if old_item else "")
-            new_exam_code = inp_code.text().strip() or old_exam_code
+            new_exam_code = str(inp_code.currentData() or inp_code.currentText() or "").strip() or old_exam_code
             sid_item = QTableWidgetItem(inp_sid.text().strip() or "-")
             sid_item.setData(Qt.UserRole, old_img)
             sid_item.setData(Qt.UserRole + 1, new_exam_code)
             sid_item.setData(Qt.UserRole + 2, old_recognized_short)
             self.scan_list.setItem(idx, 0, sid_item)
-            self.scan_list.setItem(idx, 4, QTableWidgetItem(txt_content.toPlainText().strip() or "-"))
+            self.scan_list.setItem(idx, 2, QTableWidgetItem(new_exam_code or "-"))
+            self.scan_list.setItem(idx, 5, QTableWidgetItem(txt_content.toPlainText().strip() or "-"))
+            rebuilt = self._build_result_from_saved_table_row(idx)
+            if rebuilt is not None:
+                self._refresh_student_profile_for_result(rebuilt, idx)
             self._refresh_row_status(idx)
             for r in range(self.scan_result_preview.rowCount()):
                 k = self.scan_result_preview.item(r, 0)
                 if k and k.text().strip().lower() in {"exam code", "mã đề"}:
                     self.scan_result_preview.setItem(r, 1, QTableWidgetItem(new_exam_code or "-"))
                     break
+            if self.scan_list.currentRow() == idx:
+                self._update_scan_preview_from_saved_row(idx)
             self.btn_save_batch_subject.setEnabled(True)
             invalidated = self._invalidate_scoring_for_student_ids(
                 [old_sid, inp_sid.text().strip()],
@@ -10010,11 +10364,19 @@ class MainWindow(QMainWindow):
                     values.append(sid_text)
             return sorted(set(values))
 
-        def _valid_exam_codes(subject_key: str, current_code: str = "") -> list[str]:
+        def _configured_exam_codes_for_subject_cfg(subject_cfg: dict | None) -> list[str]:
+            codes: set[str] = set()
+            cfg = subject_cfg if isinstance(subject_cfg, dict) else {}
+            imported = cfg.get("imported_answer_keys", {}) if isinstance(cfg.get("imported_answer_keys", {}), dict) else {}
+            codes.update(str(x).strip() for x in imported.keys() if str(x).strip())
+            return sorted(codes)
+
+        def _valid_exam_codes(subject_key: str, current_code: str = "", subject_cfg: dict | None = None) -> list[str]:
             codes: set[str] = set()
             subject = str(subject_key or "").strip()
             if not subject:
                 return []
+            codes.update(_configured_exam_codes_for_subject_cfg(subject_cfg))
             try:
                 codes.update(str(x).strip() for x in self._fetch_answer_keys_for_subject_scoped(subject).keys() if str(x).strip())
             except Exception:
@@ -10025,12 +10387,15 @@ class MainWindow(QMainWindow):
                     for item in self.answer_keys.keys.values()
                     if str(getattr(item, "subject", "") or "").strip() == subject and str(getattr(item, "exam_code", "") or "").strip()
                 )
+            if str(current_code or "").strip():
+                codes.add(str(current_code or "").strip())
             return sorted(codes)
 
         def _populate_exam_code_combo(combo: QComboBox, subject_key: str, current_code: str) -> None:
             combo.blockSignals(True)
             combo.clear()
-            valid_codes = _valid_exam_codes(subject_key, current_code)
+            subject_cfg_local = self._selected_batch_subject_config() or {}
+            valid_codes = _valid_exam_codes(subject_key, current_code, subject_cfg_local)
             selected_code = str(current_code or "").strip()
             selected_is_valid = bool(selected_code and selected_code in valid_codes)
             if not selected_is_valid:
@@ -10755,10 +11120,18 @@ class MainWindow(QMainWindow):
             cfg["last_scoring_phase"] = dict(phase)
             self.session.config = cfg
             self.session_dirty = True
-            if not self._persist_session_quietly():
-                QMessageBox.warning(self, "Scoring", "Không thể tự động lưu kết quả chấm điểm. Vui lòng dùng nút Lưu kỳ thi.")
+        persisted_rows = list(subject_scores.values())
+        self._persist_scoring_results_for_subject(
+            subject,
+            persisted_rows,
+            mode_text,
+            note,
+            mark_saved=False,
+        )
         self._refresh_scoring_phase_table()
         self._refresh_dashboard_summary_from_db(subject)
+        self._refresh_scoring_state_label(subject)
+        return rows
 
     def action_open_recheck(self) -> None:
         subject_cfgs = [cfg for cfg in self._effective_subject_configs_for_batch() if isinstance(cfg, dict)]
