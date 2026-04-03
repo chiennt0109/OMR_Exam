@@ -6966,11 +6966,59 @@ class MainWindow(QMainWindow):
         expected_by_section = self._expected_questions_by_section(result)
         subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
         configured_counts = self._subject_section_question_counts(subject_key)
-
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+        answer_string_text = str(getattr(result, "answer_string", "") or "").strip()
+        # Fallback từ chuỗi bài làm đã lưu khi map đáp án còn thiếu (đặc biệt sau luồng sửa -> lưu -> load fallback).
+        if answer_string_text and (not mcq_payload or not tf_payload or not numeric_payload):
+            answer_key = self._subject_answer_key_for_result(result, subject_key)
+            if answer_key is not None:
+                cursor = 0
+                if not mcq_payload:
+                    for q in sorted(int(k) for k in (getattr(answer_key, "answers", {}) or {}).keys()):
+                        if cursor >= len(answer_string_text):
+                            break
+                        ch = answer_string_text[cursor]
+                        cursor += 1
+                        if ch and ch != "_":
+                            mcq_payload[int(q)] = str(ch).upper()
+                else:
+                    cursor += len(sorted(int(k) for k in (getattr(answer_key, "answers", {}) or {}).keys()))
+                if not tf_payload:
+                    for q in sorted(int(k) for k in (getattr(answer_key, "true_false_answers", {}) or {}).keys()):
+                        chunk = answer_string_text[cursor: cursor + 4]
+                        cursor += 4
+                        if not chunk:
+                            break
+                        flags: dict[str, bool] = {}
+                        for idx, key in enumerate(["a", "b", "c", "d"]):
+                            if idx >= len(chunk):
+                                continue
+                            c = chunk[idx]
+                            if c == "Đ":
+                                flags[key] = True
+                            elif c == "S":
+                                flags[key] = False
+                        if flags:
+                            tf_payload[int(q)] = flags
+                else:
+                    cursor += 4 * len(sorted(int(k) for k in (getattr(answer_key, "true_false_answers", {}) or {}).keys()))
+                if not numeric_payload:
+                    for q in sorted(int(k) for k in (getattr(answer_key, "numeric_answers", {}) or {}).keys()):
+                        raw_key = str((getattr(answer_key, "numeric_answers", {}) or {}).get(q, "") or "")
+                        normalized_key = str(raw_key).strip().replace(" ", "").lstrip("+").replace(".", ",")
+                        width = len(normalized_key) if normalized_key else max(1, len(raw_key.strip()))
+                        chunk = answer_string_text[cursor: cursor + width]
+                        cursor += width
+                        if not chunk:
+                            break
+                        if any(ch != "_" for ch in chunk):
+                            numeric_payload[int(q)] = chunk.replace("_", "").strip()
         section_answers = {
-            "MCQ": set(int(q) for q in (result.mcq_answers or {}).keys()),
-            "TF": set(int(q) for q in (result.true_false_answers or {}).keys()),
-            "NUMERIC": set(int(q) for q in (result.numeric_answers or {}).keys()),
+            "MCQ": set(int(q) for q in (mcq_payload or {}).keys()),
+            "TF": set(int(q) for q in (tf_payload or {}).keys()),
+            "NUMERIC": set(int(q) for q in (numeric_payload or {}).keys()),
         }
         blanks: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
 
@@ -7005,7 +7053,6 @@ class MainWindow(QMainWindow):
             if sec == "TF":
                 display_to_actual = {int(v): int(k) for k, v in actual_to_display.items()}
                 missing_tf_statements = 0
-                tf_payload = result.true_false_answers or {}
                 for display_q in display_questions:
                     actual_q = int(display_to_actual.get(int(display_q), int(display_q)))
                     flags = tf_payload.get(actual_q, {})
