@@ -2097,6 +2097,27 @@ class MainWindow(QMainWindow):
         self.scan_list.setUpdatesEnabled(True)
         self._scan_grid_loading = False
 
+    def _open_wait_progress(self, label_text: str, title: str = "Đang xử lý...") -> QProgressDialog:
+        dlg = QProgressDialog(label_text, "", 0, 0, self)
+        dlg.setWindowTitle(title)
+        dlg.setCancelButton(None)
+        dlg.setMinimumDuration(0)
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setValue(0)
+        dlg.show()
+        QApplication.processEvents()
+        return dlg
+
+    @staticmethod
+    def _close_wait_progress(dlg: QProgressDialog | None) -> None:
+        if dlg is None:
+            return
+        try:
+            dlg.close()
+            dlg.deleteLater()
+        except Exception:
+            pass
+
     def _set_scan_action_widget(self, row: int) -> None:
         if row < 0 or row >= self.scan_list.rowCount():
             return
@@ -2163,6 +2184,8 @@ class MainWindow(QMainWindow):
             candidate_subject_keys.append(legacy_scoped)
         if subject_key and subject_key not in candidate_subject_keys:
             candidate_subject_keys.append(subject_key)
+        # Keep direct delete by current subject key for compatibility with legacy flows/tests.
+        self.database.delete_scan_result(subject_key, image_path)
         for key in candidate_subject_keys:
             self.database.delete_scan_result(key, image_path)
         self.scan_results = [x for x in self._refresh_scan_results_from_db(subject_key) if str(getattr(x, "image_path", "") or "") != ""]
@@ -5446,6 +5469,7 @@ class MainWindow(QMainWindow):
 
     def _load_batch_subject_state(self, subject_cfg: dict | None, source_hint: str = "") -> bool:
         self._reset_batch_subject_ui_state()
+        wait_dlg = self._open_wait_progress("Đang tải dữ liệu môn, vui lòng chờ...", "Batch Scan")
         cfg = self._merge_saved_batch_snapshot(subject_cfg or {}) if isinstance(subject_cfg, dict) else {}
         if not cfg:
             self.batch_template_value.setText("-")
@@ -5458,6 +5482,7 @@ class MainWindow(QMainWindow):
                 self.batch_context_value.setText("-")
             self._current_batch_data_source = "empty"
             print(f"[BatchLoad] subject=- source=empty rows=0 errors=0")
+            self._close_wait_progress(wait_dlg)
             return False
 
         subject_key = self._subject_key_from_cfg(cfg)
@@ -5499,6 +5524,7 @@ class MainWindow(QMainWindow):
             self.btn_save_batch_subject.setEnabled(False)
             self._update_batch_scan_scope_summary()
             print(f"[BatchLoad] subject={subject_key} source=working_cache rows={self.scan_list.rowCount()} errors={self.error_list.count()}")
+            self._close_wait_progress(wait_dlg)
             return True
 
         scoped_subject = self._batch_result_subject_key(subject_key)
@@ -5575,6 +5601,7 @@ class MainWindow(QMainWindow):
         self._update_batch_scan_scope_summary()
         source_label = source if not source_hint else f"{source}({source_hint})"
         print(f"[BatchLoad] subject={subject_key} source={source_label} rows={self.scan_list.rowCount()} errors={self.error_list.count()}")
+        self._close_wait_progress(wait_dlg)
         return source != "empty"
 
     def _cache_working_batch_state(self, subject_key: str) -> None:
