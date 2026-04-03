@@ -4063,6 +4063,7 @@ class MainWindow(QMainWindow):
             "cached_status": str(getattr(result, "cached_status", "") or ""),
             "cached_content": str(getattr(result, "cached_content", "") or ""),
             "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
+            "manual_content_override": str(getattr(result, "manual_content_override", "") or ""),
             "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
             "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
             "recognized_template_path": str(getattr(result, "recognized_template_path", "") or ""),
@@ -4093,6 +4094,7 @@ class MainWindow(QMainWindow):
         setattr(result, "cached_status", str(payload.get("cached_status", "") or ""))
         setattr(result, "cached_content", str(payload.get("cached_content", "") or ""))
         setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
+        setattr(result, "manual_content_override", str(payload.get("manual_content_override", "") or ""))
         setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
         setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
         setattr(result, "recognized_template_path", str(payload.get("recognized_template_path", "") or ""))
@@ -6083,6 +6085,7 @@ class MainWindow(QMainWindow):
         setattr(result, "cached_recognized_short", self._short_recognition_text_for_result(scoped))
         if source_tag:
             setattr(result, "cached_forced_status", str(source_tag))
+        setattr(result, "manual_content_override", "")
         md = self.template.metadata if isinstance(self.template.metadata, dict) else {}
         setattr(result, "recognized_template_path", path_text)
         setattr(result, "recognized_alignment_profile", str(getattr(self.omr_processor, "alignment_profile", md.get("alignment_profile", "")) or ""))
@@ -9229,7 +9232,8 @@ class MainWindow(QMainWindow):
             available_exam_codes=available_exam_codes,
         )
         status_text = str(forced_status or "").strip() or (", ".join(status_parts) if status_parts else "OK")
-        content_text = self._build_recognition_content_text(scoped, blank_map)
+        manual_content_override = str(getattr(result, "manual_content_override", "") or "").strip()
+        content_text = manual_content_override if manual_content_override else self._build_recognition_content_text(scoped, blank_map)
         recognized_short = self._short_recognition_text_for_result(scoped)
 
         if row_idx is not None and row_idx >= 0:
@@ -9244,6 +9248,7 @@ class MainWindow(QMainWindow):
         setattr(result, "cached_content", content_text)
         setattr(result, "cached_recognized_short", recognized_short)
         setattr(result, "cached_blank_summary", dict(blank_map))
+        setattr(result, "manual_content_override", manual_content_override)
 
         return {
             "result": result,
@@ -9254,6 +9259,7 @@ class MainWindow(QMainWindow):
             "full_name": str(getattr(result, "full_name", "") or "-"),
             "birth_date": str(getattr(result, "birth_date", "") or "-"),
             "content": content_text,
+            "manual_content_override": manual_content_override,
             "status": status_text,
             "recognized_short": recognized_short,
             "forced_status": str(forced_status or "").strip(),
@@ -9276,6 +9282,7 @@ class MainWindow(QMainWindow):
         sid_item.setData(Qt.UserRole + 1, str(payload.get("exam_code", "") or ""))
         sid_item.setData(Qt.UserRole + 2, str(payload.get("recognized_short", "") or ""))
         sid_item.setData(Qt.UserRole + 10, dict(payload.get("serialized_result", {}) or {}))
+        sid_item.setData(Qt.UserRole + 11, str(payload.get("manual_content_override", "") or ""))
         self.scan_list.setItem(row_idx, 0, sid_item)
         self.scan_list.setItem(row_idx, 1, QTableWidgetItem(str(payload.get("exam_room", "") or "-")))
         self.scan_list.setItem(row_idx, 2, QTableWidgetItem(str(payload.get("exam_code", "") or "-")))
@@ -9462,6 +9469,9 @@ class MainWindow(QMainWindow):
         result.exam_room = room_text
         result.full_name = str(self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else "")
         result.birth_date = str(self.scan_list.item(idx, 4).text() if self.scan_list.item(idx, 4) else "")
+        manual_content_override = str(sid_item.data(Qt.UserRole + 11) if sid_item else "").strip()
+        if manual_content_override:
+            setattr(result, "manual_content_override", manual_content_override)
         result.sync_legacy_aliases()
         return result
 
@@ -10621,11 +10631,19 @@ class MainWindow(QMainWindow):
             sid_item.setData(Qt.UserRole + 2, old_recognized_short)
             self.scan_list.setItem(idx, 0, sid_item)
             self.scan_list.setItem(idx, 2, QTableWidgetItem(new_exam_code or "-"))
-            self.scan_list.setItem(idx, 5, QTableWidgetItem(txt_content.toPlainText().strip() or "-"))
+            manual_content_text = txt_content.toPlainText().strip()
+            self.scan_list.setItem(idx, 5, QTableWidgetItem(manual_content_text or "-"))
             rebuilt = self._build_result_from_saved_table_row(idx)
             if rebuilt is not None:
+                setattr(rebuilt, "manual_content_override", manual_content_text)
                 self._refresh_student_profile_for_result(rebuilt, idx)
-            self._refresh_row_status(idx)
+                self._set_scan_result_at_row(idx, rebuilt)
+                subject_key_now = self._current_batch_subject_key()
+                if subject_key_now:
+                    self.scan_results_by_subject[self._batch_result_subject_key(subject_key_now)] = list(self.scan_results)
+                self._update_scan_row_from_result(idx, rebuilt)
+            else:
+                self._refresh_row_status(idx)
             for r in range(self.scan_result_preview.rowCount()):
                 k = self.scan_result_preview.item(r, 0)
                 if k and k.text().strip().lower() in {"exam code", "mã đề"}:
