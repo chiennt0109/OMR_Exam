@@ -8883,8 +8883,6 @@ class MainWindow(QMainWindow):
         for result in results:
             self._refresh_student_profile_for_result(result)
             scoped = self._scoped_result_copy(result)
-            cached_blank_map = getattr(result, "cached_blank_summary", None)
-            can_use_cached_display = isinstance(cached_blank_map, dict)
             sid = str(result.student_id or "").strip()
             exam_code_text = str(result.exam_code or "").strip()
             image_path = str(result.image_path or "")
@@ -8903,7 +8901,7 @@ class MainWindow(QMainWindow):
             status_override = ""
             if forced_status:
                 status_override = forced_status
-            elif can_use_cached_display or skip_expensive_checks:
+            elif skip_expensive_checks:
                 status_override = str(getattr(result, "cached_status", "") or "OK")
             payload = self._build_scan_row_payload_from_result(
                 result,
@@ -10062,20 +10060,25 @@ class MainWindow(QMainWindow):
         self.database.update_scan_result_payload(self._batch_result_subject_key(subject_key), str(getattr(result, "image_path", "") or ""), self._serialize_omr_result(result), note=note)
 
     def _refresh_all_statuses(self) -> None:
-        duplicate_count_map: dict[str, int] = {}
-        for res in self.scan_results:
-            sid = str(getattr(res, "student_id", "") or "").strip()
-            if not self._student_id_has_recognition_error(sid):
-                duplicate_count_map[sid] = duplicate_count_map.get(sid, 0) + 1
-        subject_scope = self._subject_student_room_scope()
-        available_exam_codes = self._available_exam_codes()
-        for row_idx in range(self.scan_list.rowCount()):
-            self._refresh_row_status(
-                row_idx,
-                duplicate_count_map=duplicate_count_map,
-                subject_scope=subject_scope,
-                available_exam_codes=available_exam_codes,
-            )
+        if not hasattr(self, "scan_list"):
+            return
+        selected_image_path = ""
+        current_idx = self.scan_list.currentRow()
+        if 0 <= current_idx < self.scan_list.rowCount():
+            selected_item = self.scan_list.item(current_idx, 0)
+            selected_image_path = str(selected_item.data(Qt.UserRole) if selected_item else "")
+        forced_status_by_image = {
+            str(getattr(result, "image_path", "") or ""): str(self.scan_forced_status_by_index.get(idx, "") or "")
+            for idx, result in enumerate(self.scan_results)
+        }
+        self._populate_scan_grid_from_results(
+            list(self.scan_results or []),
+            forced_status_by_image=forced_status_by_image,
+            skip_expensive_checks=False,
+            preserve_selection_image_path=selected_image_path,
+            refresh_statuses=False,
+            rebuild_error_list=False,
+        )
 
     def _on_scan_cell_clicked(self, row: int, col: int) -> None:
         if row < 0:
