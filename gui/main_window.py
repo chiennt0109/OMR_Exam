@@ -3907,6 +3907,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, "scoring_panel"):
             self.scoring_panel.setVisible(False)
         self._current_route_name = "workspace_batch_scan"
+        if hasattr(self, "batch_subject_combo") and self.batch_subject_combo.count() > 0:
+            cfg = self._selected_batch_subject_config()
+            if cfg:
+                self._load_batch_subject_state(cfg, source_hint="show_batch_panel")
 
     def _show_scoring_panel(self) -> None:
         if hasattr(self, "scan_lr_split"):
@@ -4465,7 +4469,8 @@ class MainWindow(QMainWindow):
                 self.batch_editor_return_payload["subject_configs"] = subject_cfgs
             self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(current_results)
             self.batch_working_state_by_subject[self._batch_runtime_key(subject_key)] = {
-                "results": list(current_results),
+                "runtime_key": self._batch_runtime_key(subject_key),
+                "scan_results": list(current_results),
                 "rows": batch_rows_payload,
                 "preview": batch_preview_payload,
                 "saved_at": timestamp,
@@ -4474,6 +4479,8 @@ class MainWindow(QMainWindow):
             self._refresh_exam_list()
             self._update_batch_scan_scope_summary()
             self.btn_save_batch_subject.setEnabled(False)
+            reload_ok = self._load_batch_subject_state(target, source_hint="after_save")
+            print(f"[BatchSave] subject={subject_key} rows={row_count} reload_ok={reload_ok}")
             QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
             return True
         except Exception as exc:
@@ -5367,86 +5374,138 @@ class MainWindow(QMainWindow):
                 print(f"[BatchSubject] switching new_runtime_key={self.active_batch_subject_key}")
             else:
                 self.active_batch_subject_key = None
-
-            # reset stale subject UI before any restore/load.
-            self._reset_batch_subject_ui_state()
-
-            if not cfg:
-                self.batch_template_value.setText("-")
-                self.batch_answer_codes_value.setText("-")
-                self.batch_student_id_value.setText("-")
-                self.batch_scan_folder_value.setText("-")
-                self.batch_scan_state_value.setText("-")
-                if hasattr(self, "batch_context_value"):
-                    self.batch_context_value.setText("-")
-                self._current_batch_data_source = "empty"
-                return
-
-            template_path = self._normalize_template_path(str(cfg.get("template_path", "") or "")) or self._normalize_template_path(str(self.session.template_path if self.session else "")) or "-"
-            scan_folder = str(cfg.get("scan_folder", "") or ((self.session.config or {}).get("scan_root", "") if self.session else "") or "-")
-            codes = ", ".join(sorted((cfg.get("imported_answer_keys") or {}).keys())) or "-"
-            self.batch_template_value.setText(template_path)
-            self.batch_answer_codes_value.setText(codes)
-            self.batch_scan_folder_value.setText(scan_folder)
-
-            tp = Path(template_path) if template_path and template_path != "-" else None
-            template_cache_key = str(tp.resolve()) if tp and tp.exists() else ""
-            tpl_for_view = self._template_cache_by_path.get(template_cache_key) if template_cache_key else None
-            if tpl_for_view is None and tp and tp.exists():
-                try:
-                    tpl_for_view = Template.load_json(tp)
-                    if template_cache_key:
-                        self._template_cache_by_path[template_cache_key] = tpl_for_view
-                except Exception:
-                    tpl_for_view = self.template
-            if tpl_for_view is None:
-                tpl_for_view = self.template
-
-            has_sid = "Có" if (tpl_for_view and any(z.zone_type.value == "STUDENT_ID_BLOCK" for z in tpl_for_view.zones)) else "Không"
-            self.batch_student_id_value.setText(has_sid)
-            if tpl_for_view:
-                self._apply_template_recognition_settings(tpl_for_view)
-                self.template = tpl_for_view
-            self._update_batch_scan_scope_summary()
-
-            subject_key = self._subject_key_from_cfg(cfg)
-            runtime_key = self._batch_runtime_key(subject_key)
-            if subject_key not in self._answer_keys_ready_subjects:
-                self._ensure_answer_keys_for_subject(subject_key)
-                self._answer_keys_ready_subjects.add(subject_key)
-
-            if self._restore_cached_working_batch_state(runtime_key):
-                self._current_batch_data_source = "working_memory"
-                self._finalize_batch_scan_display(refresh_statuses=False)
-                self.scan_image_preview.setText("Đã khôi phục dữ liệu Batch Scan từ bộ nhớ tạm của môn này")
-                self._update_batch_scan_scope_summary()
-                return
-
-            cached_subject_rows = list(self.scan_results_by_subject.get(runtime_key, []) or [])
-            if cached_subject_rows:
-                self.scan_results = cached_subject_rows
-                self._current_batch_data_source = "in_memory_subject_cache"
-            else:
-                self.scan_results = self._refresh_scan_results_from_db(subject_key)
-                self._current_batch_data_source = "database" if self.scan_results else "empty"
-            if self.scan_results:
-                self._populate_scan_grid_from_results(self.scan_results, skip_expensive_checks=True)
-                self._finalize_batch_scan_display(refresh_statuses=False)
-                if self.scan_list.rowCount() > 0:
-                    self.scan_list.selectRow(0)
-                    self.scan_list.setCurrentCell(0, 0)
-                    self._on_scan_selected()
-                self.scan_image_preview.setText("Đã nạp kết quả Batch Scan từ nguồn dữ liệu chuẩn trong cơ sở dữ liệu cho môn này")
-            elif bool(cfg.get("batch_saved")):
-                self._current_batch_data_source = "saved_snapshot"
-                self.scan_image_preview.setText(
-                    f"Môn này đã lưu Batch ({cfg.get('batch_saved_at', '-')}) - Số bài: {cfg.get('batch_result_count', '-')}."
-                )
-            else:
-                self._current_batch_data_source = "empty"
-            self._update_batch_scan_scope_summary()
+            self._load_batch_subject_state(cfg, source_hint="subject_changed")
         finally:
             self._switching_batch_subject = False
+
+    def _load_batch_subject_state(self, subject_cfg: dict | None, source_hint: str = "") -> bool:
+        self._reset_batch_subject_ui_state()
+        cfg = self._merge_saved_batch_snapshot(subject_cfg or {}) if isinstance(subject_cfg, dict) else {}
+        if not cfg:
+            self.batch_template_value.setText("-")
+            self.batch_answer_codes_value.setText("-")
+            self.batch_student_id_value.setText("-")
+            self.batch_scan_folder_value.setText("-")
+            self.batch_scan_state_value.setText("-")
+            if hasattr(self, "batch_context_value"):
+                self.batch_context_value.setText("-")
+            self._current_batch_data_source = "empty"
+            print(f"[BatchLoad] subject=- source=empty rows=0 errors=0")
+            return False
+
+        subject_key = self._subject_key_from_cfg(cfg)
+        runtime_key = self._batch_runtime_key(subject_key)
+        if subject_key and subject_key not in self._answer_keys_ready_subjects:
+            self._ensure_answer_keys_for_subject(subject_key)
+            self._answer_keys_ready_subjects.add(subject_key)
+
+        template_path = self._normalize_template_path(str(cfg.get("template_path", "") or "")) or self._normalize_template_path(str(self.session.template_path if self.session else "")) or "-"
+        scan_folder = str(cfg.get("scan_folder", "") or ((self.session.config or {}).get("scan_root", "") if self.session else "") or "-")
+        codes = ", ".join(sorted((cfg.get("imported_answer_keys") or {}).keys())) or "-"
+        self.batch_template_value.setText(template_path)
+        self.batch_answer_codes_value.setText(codes)
+        self.batch_scan_folder_value.setText(scan_folder)
+
+        tp = Path(template_path) if template_path and template_path != "-" else None
+        template_cache_key = str(tp.resolve()) if tp and tp.exists() else ""
+        tpl_for_view = self._template_cache_by_path.get(template_cache_key) if template_cache_key else None
+        if tpl_for_view is None and tp and tp.exists():
+            try:
+                tpl_for_view = Template.load_json(tp)
+                if template_cache_key:
+                    self._template_cache_by_path[template_cache_key] = tpl_for_view
+            except Exception:
+                tpl_for_view = self.template
+        if tpl_for_view is None:
+            tpl_for_view = self.template
+        has_sid = "Có" if (tpl_for_view and any(z.zone_type.value == "STUDENT_ID_BLOCK" for z in tpl_for_view.zones)) else "Không"
+        self.batch_student_id_value.setText(has_sid)
+        if tpl_for_view:
+            self._apply_template_recognition_settings(tpl_for_view)
+            self.template = tpl_for_view
+
+        if self._restore_cached_working_batch_state(runtime_key):
+            self._current_batch_data_source = "working_cache"
+            self._finalize_batch_scan_display(refresh_statuses=True)
+            self.btn_save_batch_subject.setEnabled(False)
+            self._update_batch_scan_scope_summary()
+            print(f"[BatchLoad] subject={subject_key} source=working_cache rows={self.scan_list.rowCount()} errors={self.error_list.count()}")
+            return True
+
+        scoped_subject = self._batch_result_subject_key(subject_key)
+        db_rows = self.database.fetch_scan_results_for_subject(scoped_subject)
+        if not db_rows:
+            sid = str(self.current_session_id or "").strip()
+            legacy_scoped = f"{sid}::{subject_key}" if sid else ""
+            if legacy_scoped and legacy_scoped != scoped_subject:
+                db_rows = self.database.fetch_scan_results_for_subject(legacy_scoped)
+        loaded_results: list[OMRResult] = []
+        source = "empty"
+        if db_rows:
+            for item in db_rows:
+                try:
+                    loaded_results.append(self._deserialize_omr_result(item))
+                except Exception:
+                    continue
+            source = "database"
+        elif isinstance(cfg.get("batch_saved_results", []), list) and cfg.get("batch_saved_results"):
+            for item in (cfg.get("batch_saved_results", []) or []):
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    loaded_results.append(self._deserialize_omr_result(item))
+                except Exception:
+                    continue
+            source = "batch_saved_results"
+
+        if loaded_results:
+            self.scan_results = list(loaded_results)
+            self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(self.scan_results)
+            self._populate_scan_grid_from_results(self.scan_results, skip_expensive_checks=False)
+        elif isinstance(cfg.get("batch_saved_rows", []), list) and cfg.get("batch_saved_rows"):
+            self.scan_results = []
+            self.scan_list.setRowCount(0)
+            rows_fallback = cfg.get("batch_saved_rows", []) or []
+            self.scan_list.setRowCount(len(rows_fallback))
+            for idx, row in enumerate(rows_fallback):
+                if not isinstance(row, dict):
+                    continue
+                pseudo = OMRResult(
+                    image_path=str(row.get("image_path", "") or ""),
+                    student_id=str(row.get("student_id", "") or ""),
+                    exam_code=str(row.get("exam_code", "") or ""),
+                    mcq_answers={},
+                    true_false_answers={},
+                    numeric_answers={},
+                )
+                setattr(pseudo, "full_name", str(row.get("full_name", "") or ""))
+                setattr(pseudo, "birth_date", str(row.get("birth_date", "") or ""))
+                setattr(pseudo, "exam_room", str(row.get("exam_room", "") or ""))
+                self.scan_results.append(pseudo)
+                payload = {
+                    "student_id": str(row.get("student_id", "") or "-"),
+                    "exam_room": str(row.get("exam_room", "") or "-"),
+                    "exam_code": str(row.get("exam_code", "") or "-"),
+                    "full_name": str(row.get("full_name", "") or "-"),
+                    "birth_date": str(row.get("birth_date", "") or "-"),
+                    "content": str(row.get("content", "") or ""),
+                    "status": str(row.get("status", "") or "OK"),
+                    "recognized_short": str(row.get("recognized_short", "") or ""),
+                    "image_path": str(row.get("image_path", "") or ""),
+                }
+                self._apply_scan_row_payload_to_grid(idx, payload)
+            self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(self.scan_results)
+            source = "batch_saved_rows"
+        else:
+            source = "empty"
+
+        self._finalize_batch_scan_display(refresh_statuses=True)
+        self.btn_save_batch_subject.setEnabled(False)
+        self._current_batch_data_source = source
+        self._update_batch_scan_scope_summary()
+        source_label = source if not source_hint else f"{source}({source_hint})"
+        print(f"[BatchLoad] subject={subject_key} source={source_label} rows={self.scan_list.rowCount()} errors={self.error_list.count()}")
+        return source != "empty"
 
     def _cache_working_batch_state(self, subject_key: str) -> None:
         # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
