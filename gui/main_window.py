@@ -6839,11 +6839,39 @@ class MainWindow(QMainWindow):
 
     def _compute_blank_questions(self, result) -> dict[str, list[int]]:
         expected_by_section = self._expected_questions_by_section(result)
-        return {
-            "MCQ": [q for q in sorted(set(expected_by_section["MCQ"])) if q not in set((result.mcq_answers or {}).keys())],
-            "TF": [q for q in sorted(set(expected_by_section["TF"])) if q not in set((result.true_false_answers or {}).keys())],
-            "NUMERIC": [q for q in sorted(set(expected_by_section["NUMERIC"])) if q not in set((result.numeric_answers or {}).keys())],
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+        configured_counts = self._subject_section_question_counts(subject_key)
+
+        section_answers = {
+            "MCQ": set(int(q) for q in (result.mcq_answers or {}).keys()),
+            "TF": set(int(q) for q in (result.true_false_answers or {}).keys()),
+            "NUMERIC": set(int(q) for q in (result.numeric_answers or {}).keys()),
         }
+        blanks: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            limit = max(0, int(configured_counts.get(sec, 0) or 0))
+            actual_questions = sorted(set(int(q) for q in (expected_by_section.get(sec, []) or [])))
+            if limit > 0:
+                actual_questions = actual_questions[:limit]
+
+            if not actual_questions:
+                if limit <= 0:
+                    continue
+                display_questions = list(range(1, limit + 1))
+                actual_questions = list(display_questions)
+            else:
+                contiguous_local = actual_questions == list(range(1, len(actual_questions) + 1))
+                display_questions = list(actual_questions) if contiguous_local else list(range(1, len(actual_questions) + 1))
+
+            actual_to_display = {int(actual_q): int(display_q) for display_q, actual_q in zip(display_questions, actual_questions)}
+            answered_display = {
+                int(actual_to_display[q_actual])
+                for q_actual in section_answers.get(sec, set())
+                if int(q_actual) in actual_to_display
+            }
+            blanks[sec] = [int(q_display) for q_display in display_questions if int(q_display) not in answered_display]
+        return blanks
         messages: list[str] = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             expected_set = set(expected.get(sec, []))
