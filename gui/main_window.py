@@ -3476,8 +3476,10 @@ class MainWindow(QMainWindow):
         self.scan_lr_split.setStretchFactor(0, 68)
         self.scan_lr_split.setStretchFactor(1, 32)
         self.scan_lr_split.setSizes([680, 320])
-        self.batch_scan_status_bottom = QLabel("Trạng thái file: - | Đã lọc: 0/0 records")
-        self.batch_scan_status_bottom.setWordWrap(True)
+        self.batch_scan_status_bottom = QLabel("Trạng thái file: - | Lọc: 0/0")
+        self.batch_scan_status_bottom.setWordWrap(False)
+        self.batch_scan_status_bottom.setFixedHeight(22)
+        self.batch_scan_status_bottom.setStyleSheet("QLabel { padding: 2px 8px; color: #444; }")
 
         # Create scoring widgets with explicit parent to avoid lifecycle issues
         # on some PySide6 builds (preventing "Internal C++ object ... already deleted").
@@ -5327,7 +5329,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, "scan_list"):
             visible_rows = sum(1 for r in range(total_rows) if not self.scan_list.isRowHidden(r))
         file_status = str(self.batch_scan_state_value.text() if hasattr(self, "batch_scan_state_value") else "-").strip() or "-"
-        self.batch_scan_status_bottom.setText(f"Trạng thái file: {file_status} | Đã lọc: {visible_rows}/{total_rows} records")
+        bar_text = f"Trạng thái file: {file_status} | Lọc: {visible_rows}/{total_rows}"
+        self.batch_scan_status_bottom.setText(bar_text)
+        self.batch_scan_status_bottom.setToolTip(bar_text)
 
     @staticmethod
     def _recommended_batch_timeout_sec(template: Template | None) -> float:
