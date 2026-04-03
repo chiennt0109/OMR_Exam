@@ -5913,10 +5913,9 @@ class MainWindow(QMainWindow):
             if improved:
                 result = retried
         result.sync_legacy_aliases()
-        self._trim_result_answers_to_expected_scope(result)
         subject_key = self._current_batch_subject_key() or self._resolve_preferred_scoring_subject()
-        result.answer_string = self._build_answer_string_for_result(result, subject_key)
         scoped = self._scoped_result_copy(result)
+        result.answer_string = self._build_answer_string_for_result(scoped, subject_key)
         blank_map = self._compute_blank_questions(scoped)
         cached_status = ", ".join(self._status_parts_for_result(result, 1)) or "OK"
         setattr(result, "cached_status", cached_status)
