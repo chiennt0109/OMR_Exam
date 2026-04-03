@@ -5616,6 +5616,8 @@ class MainWindow(QMainWindow):
             self.scan_result_preview.setRowCount(0)
 
         self.scan_results = list(cached.get("scan_results", []))
+        for res in self.scan_results:
+            self._trim_result_answers_to_expected_scope(res)
         self.scan_results_by_subject[key] = list(self.scan_results)
         duplicate_ids: dict[str, int] = {}
         available_exam_codes = self._available_exam_codes()
@@ -8724,6 +8726,7 @@ class MainWindow(QMainWindow):
         row_views: list[dict[str, object]] = []
         for result in results:
             self._refresh_student_profile_for_result(result)
+            scoped = self._scoped_result_copy(result)
             cached_blank_map = getattr(result, "cached_blank_summary", None)
             can_use_cached_display = isinstance(cached_blank_map, dict)
             sid = str(result.student_id or "").strip()
