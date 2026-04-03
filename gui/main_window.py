@@ -4065,6 +4065,7 @@ class MainWindow(QMainWindow):
             "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
             "manual_content_override": str(getattr(result, "manual_content_override", "") or ""),
             "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
+            "manually_edited": bool(getattr(result, "manually_edited", False)),
             "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
             "recognized_template_path": str(getattr(result, "recognized_template_path", "") or ""),
             "recognized_alignment_profile": str(getattr(result, "recognized_alignment_profile", "") or ""),
@@ -4096,6 +4097,7 @@ class MainWindow(QMainWindow):
         setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
         setattr(result, "manual_content_override", str(payload.get("manual_content_override", "") or ""))
         setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
+        setattr(result, "manually_edited", bool(payload.get("manually_edited", False)))
         setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
         setattr(result, "recognized_template_path", str(payload.get("recognized_template_path", "") or ""))
         setattr(result, "recognized_alignment_profile", str(payload.get("recognized_alignment_profile", "") or ""))
@@ -9231,7 +9233,9 @@ class MainWindow(QMainWindow):
             subject_scope=subject_scope,
             available_exam_codes=available_exam_codes,
         )
-        status_text = str(forced_status or "").strip() or (", ".join(status_parts) if status_parts else "OK")
+        manual_override_status = "Đã sửa" if bool(getattr(result, "manually_edited", False)) else ""
+        effective_forced_status = str(forced_status or manual_override_status or "").strip()
+        status_text = effective_forced_status or (", ".join(status_parts) if status_parts else "OK")
         manual_content_override = str(getattr(result, "manual_content_override", "") or "").strip()
         content_text = manual_content_override if manual_content_override else self._build_recognition_content_text(scoped, blank_map)
         recognized_short = self._short_recognition_text_for_result(scoped)
@@ -9239,8 +9243,8 @@ class MainWindow(QMainWindow):
         if row_idx is not None and row_idx >= 0:
             self.scan_blank_summary[row_idx] = dict(blank_map)
             self.scan_blank_questions[row_idx] = list(blank_map.get("MCQ", []))
-            if str(forced_status or "").strip():
-                self.scan_forced_status_by_index[row_idx] = str(forced_status).strip()
+            if effective_forced_status:
+                self.scan_forced_status_by_index[row_idx] = effective_forced_status
             elif row_idx in self.scan_forced_status_by_index:
                 self.scan_forced_status_by_index.pop(row_idx, None)
 
@@ -9262,7 +9266,7 @@ class MainWindow(QMainWindow):
             "manual_content_override": manual_content_override,
             "status": status_text,
             "recognized_short": recognized_short,
-            "forced_status": str(forced_status or "").strip(),
+            "forced_status": effective_forced_status,
             "blank_map": dict(blank_map),
             "serialized_result": self._serialize_omr_result(result),
             "recognized_template_path": str(getattr(result, "recognized_template_path", "") or ""),
@@ -10248,6 +10252,30 @@ class MainWindow(QMainWindow):
             res = self.scan_results[idx]
             self.database.log_change("scan_results", str(getattr(res, "image_path", "") or idx), source, "", message, source)
 
+    @staticmethod
+    def _result_identity_key(image_path: str) -> str:
+        return str(image_path or "").strip()
+
+    def _row_index_by_image_path(self, image_path: str) -> int:
+        key = self._result_identity_key(image_path)
+        if not key or not hasattr(self, "scan_list"):
+            return -1
+        for row in range(self.scan_list.rowCount()):
+            sid_item = self.scan_list.item(row, 0)
+            row_image = self._result_identity_key(str(sid_item.data(Qt.UserRole) if sid_item else ""))
+            if row_image == key:
+                return row
+        return -1
+
+    def _mark_result_manually_edited(self, result: OMRResult, row_idx: int | None = None) -> None:
+        setattr(result, "manually_edited", True)
+        setattr(result, "cached_forced_status", "Đã sửa")
+        image_key = self._result_identity_key(getattr(result, "image_path", ""))
+        resolved_row = row_idx if row_idx is not None and row_idx >= 0 else self._row_index_by_image_path(image_key)
+        print(f"[ManualEdit] image={image_key} row={resolved_row}")
+        if resolved_row >= 0:
+            self.scan_forced_status_by_index[resolved_row] = "Đã sửa"
+
     def _persist_scan_results_to_db(self, subject_key: str) -> None:
         source_rows = list(self.scan_results_by_subject.get(self._batch_result_subject_key(subject_key), self.scan_results) or [])
         for result in source_rows:
@@ -10334,6 +10362,11 @@ class MainWindow(QMainWindow):
         if idx < 0 or idx >= self.scan_list.rowCount():
             return
         forced_status = self.scan_forced_status_by_index.get(idx, "")
+        if not forced_status and idx < len(self.scan_results):
+            row_result = self.scan_results[idx]
+            if bool(getattr(row_result, "manually_edited", False)):
+                forced_status = "Đã sửa"
+                self.scan_forced_status_by_index[idx] = forced_status
         status = forced_status or (
             self._status_text_for_row(
                 idx,
@@ -10636,6 +10669,7 @@ class MainWindow(QMainWindow):
             rebuilt = self._build_result_from_saved_table_row(idx)
             if rebuilt is not None:
                 setattr(rebuilt, "manual_content_override", manual_content_text)
+                self._mark_result_manually_edited(rebuilt, idx)
                 self._refresh_student_profile_for_result(rebuilt, idx)
                 self._set_scan_result_at_row(idx, rebuilt)
                 subject_key_now = self._current_batch_subject_key()
@@ -10794,8 +10828,8 @@ class MainWindow(QMainWindow):
             "NUMERIC": {"display_to_actual": {}, "actual_to_display": {}},
         }
         preview_state: dict[str, object] = {"pix": QPixmap(), "image_name": "-", "zoom": default_zoom_factor}
-        loaded_snapshots: dict[int, dict[str, object]] = {}
-        dialog_saved_rows: set[int] = set()
+        loaded_snapshots: dict[str, dict[str, object]] = {}
+        dialog_saved_images: set[str] = set()
 
         def _question_numbers(values) -> list[int]:
             out = {int(q) for q in (values or {}).keys() if str(q).strip().lstrip('-').isdigit()}
@@ -10804,8 +10838,12 @@ class MainWindow(QMainWindow):
         def _current_result() -> OMRResult:
             return self.scan_results[dialog_state["index"]]
 
+        def _current_result_image_key() -> str:
+            return self._result_identity_key(getattr(_current_result(), "image_path", ""))
+
         def _snapshot_from_result(result: OMRResult) -> dict[str, object]:
             return {
+                "image_path": self._result_identity_key(getattr(result, "image_path", "")),
                 "student_id": str(result.student_id or "").strip(),
                 "exam_code": str(result.exam_code or "").strip(),
                 "mcq_answers": {int(q): str(v) for q, v in (result.mcq_answers or {}).items()},
@@ -11029,6 +11067,7 @@ class MainWindow(QMainWindow):
                 if valid_exam_codes and exam_code_text not in {"", "-"} and exam_code_text not in valid_exam_codes:
                     raise ValueError(f"Exam code '{exam_code_text}' không có đáp án hợp lệ cho môn hiện tại.")
             snapshot = {
+                "image_path": self._result_identity_key(getattr(result, "image_path", "")),
                 "student_id": student_id_text,
                 "exam_code": exam_code_text,
                 "mcq_answers": {},
@@ -11260,13 +11299,15 @@ class MainWindow(QMainWindow):
             if not changes:
                 return True
 
+            self._mark_result_manually_edited(result, idx_local)
             self._refresh_student_profile_for_result(result)
             self._record_adjustment(idx_local, changes, "dialog_edit")
             self._persist_single_scan_result_to_db(result, note="dialog_edit")
-            dialog_saved_rows.add(idx_local)
+            dialog_saved_images.add(_current_result_image_key())
             self.btn_save_batch_subject.setEnabled(False)
             invalidated = self._invalidate_scoring_for_student_ids([old_sid_for_score, str(result.student_id or "").strip()], reason="dialog_edit")
-            loaded_snapshots[idx_local] = _snapshot_from_result(result)
+            loaded_snapshots[_current_result_image_key()] = _snapshot_from_result(result)
+            print(f"[EditDialogSave] row={idx_local} image={_current_result_image_key()} changes={len(changes)}")
             if save_feedback:
                 notices = ["Đã lưu thay đổi cho bài hiện tại."]
                 if invalidated > 0:
@@ -11281,6 +11322,8 @@ class MainWindow(QMainWindow):
             dialog_state["index"] = new_index
             self.scan_list.setCurrentCell(new_index, 0)
             result = self.scan_results[new_index]
+            image_key = self._result_identity_key(getattr(result, "image_path", ""))
+            print(f"[EditDialogOpen] row={new_index} image={image_key}")
             dlg.setWindowTitle(f"Sửa bài thi: {Path(result.image_path).name}")
             self._load_student_correction_options(str(result.student_id or "").strip())
             inp_sid.blockSignals(True)
@@ -11295,15 +11338,16 @@ class MainWindow(QMainWindow):
             current_code = str((preserve_snapshot or {}).get("exam_code", result.exam_code or ""))
             _populate_exam_code_combo(inp_code, subject_key, current_code)
 
-            data_snapshot = preserve_snapshot or loaded_snapshots.get(new_index) or _snapshot_from_result(result)
-            loaded_snapshots[new_index] = {
+            data_snapshot = preserve_snapshot or loaded_snapshots.get(image_key) or _snapshot_from_result(result)
+            loaded_snapshots[image_key] = {
+                "image_path": image_key,
                 "student_id": str(data_snapshot.get("student_id", "") or "").strip(),
                 "exam_code": str(data_snapshot.get("exam_code", "") or "").strip(),
                 "mcq_answers": {int(q): str(v) for q, v in (data_snapshot.get("mcq_answers", {}) or {}).items()},
                 "true_false_answers": {int(q): dict(v or {}) for q, v in (data_snapshot.get("true_false_answers", {}) or {}).items()},
                 "numeric_answers": {int(q): str(v) for q, v in (data_snapshot.get("numeric_answers", {}) or {}).items()},
             }
-            _refresh_editor_widgets(loaded_snapshots[new_index])
+            _refresh_editor_widgets(loaded_snapshots[image_key])
             _render_preview_for_result(result)
             btn_prev.setEnabled(new_index > 0)
             btn_prev_top.setEnabled(new_index > 0)
@@ -11318,14 +11362,16 @@ class MainWindow(QMainWindow):
                 snapshot = _collect_editor_snapshot(validate=False)
             except Exception:
                 snapshot = _snapshot_from_result(_current_result())
-            loaded_snapshots[dialog_state["index"]] = {
+            image_key = _current_result_image_key()
+            loaded_snapshots[image_key] = {
+                "image_path": image_key,
                 "student_id": str(snapshot.get("student_id", "") or "").strip(),
                 "exam_code": str(snapshot.get("exam_code", "") or "").strip(),
                 "mcq_answers": {int(q): str(v) for q, v in (snapshot.get("mcq_answers", {}) or {}).items()},
                 "true_false_answers": {int(q): dict(v or {}) for q, v in (snapshot.get("true_false_answers", {}) or {}).items()},
                 "numeric_answers": {int(q): str(v) for q, v in (snapshot.get("numeric_answers", {}) or {}).items()},
             }
-            _refresh_editor_widgets(loaded_snapshots[dialog_state["index"]])
+            _refresh_editor_widgets(loaded_snapshots[image_key])
 
         def _navigate(offset: int) -> None:
             target = dialog_state["index"] + offset
@@ -11340,7 +11386,7 @@ class MainWindow(QMainWindow):
                 snapshot = _collect_editor_snapshot(validate=False)
             except Exception:
                 return False
-            baseline = loaded_snapshots.get(dialog_state["index"], _snapshot_from_result(_current_result()))
+            baseline = loaded_snapshots.get(_current_result_image_key(), _snapshot_from_result(_current_result()))
             return snapshot != baseline
 
         def _request_close() -> None:
@@ -11356,20 +11402,23 @@ class MainWindow(QMainWindow):
                     return
                 if choice == QMessageBox.Save and not _apply_changes(save_feedback=False):
                     return
-            if dialog_saved_rows:
-                for saved_idx in sorted(dialog_saved_rows):
+            if dialog_saved_images:
+                for saved_image in sorted(dialog_saved_images):
+                    saved_idx = self._row_index_by_image_path(saved_image)
                     if 0 <= saved_idx < len(self.scan_results):
                         saved_result = self.scan_results[saved_idx]
                         self._refresh_student_profile_for_result(saved_result, saved_idx)
                         scoped_saved = self._scoped_result_copy(saved_result)
                         self.scan_blank_summary[saved_idx] = self._compute_blank_questions(scoped_saved)
                         self._update_scan_row_from_result(saved_idx, saved_result)
+                        self._persist_single_scan_result_to_db(saved_result, note="dialog_close_sync")
                 self._refresh_all_statuses()
                 current_idx = dialog_state["index"]
                 if 0 <= current_idx < len(self.scan_results):
                     self.scan_list.setCurrentCell(current_idx, 0)
                     self._update_scan_preview(current_idx)
                     self._sync_correction_detail_panel(self.scan_results[current_idx], rebuild_editor=False)
+            print(f"[EditDialogClose] saved_images={len(dialog_saved_images)} current_row={dialog_state['index']}")
             dlg.accept()
 
         inp_code.currentIndexChanged.connect(lambda _=0: _rebuild_for_exam_code_change())
@@ -11434,6 +11483,7 @@ class MainWindow(QMainWindow):
         sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(res))
         self.scan_list.setItem(idx, 0, sid_item)
         if changes:
+            self._mark_result_manually_edited(res, idx)
             self._refresh_student_profile_for_result(res)
             scoped = self._scoped_result_copy(res)
             self.scan_blank_summary[idx] = self._compute_blank_questions(scoped)
