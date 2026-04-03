@@ -6852,19 +6852,31 @@ class MainWindow(QMainWindow):
         for sec in ["MCQ", "TF", "NUMERIC"]:
             limit = max(0, int(configured_counts.get(sec, 0) or 0))
             actual_questions = sorted(set(int(q) for q in (expected_by_section.get(sec, []) or [])))
+            if limit <= 0 and not actual_questions:
+                continue
+
             if limit > 0:
-                actual_questions = actual_questions[:limit]
-
-            if not actual_questions:
-                if limit <= 0:
-                    continue
                 display_questions = list(range(1, limit + 1))
-                actual_questions = list(display_questions)
+                actual_questions = actual_questions[:limit]
             else:
-                contiguous_local = actual_questions == list(range(1, len(actual_questions) + 1))
-                display_questions = list(actual_questions) if contiguous_local else list(range(1, len(actual_questions) + 1))
+                display_questions = list(actual_questions)
 
-            actual_to_display = {int(actual_q): int(display_q) for display_q, actual_q in zip(display_questions, actual_questions)}
+            # Ưu tiên mapping identity cho các câu đã đánh số lại theo section (1..N).
+            actual_to_display = {int(q): int(q) for q in display_questions}
+            # Với dữ liệu cũ dùng số câu toàn cục (ví dụ TF bắt đầu từ 16), map bổ sung theo thứ tự.
+            if limit > 0:
+                mapped_display_idx = 1
+                for actual_q in actual_questions:
+                    if actual_q in actual_to_display:
+                        continue
+                    if mapped_display_idx > limit:
+                        break
+                    while mapped_display_idx in actual_to_display.values() and mapped_display_idx <= limit:
+                        mapped_display_idx += 1
+                    if mapped_display_idx > limit:
+                        break
+                    actual_to_display[int(actual_q)] = int(mapped_display_idx)
+
             answered_display = {
                 int(actual_to_display[q_actual])
                 for q_actual in section_answers.get(sec, set())
