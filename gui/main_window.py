@@ -4410,21 +4410,34 @@ class MainWindow(QMainWindow):
                 return False
             saved_results = [self._serialize_omr_result(x) for x in current_results]
             timestamp = datetime.now().isoformat(timespec="seconds")
-            batch_rows_payload = [
-                {
-                    "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                    "exam_room": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                    "full_name": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                    "birth_date": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                    "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                    "status": self.scan_list.item(r, 6).text() if self.scan_list.item(r, 6) else "-",
-                    "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                    "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                    "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                    "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
-                }
-                for r in range(self.scan_list.rowCount())
-            ]
+            batch_rows_payload = []
+            for r in range(self.scan_list.rowCount()):
+                row_result = current_results[r] if r < len(current_results) else self._build_result_from_saved_table_row(r)
+                serialized = self._serialize_omr_result(row_result) if row_result is not None else {}
+                batch_rows_payload.append(
+                    {
+                        "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
+                        "exam_room": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
+                        "full_name": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
+                        "birth_date": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
+                        "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
+                        "status": self.scan_list.item(r, 6).text() if self.scan_list.item(r, 6) else "-",
+                        "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
+                        "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
+                        "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
+                        "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
+                        "answer_string": str(getattr(row_result, "answer_string", "") or ""),
+                        "mcq_answers": dict(getattr(row_result, "mcq_answers", {}) or {}),
+                        "true_false_answers": dict(getattr(row_result, "true_false_answers", {}) or {}),
+                        "numeric_answers": dict(getattr(row_result, "numeric_answers", {}) or {}),
+                        "recognition_errors": list(getattr(row_result, "recognition_errors", []) or []),
+                        "issues": [
+                            {"code": str(getattr(i, "code", "") or ""), "message": str(getattr(i, "message", "") or "")}
+                            for i in (getattr(row_result, "issues", []) or [])
+                        ],
+                        "serialized_result": serialized,
+                    }
+                )
             batch_preview_payload = [
                 {
                     "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
@@ -5492,6 +5505,7 @@ class MainWindow(QMainWindow):
                     "status": str(row.get("status", "") or "OK"),
                     "recognized_short": str(row.get("recognized_short", "") or ""),
                     "image_path": str(row.get("image_path", "") or ""),
+                    "serialized_result": dict(row.get("serialized_result", {}) or {}),
                 }
                 self._apply_scan_row_payload_to_grid(idx, payload)
             self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(self.scan_results)
@@ -5516,6 +5530,8 @@ class MainWindow(QMainWindow):
         rows: list[dict] = []
         for r in range(self.scan_list.rowCount()):
             sid_item = self.scan_list.item(r, 0)
+            row_result = self.scan_results[r] if r < len(self.scan_results) else self._build_result_from_saved_table_row(r)
+            serialized = self._serialize_omr_result(row_result) if row_result is not None else {}
             rows.append(
                 {
                     "student_id": sid_item.text() if sid_item else "-",
@@ -5527,6 +5543,16 @@ class MainWindow(QMainWindow):
                     "birth_date": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
                     "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
                     "status": self.scan_list.item(r, 6).text() if self.scan_list.item(r, 6) else "-",
+                    "answer_string": str(getattr(row_result, "answer_string", "") or ""),
+                    "mcq_answers": dict(getattr(row_result, "mcq_answers", {}) or {}),
+                    "true_false_answers": dict(getattr(row_result, "true_false_answers", {}) or {}),
+                    "numeric_answers": dict(getattr(row_result, "numeric_answers", {}) or {}),
+                    "recognition_errors": list(getattr(row_result, "recognition_errors", []) or []),
+                    "issues": [
+                        {"code": str(getattr(i, "code", "") or ""), "message": str(getattr(i, "message", "") or "")}
+                        for i in (getattr(row_result, "issues", []) or [])
+                    ],
+                    "serialized_result": serialized,
                 }
             )
 
@@ -5609,6 +5635,7 @@ class MainWindow(QMainWindow):
                     "status": str(row.get("status", "") or "OK"),
                     "recognized_short": str(row.get("recognized_short", "") or ""),
                     "image_path": str(row.get("image_path", "") or ""),
+                    "serialized_result": dict(row.get("serialized_result", {}) or {}),
                 }
                 self._apply_scan_row_payload_to_grid(r, payload)
 
@@ -8714,6 +8741,7 @@ class MainWindow(QMainWindow):
                     "status": item.get("status", "OK"),
                     "recognized_short": item.get("recognized_short", ""),
                     "image_path": item.get("image_path", ""),
+                    "serialized_result": item.get("serialized_result", {}),
                 }
                 self._apply_scan_row_payload_to_grid(idx, payload, skip_actions=skip_expensive_checks)
             scan_list.resizeRowsToContents()
@@ -8818,6 +8846,7 @@ class MainWindow(QMainWindow):
             "recognized_short": recognized_short,
             "forced_status": str(forced_status or "").strip(),
             "blank_map": dict(blank_map),
+            "serialized_result": self._serialize_omr_result(result),
         }
 
     def _apply_scan_row_payload_to_grid(self, row_idx: int, payload: dict, *, skip_actions: bool = False) -> None:
@@ -8829,6 +8858,7 @@ class MainWindow(QMainWindow):
         sid_item.setData(Qt.UserRole, str(payload.get("image_path", "") or ""))
         sid_item.setData(Qt.UserRole + 1, str(payload.get("exam_code", "") or ""))
         sid_item.setData(Qt.UserRole + 2, str(payload.get("recognized_short", "") or ""))
+        sid_item.setData(Qt.UserRole + 10, dict(payload.get("serialized_result", {}) or {}))
         self.scan_list.setItem(row_idx, 0, sid_item)
         self.scan_list.setItem(row_idx, 1, QTableWidgetItem(str(payload.get("exam_room", "") or "-")))
         self.scan_list.setItem(row_idx, 2, QTableWidgetItem(str(payload.get("exam_code", "") or "-")))
@@ -8887,6 +8917,108 @@ class MainWindow(QMainWindow):
             out.append(result)
         return out
 
+    @staticmethod
+    def _result_has_recognition_payload(result: OMRResult | None) -> bool:
+        if result is None:
+            return False
+        if bool(str(getattr(result, "answer_string", "") or "").strip()):
+            return True
+        if bool(getattr(result, "mcq_answers", {}) or {}):
+            return True
+        if bool(getattr(result, "true_false_answers", {}) or {}):
+            return True
+        if bool(getattr(result, "numeric_answers", {}) or {}):
+            return True
+        if bool(getattr(result, "recognition_errors", []) or []):
+            return True
+        return bool(getattr(result, "issues", []) or [])
+
+    def _restore_full_result_for_row(self, row_idx: int) -> OMRResult | None:
+        if row_idx < 0 or row_idx >= self.scan_list.rowCount():
+            return None
+        sid_item = self.scan_list.item(row_idx, 0)
+        image_path = str(sid_item.data(Qt.UserRole) if sid_item else "")
+        sid_text = str(sid_item.text() if sid_item else "").strip()
+        exam_code = str(sid_item.data(Qt.UserRole + 1) if sid_item else "").strip()
+        if sid_text == "-":
+            sid_text = ""
+
+        def _match_result_pool(pool: list[OMRResult]) -> OMRResult | None:
+            for cand in (pool or []):
+                cand_img = str(getattr(cand, "image_path", "") or "").strip()
+                cand_sid = str(getattr(cand, "student_id", "") or "").strip()
+                cand_code = str(getattr(cand, "exam_code", "") or "").strip()
+                if image_path and cand_img == image_path:
+                    return cand
+                if (not image_path) and sid_text and cand_sid == sid_text and (not exam_code or cand_code == exam_code):
+                    return cand
+            return None
+
+        # 1) current scan_results
+        if 0 <= row_idx < len(self.scan_results):
+            direct = self.scan_results[row_idx]
+            if self._result_has_recognition_payload(direct):
+                print(f"[CorrectionLoad] row={row_idx} source=scan_results has_mcq={bool(direct.mcq_answers)} has_tf={bool(direct.true_false_answers)} has_num={bool(direct.numeric_answers)} answer_string_len={len(str(getattr(direct,'answer_string','') or ''))}")
+                return direct
+
+        # 2) scan_results_by_subject
+        subject_key = self._current_batch_subject_key()
+        subject_pool = list(self.scan_results_by_subject.get(self._batch_result_subject_key(subject_key), []) or [])
+        matched = _match_result_pool(subject_pool)
+        if matched is not None and self._result_has_recognition_payload(matched):
+            print(f"[CorrectionLoad] row={row_idx} source=scan_results_by_subject has_mcq={bool(matched.mcq_answers)} has_tf={bool(matched.true_false_answers)} has_num={bool(matched.numeric_answers)} answer_string_len={len(str(getattr(matched,'answer_string','') or ''))}")
+            return matched
+
+        # 3) working cache scan_results
+        runtime_key = self._batch_runtime_key(subject_key)
+        working = self.batch_working_state_by_subject.get(runtime_key, {}) if isinstance(self.batch_working_state_by_subject.get(runtime_key, {}), dict) else {}
+        working_results = list(working.get("scan_results", []) or [])
+        matched = _match_result_pool(working_results)
+        if matched is not None and self._result_has_recognition_payload(matched):
+            print(f"[CorrectionLoad] row={row_idx} source=working_cache has_mcq={bool(matched.mcq_answers)} has_tf={bool(matched.true_false_answers)} has_num={bool(matched.numeric_answers)} answer_string_len={len(str(getattr(matched,'answer_string','') or ''))}")
+            return matched
+
+        # 4) DB
+        db_rows = self.database.fetch_scan_results_for_subject(self._batch_result_subject_key(subject_key))
+        db_pool: list[OMRResult] = []
+        for item in db_rows:
+            try:
+                db_pool.append(self._deserialize_omr_result(item))
+            except Exception:
+                continue
+        matched = _match_result_pool(db_pool)
+        if matched is not None and self._result_has_recognition_payload(matched):
+            print(f"[CorrectionLoad] row={row_idx} source=db has_mcq={bool(matched.mcq_answers)} has_tf={bool(matched.true_false_answers)} has_num={bool(matched.numeric_answers)} answer_string_len={len(str(getattr(matched,'answer_string','') or ''))}")
+            return matched
+
+        # 5/6) batch_saved_results or serialized payload from row snapshot
+        cfg = self._selected_batch_subject_config() or {}
+        cfg = self._merge_saved_batch_snapshot(cfg) if cfg else {}
+        for raw in (cfg.get("batch_saved_results", []) if isinstance(cfg.get("batch_saved_results", []), list) else []):
+            if not isinstance(raw, dict):
+                continue
+            try:
+                cand = self._deserialize_omr_result(raw)
+            except Exception:
+                continue
+            if _match_result_pool([cand]) is not None:
+                print(f"[CorrectionLoad] row={row_idx} source=batch_saved_results has_mcq={bool(cand.mcq_answers)} has_tf={bool(cand.true_false_answers)} has_num={bool(cand.numeric_answers)} answer_string_len={len(str(getattr(cand,'answer_string','') or ''))}")
+                return cand
+
+        if isinstance(working, dict):
+            rows_snapshot = working.get("rows", []) if isinstance(working.get("rows", []), list) else []
+            if 0 <= row_idx < len(rows_snapshot) and isinstance(rows_snapshot[row_idx], dict):
+                sr = rows_snapshot[row_idx].get("serialized_result", {})
+                if isinstance(sr, dict) and sr:
+                    try:
+                        cand = self._deserialize_omr_result(sr)
+                        print(f"[CorrectionLoad] row={row_idx} source=row_serialized has_mcq={bool(cand.mcq_answers)} has_tf={bool(cand.true_false_answers)} has_num={bool(cand.numeric_answers)} answer_string_len={len(str(getattr(cand,'answer_string','') or ''))}")
+                        return cand
+                    except Exception:
+                        pass
+        print(f"[CorrectionFallback] row={row_idx} reason=minimal_fallback")
+        return self._build_result_from_saved_table_row(row_idx)
+
     def _build_result_from_saved_table_row(self, idx: int) -> OMRResult | None:
         # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
         if idx < 0 or idx >= self.scan_list.rowCount():
@@ -8900,6 +9032,13 @@ class MainWindow(QMainWindow):
             student_id = ""
         exam_code = str(sid_item.data(Qt.UserRole + 1) if sid_item else "").strip()
         result = OMRResult(image_path=image_path, student_id=student_id, exam_code=exam_code)
+        serialized_payload = sid_item.data(Qt.UserRole + 10) if sid_item else None
+        if isinstance(serialized_payload, dict) and serialized_payload:
+            try:
+                restored = self._deserialize_omr_result(serialized_payload)
+                result = restored
+            except Exception:
+                pass
         room_text = str(self.scan_list.item(idx, 1).text() if self.scan_list.item(idx, 1) else "").strip()
         if not room_text and student_id:
             room_text = str(self._subject_room_for_student_id(student_id) or "").strip()
@@ -9260,7 +9399,7 @@ class MainWindow(QMainWindow):
             self._render_preview_pixmap()
             self.btn_zoom_reset.setText(f"{int(self.preview_zoom_factor*100)}%")
 
-        tmp_result = self._build_result_from_saved_table_row(row)
+        tmp_result = self._restore_full_result_for_row(row)
         if tmp_result is not None:
             self.scan_image_preview.set_overlay_markers(self._recognition_overlay_positions_for_result(tmp_result))
             self.scan_image_preview.set_markers(self._marker_positions_for_result(tmp_result))
@@ -9291,7 +9430,10 @@ class MainWindow(QMainWindow):
         if index < 0:
             return
         self._ensure_scan_action_widget(index)
-        if 0 <= index < len(self.scan_results):
+        result = self._restore_full_result_for_row(index)
+        if result is not None:
+            if index >= len(self.scan_results):
+                self._set_scan_result_at_row(index, result)
             self._update_scan_preview(index)
             self._load_selected_result_for_correction()
             return
@@ -9873,81 +10015,117 @@ class MainWindow(QMainWindow):
 
     def _load_selected_result_for_correction(self) -> None:
         idx = self.scan_list.currentRow()
-        if idx < 0 or idx >= len(self.scan_results):
+        if idx < 0:
             return
-        res = self.scan_results[idx]
+        res = self._restore_full_result_for_row(idx)
+        if res is None:
+            return
+        if idx >= len(self.scan_results):
+            self._set_scan_result_at_row(idx, res)
         self.correction_ui_loading = True
         self._sync_correction_detail_panel(res, rebuild_editor=True)
         self.correction_ui_loading = False
 
     def _load_selected_result_for_correction(self) -> None:
         idx = self.scan_list.currentRow()
-        if idx < 0 or idx >= len(self.scan_results):
+        if idx < 0:
             return
-        res = self.scan_results[idx]
+        res = self._restore_full_result_for_row(idx)
+        if res is None:
+            return
+        if idx >= len(self.scan_results):
+            self._set_scan_result_at_row(idx, res)
         self.correction_ui_loading = True
         self._sync_correction_detail_panel(res, rebuild_editor=True)
         self.correction_ui_loading = False
 
     def _load_selected_result_for_correction(self) -> None:
         idx = self.scan_list.currentRow()
-        if idx < 0 or idx >= len(self.scan_results):
+        if idx < 0:
             return
-        res = self.scan_results[idx]
+        res = self._restore_full_result_for_row(idx)
+        if res is None:
+            return
+        if idx >= len(self.scan_results):
+            self._set_scan_result_at_row(idx, res)
         self.correction_ui_loading = True
         self._sync_correction_detail_panel(res, rebuild_editor=True)
         self.correction_ui_loading = False
 
     def _load_selected_result_for_correction(self) -> None:
         idx = self.scan_list.currentRow()
-        if idx < 0 or idx >= len(self.scan_results):
+        if idx < 0:
             return
-        res = self.scan_results[idx]
+        res = self._restore_full_result_for_row(idx)
+        if res is None:
+            return
+        if idx >= len(self.scan_results):
+            self._set_scan_result_at_row(idx, res)
         self.correction_ui_loading = True
         self._sync_correction_detail_panel(res, rebuild_editor=True)
         self.correction_ui_loading = False
 
     def _load_selected_result_for_correction(self) -> None:
         idx = self.scan_list.currentRow()
-        if idx < 0 or idx >= len(self.scan_results):
+        if idx < 0:
             return
-        res = self.scan_results[idx]
+        res = self._restore_full_result_for_row(idx)
+        if res is None:
+            return
+        if idx >= len(self.scan_results):
+            self._set_scan_result_at_row(idx, res)
         self.correction_ui_loading = True
         self._sync_correction_detail_panel(res, rebuild_editor=True)
         self.correction_ui_loading = False
 
     def _load_selected_result_for_correction(self) -> None:
         idx = self.scan_list.currentRow()
-        if idx < 0 or idx >= len(self.scan_results):
+        if idx < 0:
             return
-        res = self.scan_results[idx]
+        res = self._restore_full_result_for_row(idx)
+        if res is None:
+            return
+        if idx >= len(self.scan_results):
+            self._set_scan_result_at_row(idx, res)
         self.correction_ui_loading = True
         self._sync_correction_detail_panel(res, rebuild_editor=True)
         self.correction_ui_loading = False
 
     def _load_selected_result_for_correction(self) -> None:
         idx = self.scan_list.currentRow()
-        if idx < 0 or idx >= len(self.scan_results):
+        if idx < 0:
             return
-        res = self.scan_results[idx]
+        res = self._restore_full_result_for_row(idx)
+        if res is None:
+            return
+        if idx >= len(self.scan_results):
+            self._set_scan_result_at_row(idx, res)
         self.correction_ui_loading = True
         self._sync_correction_detail_panel(res, rebuild_editor=True)
         self.correction_ui_loading = False
 
     def _load_selected_result_for_correction(self) -> None:
         idx = self.scan_list.currentRow()
-        if idx < 0 or idx >= len(self.scan_results):
+        if idx < 0:
             return
-        res = self.scan_results[idx]
+        res = self._restore_full_result_for_row(idx)
+        if res is None:
+            return
+        if idx >= len(self.scan_results):
+            self._set_scan_result_at_row(idx, res)
         self.correction_ui_loading = True
         self._sync_correction_detail_panel(res, rebuild_editor=True)
         self.correction_ui_loading = False
 
     def _load_selected_result_for_correction(self) -> None:
         idx = self.scan_list.currentRow()
-        if idx < 0 or idx >= len(self.scan_results):
+        if idx < 0:
             return
-        res = self.scan_results[idx]
+        res = self._restore_full_result_for_row(idx)
+        if res is None:
+            return
+        if idx >= len(self.scan_results):
+            self._set_scan_result_at_row(idx, res)
         self.correction_ui_loading = True
         self._sync_correction_detail_panel(res, rebuild_editor=True)
         self.correction_ui_loading = False
@@ -9957,6 +10135,9 @@ class MainWindow(QMainWindow):
         if idx < 0:
             QMessageBox.warning(self, "No selection", "Chọn bài thi cần sửa trước.")
             return
+        restored_for_edit = self._restore_full_result_for_row(idx)
+        if restored_for_edit is not None and idx >= len(self.scan_results):
+            self._set_scan_result_at_row(idx, restored_for_edit)
         if idx >= len(self.scan_results):
             sid_item_existing = self.scan_list.item(idx, 0)
             sid = sid_item_existing.text() if sid_item_existing else "-"
