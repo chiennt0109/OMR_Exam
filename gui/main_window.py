@@ -5572,37 +5572,34 @@ class MainWindow(QMainWindow):
             self._populate_scan_grid_from_results(self.scan_results, skip_expensive_checks=False)
         elif isinstance(cfg.get("batch_saved_rows", []), list) and cfg.get("batch_saved_rows"):
             self.scan_results = []
-            self.scan_list.setRowCount(0)
             rows_fallback = cfg.get("batch_saved_rows", []) or []
-            self.scan_list.setRowCount(len(rows_fallback))
+            has_deserialized_payload = False
             for idx, row in enumerate(rows_fallback):
                 if not isinstance(row, dict):
                     continue
-                pseudo = OMRResult(
-                    image_path=str(row.get("image_path", "") or ""),
-                    student_id=str(row.get("student_id", "") or ""),
-                    exam_code=str(row.get("exam_code", "") or ""),
-                    mcq_answers={},
-                    true_false_answers={},
-                    numeric_answers={},
-                )
-                setattr(pseudo, "full_name", str(row.get("full_name", "") or ""))
-                setattr(pseudo, "birth_date", str(row.get("birth_date", "") or ""))
-                setattr(pseudo, "exam_room", str(row.get("exam_room", "") or ""))
-                self.scan_results.append(pseudo)
-                payload = {
-                    "student_id": str(row.get("student_id", "") or "-"),
-                    "exam_room": str(row.get("exam_room", "") or "-"),
-                    "exam_code": str(row.get("exam_code", "") or "-"),
-                    "full_name": str(row.get("full_name", "") or "-"),
-                    "birth_date": str(row.get("birth_date", "") or "-"),
-                    "content": str(row.get("content", "") or ""),
-                    "status": str(row.get("status", "") or "OK"),
-                    "recognized_short": str(row.get("recognized_short", "") or ""),
-                    "image_path": str(row.get("image_path", "") or ""),
-                    "serialized_result": dict(row.get("serialized_result", {}) or {}),
-                }
-                self._apply_scan_row_payload_to_grid(idx, payload)
+                serialized_result = dict(row.get("serialized_result", {}) or {})
+                restored = None
+                if serialized_result:
+                    try:
+                        restored = self._deserialize_omr_result(serialized_result)
+                        has_deserialized_payload = True
+                    except Exception:
+                        restored = None
+                if restored is None:
+                    restored = OMRResult(
+                        image_path=str(row.get("image_path", "") or ""),
+                        student_id=str(row.get("student_id", "") or ""),
+                        exam_code=str(row.get("exam_code", "") or ""),
+                        mcq_answers={},
+                        true_false_answers={},
+                        numeric_answers={},
+                    )
+                    setattr(restored, "full_name", str(row.get("full_name", "") or ""))
+                    setattr(restored, "birth_date", str(row.get("birth_date", "") or ""))
+                    setattr(restored, "exam_room", str(row.get("exam_room", "") or ""))
+                self.scan_results.append(restored)
+            if self.scan_results:
+                self._populate_scan_grid_from_results(self.scan_results, skip_expensive_checks=not has_deserialized_payload)
             self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(self.scan_results)
             source = "batch_saved_rows"
         else:
@@ -5723,23 +5720,36 @@ class MainWindow(QMainWindow):
                 self._apply_scan_row_payload_to_grid(r, payload)
         else:
             rows_fallback = cached.get("rows", []) if isinstance(cached.get("rows", []), list) else []
-            self.scan_list.setRowCount(len(rows_fallback))
-            for r, row in enumerate(rows_fallback):
+            restored_rows: list[OMRResult] = []
+            has_deserialized_payload = False
+            for row in rows_fallback:
                 if not isinstance(row, dict):
                     continue
-                payload = {
-                    "student_id": str(row.get("student_id", "") or "-"),
-                    "exam_room": str(row.get("exam_room", "") or "-"),
-                    "exam_code": str(row.get("exam_code", "") or "-"),
-                    "full_name": str(row.get("full_name", "") or "-"),
-                    "birth_date": str(row.get("birth_date", "") or "-"),
-                    "content": str(row.get("content", "") or ""),
-                    "status": str(row.get("status", "") or "OK"),
-                    "recognized_short": str(row.get("recognized_short", "") or ""),
-                    "image_path": str(row.get("image_path", "") or ""),
-                    "serialized_result": dict(row.get("serialized_result", {}) or {}),
-                }
-                self._apply_scan_row_payload_to_grid(r, payload)
+                serialized_result = dict(row.get("serialized_result", {}) or {})
+                restored = None
+                if serialized_result:
+                    try:
+                        restored = self._deserialize_omr_result(serialized_result)
+                        has_deserialized_payload = True
+                    except Exception:
+                        restored = None
+                if restored is None:
+                    restored = OMRResult(
+                        image_path=str(row.get("image_path", "") or ""),
+                        student_id=str(row.get("student_id", "") or ""),
+                        exam_code=str(row.get("exam_code", "") or ""),
+                        mcq_answers={},
+                        true_false_answers={},
+                        numeric_answers={},
+                    )
+                    setattr(restored, "full_name", str(row.get("full_name", "") or ""))
+                    setattr(restored, "birth_date", str(row.get("birth_date", "") or ""))
+                    setattr(restored, "exam_room", str(row.get("exam_room", "") or ""))
+                restored_rows.append(restored)
+            if restored_rows:
+                self.scan_results = list(restored_rows)
+                self.scan_results_by_subject[key] = list(self.scan_results)
+                self._populate_scan_grid_from_results(self.scan_results, skip_expensive_checks=not has_deserialized_payload)
 
         for row in (cached.get("preview", []) if isinstance(cached.get("preview", []), list) else []):
             if not isinstance(row, dict):
