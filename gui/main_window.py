@@ -6609,7 +6609,10 @@ class MainWindow(QMainWindow):
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
             if vals:
-                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+                if sec == "TF":
+                    blank_parts.append(f"{sec} trống: {len(vals)}")
+                else:
+                    blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         merged = parsed_parts + blank_parts
         return " | ".join(merged) if merged else "-"
 
@@ -6723,7 +6726,10 @@ class MainWindow(QMainWindow):
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
             if vals:
-                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+                if sec == "TF":
+                    blank_parts.append(f"{sec} trống: {len(vals)}")
+                else:
+                    blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
@@ -6877,6 +6883,20 @@ class MainWindow(QMainWindow):
                         break
                     actual_to_display[int(actual_q)] = int(mapped_display_idx)
 
+            if sec == "TF":
+                display_to_actual = {int(v): int(k) for k, v in actual_to_display.items()}
+                missing_tf_statements = 0
+                tf_payload = result.true_false_answers or {}
+                for display_q in display_questions:
+                    actual_q = int(display_to_actual.get(int(display_q), int(display_q)))
+                    flags = tf_payload.get(actual_q, {})
+                    flags = flags if isinstance(flags, dict) else {}
+                    for key in ["a", "b", "c", "d"]:
+                        if key not in flags:
+                            missing_tf_statements += 1
+                blanks[sec] = list(range(1, missing_tf_statements + 1))
+                continue
+
             answered_display = {
                 int(actual_to_display[q_actual])
                 for q_actual in section_answers.get(sec, set())
@@ -6970,7 +6990,10 @@ class MainWindow(QMainWindow):
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
             if vals:
-                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+                if sec == "TF":
+                    blank_parts.append(f"{sec} trống: {len(vals)}")
+                else:
+                    blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
@@ -7080,7 +7103,10 @@ class MainWindow(QMainWindow):
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
             if vals:
-                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+                if sec == "TF":
+                    blank_parts.append(f"{sec} trống: {len(vals)}")
+                else:
+                    blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
@@ -7193,7 +7219,10 @@ class MainWindow(QMainWindow):
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
             if vals:
-                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+                if sec == "TF":
+                    blank_parts.append(f"{sec} trống: {len(vals)}")
+                else:
+                    blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
@@ -7306,7 +7335,10 @@ class MainWindow(QMainWindow):
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
             if vals:
-                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+                if sec == "TF":
+                    blank_parts.append(f"{sec} trống: {len(vals)}")
+                else:
+                    blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
@@ -7419,7 +7451,10 @@ class MainWindow(QMainWindow):
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
             if vals:
-                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+                if sec == "TF":
+                    blank_parts.append(f"{sec} trống: {len(vals)}")
+                else:
+                    blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
@@ -7532,7 +7567,10 @@ class MainWindow(QMainWindow):
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
             if vals:
-                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+                if sec == "TF":
+                    blank_parts.append(f"{sec} trống: {len(vals)}")
+                else:
+                    blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
@@ -7645,7 +7683,10 @@ class MainWindow(QMainWindow):
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
             if vals:
-                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+                if sec == "TF":
+                    blank_parts.append(f"{sec} trống: {len(vals)}")
+                else:
+                    blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
@@ -7758,7 +7799,10 @@ class MainWindow(QMainWindow):
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
             if vals:
-                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+                if sec == "TF":
+                    blank_parts.append(f"{sec} trống: {len(vals)}")
+                else:
+                    blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
@@ -7871,7 +7915,10 @@ class MainWindow(QMainWindow):
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
             if vals:
-                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+                if sec == "TF":
+                    blank_parts.append(f"{sec} trống: {len(vals)}")
+                else:
+                    blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
@@ -7984,7 +8031,10 @@ class MainWindow(QMainWindow):
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
             if vals:
-                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+                if sec == "TF":
+                    blank_parts.append(f"{sec} trống: {len(vals)}")
+                else:
+                    blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
@@ -8097,7 +8147,10 @@ class MainWindow(QMainWindow):
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
             if vals:
-                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+                if sec == "TF":
+                    blank_parts.append(f"{sec} trống: {len(vals)}")
+                else:
+                    blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
@@ -8210,7 +8263,10 @@ class MainWindow(QMainWindow):
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
             if vals:
-                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+                if sec == "TF":
+                    blank_parts.append(f"{sec} trống: {len(vals)}")
+                else:
+                    blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
@@ -8323,7 +8379,10 @@ class MainWindow(QMainWindow):
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
             if vals:
-                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+                if sec == "TF":
+                    blank_parts.append(f"{sec} trống: {len(vals)}")
+                else:
+                    blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
@@ -8436,7 +8495,10 @@ class MainWindow(QMainWindow):
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
             if vals:
-                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+                if sec == "TF":
+                    blank_parts.append(f"{sec} trống: {len(vals)}")
+                else:
+                    blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
@@ -8549,7 +8611,10 @@ class MainWindow(QMainWindow):
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
             if vals:
-                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+                if sec == "TF":
+                    blank_parts.append(f"{sec} trống: {len(vals)}")
+                else:
+                    blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
