@@ -3976,6 +3976,11 @@ class MainWindow(QMainWindow):
             "cached_recognized_short": str(getattr(result, "cached_recognized_short", "") or ""),
             "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
             "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
+            "recognized_template_path": str(getattr(result, "recognized_template_path", "") or ""),
+            "recognized_alignment_profile": str(getattr(result, "recognized_alignment_profile", "") or ""),
+            "recognized_fill_threshold": float(getattr(result, "recognized_fill_threshold", 0.45) or 0.45),
+            "recognized_empty_threshold": float(getattr(result, "recognized_empty_threshold", 0.20) or 0.20),
+            "recognized_certainty_margin": float(getattr(result, "recognized_certainty_margin", 0.08) or 0.08),
         }
 
     @staticmethod
@@ -4001,6 +4006,11 @@ class MainWindow(QMainWindow):
         setattr(result, "cached_recognized_short", str(payload.get("cached_recognized_short", "") or ""))
         setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
         setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
+        setattr(result, "recognized_template_path", str(payload.get("recognized_template_path", "") or ""))
+        setattr(result, "recognized_alignment_profile", str(payload.get("recognized_alignment_profile", "") or ""))
+        setattr(result, "recognized_fill_threshold", float(payload.get("recognized_fill_threshold", 0.45) or 0.45))
+        setattr(result, "recognized_empty_threshold", float(payload.get("recognized_empty_threshold", 0.20) or 0.20))
+        setattr(result, "recognized_certainty_margin", float(payload.get("recognized_certainty_margin", 0.08) or 0.08))
         result.sync_legacy_aliases()
         return result
 
@@ -4431,6 +4441,11 @@ class MainWindow(QMainWindow):
                         "true_false_answers": dict(getattr(row_result, "true_false_answers", {}) or {}),
                         "numeric_answers": dict(getattr(row_result, "numeric_answers", {}) or {}),
                         "recognition_errors": list(getattr(row_result, "recognition_errors", []) or []),
+                        "recognized_template_path": str(getattr(row_result, "recognized_template_path", "") or ""),
+                        "recognized_alignment_profile": str(getattr(row_result, "recognized_alignment_profile", "") or ""),
+                        "recognized_fill_threshold": float(getattr(row_result, "recognized_fill_threshold", 0.45) or 0.45),
+                        "recognized_empty_threshold": float(getattr(row_result, "recognized_empty_threshold", 0.20) or 0.20),
+                        "recognized_certainty_margin": float(getattr(row_result, "recognized_certainty_margin", 0.08) or 0.08),
                         "issues": [
                             {"code": str(getattr(i, "code", "") or ""), "message": str(getattr(i, "message", "") or "")}
                             for i in (getattr(row_result, "issues", []) or [])
@@ -5548,6 +5563,11 @@ class MainWindow(QMainWindow):
                     "true_false_answers": dict(getattr(row_result, "true_false_answers", {}) or {}),
                     "numeric_answers": dict(getattr(row_result, "numeric_answers", {}) or {}),
                     "recognition_errors": list(getattr(row_result, "recognition_errors", []) or []),
+                    "recognized_template_path": str(getattr(row_result, "recognized_template_path", "") or ""),
+                    "recognized_alignment_profile": str(getattr(row_result, "recognized_alignment_profile", "") or ""),
+                    "recognized_fill_threshold": float(getattr(row_result, "recognized_fill_threshold", 0.45) or 0.45),
+                    "recognized_empty_threshold": float(getattr(row_result, "recognized_empty_threshold", 0.20) or 0.20),
+                    "recognized_certainty_margin": float(getattr(row_result, "recognized_certainty_margin", 0.08) or 0.08),
                     "issues": [
                         {"code": str(getattr(i, "code", "") or ""), "message": str(getattr(i, "message", "") or "")}
                         for i in (getattr(row_result, "issues", []) or [])
@@ -5834,13 +5854,62 @@ class MainWindow(QMainWindow):
         return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
     def _recognize_single_image(self, image_path: str, *, allow_retry: bool = False, context_tag: str = ""):
-        # unified recognition entry point
-        if not self.template:
-            raise RuntimeError("Template chưa sẵn sàng để nhận dạng.")
+        cfg = self._selected_batch_subject_config() or self._resolve_subject_config_for_batch()
+        template_path = self._resolve_template_path_for_subject(cfg)
+        return self._recognize_image_with_exact_template(
+            image_path,
+            template_path,
+            source_tag=context_tag or "single",
+            allow_retry=allow_retry,
+        )
+
+    def _try_reprocess_result_rotated_180(self, result, template_path: str = "", source_tag: str = ""):
+        image_path = str(getattr(result, "image_path", "") or "").strip()
+        if not image_path or not Path(image_path).exists():
+            return result, False
+        pix = QPixmap(image_path)
+        if pix.isNull():
+            return result, False
+        rotated = pix.transformed(QTransform().rotate(180.0), Qt.SmoothTransformation)
+        temp_path = str(Path(image_path).with_name(f".{Path(image_path).stem}_tmp_auto180.png"))
+        if not rotated.save(temp_path):
+            return result, False
+        try:
+            chosen_template = template_path or self._resolve_template_path_for_subject(self._selected_batch_subject_config() or self._resolve_subject_config_for_batch())
+            alt = self._recognize_image_with_exact_template(temp_path, chosen_template, source_tag=source_tag or "retry_180", allow_retry=False)
+        finally:
+            try:
+                Path(temp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+        alt.image_path = image_path
+        if self._recognition_quality_score(alt) > self._recognition_quality_score(result):
+            return alt, True
+        return result, False
+
+    def _resolve_template_path_for_subject(self, subject_cfg: dict | None = None) -> str:
+        cfg = subject_cfg if isinstance(subject_cfg, dict) else (self._selected_batch_subject_config() or self._resolve_subject_config_for_batch() or {})
+        template_path = self._normalize_template_path(str((cfg or {}).get("template_path", "") or ""))
+        if not template_path and self.session:
+            template_path = self._normalize_template_path(str(self.session.template_path or ""))
+        return str(template_path or "").strip()
+
+    def _recognize_image_with_exact_template(self, image_path: str, template_path: str, source_tag: str = "", allow_retry: bool = False):
+        path_text = str(template_path or "").strip()
+        if not path_text:
+            raise RuntimeError("Chưa cấu hình template cho môn hiện tại.")
+        pth = Path(path_text)
+        if not pth.exists():
+            raise RuntimeError(f"Không tìm thấy template: {path_text}")
+        loaded_template = Template.load_json(pth)
+        self.template = loaded_template
+        setattr(self, "_active_template_path", str(pth.resolve()))
+        self._apply_template_recognition_settings(self.template, sync_mode_selector=False)
+        print(f"[Recognize] image={image_path} template={path_text} source={source_tag or 'unknown'}")
         result = self.omr_processor.recognize_sheet_production_fast(image_path, self.template, RecognitionContext(collect_diagnostics=False))
         result.sync_legacy_aliases()
         if allow_retry:
-            retried, improved = self._try_reprocess_result_rotated_180(result)
+            retried, improved = self._try_reprocess_result_rotated_180(result, template_path=path_text, source_tag=f"{source_tag}_retry180")
             if improved:
                 result = retried
         result.sync_legacy_aliases()
@@ -5853,32 +5922,15 @@ class MainWindow(QMainWindow):
         setattr(result, "cached_status", cached_status)
         setattr(result, "cached_content", self._build_recognition_content_text(scoped, blank_map))
         setattr(result, "cached_recognized_short", self._short_recognition_text_for_result(scoped))
-        if context_tag:
-            setattr(result, "cached_forced_status", str(context_tag))
+        if source_tag:
+            setattr(result, "cached_forced_status", str(source_tag))
+        md = self.template.metadata if isinstance(self.template.metadata, dict) else {}
+        setattr(result, "recognized_template_path", path_text)
+        setattr(result, "recognized_alignment_profile", str(getattr(self.omr_processor, "alignment_profile", md.get("alignment_profile", "")) or ""))
+        setattr(result, "recognized_fill_threshold", float(getattr(self.omr_processor, "fill_threshold", md.get("fill_threshold", 0.45)) or 0.45))
+        setattr(result, "recognized_empty_threshold", float(getattr(self.omr_processor, "empty_threshold", md.get("empty_threshold", 0.20)) or 0.20))
+        setattr(result, "recognized_certainty_margin", float(getattr(self.omr_processor, "certainty_margin", md.get("certainty_margin", 0.08)) or 0.08))
         return result
-
-    def _try_reprocess_result_rotated_180(self, result):
-        image_path = str(getattr(result, "image_path", "") or "").strip()
-        if not image_path or not Path(image_path).exists() or not self.template:
-            return result, False
-        pix = QPixmap(image_path)
-        if pix.isNull():
-            return result, False
-        rotated = pix.transformed(QTransform().rotate(180.0), Qt.SmoothTransformation)
-        temp_path = str(Path(image_path).with_name(f".{Path(image_path).stem}_tmp_auto180.png"))
-        if not rotated.save(temp_path):
-            return result, False
-        try:
-            alt = self._recognize_single_image(temp_path, allow_retry=False, context_tag="retry_180")
-        finally:
-            try:
-                Path(temp_path).unlink(missing_ok=True)
-            except Exception:
-                pass
-        alt.image_path = image_path
-        if self._recognition_quality_score(alt) > self._recognition_quality_score(result):
-            return alt, True
-        return result, False
 
     def run_batch_scan(self) -> None:
         if self._batch_scan_running:
@@ -6038,6 +6090,11 @@ class MainWindow(QMainWindow):
         self.scan_forced_status_by_index.clear()
 
         self._apply_template_recognition_settings(self.template, sync_mode_selector=False)
+        print(
+            f"[BatchRecognize] subject={subject_key_for_results} template={template_path} "
+            f"profile={getattr(self.omr_processor, 'alignment_profile', '')} "
+            f"thresholds={getattr(self.omr_processor, 'fill_threshold', '-')}/{getattr(self.omr_processor, 'empty_threshold', '-')}/{getattr(self.omr_processor, 'certainty_margin', '-')}"
+        )
         batch_started = time.perf_counter()
 
         def on_progress(current: int, total: int, image_path: str):
@@ -6065,10 +6122,11 @@ class MainWindow(QMainWindow):
             total = len(file_paths)
             for offset, image_path in enumerate(file_paths):
                 on_progress(offset + 1, total, image_path)
-                result = self._recognize_single_image(
+                result = self._recognize_image_with_exact_template(
                     str(image_path),
+                    template_path,
+                    source_tag="batch_scan",
                     allow_retry=False,
-                    context_tag="batch_scan",
                 )
                 new_results.append(result)
                 idx = base_count + offset
@@ -6080,7 +6138,7 @@ class MainWindow(QMainWindow):
                 skip_retry_on_poor = self._skip_retry_for_poor_images() and self._result_is_poor_image(result)
                 need_retry_180 = self._allow_batch_auto_rotate_retry() and (not skip_retry_on_poor) and ((not original_identity) or (not original_meaningful))
                 if need_retry_180:
-                    retried, improved = self._try_reprocess_result_rotated_180(result)
+                    retried, improved = self._try_reprocess_result_rotated_180(result, template_path=template_path, source_tag="batch_scan_retry180")
                     # Accept 180° retry only when quality is strictly improved, otherwise keep original orientation.
                     if improved:
                         result = retried
@@ -8847,6 +8905,11 @@ class MainWindow(QMainWindow):
             "forced_status": str(forced_status or "").strip(),
             "blank_map": dict(blank_map),
             "serialized_result": self._serialize_omr_result(result),
+            "recognized_template_path": str(getattr(result, "recognized_template_path", "") or ""),
+            "recognized_alignment_profile": str(getattr(result, "recognized_alignment_profile", "") or ""),
+            "recognized_fill_threshold": float(getattr(result, "recognized_fill_threshold", 0.45) or 0.45),
+            "recognized_empty_threshold": float(getattr(result, "recognized_empty_threshold", 0.20) or 0.20),
+            "recognized_certainty_margin": float(getattr(result, "recognized_certainty_margin", 0.08) or 0.08),
         }
 
     def _apply_scan_row_payload_to_grid(self, row_idx: int, payload: dict, *, skip_actions: bool = False) -> None:
@@ -9050,21 +9113,22 @@ class MainWindow(QMainWindow):
 
     def _ensure_template_for_selected_subject(self) -> bool:
         cfg = self._selected_batch_subject_config() or self._resolve_subject_config_for_batch()
-        template_path = ""
-        if cfg:
-            template_path = self._normalize_template_path(str(cfg.get("template_path", "") or ""))
-        if not template_path and self.session:
-            template_path = self._normalize_template_path(str(self.session.template_path or ""))
+        template_path = self._resolve_template_path_for_subject(cfg)
         if not template_path:
-            return self.template is not None
+            return False
         pth = Path(template_path)
         if not pth.exists():
-            return self.template is not None
+            return False
+        active_template_path = str(getattr(self, "_active_template_path", "") or "").strip()
+        desired_template_path = str(pth.resolve())
         try:
-            self.template = Template.load_json(pth)
+            if (self.template is None) or (active_template_path != desired_template_path):
+                self.template = Template.load_json(pth)
+                setattr(self, "_active_template_path", desired_template_path)
+            self._apply_template_recognition_settings(self.template, sync_mode_selector=False)
             return True
         except Exception:
-            return self.template is not None
+            return False
 
     @staticmethod
     def _aligned_image_to_qpixmap(image) -> QPixmap:
@@ -9284,7 +9348,9 @@ class MainWindow(QMainWindow):
                 return
             process_path = temp_rotated_path
 
-        new_result = self._recognize_single_image(process_path, allow_retry=False, context_tag="rerecognize_selected")
+        recognized_template_path = str(getattr(old_result, "recognized_template_path", "") or "").strip()
+        template_path = recognized_template_path or self._resolve_template_path_for_subject(self._selected_batch_subject_config() or self._resolve_subject_config_for_batch())
+        new_result = self._recognize_image_with_exact_template(process_path, template_path, source_tag="rerecognize_selected", allow_retry=False)
         if temp_rotated_path:
             try:
                 Path(temp_rotated_path).unlink(missing_ok=True)
