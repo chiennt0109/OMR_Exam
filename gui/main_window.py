@@ -1657,9 +1657,18 @@ class MainWindow(QMainWindow):
             return True
         if hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled():
             return True
-        if self.stack.currentIndex() == 5 and self.embedded_exam_dialog:
+        if self.stack.currentIndex() == 5 and self._embedded_exam_has_real_changes():
             return True
         return False
+
+    def _embedded_exam_has_real_changes(self) -> bool:
+        if not self.embedded_exam_dialog:
+            return False
+        try:
+            current_payload = self.embedded_exam_dialog.payload()
+        except Exception:
+            return False
+        return self._payload_changed(current_payload, self.embedded_exam_original_payload)
 
     def _session_has_real_changes(self) -> bool:
         if not self.session:
@@ -1707,6 +1716,8 @@ class MainWindow(QMainWindow):
 
     def _save_current_work(self) -> bool:
         if self.stack.currentIndex() == 5 and self.embedded_exam_dialog:
+            if not self._embedded_exam_has_real_changes():
+                return True
             return bool(self._save_embedded_exam_editor())
 
         if self._current_route_name == "workspace_scoring":
@@ -4551,6 +4562,7 @@ class MainWindow(QMainWindow):
                 "rows": batch_rows_payload,
                 "preview": batch_preview_payload,
                 "saved_at": timestamp,
+                "dirty": False,
             }
             self._upsert_session_registry(self.current_session_id, self.session.exam_name if self.session else None)
             self._refresh_exam_list()
@@ -5669,6 +5681,7 @@ class MainWindow(QMainWindow):
             "selected_image_path": selected_image_path,
             "preview_rotation_by_index": dict(getattr(self, "preview_rotation_by_index", {}) or {}),
             "preview_markers_by_index": dict(getattr(self, "preview_markers_by_index", {}) or {}),
+            "dirty": bool(hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled()),
         }
 
     def _restore_cached_working_batch_state(self, subject_key: str) -> bool:
@@ -5757,8 +5770,9 @@ class MainWindow(QMainWindow):
         else:
             self._clear_batch_preview_panels()
 
-        if hasattr(self, "btn_save_batch_subject") and self.scan_list.rowCount() > 0:
-            self.btn_save_batch_subject.setEnabled(True)
+        if hasattr(self, "btn_save_batch_subject"):
+            cached_dirty = bool(cached.get("dirty", False))
+            self.btn_save_batch_subject.setEnabled(cached_dirty and self.scan_list.rowCount() > 0)
         return self.scan_list.rowCount() > 0
 
     def _batch_runtime_key(self, subject_key_or_cfg) -> str:
