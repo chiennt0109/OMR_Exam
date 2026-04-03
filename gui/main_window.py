@@ -4685,12 +4685,12 @@ class MainWindow(QMainWindow):
         self._refresh_student_profile_for_result(result, idx)
         scoped = self._scoped_result_copy(result)
         self.scan_blank_summary[idx] = self._compute_blank_questions(scoped)
-        self.scan_list.setItem(idx, 5, QTableWidgetItem(self._build_recognition_content_text(result, self.scan_blank_summary[idx])))
+        self.scan_list.setItem(idx, 5, QTableWidgetItem(self._build_recognition_content_text(scoped, self.scan_blank_summary[idx])))
         sid_item = self.scan_list.item(idx, 0)
         if sid_item:
             sid_item.setText((result.student_id or "").strip() or "-")
             sid_item.setData(Qt.UserRole + 1, result.exam_code or "")
-            sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(result))
+            sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(scoped))
         self._record_adjustment(idx, changes, "visual_correction")
         self._persist_single_scan_result_to_db(result, note="visual_correction")
         image_key = str(getattr(result, "image_path", "") or idx)
@@ -5511,6 +5511,13 @@ class MainWindow(QMainWindow):
             self.scan_result_preview.setRowCount(0)
 
         self.scan_results = list(cached.get("scan_results", []))
+        for res in self.scan_results:
+            self._trim_result_answers_to_expected_scope(res)
+            scoped_res = self._scoped_result_copy(res)
+            scoped_blank = self._compute_blank_questions(scoped_res)
+            setattr(res, "cached_blank_summary", dict(scoped_blank))
+            setattr(res, "cached_content", self._build_recognition_content_text(scoped_res, scoped_blank))
+            setattr(res, "cached_recognized_short", self._short_recognition_text_for_result(scoped_res))
         self.scan_results_by_subject[key] = list(self.scan_results)
 
         for row in (cached.get("rows", []) if isinstance(cached.get("rows", []), list) else []):
@@ -5521,7 +5528,9 @@ class MainWindow(QMainWindow):
             sid_item = QTableWidgetItem(str(row.get("student_id", "-")))
             sid_item.setData(Qt.UserRole, str(row.get("image_path", "") or ""))
             sid_item.setData(Qt.UserRole + 1, str(row.get("exam_code", "") or ""))
-            sid_item.setData(Qt.UserRole + 2, str(row.get("recognized_short", "") or ""))
+            scoped_result = self.scan_results[r] if r < len(self.scan_results) else None
+            scoped_short = self._short_recognition_text_for_result(self._scoped_result_copy(scoped_result)) if scoped_result is not None else ""
+            sid_item.setData(Qt.UserRole + 2, str(scoped_short or row.get("recognized_short", "") or ""))
             self.scan_list.setItem(r, 0, sid_item)
             sid_text = str(row.get("student_id", "") or "").strip()
             room_text = str(row.get("exam_room", "") or "").strip()
@@ -5531,7 +5540,8 @@ class MainWindow(QMainWindow):
             self.scan_list.setItem(r, 2, QTableWidgetItem(str(row.get("exam_code", "-") or "-")))
             self.scan_list.setItem(r, 3, QTableWidgetItem(str(row.get("full_name", "-"))))
             self.scan_list.setItem(r, 4, QTableWidgetItem(str(row.get("birth_date", "-"))))
-            content_text = str(row.get("content", "-"))
+            scoped_blank_map = self._compute_blank_questions(self._scoped_result_copy(scoped_result)) if scoped_result is not None else {"MCQ": [], "TF": [], "NUMERIC": []}
+            content_text = self._build_recognition_content_text(self._scoped_result_copy(scoped_result), scoped_blank_map) if scoped_result is not None else str(row.get("content", "-"))
             content_item = QTableWidgetItem(content_text)
             content_item.setToolTip(content_text)
             self.scan_list.setItem(r, 5, content_item)
@@ -5748,13 +5758,15 @@ class MainWindow(QMainWindow):
             if improved:
                 result = retried
         result.sync_legacy_aliases()
+        self._trim_result_answers_to_expected_scope(result)
         subject_key = self._current_batch_subject_key() or self._resolve_preferred_scoring_subject()
         result.answer_string = self._build_answer_string_for_result(result, subject_key)
-        blank_map = self._compute_blank_questions(self._scoped_result_copy(result))
+        scoped = self._scoped_result_copy(result)
+        blank_map = self._compute_blank_questions(scoped)
         cached_status = ", ".join(self._status_parts_for_result(result, 1)) or "OK"
         setattr(result, "cached_status", cached_status)
-        setattr(result, "cached_content", self._build_recognition_content_text(result, blank_map))
-        setattr(result, "cached_recognized_short", self._short_recognition_text_for_result(result))
+        setattr(result, "cached_content", self._build_recognition_content_text(scoped, blank_map))
+        setattr(result, "cached_recognized_short", self._short_recognition_text_for_result(scoped))
         if context_tag:
             setattr(result, "cached_forced_status", str(context_tag))
         return result
@@ -8571,6 +8583,7 @@ class MainWindow(QMainWindow):
         row_views: list[dict[str, object]] = []
         for result in results:
             self._refresh_student_profile_for_result(result)
+            scoped = self._scoped_result_copy(result)
             cached_blank_map = getattr(result, "cached_blank_summary", None)
             can_use_cached_display = isinstance(cached_blank_map, dict)
             if can_use_cached_display:
@@ -8579,12 +8592,11 @@ class MainWindow(QMainWindow):
                     "TF": [int(x) for x in (cached_blank_map.get("TF", []) or [])],
                     "NUMERIC": [int(x) for x in (cached_blank_map.get("NUMERIC", []) or [])],
                 }
-                scoped = None
+                if not any(blank_map.values()):
+                    blank_map = self._compute_blank_questions(scoped)
             elif skip_expensive_checks:
-                blank_map = {"MCQ": [], "TF": [], "NUMERIC": []}
-                scoped = None
+                blank_map = self._compute_blank_questions(scoped)
             else:
-                scoped = self._scoped_result_copy(result)
                 blank_map = self._compute_blank_questions(scoped)
             sid = str(result.student_id or "").strip()
             exam_code_text = str(result.exam_code or "").strip()
@@ -8616,12 +8628,12 @@ class MainWindow(QMainWindow):
                 )
                 status = ", ".join(status_parts) if status_parts else "OK"
             if can_use_cached_display:
-                content_text = self._build_recognition_content_text(result if scoped is None else scoped, blank_map)
-                recognized_short = str(getattr(result, "cached_recognized_short", "") or "")
+                content_text = self._build_recognition_content_text(scoped, blank_map)
+                recognized_short = self._short_recognition_text_for_result(scoped)
                 forced_status = str(getattr(result, "cached_forced_status", "") or forced_status)
             elif skip_expensive_checks:
-                content_text = self._build_recognition_content_text(result, blank_map)
-                recognized_short = str(getattr(result, "cached_recognized_short", "") or self._short_recognition_text_for_result(result))
+                content_text = self._build_recognition_content_text(scoped, blank_map)
+                recognized_short = self._short_recognition_text_for_result(scoped)
                 setattr(result, "cached_status", status)
                 setattr(result, "cached_content", content_text)
                 setattr(result, "cached_recognized_short", recognized_short)
