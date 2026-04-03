@@ -2135,10 +2135,13 @@ class MainWindow(QMainWindow):
             self._flush_pending_correction_updates()
 
         idx = self.scan_list.currentRow()
-        result = self.scan_results[idx] if 0 <= idx < len(self.scan_results) else self._build_result_from_saved_table_row(idx)
-        if result is None:
-            return
-        image_path = str(getattr(result, "image_path", "") or "").strip()
+        sid_item = self.scan_list.item(idx, 0) if 0 <= idx < self.scan_list.rowCount() else None
+        image_path = str(sid_item.data(Qt.UserRole) if sid_item else "").strip()
+        if not image_path:
+            result = self.scan_results[idx] if 0 <= idx < len(self.scan_results) else self._build_result_from_saved_table_row(idx)
+            if result is None:
+                return
+            image_path = str(getattr(result, "image_path", "") or "").strip()
         if not image_path:
             return
         confirm = QMessageBox.question(
@@ -2152,8 +2155,18 @@ class MainWindow(QMainWindow):
             return
 
         subject_key = self._current_batch_subject_key()
-        self.database.delete_scan_result(subject_key, image_path)
+        scoped_subject = self._batch_result_subject_key(subject_key)
+        candidate_subject_keys: list[str] = [scoped_subject]
+        sid = str(self.current_session_id or "").strip()
+        legacy_scoped = f"{sid}::{subject_key}" if sid and subject_key else ""
+        if legacy_scoped and legacy_scoped not in candidate_subject_keys:
+            candidate_subject_keys.append(legacy_scoped)
+        if subject_key and subject_key not in candidate_subject_keys:
+            candidate_subject_keys.append(subject_key)
+        for key in candidate_subject_keys:
+            self.database.delete_scan_result(key, image_path)
         self.scan_results = [x for x in self._refresh_scan_results_from_db(subject_key) if str(getattr(x, "image_path", "") or "") != ""]
+        self.scan_results_by_subject[scoped_subject] = list(self.scan_results)
         self._populate_scan_grid_from_results(self.scan_results)
         self._rebuild_error_list()
         self._refresh_all_statuses()
