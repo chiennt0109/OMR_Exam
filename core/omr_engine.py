@@ -182,6 +182,13 @@ class OMRProcessor:
         self._batch_worker_local = None
         self._last_alignment_debug: dict[str, object] = {}
 
+        # UI sliders are typically expressed as 0..1 values.
+        # Normalize once and reuse these conservative gates everywhere so
+        # blank bubbles are less likely to be classified as marked.
+        self._fill_level = self._normalized_slider_value(self.fill_threshold, default=0.45)
+        self._empty_level = self._normalized_slider_value(self.empty_threshold, default=0.20)
+        self._certainty_level = self._normalized_slider_value(self.certainty_margin, default=0.08)
+
     # ------------------------------------------------------------------
     # Metadata / mode helpers
     # ------------------------------------------------------------------
@@ -240,6 +247,85 @@ class OMRProcessor:
 
     def _time_budget_exceeded(self) -> bool:
         return bool(self._processing_deadline_monotonic and time.monotonic() >= self._processing_deadline_monotonic)
+
+    @staticmethod
+    def _normalized_slider_value(value: float | int | None, default: float) -> float:
+        try:
+            v = float(value)
+        except Exception:
+            v = float(default)
+        if v < 0.0:
+            v = 0.0
+        if v <= 1.0:
+            return float(max(0.0, min(1.0, v)))
+        if v <= 100.0:
+            return float(max(0.0, min(1.0, v / 100.0)))
+        if v <= 255.0:
+            return float(max(0.0, min(1.0, v / 255.0)))
+        return float(max(0.0, min(1.0, default)))
+
+    @staticmethod
+    def _safe_float(value: object, default: float) -> float:
+        try:
+            return float(value)
+        except Exception:
+            return float(default)
+
+    def _zone_score_floor(self, zone: Zone, zone_type_name: str) -> float:
+        md = dict(getattr(zone, "metadata", {}) or {})
+        if "score_floor" in md:
+            return max(0.0, self._safe_float(md.get("score_floor"), 0.0))
+        level = self._fill_level
+        defaults = {
+            "MCQ_BLOCK": 16.0 + 22.0 * level,
+            "TRUE_FALSE_BLOCK": 15.0 + 20.0 * level,
+            "NUMERIC_BLOCK": 15.0 + 20.0 * level,
+            "STUDENT_ID_BLOCK": 14.0 + 18.0 * level,
+            "EXAM_CODE_BLOCK": 14.0 + 18.0 * level,
+        }
+        return float(defaults.get(zone_type_name, 16.0 + 20.0 * level))
+
+    def _zone_delta_floor(self, zone: Zone, zone_type_name: str) -> float:
+        md = dict(getattr(zone, "metadata", {}) or {})
+        if "delta_floor" in md:
+            return max(0.0, self._safe_float(md.get("delta_floor"), 0.0))
+        level = self._certainty_level
+        defaults = {
+            "MCQ_BLOCK": 5.0 + 24.0 * level,
+            "TRUE_FALSE_BLOCK": 4.0 + 20.0 * level,
+            "NUMERIC_BLOCK": 4.0 + 20.0 * level,
+            "STUDENT_ID_BLOCK": 4.0 + 18.0 * level,
+            "EXAM_CODE_BLOCK": 4.0 + 18.0 * level,
+        }
+        return float(defaults.get(zone_type_name, 4.0 + 20.0 * level))
+
+    def _zone_ratio_floor(self, zone: Zone, zone_type_name: str) -> float:
+        md = dict(getattr(zone, "metadata", {}) or {})
+        if "ratio_floor" in md:
+            return max(1.0, self._safe_float(md.get("ratio_floor"), 1.0))
+        level = self._certainty_level
+        defaults = {
+            "MCQ_BLOCK": 1.18 + 1.05 * level,
+            "TRUE_FALSE_BLOCK": 1.10 + 0.95 * level,
+            "NUMERIC_BLOCK": 1.10 + 0.95 * level,
+            "STUDENT_ID_BLOCK": 1.08 + 0.85 * level,
+            "EXAM_CODE_BLOCK": 1.08 + 0.85 * level,
+        }
+        return float(defaults.get(zone_type_name, 1.10 + 0.95 * level))
+
+    def _filled_state_threshold(self, zone: Zone, zone_type_name: str) -> float:
+        md = dict(getattr(zone, "metadata", {}) or {})
+        if "state_threshold" in md:
+            return max(0.0, self._safe_float(md.get("state_threshold"), 0.0))
+        base = self._zone_score_floor(zone, zone_type_name)
+        return float(max(10.0, base * 0.88))
+
+    def _blank_state_threshold(self, zone: Zone, zone_type_name: str) -> float:
+        md = dict(getattr(zone, "metadata", {}) or {})
+        if "blank_threshold" in md:
+            return max(0.0, self._safe_float(md.get("blank_threshold"), 0.0))
+        empty = max(0.05, self._empty_level)
+        return float(max(6.0, (8.0 + 18.0 * empty)))
 
     # ------------------------------------------------------------------
     # Template plan
@@ -653,21 +739,55 @@ class OMRProcessor:
         return str(getattr(zt, "value", zt) or "")
 
     @staticmethod
-    def _pick_best_index(scores: np.ndarray, threshold: float, margin: float) -> tuple[int | None, float, str]:
+    def _pick_best_index(
+        scores: np.ndarray,
+        threshold: float,
+        margin: float,
+        *,
+        absolute_floor: float = 0.0,
+        delta_floor: float = 0.0,
+        ratio_floor: float = 1.0,
+    ) -> tuple[int | None, float, str]:
         if scores.size == 0:
             return None, 0.0, "empty"
-        order = np.argsort(scores)[::-1]
+        arr = np.asarray(scores, dtype=np.float32).reshape(-1)
+        order = np.argsort(arr)[::-1]
         top_i = int(order[0])
-        top = float(scores[top_i])
-        second = float(scores[int(order[1])]) if len(order) > 1 else 0.0
-        if top < threshold:
-            return None, max(0.0, top - threshold), "below threshold"
-        if (top - second) < margin:
+        top = float(arr[top_i])
+        second = float(arr[int(order[1])]) if len(order) > 1 else 0.0
+        effective_threshold = max(float(threshold), float(absolute_floor))
+        effective_margin = max(float(margin), float(delta_floor))
+        if top < effective_threshold:
+            return None, max(0.0, top - effective_threshold), "below threshold"
+        if (top - second) < effective_margin:
             return None, max(0.0, top - second), "ambiguous"
+        if second > 1e-6 and (top / second) < max(1.0, float(ratio_floor)):
+            return None, max(0.0, top / second), "weak ratio"
         return top_i, float(top - second), "ok"
 
+    def _row_pick_threshold(self, scores: np.ndarray, zone: Zone, zone_type_name: str, *, is_column: bool = False) -> float:
+        arr = np.asarray(scores, dtype=np.float32).reshape(-1)
+        if arr.size == 0:
+            return self._zone_score_floor(zone, zone_type_name)
+        mean_v = float(np.mean(arr))
+        median_v = float(np.median(arr))
+        max_v = float(np.max(arr))
+        if is_column:
+            return float(max(
+                self._zone_score_floor(zone, zone_type_name),
+                mean_v + 3.0,
+                median_v + 4.0,
+                max_v * (0.60 + 0.12 * self._fill_level),
+            ))
+        return float(max(
+            self._zone_score_floor(zone, zone_type_name),
+            mean_v + 3.5,
+            median_v + 5.0,
+            max_v * (0.60 + 0.14 * self._fill_level),
+        ))
+
     def _bubble_states_from_scores(self, scores: np.ndarray, threshold: float | None = None) -> list[bool]:
-        t = self.fill_threshold if threshold is None else float(threshold)
+        t = (15.0 + 20.0 * self._fill_level) if threshold is None else float(threshold)
         return [bool(v >= t) for v in np.asarray(scores, dtype=np.float32).tolist()]
 
     def _decode_mcq_zone(self, mat: np.ndarray, zone: Zone, result: OMRResult) -> None:
@@ -675,17 +795,25 @@ class OMRProcessor:
         if grid is None:
             return
         rows, cols = mat.shape
+        ztype = self._zone_type_name(zone)
         labels = list(getattr(grid, "options", []) or [chr(65 + i) for i in range(cols)])
         if len(labels) < cols:
             labels.extend(chr(65 + i) for i in range(len(labels), cols))
-        row_base = np.maximum(16.0, np.maximum(np.mean(mat, axis=1) + 2.5, np.max(mat, axis=1) * 0.58))
         confs: list[float] = []
         q_count = min(int(getattr(grid, "question_count", 0) or rows), rows)
         for r in range(q_count):
-            idx, conf, reason = self._pick_best_index(mat[r], float(row_base[r]), max(4.0, self.certainty_margin * 255.0))
+            row = mat[r]
+            thr = self._row_pick_threshold(row, zone, ztype, is_column=False)
+            idx, conf, reason = self._pick_best_index(
+                row,
+                thr,
+                self._zone_delta_floor(zone, ztype),
+                absolute_floor=self._zone_score_floor(zone, ztype),
+                delta_floor=self._zone_delta_floor(zone, ztype),
+                ratio_floor=self._zone_ratio_floor(zone, ztype),
+            )
             qno = int(getattr(grid, "question_start", 1) or 1) + r
             if idx is None:
-                result.recognition_errors.append(f"MCQ Q{qno}: {reason}")
                 continue
             result.mcq_answers[qno] = str(labels[idx])
             confs.append(float(conf))
@@ -695,6 +823,7 @@ class OMRProcessor:
         grid = zone.grid
         if grid is None:
             return
+        ztype = self._zone_type_name(zone)
         qpb = max(1, int(zone.metadata.get("questions_per_block", 2) or 2))
         spq = max(1, int(zone.metadata.get("statements_per_question", 4) or 4))
         cps = max(1, int(zone.metadata.get("choices_per_statement", 2) or 2))
@@ -708,10 +837,16 @@ class OMRProcessor:
                 if row_idx >= mat.shape[0]:
                     break
                 row = mat[row_idx, :cps]
-                thr = max(14.0, float(np.mean(row) + 2.0), float(np.max(row) * 0.58))
-                idx, conf, reason = self._pick_best_index(row, thr, max(2.0, self.certainty_margin * 180.0))
+                thr = self._row_pick_threshold(row, zone, ztype, is_column=False)
+                idx, conf, reason = self._pick_best_index(
+                    row,
+                    thr,
+                    self._zone_delta_floor(zone, ztype),
+                    absolute_floor=self._zone_score_floor(zone, ztype),
+                    delta_floor=self._zone_delta_floor(zone, ztype),
+                    ratio_floor=self._zone_ratio_floor(zone, ztype),
+                )
                 if idx is None:
-                    result.recognition_errors.append(f"TF Q{qno}{labels[sidx]}: {reason}")
                     continue
                 result.true_false_answers[qno][labels[sidx]] = bool(idx == 0)
                 confs.append(float(conf))
@@ -738,6 +873,7 @@ class OMRProcessor:
         if grid is None:
             return
         rows, cols = mat.shape
+        ztype = self._zone_type_name(zone)
         md = dict(getattr(zone, "metadata", {}) or {})
         digits_per_answer = max(1, int(md.get("digits_per_answer", cols) or cols))
         question_count = max(1, int(md.get("questions_per_block", md.get("total_questions", 1)) or 1))
@@ -773,8 +909,15 @@ class OMRProcessor:
                 if c >= cols:
                     break
                 col = mat[:, c]
-                thr = max(14.0, float(np.mean(col) + 2.0), float(np.max(col) * 0.55))
-                idx, conf, _ = self._pick_best_index(col, thr, max(2.0, self.certainty_margin * 180.0))
+                thr = self._row_pick_threshold(col, zone, ztype, is_column=True)
+                idx, conf, _ = self._pick_best_index(
+                    col,
+                    thr,
+                    self._zone_delta_floor(zone, ztype),
+                    absolute_floor=self._zone_score_floor(zone, ztype),
+                    delta_floor=self._zone_delta_floor(zone, ztype),
+                    ratio_floor=self._zone_ratio_floor(zone, ztype),
+                )
                 if idx is None:
                     continue
                 tok = token_for_row(idx, local_c)
@@ -882,11 +1025,14 @@ class OMRProcessor:
         })
         context.digit_zone_debug[str(zplan.zone.id)] = zone_debug
         result.digit_zone_debug = dict(context.digit_zone_debug)
-        context.bubble_states_by_zone[str(zplan.zone.id)] = self._bubble_states_from_scores(scores, threshold=max(self.fill_threshold - 6.0, 20.0))
+        ztype = self._zone_type_name(zplan.zone)
+        filled_thr = self._filled_state_threshold(zplan.zone, ztype)
+        blank_thr = self._blank_state_threshold(zplan.zone, ztype)
+        context.bubble_states_by_zone[str(zplan.zone.id)] = self._bubble_states_from_scores(scores, threshold=filled_thr)
         result.bubble_states_by_zone = dict(context.bubble_states_by_zone)
         bubble_count = int(scores.size)
-        recognized = int(np.sum(scores >= max(self.fill_threshold - 6.0, 20.0)))
-        blank = int(np.sum(scores <= max(8.0, self.empty_threshold * 255.0)))
+        recognized = int(np.sum(scores >= filled_thr))
+        blank = int(np.sum(scores <= blank_thr))
         uncertain = int(max(0, bubble_count - recognized - blank))
         return {
             "zone_id": str(zplan.zone.id),
@@ -916,10 +1062,12 @@ class OMRProcessor:
             self._decode_true_false_zone(mat, zplan.zone, result)
         elif ztype == "NUMERIC_BLOCK":
             self._decode_numeric_zone(mat, zplan.zone, result)
-        context.bubble_states_by_zone[str(zplan.zone.id)] = self._bubble_states_from_scores(scores[:need], threshold=max(self.fill_threshold - 6.0, 20.0))
+        filled_thr = self._filled_state_threshold(zplan.zone, ztype)
+        blank_thr = self._blank_state_threshold(zplan.zone, ztype)
+        context.bubble_states_by_zone[str(zplan.zone.id)] = self._bubble_states_from_scores(scores[:need], threshold=filled_thr)
         bubble_count = int(need)
-        recognized = int(np.sum(scores[:need] >= max(self.fill_threshold - 6.0, 20.0)))
-        blank = int(np.sum(scores[:need] <= max(8.0, self.empty_threshold * 255.0)))
+        recognized = int(np.sum(scores[:need] >= filled_thr))
+        blank = int(np.sum(scores[:need] <= blank_thr))
         uncertain = int(max(0, bubble_count - recognized - blank))
         return {
             "zone_id": str(zplan.zone.id),
@@ -1182,9 +1330,10 @@ class OMRProcessor:
         integral_dark = self._build_integral(dark)
         out: dict[str, list[bool]] = {}
         for zplan in plan.zone_plans.values():
-            kind = "header" if self._zone_type_name(zplan.zone) in {"STUDENT_ID_BLOCK", "EXAM_CODE_BLOCK"} else ("numeric" if self._zone_type_name(zplan.zone) == "NUMERIC_BLOCK" else "zone")
+            ztype = self._zone_type_name(zplan.zone)
+            kind = "header" if ztype in {"STUDENT_ID_BLOCK", "EXAM_CODE_BLOCK"} else ("numeric" if ztype == "NUMERIC_BLOCK" else "zone")
             scores, _ = self._sample_with_local_recenter(integral_dark, zplan.centers_px, zplan.radius, dark.shape[:2], kind=kind)
-            out[str(zplan.zone.id)] = self._bubble_states_from_scores(scores, threshold=max(self.fill_threshold - 6.0, 20.0))
+            out[str(zplan.zone.id)] = self._bubble_states_from_scores(scores, threshold=self._filled_state_threshold(zplan.zone, ztype))
         return out
 
     def process_image(self, image_path: str | Path, template: Template) -> OMRResult:
