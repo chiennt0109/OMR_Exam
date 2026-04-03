@@ -4409,6 +4409,7 @@ class MainWindow(QMainWindow):
             batch_rows_payload = [
                 {
                     "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
+                    "exam_room": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
                     "full_name": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
                     "birth_date": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
                     "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
@@ -8838,6 +8839,7 @@ class MainWindow(QMainWindow):
                 profile = self._student_profile_by_id(sid) if sid else {}
                 room_text = str((profile or {}).get("exam_room", "") or "").strip()
             setattr(result, "exam_room", room_text)
+            print(f"[GridPopulate] sid={sid} room={room_text} exam_code={exam_code_text}")
             forced_status = str(forced_status_by_image.get(image_path, "") or "")
             if forced_status:
                 status = forced_status
@@ -9582,6 +9584,7 @@ class MainWindow(QMainWindow):
                 status_parts.append("SBD không có trong danh sách")
             else:
                 room_text = self._subject_room_for_student_id(sid_text, cfg)
+                print(f"[StatusCheck] sid={sid_text} room={room_text} room_missing={self._is_missing_room_for_status(room_text)}")
                 if self._is_missing_room_for_status(room_text):
                     status_parts.append("Thiếu phòng thi")
                 elif room_sids and sid_norm not in room_sids:
@@ -9606,6 +9609,23 @@ class MainWindow(QMainWindow):
                     status_parts.append("Lỗi nhận dạng")
         return list(dict.fromkeys([x for x in status_parts if str(x or "").strip()]))
 
+    def _normalized_exam_room_mapping_by_room(self, cfg: dict) -> dict[str, set[str]]:
+        normalized: dict[str, set[str]] = {}
+        mapping_by_room = cfg.get("exam_room_sbd_mapping_by_room", {}) if isinstance(cfg.get("exam_room_sbd_mapping_by_room", {}), dict) else {}
+        for room_key, vals in mapping_by_room.items():
+            room_text = str(room_key or "").strip()
+            if not room_text:
+                continue
+            raw_vals: list[str] = []
+            if isinstance(vals, (list, tuple, set)):
+                raw_vals.extend(str(x).strip() for x in vals if str(x).strip())
+            elif isinstance(vals, str):
+                raw_vals.extend(x.strip() for x in vals.replace(";", ",").replace("\n", ",").split(",") if x.strip())
+            normalized_vals = {self._normalized_student_id_for_match(x) for x in raw_vals if x}
+            if normalized_vals:
+                normalized[room_text] = normalized_vals
+        return normalized
+
     def _subject_student_room_scope(self) -> tuple[set[str], set[str]]:
         all_sids: set[str] = set()
         for s in (self.session.students if self.session else []):
@@ -9616,27 +9636,19 @@ class MainWindow(QMainWindow):
         room_name = str(cfg.get("exam_room_name", "") or "").strip()
         room_name_norm = self._normalized_room_for_match(room_name)
         mapping_text = str(cfg.get("exam_room_sbd_mapping", "") or "").strip()
-        mapping_by_room = cfg.get("exam_room_sbd_mapping_by_room", {}) if isinstance(cfg.get("exam_room_sbd_mapping_by_room", {}), dict) else {}
+        mapping_by_room = self._normalized_exam_room_mapping_by_room(cfg)
         room_sids: set[str] = set()
-        if mapping_by_room and room_name:
-            selected_vals: list[str] = []
-            for room_key, vals in mapping_by_room.items():
-                if self._normalized_room_for_match(str(room_key or "")) != room_name_norm:
-                    continue
-                if isinstance(vals, (list, tuple, set)):
-                    selected_vals.extend(str(x).strip() for x in vals if str(x).strip())
-                elif isinstance(vals, str):
-                    selected_vals.extend(x.strip() for x in vals.replace(";", ",").replace("\n", ",").split(",") if x.strip())
-            room_sids = {self._normalized_student_id_for_match(x) for x in selected_vals if x}
-            # Fallback when cấu hình phòng thi môn bị lệch: nếu không tìm được room đúng tên
-            # trong mapping_by_room thì lấy theo phòng của danh sách thí sinh.
-            if not room_sids:
-                for s in (self.session.students if self.session else []):
-                    sid = str(getattr(s, "student_id", "") or "").strip()
-                    extra = getattr(s, "extra", {}) or {}
-                    exam_room = str(extra.get("exam_room", "") or "").strip()
-                    if sid and exam_room and self._normalized_room_for_match(exam_room) == room_name_norm:
-                        room_sids.add(self._normalized_student_id_for_match(sid))
+        if mapping_by_room:
+            matched_rooms = [room for room in mapping_by_room.keys() if self._normalized_room_for_match(room) == room_name_norm] if room_name else []
+            if not matched_rooms and len(mapping_by_room) == 1:
+                matched_rooms = [next(iter(mapping_by_room.keys()))]
+            if matched_rooms:
+                for room in matched_rooms:
+                    room_sids.update(mapping_by_room.get(room, set()))
+            elif not room_name:
+                # exam_room_name trống: dùng union của toàn bộ mapping để tránh false negative.
+                for values in mapping_by_room.values():
+                    room_sids.update(values)
         elif mapping_text:
             chunks = [x.strip() for x in mapping_text.replace(";", ",").replace("\n", ",").split(",")]
             room_sids = {self._normalized_student_id_for_match(x) for x in chunks if x}
@@ -9654,27 +9666,34 @@ class MainWindow(QMainWindow):
         if not sid_norm:
             return ""
         cfg = subject_cfg if isinstance(subject_cfg, dict) else (self._selected_batch_subject_config() or {})
-        mapping_by_room = cfg.get("exam_room_sbd_mapping_by_room", {}) if isinstance(cfg.get("exam_room_sbd_mapping_by_room", {}), dict) else {}
+        mapping_by_room = self._normalized_exam_room_mapping_by_room(cfg)
+        print(f"[RoomResolve] sid={sid} sid_norm={sid_norm} exam_room_name={cfg.get('exam_room_name','')} mapping_rooms={list(mapping_by_room.keys())}")
         if mapping_by_room:
-            for room_key, vals in mapping_by_room.items():
-                raw_vals: list[str] = []
-                if isinstance(vals, (list, tuple, set)):
-                    raw_vals.extend(str(x).strip() for x in vals if str(x).strip())
-                elif isinstance(vals, str):
-                    raw_vals.extend(x.strip() for x in vals.replace(";", ",").replace("\n", ",").split(",") if x.strip())
-                normalized_vals = {self._normalized_student_id_for_match(x) for x in raw_vals if x}
-                if sid_norm in normalized_vals:
-                    return str(room_key or "").strip()
+            matched_rooms = [room for room, sids in mapping_by_room.items() if sid_norm in sids]
+            if matched_rooms:
+                preferred_room = str(cfg.get("exam_room_name", "") or "").strip()
+                preferred_norm = self._normalized_room_for_match(preferred_room)
+                if preferred_norm:
+                    for room in matched_rooms:
+                        if self._normalized_room_for_match(room) == preferred_norm:
+                            print(f"[RoomResolve] resolved_room={room}")
+                            return str(room or "").strip()
+                picked = sorted(matched_rooms, key=lambda x: self._normalized_room_for_match(x))[0]
+                print(f"[RoomResolve] resolved_room={picked}")
+                return str(picked or "").strip()
 
         room_name = str(cfg.get("exam_room_name", "") or "").strip()
         mapping_text = str(cfg.get("exam_room_sbd_mapping", "") or "").strip()
         if room_name and mapping_text:
             chunks = [x.strip() for x in mapping_text.replace(";", ",").replace("\n", ",").split(",") if x.strip()]
             if sid_norm in {self._normalized_student_id_for_match(x) for x in chunks if x}:
+                print(f"[RoomResolve] resolved_room={room_name}")
                 return room_name
 
         prof = self._student_profile_by_id(sid)
-        return str(prof.get("exam_room", "") or "")
+        fallback_room = str(prof.get("exam_room", "") or "")
+        print(f"[RoomResolve] resolved_room={fallback_room}")
+        return fallback_room
 
     @staticmethod
     def _student_id_has_recognition_error(student_id: str) -> bool:
