@@ -32,6 +32,32 @@ class ScoreResult:
 
 class ScoringEngine:
     @staticmethod
+    def score_result_to_dict(row: ScoreResult) -> dict:
+        return asdict(row)
+
+    @staticmethod
+    def score_result_from_dict(payload: dict) -> ScoreResult:
+        data = dict(payload or {})
+        return ScoreResult(
+            student_id=str(data.get("student_id", "") or ""),
+            name=str(data.get("name", "") or ""),
+            subject=str(data.get("subject", "") or ""),
+            exam_code=str(data.get("exam_code", "") or ""),
+            correct=int(data.get("correct", 0) or 0),
+            wrong=int(data.get("wrong", 0) or 0),
+            blank=int(data.get("blank", 0) or 0),
+            score=float(data.get("score", 0.0) or 0.0),
+            mcq_correct=int(data.get("mcq_correct", 0) or 0),
+            tf_correct=int(data.get("tf_correct", 0) or 0),
+            numeric_correct=int(data.get("numeric_correct", 0) or 0),
+            bonus_full_credit_count=int(data.get("bonus_full_credit_count", 0) or 0),
+            bonus_full_credit_points=float(data.get("bonus_full_credit_points", 0.0) or 0.0),
+            mcq_compare=str(data.get("mcq_compare", "") or ""),
+            tf_compare=str(data.get("tf_compare", "") or ""),
+            numeric_compare=str(data.get("numeric_compare", "") or ""),
+        )
+
+    @staticmethod
     def _score_mode(subject_config: dict | None = None) -> str:
         cfg = subject_config or {}
         if not isinstance(cfg, dict):
