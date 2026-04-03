@@ -10423,6 +10423,12 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, lambda s=splitter: s.setSizes([max(1, s.width() // 2), max(1, s.width() // 2)]))
 
         editor_refs: dict[str, object] = {"mcq_edits": {}, "table_tf": None, "table_num": None}
+        expected_questions_state: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        question_mapping_state: dict[str, dict[str, dict[int, int]]] = {
+            "MCQ": {"display_to_actual": {}, "actual_to_display": {}},
+            "TF": {"display_to_actual": {}, "actual_to_display": {}},
+            "NUMERIC": {"display_to_actual": {}, "actual_to_display": {}},
+        }
         preview_state: dict[str, object] = {"pix": QPixmap(), "image_name": "-", "zoom": default_zoom_factor}
         loaded_snapshots: dict[int, dict[str, object]] = {}
         dialog_saved_rows: set[int] = set()
@@ -10523,6 +10529,10 @@ class MainWindow(QMainWindow):
                 sec: list(range(1, max(0, int(configured_counts.get(sec, 0) or 0)) + 1))
                 for sec in ["MCQ", "TF", "NUMERIC"]
             }
+            mapping_payload = {
+                sec: {"display_to_actual": {}, "actual_to_display": {}}
+                for sec in ["MCQ", "TF", "NUMERIC"]
+            }
             key = _answer_key_for_exam_code(exam_code_text)
             if key is not None:
                 expected = {
@@ -10541,7 +10551,25 @@ class MainWindow(QMainWindow):
                 if limit <= 0:
                     expected[sec] = []
                 else:
-                    expected[sec] = sorted(expected.get(sec, []))[:limit]
+                    actual_questions = sorted(expected.get(sec, []))[:limit]
+                    if not actual_questions:
+                        display_questions = list(range(1, limit + 1))
+                        actual_questions = list(display_questions)
+                    else:
+                        contiguous_local = actual_questions == list(range(1, len(actual_questions) + 1))
+                        display_questions = list(actual_questions) if contiguous_local else list(range(1, len(actual_questions) + 1))
+                    expected[sec] = list(display_questions)
+                    mapping_payload[sec]["display_to_actual"] = {
+                        int(display_q): int(actual_q)
+                        for display_q, actual_q in zip(display_questions, actual_questions)
+                    }
+                    mapping_payload[sec]["actual_to_display"] = {
+                        int(actual_q): int(display_q)
+                        for display_q, actual_q in zip(display_questions, actual_questions)
+                    }
+            for sec in ["MCQ", "TF", "NUMERIC"]:
+                question_mapping_state[sec]["display_to_actual"] = dict(mapping_payload[sec]["display_to_actual"])
+                question_mapping_state[sec]["actual_to_display"] = dict(mapping_payload[sec]["actual_to_display"])
             return expected
 
         def _clear_layout(layout_obj: QVBoxLayout) -> None:
@@ -10562,7 +10590,7 @@ class MainWindow(QMainWindow):
             table.setHorizontalHeaderLabels(["Câu", "Giá trị"])
             table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
             table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-            rows = question_numbers or sorted(int(q) for q in (data or {}).keys())
+            rows = list(question_numbers or [])
             for q in rows:
                 r = table.rowCount()
                 table.insertRow(r)
@@ -10580,7 +10608,7 @@ class MainWindow(QMainWindow):
             grid.setHorizontalSpacing(8)
             grid.setVerticalSpacing(6)
             edits: dict[int, QLineEdit] = {}
-            questions = question_numbers or sorted(int(q) for q in (data or {}).keys())
+            questions = list(question_numbers or [])
             cols = 8
             for idx_q, q_no in enumerate(questions):
                 row = (idx_q // cols) * 2
@@ -10604,7 +10632,7 @@ class MainWindow(QMainWindow):
             table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
             for c in range(1, 5):
                 table.horizontalHeader().setSectionResizeMode(c, QHeaderView.ResizeToContents)
-            rows = question_numbers or sorted(int(q) for q in (data or {}).keys())
+            rows = list(question_numbers or [])
             for q in rows:
                 r = table.rowCount()
                 table.insertRow(r)
@@ -10647,7 +10675,8 @@ class MainWindow(QMainWindow):
             for q_no, edit in mcq_edits.items():
                 v_text = str(edit.text() if edit else "").strip().upper()[:1]
                 if v_text:
-                    snapshot["mcq_answers"][int(q_no)] = v_text
+                    actual_q = int(question_mapping_state.get("MCQ", {}).get("display_to_actual", {}).get(int(q_no), int(q_no)))
+                    snapshot["mcq_answers"][actual_q] = v_text
 
             table_num = editor_refs.get("table_num")
             if isinstance(table_num, QTableWidget):
@@ -10662,7 +10691,9 @@ class MainWindow(QMainWindow):
                         raise ValueError(f"Numeric dòng {r+1}: Câu phải là số nguyên.")
                     if not q_text.lstrip('-').isdigit() or not v_text:
                         continue
-                    snapshot["numeric_answers"][int(q_text)] = v_text
+                    display_q = int(q_text)
+                    actual_q = int(question_mapping_state.get("NUMERIC", {}).get("display_to_actual", {}).get(display_q, display_q))
+                    snapshot["numeric_answers"][actual_q] = v_text
 
             table_tf = editor_refs.get("table_tf")
             if isinstance(table_tf, QTableWidget):
@@ -10676,7 +10707,8 @@ class MainWindow(QMainWindow):
                         raise ValueError(f"TF dòng {r+1}: Câu phải là số nguyên.")
                     if not q_text.lstrip('-').isdigit():
                         continue
-                    q = int(q_text)
+                    display_q = int(q_text)
+                    q = int(question_mapping_state.get("TF", {}).get("display_to_actual", {}).get(display_q, display_q))
                     flags: dict[str, bool] = {}
                     for i, key in enumerate(labels, start=1):
                         cb = table_tf.cellWidget(r, i)
@@ -10699,6 +10731,9 @@ class MainWindow(QMainWindow):
         def _add_pair_row() -> None:
             table = editor_refs.get("table_num")
             if isinstance(table, QTableWidget):
+                numeric_limit = len(expected_questions_state.get("NUMERIC", []) or [])
+                if numeric_limit > 0 and table.rowCount() >= numeric_limit:
+                    return
                 r = table.rowCount()
                 table.insertRow(r)
                 table.setItem(r, 0, QTableWidgetItem(""))
@@ -10707,6 +10742,9 @@ class MainWindow(QMainWindow):
         def _add_tf_row() -> None:
             table = editor_refs.get("table_tf")
             if isinstance(table, QTableWidget):
+                tf_limit = len(expected_questions_state.get("TF", []) or [])
+                if tf_limit > 0 and table.rowCount() >= tf_limit:
+                    return
                 r = table.rowCount()
                 table.insertRow(r)
                 table.setItem(r, 0, QTableWidgetItem(""))
@@ -10765,20 +10803,40 @@ class MainWindow(QMainWindow):
         def _refresh_editor_widgets(data_snapshot: dict[str, object]) -> None:
             result = _current_result()
             expected = _expected_questions_for_dialog(result, str(data_snapshot.get("exam_code", "") or ""), data_snapshot)
-            mcq_widget, mcq_edits = _build_mcq_grid(expected.get("MCQ", []), data_snapshot.get("mcq_answers", {}) or {})
+            expected_questions_state["MCQ"] = list(expected.get("MCQ", []) or [])
+            expected_questions_state["TF"] = list(expected.get("TF", []) or [])
+            expected_questions_state["NUMERIC"] = list(expected.get("NUMERIC", []) or [])
+            mcq_questions = list(expected.get("MCQ", []) or [])
+            mcq_allowed = set(mcq_questions)
+            mcq_map_actual_to_display = question_mapping_state.get("MCQ", {}).get("actual_to_display", {}) or {}
+            mcq_data = data_snapshot.get("mcq_answers", {}) or {}
+            mcq_data_display = {
+                int(mcq_map_actual_to_display.get(int(q), int(q))): str(v)
+                for q, v in mcq_data.items()
+                if int(mcq_map_actual_to_display.get(int(q), int(q))) in mcq_allowed
+            }
+            mcq_widget, mcq_edits = _build_mcq_grid(mcq_questions, mcq_data_display)
 
             tf_data = data_snapshot.get("true_false_answers", {}) or {}
-            tf_questions = sorted(
-                set(int(q) for q in (expected.get("TF", []) or []))
-                | set(int(q) for q in tf_data.keys())
-            )
+            tf_questions = list(expected.get("TF", []) or [])
+            tf_allowed = set(tf_questions)
+            tf_map_actual_to_display = question_mapping_state.get("TF", {}).get("actual_to_display", {}) or {}
+            tf_data = {
+                int(tf_map_actual_to_display.get(int(q), int(q))): dict(v or {})
+                for q, v in tf_data.items()
+                if int(tf_map_actual_to_display.get(int(q), int(q))) in tf_allowed
+            }
             table_tf = _build_tf_table(tf_questions, tf_data)
 
             numeric_data = data_snapshot.get("numeric_answers", {}) or {}
-            numeric_questions = sorted(
-                set(int(q) for q in (expected.get("NUMERIC", []) or []))
-                | set(int(q) for q in numeric_data.keys())
-            )
+            numeric_questions = list(expected.get("NUMERIC", []) or [])
+            numeric_allowed = set(numeric_questions)
+            numeric_map_actual_to_display = question_mapping_state.get("NUMERIC", {}).get("actual_to_display", {}) or {}
+            numeric_data = {
+                int(numeric_map_actual_to_display.get(int(q), int(q))): str(v)
+                for q, v in numeric_data.items()
+                if int(numeric_map_actual_to_display.get(int(q), int(q))) in numeric_allowed
+            }
             table_num = _build_pair_table(numeric_questions, numeric_data, "Ví dụ: -12.5")
             _clear_layout(mcq_host_lay)
             _clear_layout(tf_host_lay)
