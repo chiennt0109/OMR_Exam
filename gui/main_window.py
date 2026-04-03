@@ -5915,7 +5915,16 @@ class MainWindow(QMainWindow):
         setattr(self, "_active_template_path", str(pth.resolve()))
         self._apply_template_recognition_settings(self.template, sync_mode_selector=False)
         print(f"[Recognize] image={image_path} template={path_text} source={source_tag or 'unknown'}")
-        result = self.omr_processor.recognize_sheet_production_fast(image_path, self.template, RecognitionContext(collect_diagnostics=False))
+        # Keep batch recognition aligned with Template Editor's "Test Recognition" path:
+        # run_recognition_test(..., fast_production_test=True) keeps fast production behavior
+        # but also forces identifier recognition to reduce SID/ExamCode drift between screens.
+        result = self.omr_processor.run_recognition_test(
+            image_path,
+            self.template,
+            RecognitionContext(collect_diagnostics=False),
+            fast_production_test=True,
+            debug_deep=False,
+        )
         result.sync_legacy_aliases()
         if allow_retry:
             retried, improved = self._try_reprocess_result_rotated_180(result, template_path=path_text, source_tag=f"{source_tag}_retry180")
@@ -8883,8 +8892,6 @@ class MainWindow(QMainWindow):
         for result in results:
             self._refresh_student_profile_for_result(result)
             scoped = self._scoped_result_copy(result)
-            cached_blank_map = getattr(result, "cached_blank_summary", None)
-            can_use_cached_display = isinstance(cached_blank_map, dict)
             sid = str(result.student_id or "").strip()
             exam_code_text = str(result.exam_code or "").strip()
             image_path = str(result.image_path or "")
@@ -8903,7 +8910,7 @@ class MainWindow(QMainWindow):
             status_override = ""
             if forced_status:
                 status_override = forced_status
-            elif can_use_cached_display or skip_expensive_checks:
+            elif skip_expensive_checks:
                 status_override = str(getattr(result, "cached_status", "") or "OK")
             payload = self._build_scan_row_payload_from_result(
                 result,
