@@ -5513,45 +5513,45 @@ class MainWindow(QMainWindow):
         self.scan_results = list(cached.get("scan_results", []))
         for res in self.scan_results:
             self._trim_result_answers_to_expected_scope(res)
-            scoped_res = self._scoped_result_copy(res)
-            scoped_blank = self._compute_blank_questions(scoped_res)
-            setattr(res, "cached_blank_summary", dict(scoped_blank))
-            setattr(res, "cached_content", self._build_recognition_content_text(scoped_res, scoped_blank))
-            setattr(res, "cached_recognized_short", self._short_recognition_text_for_result(scoped_res))
         self.scan_results_by_subject[key] = list(self.scan_results)
+        duplicate_ids: dict[str, int] = {}
+        available_exam_codes = self._available_exam_codes()
+        subject_scope = self._subject_student_room_scope()
+        for res in self.scan_results:
+            sid_text = str(getattr(res, "student_id", "") or "").strip()
+            if sid_text and not self._student_id_has_recognition_error(sid_text):
+                duplicate_ids[sid_text] = duplicate_ids.get(sid_text, 0) + 1
 
-        for row in (cached.get("rows", []) if isinstance(cached.get("rows", []), list) else []):
-            if not isinstance(row, dict):
-                continue
-            r = self.scan_list.rowCount()
-            self.scan_list.insertRow(r)
-            sid_item = QTableWidgetItem(str(row.get("student_id", "-")))
-            sid_item.setData(Qt.UserRole, str(row.get("image_path", "") or ""))
-            sid_item.setData(Qt.UserRole + 1, str(row.get("exam_code", "") or ""))
-            scoped_result = self.scan_results[r] if r < len(self.scan_results) else None
-            scoped_short = self._short_recognition_text_for_result(self._scoped_result_copy(scoped_result)) if scoped_result is not None else ""
-            sid_item.setData(Qt.UserRole + 2, str(scoped_short or row.get("recognized_short", "") or ""))
-            self.scan_list.setItem(r, 0, sid_item)
-            sid_text = str(row.get("student_id", "") or "").strip()
-            room_text = str(row.get("exam_room", "") or "").strip()
-            if sid_text and (not room_text or room_text == "-"):
-                room_text = str(self._subject_room_for_student_id(sid_text) or "").strip()
-            self.scan_list.setItem(r, 1, QTableWidgetItem(room_text or "-"))
-            self.scan_list.setItem(r, 2, QTableWidgetItem(str(row.get("exam_code", "-") or "-")))
-            self.scan_list.setItem(r, 3, QTableWidgetItem(str(row.get("full_name", "-"))))
-            self.scan_list.setItem(r, 4, QTableWidgetItem(str(row.get("birth_date", "-"))))
-            scoped_blank_map = self._compute_blank_questions(self._scoped_result_copy(scoped_result)) if scoped_result is not None else {"MCQ": [], "TF": [], "NUMERIC": []}
-            content_text = self._build_recognition_content_text(self._scoped_result_copy(scoped_result), scoped_blank_map) if scoped_result is not None else str(row.get("content", "-"))
-            content_item = QTableWidgetItem(content_text)
-            content_item.setToolTip(content_text)
-            self.scan_list.setItem(r, 5, content_item)
-            status_text = str(row.get("status", "-"))
-            st = QTableWidgetItem(self._compact_status_text(status_text))
-            st.setToolTip(status_text)
-            if st.text() != "OK":
-                st.setForeground(Qt.red)
-            self.scan_list.setItem(r, 6, st)
-            self._set_scan_action_widget(r)
+        if self.scan_results:
+            self.scan_list.setRowCount(len(self.scan_results))
+            for r, result in enumerate(self.scan_results):
+                payload = self._build_scan_row_payload_from_result(
+                    result,
+                    row_idx=r,
+                    duplicate_count=duplicate_ids.get(str(getattr(result, "student_id", "") or "").strip(), 0),
+                    subject_scope=subject_scope,
+                    available_exam_codes=available_exam_codes,
+                    forced_status=str(getattr(result, "cached_forced_status", "") or ""),
+                )
+                self._apply_scan_row_payload_to_grid(r, payload)
+        else:
+            rows_fallback = cached.get("rows", []) if isinstance(cached.get("rows", []), list) else []
+            self.scan_list.setRowCount(len(rows_fallback))
+            for r, row in enumerate(rows_fallback):
+                if not isinstance(row, dict):
+                    continue
+                payload = {
+                    "student_id": str(row.get("student_id", "") or "-"),
+                    "exam_room": str(row.get("exam_room", "") or "-"),
+                    "exam_code": str(row.get("exam_code", "") or "-"),
+                    "full_name": str(row.get("full_name", "") or "-"),
+                    "birth_date": str(row.get("birth_date", "") or "-"),
+                    "content": str(row.get("content", "") or ""),
+                    "status": str(row.get("status", "") or "OK"),
+                    "recognized_short": str(row.get("recognized_short", "") or ""),
+                    "image_path": str(row.get("image_path", "") or ""),
+                }
+                self._apply_scan_row_payload_to_grid(r, payload)
 
         for row in (cached.get("preview", []) if isinstance(cached.get("preview", []), list) else []):
             if not isinstance(row, dict):
@@ -8586,18 +8586,6 @@ class MainWindow(QMainWindow):
             scoped = self._scoped_result_copy(result)
             cached_blank_map = getattr(result, "cached_blank_summary", None)
             can_use_cached_display = isinstance(cached_blank_map, dict)
-            if can_use_cached_display:
-                blank_map = {
-                    "MCQ": [int(x) for x in (cached_blank_map.get("MCQ", []) or [])],
-                    "TF": [int(x) for x in (cached_blank_map.get("TF", []) or [])],
-                    "NUMERIC": [int(x) for x in (cached_blank_map.get("NUMERIC", []) or [])],
-                }
-                if not any(blank_map.values()):
-                    blank_map = self._compute_blank_questions(scoped)
-            elif skip_expensive_checks:
-                blank_map = self._compute_blank_questions(scoped)
-            else:
-                blank_map = self._compute_blank_questions(scoped)
             sid = str(result.student_id or "").strip()
             exam_code_text = str(result.exam_code or "").strip()
             image_path = str(result.image_path or "")
@@ -8613,61 +8601,27 @@ class MainWindow(QMainWindow):
             setattr(result, "exam_room", room_text)
             print(f"[GridPopulate] sid={sid} room={room_text} exam_code={exam_code_text}")
             forced_status = str(forced_status_by_image.get(image_path, "") or "")
+            status_override = ""
             if forced_status:
-                status = forced_status
-            elif can_use_cached_display:
-                status = str(getattr(result, "cached_status", "") or "OK")
-            elif skip_expensive_checks:
-                status = forced_status or "OK"
-            else:
-                status_parts = self._status_parts_for_result(
-                    result,
-                    duplicate_ids.get(sid, 0),
-                    subject_scope=subject_scope,
-                    available_exam_codes=available_exam_codes,
-                )
-                status = ", ".join(status_parts) if status_parts else "OK"
-            if can_use_cached_display:
-                content_text = self._build_recognition_content_text(scoped, blank_map)
-                recognized_short = self._short_recognition_text_for_result(scoped)
-                forced_status = str(getattr(result, "cached_forced_status", "") or forced_status)
-            elif skip_expensive_checks:
-                content_text = self._build_recognition_content_text(scoped, blank_map)
-                recognized_short = self._short_recognition_text_for_result(scoped)
-                setattr(result, "cached_status", status)
-                setattr(result, "cached_content", content_text)
-                setattr(result, "cached_recognized_short", recognized_short)
-                setattr(result, "cached_forced_status", forced_status)
-                setattr(result, "cached_blank_summary", dict(blank_map))
-            else:
-                content_text = self._build_recognition_content_text(scoped, blank_map)
-                recognized_short = self._short_recognition_text_for_result(scoped)
-                setattr(result, "cached_status", status)
-                setattr(result, "cached_content", content_text)
-                setattr(result, "cached_recognized_short", recognized_short)
-                setattr(result, "cached_forced_status", forced_status)
-                setattr(result, "cached_blank_summary", dict(blank_map))
-            row_views.append(
-                {
-                    "result": result,
-                    "image_path": image_path,
-                    "sid": sid,
-                    "exam_code": exam_code_text,
-                    "full_name": str(getattr(result, "full_name", "") or "-"),
-                    "birth_date": str(getattr(result, "birth_date", "") or "-"),
-                    "exam_room": room_text,
-                    "blank_map": blank_map,
-                    "content": content_text,
-                    "status": status,
-                    "forced_status": forced_status,
-                    "recognized_short": recognized_short,
-                }
+                status_override = forced_status
+            elif can_use_cached_display or skip_expensive_checks:
+                status_override = str(getattr(result, "cached_status", "") or "OK")
+            payload = self._build_scan_row_payload_from_result(
+                result,
+                row_idx=None,
+                duplicate_count=duplicate_ids.get(sid, 0),
+                subject_scope=None if skip_expensive_checks else subject_scope,
+                available_exam_codes=None if skip_expensive_checks else available_exam_codes,
+                forced_status=status_override,
             )
+            setattr(result, "cached_forced_status", str(forced_status or getattr(result, "cached_forced_status", "") or ""))
+            payload["forced_status"] = str(forced_status or payload.get("forced_status", "") or "")
+            row_views.append(payload)
 
         row_views.sort(
             key=lambda item: (
                 self._row_sort_bucket(str(item["status"]), item["blank_map"]),
-                self._student_sort_token(str(item["sid"])),
+                self._student_sort_token(str(item["student_id"])),
                 str(item["exam_code"] or "").casefold(),
                 Path(str(item["image_path"] or "")).name.casefold(),
             )
@@ -8691,29 +8645,18 @@ class MainWindow(QMainWindow):
         try:
             scan_list.setRowCount(len(row_views))
             for idx, item in enumerate(row_views):
-                sid_item = QTableWidgetItem(str(item["sid"] or "-"))
-                sid_item.setData(Qt.UserRole, str(item["image_path"] or ""))
-                sid_item.setData(Qt.UserRole + 1, str(item["exam_code"] or ""))
-                sid_item.setData(Qt.UserRole + 2, str(item["recognized_short"] or ""))
-                scan_list.setItem(idx, 0, sid_item)
-                scan_list.setItem(idx, 1, QTableWidgetItem(str(item.get("exam_room", "") or "-")))
-                scan_list.setItem(idx, 2, QTableWidgetItem(str(item["exam_code"] or "-")))
-                scan_list.setItem(idx, 3, QTableWidgetItem(str(item["full_name"] or "-")))
-                scan_list.setItem(idx, 4, QTableWidgetItem(str(item["birth_date"] or "-")))
-                content_full = str(item["content"] or "")
-                content_item = QTableWidgetItem(content_full)
-                content_item.setToolTip(content_full)
-                scan_list.setItem(idx, 5, content_item)
-                full_status = str(item["status"] or "OK")
-                status_item = QTableWidgetItem(self._compact_status_text(full_status, max_len=150))
-                status_item.setToolTip(full_status)
-                if full_status != "OK":
-                    status_item.setForeground(Qt.red)
-                scan_list.setItem(idx, 6, status_item)
-                if skip_expensive_checks:
-                    scan_list.setItem(idx, 7, QTableWidgetItem("..."))
-                else:
-                    self._set_scan_action_widget(idx)
+                payload = {
+                    "student_id": item.get("student_id", ""),
+                    "exam_room": item.get("exam_room", ""),
+                    "exam_code": item.get("exam_code", ""),
+                    "full_name": item.get("full_name", "-"),
+                    "birth_date": item.get("birth_date", "-"),
+                    "content": item.get("content", ""),
+                    "status": item.get("status", "OK"),
+                    "recognized_short": item.get("recognized_short", ""),
+                    "image_path": item.get("image_path", ""),
+                }
+                self._apply_scan_row_payload_to_grid(idx, payload, skip_actions=skip_expensive_checks)
             scan_list.resizeRowsToContents()
             for fit_col in [0, 1, 2, 3, 4, 7]:
                 scan_list.resizeColumnToContents(fit_col)
@@ -8759,14 +8702,19 @@ class MainWindow(QMainWindow):
         self.scan_list.selectRow(target_row)
         self._on_scan_selected()
 
-    def _update_scan_row_from_result(self, idx: int, result) -> None:
-        # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
-        if idx < 0 or idx >= self.scan_list.rowCount():
-            return
-        self._refresh_student_profile_for_result(result)
+    def _build_scan_row_payload_from_result(
+        self,
+        result,
+        row_idx: int | None = None,
+        duplicate_count: int = 1,
+        subject_scope: tuple[set[str], set[str]] | None = None,
+        available_exam_codes: set[str] | None = None,
+        forced_status: str = "",
+    ) -> dict:
         scoped = self._scoped_result_copy(result)
-        sid = (result.student_id or "").strip()
-        exam_code_text = (result.exam_code or "").strip()
+        blank_map = self._compute_blank_questions(scoped)
+        sid = str(getattr(result, "student_id", "") or "").strip()
+        exam_code_text = str(getattr(result, "exam_code", "") or "").strip()
         room_text = str(self._subject_room_for_student_id(sid) or "").strip() if sid else ""
         if not room_text:
             room_text = str(getattr(result, "exam_room", "") or "").strip()
@@ -8774,23 +8722,81 @@ class MainWindow(QMainWindow):
             profile = self._student_profile_by_id(sid)
             room_text = str((profile or {}).get("exam_room", "") or "").strip()
         setattr(result, "exam_room", room_text)
-        sid_item = QTableWidgetItem(sid or "-")
-        sid_item.setData(Qt.UserRole, str(result.image_path))
-        sid_item.setData(Qt.UserRole + 1, exam_code_text)
-        sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(scoped))
-        self.scan_list.setItem(idx, 0, sid_item)
-        self.scan_list.setItem(idx, 1, QTableWidgetItem(room_text or "-"))
-        self.scan_list.setItem(idx, 2, QTableWidgetItem((result.exam_code or "").strip() or "-"))
-        self.scan_list.setItem(idx, 3, QTableWidgetItem(str(getattr(result, "full_name", "") or "-")))
-        self.scan_list.setItem(idx, 4, QTableWidgetItem(str(getattr(result, "birth_date", "") or "-")))
-        content_text = self._build_recognition_content_text(scoped, self.scan_blank_summary.get(idx, {"MCQ": [], "TF": [], "NUMERIC": []}))
+
+        status_parts = self._status_parts_for_result(
+            result,
+            duplicate_count,
+            subject_scope=subject_scope,
+            available_exam_codes=available_exam_codes,
+        )
+        status_text = str(forced_status or "").strip() or (", ".join(status_parts) if status_parts else "OK")
+        content_text = self._build_recognition_content_text(scoped, blank_map)
+        recognized_short = self._short_recognition_text_for_result(scoped)
+
+        if row_idx is not None and row_idx >= 0:
+            self.scan_blank_summary[row_idx] = dict(blank_map)
+            self.scan_blank_questions[row_idx] = list(blank_map.get("MCQ", []))
+            if str(forced_status or "").strip():
+                self.scan_forced_status_by_index[row_idx] = str(forced_status).strip()
+            elif row_idx in self.scan_forced_status_by_index:
+                self.scan_forced_status_by_index.pop(row_idx, None)
+
+        setattr(result, "cached_status", status_text)
+        setattr(result, "cached_content", content_text)
+        setattr(result, "cached_recognized_short", recognized_short)
+        setattr(result, "cached_blank_summary", dict(blank_map))
+
+        return {
+            "result": result,
+            "image_path": str(getattr(result, "image_path", "") or ""),
+            "student_id": sid,
+            "exam_room": room_text,
+            "exam_code": exam_code_text,
+            "full_name": str(getattr(result, "full_name", "") or "-"),
+            "birth_date": str(getattr(result, "birth_date", "") or "-"),
+            "content": content_text,
+            "status": status_text,
+            "recognized_short": recognized_short,
+            "forced_status": str(forced_status or "").strip(),
+            "blank_map": dict(blank_map),
+        }
+
+    def _apply_scan_row_payload_to_grid(self, row_idx: int, payload: dict, *, skip_actions: bool = False) -> None:
+        if row_idx < 0:
+            return
+        if row_idx >= self.scan_list.rowCount():
+            self.scan_list.setRowCount(row_idx + 1)
+        sid_item = QTableWidgetItem(str(payload.get("student_id", "") or "-"))
+        sid_item.setData(Qt.UserRole, str(payload.get("image_path", "") or ""))
+        sid_item.setData(Qt.UserRole + 1, str(payload.get("exam_code", "") or ""))
+        sid_item.setData(Qt.UserRole + 2, str(payload.get("recognized_short", "") or ""))
+        self.scan_list.setItem(row_idx, 0, sid_item)
+        self.scan_list.setItem(row_idx, 1, QTableWidgetItem(str(payload.get("exam_room", "") or "-")))
+        self.scan_list.setItem(row_idx, 2, QTableWidgetItem(str(payload.get("exam_code", "") or "-")))
+        self.scan_list.setItem(row_idx, 3, QTableWidgetItem(str(payload.get("full_name", "") or "-")))
+        self.scan_list.setItem(row_idx, 4, QTableWidgetItem(str(payload.get("birth_date", "") or "-")))
+        content_text = str(payload.get("content", "") or "")
         content_item = QTableWidgetItem(content_text)
         content_item.setToolTip(content_text)
-        self.scan_list.setItem(
-            idx,
-            5,
-            content_item,
-        )
+        self.scan_list.setItem(row_idx, 5, content_item)
+        full_status = str(payload.get("status", "") or "OK")
+        status_item = QTableWidgetItem(self._compact_status_text(full_status, max_len=150))
+        status_item.setToolTip(full_status)
+        if full_status != "OK":
+            status_item.setForeground(Qt.red)
+        self.scan_list.setItem(row_idx, 6, status_item)
+        if skip_actions:
+            self.scan_list.setItem(row_idx, 7, QTableWidgetItem("..."))
+        else:
+            self._set_scan_action_widget(row_idx)
+
+    def _update_scan_row_from_result(self, idx: int, result) -> None:
+        # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
+        if idx < 0 or idx >= self.scan_list.rowCount():
+            return
+        self._refresh_student_profile_for_result(result)
+        payload = self._build_scan_row_payload_from_result(result, row_idx=idx)
+        self._apply_scan_row_payload_to_grid(idx, payload)
 
     def _current_scan_results_snapshot(self) -> list[OMRResult]:
         # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
