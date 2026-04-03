@@ -9324,24 +9324,38 @@ class MainWindow(QMainWindow):
         if row_count <= 0:
             return base
 
+        base_by_image: dict[str, list[OMRResult]] = {}
+        for src in base:
+            key = self._result_identity_key(getattr(src, "image_path", ""))
+            if not key:
+                continue
+            base_by_image.setdefault(key, []).append(src)
+
         out: list[OMRResult] = []
         for idx in range(row_count):
-            if idx < len(base):
+            sid_item = self.scan_list.item(idx, 0)
+            sid_text = str(sid_item.text() if sid_item else "").strip()
+            image_path = str(sid_item.data(Qt.UserRole) if sid_item else "").strip()
+            matched_base = None
+            image_key = self._result_identity_key(image_path)
+            if image_key and image_key in base_by_image and base_by_image[image_key]:
+                matched_base = base_by_image[image_key].pop(0)
+            if matched_base is not None:
+                result = self._lightweight_result_copy(matched_base)
+            elif idx < len(base):
                 result = self._lightweight_result_copy(base[idx])
             else:
                 fallback = self._build_result_from_saved_table_row(idx)
                 result = fallback if fallback is not None else OMRResult(image_path="")
 
-            sid_item = self.scan_list.item(idx, 0)
-            sid_text = str(sid_item.text() if sid_item else "").strip()
             result.student_id = "" if sid_text in {"", "-"} else sid_text
             result.exam_code = str(sid_item.data(Qt.UserRole + 1) if sid_item else "").strip()
-            image_path = str(sid_item.data(Qt.UserRole) if sid_item else "").strip()
             if image_path:
                 result.image_path = image_path
             setattr(result, "exam_room", str(self.scan_list.item(idx, 1).text() if self.scan_list.item(idx, 1) else ""))
             setattr(result, "full_name", str(self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else ""))
             setattr(result, "birth_date", str(self.scan_list.item(idx, 4).text() if self.scan_list.item(idx, 4) else ""))
+            print(f"[SnapshotRow] row={idx} image={image_key} sid={result.student_id}")
             out.append(result)
         return out
 
