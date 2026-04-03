@@ -1511,6 +1511,7 @@ class MainWindow(QMainWindow):
         self._answer_keys_ready_subjects: set[str] = set()
         self._batch_scan_running = False
         self._batch_cancel_requested = False
+        self._batch_loaded_runtime_key: str = ""
         self.preview_drag_active = False
         self.preview_last_pos = None
         self.setCentralWidget(self.stack)
@@ -3603,6 +3604,9 @@ class MainWindow(QMainWindow):
     def _close_batch_scan_view(self) -> None:
         route_ctx = dict(self._current_route_context or {})
         print(f"[BatchClose] route={self._current_route_name} context={route_ctx}")
+        subject_key = self._current_batch_subject_key()
+        if subject_key and hasattr(self, "scan_list") and self.scan_list.rowCount() > 0:
+            self._sync_current_batch_subject_snapshot(persist_to_db=False)
         if self._has_batch_unsaved_changes():
             choice = self._prompt_save_changes_word_style(
                 "Batch Scan chưa lưu",
@@ -3630,13 +3634,24 @@ class MainWindow(QMainWindow):
         # return to current exam on batch close: open current runtime session, avoid stale batch return payload.
         if not self.current_session_id:
             return False
-        payload = self.database.fetch_exam_session(self.current_session_id) or {}
-        if not payload:
-            return False
-        try:
-            session = ExamSession.from_dict(payload)
-        except Exception:
-            return False
+        if self.embedded_exam_dialog and str(self.embedded_exam_session_id or "").strip() == str(self.current_session_id or "").strip():
+            self._navigate_to(
+                "exam_editor",
+                context={"session_id": self.current_session_id},
+                push_current=False,
+                require_confirm=False,
+                reason="return_to_existing_exam_editor",
+            )
+            return True
+        session = self.session if self.session is not None else None
+        if session is None:
+            payload = self.database.fetch_exam_session(self.current_session_id) or {}
+            if not payload:
+                return False
+            try:
+                session = ExamSession.from_dict(payload)
+            except Exception:
+                return False
         cfg = session.config or {}
         editor_payload = {
             "exam_name": session.exam_name,
@@ -3673,6 +3688,15 @@ class MainWindow(QMainWindow):
             target = "exam_list"
         print(f"[BatchClose] return_target={target}")
         if target == "exam_editor":
+            if self.embedded_exam_dialog and str(self.embedded_exam_session_id or "").strip() == str(self.current_session_id or "").strip():
+                self._navigate_to(
+                    "exam_editor",
+                    context={"session_id": self.current_session_id},
+                    push_current=False,
+                    require_confirm=False,
+                    reason="return_existing_exam_editor",
+                )
+                return
             if self._open_current_session_in_exam_editor():
                 return
         self._navigate_back(default_route="exam_list")
@@ -3970,7 +3994,12 @@ class MainWindow(QMainWindow):
         if hasattr(self, "batch_subject_combo") and self.batch_subject_combo.count() > 0:
             cfg = self._selected_batch_subject_config()
             if cfg:
-                self._load_batch_subject_state(cfg, source_hint="show_batch_panel")
+                runtime_key = self._batch_runtime_key(cfg)
+                need_reload = bool(self.scan_list.rowCount() <= 0 or runtime_key != self._batch_loaded_runtime_key)
+                if need_reload:
+                    self._load_batch_subject_state(cfg, source_hint="show_batch_panel", force_reload=False)
+                else:
+                    self._update_batch_scan_scope_summary()
 
     def _show_scoring_panel(self) -> None:
         if hasattr(self, "scan_lr_split"):
@@ -5246,22 +5275,28 @@ class MainWindow(QMainWindow):
     def _refresh_batch_subject_controls(self) -> None:
         if not hasattr(self, "batch_subject_combo"):
             return
+        previous_active_key = str(getattr(self, "active_batch_subject_key", "") or "").strip()
         current_key = str(self.batch_subject_combo.currentData() or "").strip() if self.batch_subject_combo.count() > 0 else ""
         self.batch_subject_combo.blockSignals(True)
         self.batch_subject_combo.clear()
         self.batch_subject_combo.addItem("[Chọn môn]", "")
+        target_index = 0
         for idx, cfg in enumerate(self._effective_subject_configs_for_batch()):
             if isinstance(cfg, dict):
                 self._ensure_subject_instance_key(cfg, idx)
             label = self._display_subject_label(cfg)
-            self.batch_subject_combo.addItem(label, self._subject_instance_key_from_cfg(cfg))
-        if current_key:
-            for i in range(self.batch_subject_combo.count()):
-                if str(self.batch_subject_combo.itemData(i) or "").strip() == current_key:
-                    self.batch_subject_combo.setCurrentIndex(i)
-                    break
+            key = self._subject_instance_key_from_cfg(cfg)
+            self.batch_subject_combo.addItem(label, key)
+            if current_key and key == current_key:
+                target_index = idx + 1
+            elif not current_key and previous_active_key and key == previous_active_key:
+                target_index = idx + 1
+        self.batch_subject_combo.setCurrentIndex(target_index)
         self.batch_subject_combo.blockSignals(False)
-        self._on_batch_subject_changed(self.batch_subject_combo.currentIndex())
+        selected_key = str(self.batch_subject_combo.currentData() or "").strip() if self.batch_subject_combo.currentIndex() > 0 else ""
+        should_load = bool(selected_key) and (selected_key != previous_active_key or self.scan_list.rowCount() <= 0)
+        if should_load:
+            self._on_batch_subject_changed(self.batch_subject_combo.currentIndex(), force_reload=False)
 
     def _selected_batch_subject_config(self) -> dict | None:
         if not hasattr(self, "batch_subject_combo"):
@@ -5460,30 +5495,49 @@ class MainWindow(QMainWindow):
                 pass
         return merged
 
-    def _on_batch_subject_changed(self, _index: int) -> None:
+    def _on_batch_subject_changed(self, _index: int, force_reload: bool = False) -> None:
         if self._switching_batch_subject:
             return
         self._switching_batch_subject = True
         try:
             previous_runtime_key = str(getattr(self, "active_batch_subject_key", "") or "").strip()
-            if previous_runtime_key:
-                print(f"[BatchSubject] cache old_runtime_key={previous_runtime_key}")
-                self._cache_working_batch_state(previous_runtime_key)
             cfg = self._selected_batch_subject_config()
+            next_runtime_key = ""
             if cfg:
                 cfg = self._merge_saved_batch_snapshot(cfg)
-                self.active_batch_subject_key = self._batch_runtime_key(cfg)
+                next_runtime_key = self._batch_runtime_key(cfg)
+            if previous_runtime_key and previous_runtime_key != next_runtime_key:
+                print(f"[BatchSubject] cache old_runtime_key={previous_runtime_key}")
+                self._cache_working_batch_state(previous_runtime_key)
+            if cfg:
+                self.active_batch_subject_key = next_runtime_key
                 print(f"[BatchSubject] switching new_runtime_key={self.active_batch_subject_key}")
             else:
                 self.active_batch_subject_key = None
-            self._load_batch_subject_state(cfg, source_hint="subject_changed")
+            current_rows = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
+            if (
+                not force_reload
+                and next_runtime_key
+                and previous_runtime_key == next_runtime_key
+                and self._batch_loaded_runtime_key == next_runtime_key
+                and current_rows > 0
+            ):
+                self._update_batch_scan_scope_summary()
+                return
+            self._load_batch_subject_state(cfg, source_hint="subject_changed", force_reload=force_reload)
         finally:
             self._switching_batch_subject = False
 
-    def _load_batch_subject_state(self, subject_cfg: dict | None, source_hint: str = "") -> bool:
+    def _load_batch_subject_state(self, subject_cfg: dict | None, source_hint: str = "", force_reload: bool = False) -> bool:
+        cfg = self._merge_saved_batch_snapshot(subject_cfg or {}) if isinstance(subject_cfg, dict) else {}
+        if cfg and not force_reload:
+            pre_subject_key = self._subject_key_from_cfg(cfg)
+            pre_runtime_key = self._batch_runtime_key(pre_subject_key)
+            if pre_runtime_key and pre_runtime_key == self._batch_loaded_runtime_key and hasattr(self, "scan_list") and self.scan_list.rowCount() > 0:
+                self._update_batch_scan_scope_summary()
+                return True
         self._reset_batch_subject_ui_state()
         wait_dlg = self._open_wait_progress("Đang tải dữ liệu môn, vui lòng chờ...", "Batch Scan")
-        cfg = self._merge_saved_batch_snapshot(subject_cfg or {}) if isinstance(subject_cfg, dict) else {}
         if not cfg:
             self.batch_template_value.setText("-")
             self.batch_template_path_value = "-"
@@ -5494,6 +5548,7 @@ class MainWindow(QMainWindow):
             if hasattr(self, "batch_context_value"):
                 self.batch_context_value.setText("-")
             self._current_batch_data_source = "empty"
+            self._batch_loaded_runtime_key = ""
             print(f"[BatchLoad] subject=- source=empty rows=0 errors=0")
             self._close_wait_progress(wait_dlg)
             return False
@@ -5533,6 +5588,7 @@ class MainWindow(QMainWindow):
 
         if self._restore_cached_working_batch_state(runtime_key):
             self._current_batch_data_source = "working_cache"
+            self._batch_loaded_runtime_key = runtime_key
             self._finalize_batch_scan_display(refresh_statuses=True)
             self.btn_save_batch_subject.setEnabled(False)
             self._update_batch_scan_scope_summary()
@@ -5608,6 +5664,7 @@ class MainWindow(QMainWindow):
         self._finalize_batch_scan_display(refresh_statuses=True)
         self.btn_save_batch_subject.setEnabled(False)
         self._current_batch_data_source = source
+        self._batch_loaded_runtime_key = runtime_key if source != "empty" else ""
         self._update_batch_scan_scope_summary()
         source_label = source if not source_hint else f"{source}({source_hint})"
         print(f"[BatchLoad] subject={subject_key} source={source_label} rows={self.scan_list.rowCount()} errors={self.error_list.count()}")
