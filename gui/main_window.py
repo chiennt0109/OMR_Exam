@@ -5915,7 +5915,16 @@ class MainWindow(QMainWindow):
         setattr(self, "_active_template_path", str(pth.resolve()))
         self._apply_template_recognition_settings(self.template, sync_mode_selector=False)
         print(f"[Recognize] image={image_path} template={path_text} source={source_tag or 'unknown'}")
-        result = self.omr_processor.recognize_sheet_production_fast(image_path, self.template, RecognitionContext(collect_diagnostics=False))
+        # Keep batch recognition aligned with Template Editor's "Test Recognition" path:
+        # run_recognition_test(..., fast_production_test=True) keeps fast production behavior
+        # but also forces identifier recognition to reduce SID/ExamCode drift between screens.
+        result = self.omr_processor.run_recognition_test(
+            image_path,
+            self.template,
+            RecognitionContext(collect_diagnostics=False),
+            fast_production_test=True,
+            debug_deep=False,
+        )
         result.sync_legacy_aliases()
         if allow_retry:
             retried, improved = self._try_reprocess_result_rotated_180(result, template_path=path_text, source_tag=f"{source_tag}_retry180")
