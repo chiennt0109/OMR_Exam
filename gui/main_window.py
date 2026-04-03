@@ -3561,7 +3561,16 @@ class MainWindow(QMainWindow):
                 return
             if choice == "save" and not self._save_batch_for_selected_subject():
                 return
+        self._clear_batch_display_caches()
         self._return_to_current_exam_from_batch_scan()
+
+    def _clear_batch_display_caches(self) -> None:
+        for result in list(getattr(self, "scan_results", []) or []):
+            for attr in ["cached_status", "cached_content", "cached_recognized_short", "cached_blank_summary", "cached_forced_status"]:
+                try:
+                    setattr(result, attr, "" if attr != "cached_blank_summary" else {})
+                except Exception:
+                    pass
 
     def _has_batch_unsaved_changes(self) -> bool:
         return bool(hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled())
@@ -6738,13 +6747,27 @@ class MainWindow(QMainWindow):
         code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
         if not code_valid:
             return
-        expected = self._expected_questions_by_section(result)
-        allow_mcq = set(expected.get("MCQ", []))
-        allow_tf = set(expected.get("TF", []))
-        allow_numeric = set(expected.get("NUMERIC", []))
-        result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow_mcq}
-        result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow_tf}
-        result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow_numeric}
+
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+        counts = self._subject_section_question_counts(subject_key)
+
+        def _trim_map(data: dict, limit: int, cast_value):
+            normalized = {int(q): cast_value(v) for q, v in (data or {}).items()}
+            if limit <= 0:
+                return normalized
+            local_keys = sorted(k for k in normalized.keys() if 1 <= int(k) <= limit)
+            keep_keys: list[int] = list(local_keys[:limit])
+            if len(keep_keys) < limit:
+                legacy_keys = [k for k in sorted(normalized.keys()) if k not in keep_keys]
+                for k in legacy_keys:
+                    keep_keys.append(int(k))
+                    if len(keep_keys) >= limit:
+                        break
+            return {int(k): normalized[int(k)] for k in keep_keys}
+
+        result.mcq_answers = _trim_map(result.mcq_answers or {}, int(counts.get("MCQ", 0) or 0), lambda v: str(v))
+        result.true_false_answers = _trim_map(result.true_false_answers or {}, int(counts.get("TF", 0) or 0), lambda v: dict(v or {}))
+        result.numeric_answers = _trim_map(result.numeric_answers or {}, int(counts.get("NUMERIC", 0) or 0), lambda v: str(v))
 
     def _count_mismatch_status_parts(self, result) -> list[str]:
         expected = self._expected_questions_by_section(result)
@@ -7002,13 +7025,27 @@ class MainWindow(QMainWindow):
         code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
         if not code_valid:
             return
-        expected = self._expected_questions_by_section(result)
-        allow_mcq = set(expected.get("MCQ", []))
-        allow_tf = set(expected.get("TF", []))
-        allow_numeric = set(expected.get("NUMERIC", []))
-        result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow_mcq}
-        result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow_tf}
-        result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow_numeric}
+
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+        counts = self._subject_section_question_counts(subject_key)
+
+        def _trim_map(data: dict, limit: int, cast_value):
+            normalized = {int(q): cast_value(v) for q, v in (data or {}).items()}
+            if limit <= 0:
+                return normalized
+            local_keys = sorted(k for k in normalized.keys() if 1 <= int(k) <= limit)
+            keep_keys: list[int] = list(local_keys[:limit])
+            if len(keep_keys) < limit:
+                legacy_keys = [k for k in sorted(normalized.keys()) if k not in keep_keys]
+                for k in legacy_keys:
+                    keep_keys.append(int(k))
+                    if len(keep_keys) >= limit:
+                        break
+            return {int(k): normalized[int(k)] for k in keep_keys}
+
+        result.mcq_answers = _trim_map(result.mcq_answers or {}, int(counts.get("MCQ", 0) or 0), lambda v: str(v))
+        result.true_false_answers = _trim_map(result.true_false_answers or {}, int(counts.get("TF", 0) or 0), lambda v: dict(v or {}))
+        result.numeric_answers = _trim_map(result.numeric_answers or {}, int(counts.get("NUMERIC", 0) or 0), lambda v: str(v))
 
     def _count_mismatch_status_parts(self, result) -> list[str]:
         expected = self._expected_questions_by_section(result)
@@ -8623,13 +8660,27 @@ class MainWindow(QMainWindow):
         code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
         if not code_valid:
             return
-        expected = self._expected_questions_by_section(result)
-        allow_mcq = set(expected.get("MCQ", []))
-        allow_tf = set(expected.get("TF", []))
-        allow_numeric = set(expected.get("NUMERIC", []))
-        result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow_mcq}
-        result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow_tf}
-        result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow_numeric}
+
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+        counts = self._subject_section_question_counts(subject_key)
+
+        def _trim_map(data: dict, limit: int, cast_value):
+            normalized = {int(q): cast_value(v) for q, v in (data or {}).items()}
+            if limit <= 0:
+                return normalized
+            local_keys = sorted(k for k in normalized.keys() if 1 <= int(k) <= limit)
+            keep_keys: list[int] = list(local_keys[:limit])
+            if len(keep_keys) < limit:
+                legacy_keys = [k for k in sorted(normalized.keys()) if k not in keep_keys]
+                for k in legacy_keys:
+                    keep_keys.append(int(k))
+                    if len(keep_keys) >= limit:
+                        break
+            return {int(k): normalized[int(k)] for k in keep_keys}
+
+        result.mcq_answers = _trim_map(result.mcq_answers or {}, int(counts.get("MCQ", 0) or 0), lambda v: str(v))
+        result.true_false_answers = _trim_map(result.true_false_answers or {}, int(counts.get("TF", 0) or 0), lambda v: dict(v or {}))
+        result.numeric_answers = _trim_map(result.numeric_answers or {}, int(counts.get("NUMERIC", 0) or 0), lambda v: str(v))
 
     def _count_mismatch_status_parts(self, result) -> list[str]:
         expected = self._expected_questions_by_section(result)
