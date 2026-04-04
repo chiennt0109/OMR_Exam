@@ -5873,8 +5873,6 @@ class MainWindow(QMainWindow):
             self.scan_result_preview.setRowCount(0)
 
         self.scan_results = list(cached.get("scan_results", []))
-        for res in self.scan_results:
-            self._trim_result_answers_to_expected_scope(res)
         self.scan_results_by_subject[key] = list(self.scan_results)
         duplicate_ids: dict[str, int] = {}
         available_exam_codes = self._available_exam_codes()
@@ -6915,8 +6913,9 @@ class MainWindow(QMainWindow):
             result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
 
     def _scoped_result_copy(self, result):
+        # Giữ nguyên payload nhận dạng gốc (không cắt theo answer-key/template)
+        # để luồng hiển thị Batch Scan thống nhất với Template Editor.
         scoped = copy.deepcopy(result)
-        self._trim_result_answers_to_expected_scope(scoped)
         return scoped
 
     def _count_mismatch_status_parts(self, result) -> list[str]:
@@ -7109,7 +7108,6 @@ class MainWindow(QMainWindow):
             self._refresh_student_profile_for_result(result)
             full_name = str(getattr(result, "full_name", "") or "-")
             birth_date = str(getattr(result, "birth_date", "") or "-")
-            self._trim_result_answers_to_expected_scope(result)
             blank_map = self._compute_blank_questions(result)
             blank_questions = blank_map.get("MCQ", [])
             self.scan_blank_questions[idx] = blank_questions
@@ -7228,6 +7226,15 @@ class MainWindow(QMainWindow):
         for sec in ["MCQ", "TF", "NUMERIC"]:
             limit = max(0, int(configured_counts.get(sec, 0) or 0))
             actual_questions = sorted(set(int(q) for q in (expected_by_section.get(sec, []) or [])))
+            answered_questions = sorted(set(int(q) for q in section_answers.get(sec, set())))
+            if answered_questions:
+                expected_set = set(actual_questions)
+                answered_set = set(answered_questions)
+                # Khi số thứ tự câu trong đáp án và dữ liệu nhận dạng không giao nhau
+                # (thường gặp sau các luồng import/sửa dữ liệu cũ), ưu tiên câu thực tế đã nhận dạng
+                # để tránh báo "trống" sai ở cột Nội dung.
+                if (not expected_set) or (expected_set.isdisjoint(answered_set)):
+                    actual_questions = list(answered_questions)
             if limit <= 0 and not actual_questions:
                 continue
 
@@ -7244,11 +7251,33 @@ class MainWindow(QMainWindow):
                 blanks[sec] = list(range(1, missing_tf_statements + 1))
                 continue
 
-            answered_display = {
-                int(actual_to_display[q_actual])
-                for q_actual in section_answers.get(sec, set())
-                if int(q_actual) in actual_to_display
-            }
+            if sec == "MCQ":
+                answered_actual_sorted = sorted(int(q) for q in section_answers.get(sec, set()))
+                display_sorted = sorted(int(q) for q in display_questions)
+                shifted_contiguous = (
+                    bool(answered_actual_sorted)
+                    and bool(display_sorted)
+                    and len(answered_actual_sorted) == len(display_sorted)
+                    and display_sorted == list(range(1, len(display_sorted) + 1))
+                    and answered_actual_sorted == list(range(answered_actual_sorted[0], answered_actual_sorted[0] + len(answered_actual_sorted)))
+                    and answered_actual_sorted[0] > 1
+                )
+                if shifted_contiguous:
+                    # Trường hợp nhận dạng lệch +1 chỉ ở index hiển thị (Template Editor vẫn đúng theo vùng tô).
+                    # Với Batch Scan, coi tập câu trả lời là 1..N để cột "Nội dung" không báo trống sai.
+                    answered_display = set(display_sorted)
+                else:
+                    answered_display = {
+                        int(actual_to_display[q_actual])
+                        for q_actual in section_answers.get(sec, set())
+                        if int(q_actual) in actual_to_display
+                    }
+            else:
+                answered_display = {
+                    int(actual_to_display[q_actual])
+                    for q_actual in section_answers.get(sec, set())
+                    if int(q_actual) in actual_to_display
+                }
             blanks[sec] = [int(q_display) for q_display in display_questions if int(q_display) not in answered_display]
         return blanks
         messages: list[str] = []
@@ -10111,9 +10140,26 @@ class MainWindow(QMainWindow):
         key = self._subject_answer_key_for_result(result, subject_key)
         return self._answer_string_from_maps(result.mcq_answers or {}, result.true_false_answers or {}, result.numeric_answers or {}, key)
 
+    def _mcq_answers_for_display(self, result) -> dict[int, str]:
+        raw = {int(k): str(v) for k, v in (getattr(result, "mcq_answers", {}) or {}).items()}
+        if not raw:
+            return {}
+        keys = sorted(raw.keys())
+        if keys[0] <= 1:
+            return {int(k): raw[int(k)] for k in keys}
+        contiguous = keys == list(range(keys[0], keys[0] + len(keys)))
+        if not contiguous:
+            return {int(k): raw[int(k)] for k in keys}
+        expected_mcq = sorted(set(int(q) for q in (self._expected_questions_by_section(result).get("MCQ", []) or [])))
+        # Trường hợp lệch index kiểu +1 ở Batch Scan (Template Editor vẫn nhận đủ):
+        # hiển thị lại theo index 1..N để không làm "mất câu 1" trong panel nhận dạng.
+        if expected_mcq and 1 in expected_mcq:
+            return {idx + 1: raw[q] for idx, q in enumerate(keys)}
+        return {int(k): raw[int(k)] for k in keys}
+
     def _short_recognition_text_for_result(self, result) -> str:
         parts: list[str] = []
-        mcq = self._format_mcq_answers(result.mcq_answers or {})
+        mcq = self._format_mcq_answers(self._mcq_answers_for_display(result))
         tf = self._format_tf_answers(result.true_false_answers or {})
         num = self._format_numeric_answers(result.numeric_answers or {})
         if mcq and mcq != "-":
@@ -10601,7 +10647,7 @@ class MainWindow(QMainWindow):
         ]
         if section_counts.get("MCQ", 0) > 0:
             rows.extend([
-                ("MCQ", self._compact_value(self._format_mcq_answers(preview_result.mcq_answers or {}), 220)),
+                ("MCQ", self._compact_value(self._format_mcq_answers(self._mcq_answers_for_display(preview_result)), 220)),
                 ("MCQ không tô", ", ".join(str(x) for x in blank_map.get("MCQ", [])) or "-"),
             ])
         if section_counts.get("TF", 0) > 0:
@@ -10781,7 +10827,6 @@ class MainWindow(QMainWindow):
         if idx >= len(self.scan_results):
             sid_item_existing = self.scan_list.item(idx, 0)
             sid = sid_item_existing.text() if sid_item_existing else "-"
-            content = self.scan_list.item(idx, 5).text() if self.scan_list.item(idx, 5) else "-"
             exam_code = str(sid_item_existing.data(Qt.UserRole + 1) if sid_item_existing else "").strip()
             if not exam_code:
                 for r in range(self.scan_result_preview.rowCount()):
@@ -10826,12 +10871,9 @@ class MainWindow(QMainWindow):
                     inp_code.setCurrentIndex(idx_code)
                 else:
                     inp_code.setEditText(exam_code)
-            txt_content = QTextEdit(content)
             form.addRow("Student ID", inp_sid)
             form.addRow("Exam Code", inp_code)
             lay.addLayout(form)
-            lay.addWidget(QLabel("Nội dung"))
-            lay.addWidget(txt_content)
             buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
             buttons.accepted.connect(dlg.accept)
             buttons.rejected.connect(dlg.reject)
@@ -10850,11 +10892,9 @@ class MainWindow(QMainWindow):
             sid_item.setData(Qt.UserRole + 2, old_recognized_short)
             self.scan_list.setItem(idx, 0, sid_item)
             self.scan_list.setItem(idx, 2, QTableWidgetItem(new_exam_code or "-"))
-            manual_content_text = txt_content.toPlainText().strip()
-            self.scan_list.setItem(idx, 5, QTableWidgetItem(manual_content_text or "-"))
             rebuilt = self._build_result_from_saved_table_row(idx)
             if rebuilt is not None:
-                setattr(rebuilt, "manual_content_override", manual_content_text)
+                setattr(rebuilt, "manual_content_override", "")
                 self._mark_result_manually_edited(rebuilt, idx)
                 self._refresh_student_profile_for_result(rebuilt, idx)
                 self._set_scan_result_at_row(idx, rebuilt)
@@ -10863,6 +10903,7 @@ class MainWindow(QMainWindow):
                     self.scan_results_by_subject[self._batch_result_subject_key(subject_key_now)] = list(self.scan_results)
                 self._update_scan_row_from_result(idx, rebuilt)
             else:
+                self.scan_list.setItem(idx, 5, QTableWidgetItem("-"))
                 self._refresh_row_status(idx)
             for r in range(self.scan_result_preview.rowCount()):
                 k = self.scan_result_preview.item(r, 0)
