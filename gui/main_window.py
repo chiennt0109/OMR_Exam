@@ -9350,6 +9350,9 @@ class MainWindow(QMainWindow):
                 matched_base = base_by_image[image_key].pop(0)
             if matched_base is not None:
                 result = self._lightweight_result_copy(matched_base)
+            elif image_key:
+                fallback = self._build_result_from_saved_table_row(idx)
+                result = fallback if fallback is not None else OMRResult(image_path=image_path)
             elif idx < len(base):
                 result = self._lightweight_result_copy(base[idx])
             else:
@@ -9412,7 +9415,8 @@ class MainWindow(QMainWindow):
         # 1) current scan_results
         if 0 <= row_idx < len(self.scan_results):
             direct = self.scan_results[row_idx]
-            if self._result_has_recognition_payload(direct):
+            direct_img = self._result_identity_key(getattr(direct, "image_path", ""))
+            if self._result_has_recognition_payload(direct) and ((not image_path) or (direct_img == self._result_identity_key(image_path))):
                 print(f"[CorrectionLoad] row={row_idx} source=scan_results has_mcq={bool(direct.mcq_answers)} has_tf={bool(direct.true_false_answers)} has_num={bool(direct.numeric_answers)} answer_string_len={len(str(getattr(direct,'answer_string','') or ''))}")
                 return direct
 
@@ -9422,7 +9426,7 @@ class MainWindow(QMainWindow):
         matched = _match_result_pool(subject_pool)
         if matched is not None and self._result_has_recognition_payload(matched):
             print(f"[CorrectionLoad] row={row_idx} source=scan_results_by_subject has_mcq={bool(matched.mcq_answers)} has_tf={bool(matched.true_false_answers)} has_num={bool(matched.numeric_answers)} answer_string_len={len(str(getattr(matched,'answer_string','') or ''))}")
-            return matched
+            return self._lightweight_result_copy(matched)
 
         # 3) working cache scan_results
         runtime_key = self._batch_runtime_key(subject_key)
@@ -9431,7 +9435,7 @@ class MainWindow(QMainWindow):
         matched = _match_result_pool(working_results)
         if matched is not None and self._result_has_recognition_payload(matched):
             print(f"[CorrectionLoad] row={row_idx} source=working_cache has_mcq={bool(matched.mcq_answers)} has_tf={bool(matched.true_false_answers)} has_num={bool(matched.numeric_answers)} answer_string_len={len(str(getattr(matched,'answer_string','') or ''))}")
-            return matched
+            return self._lightweight_result_copy(matched)
 
         # 4) DB
         db_rows = self.database.fetch_scan_results_for_subject(self._batch_result_subject_key(subject_key))
@@ -9444,7 +9448,7 @@ class MainWindow(QMainWindow):
         matched = _match_result_pool(db_pool)
         if matched is not None and self._result_has_recognition_payload(matched):
             print(f"[CorrectionLoad] row={row_idx} source=db has_mcq={bool(matched.mcq_answers)} has_tf={bool(matched.true_false_answers)} has_num={bool(matched.numeric_answers)} answer_string_len={len(str(getattr(matched,'answer_string','') or ''))}")
-            return matched
+            return self._lightweight_result_copy(matched)
 
         # 5/6) batch_saved_results or serialized payload from row snapshot
         cfg = self._selected_batch_subject_config() or {}
@@ -10321,30 +10325,6 @@ class MainWindow(QMainWindow):
         print(f"[ManualEdit] image={image_key} row={resolved_row}")
         if image_key:
             self.scan_forced_status_by_index[image_key] = "Đã sửa"
-
-    @staticmethod
-    def _result_identity_key(image_path: str) -> str:
-        return str(image_path or "").strip()
-
-    def _row_index_by_image_path(self, image_path: str) -> int:
-        key = self._result_identity_key(image_path)
-        if not key or not hasattr(self, "scan_list"):
-            return -1
-        for row in range(self.scan_list.rowCount()):
-            sid_item = self.scan_list.item(row, 0)
-            row_image = self._result_identity_key(str(sid_item.data(Qt.UserRole) if sid_item else ""))
-            if row_image == key:
-                return row
-        return -1
-
-    def _mark_result_manually_edited(self, result: OMRResult, row_idx: int | None = None) -> None:
-        setattr(result, "manually_edited", True)
-        setattr(result, "cached_forced_status", "Đã sửa")
-        image_key = self._result_identity_key(getattr(result, "image_path", ""))
-        resolved_row = row_idx if row_idx is not None and row_idx >= 0 else self._row_index_by_image_path(image_key)
-        print(f"[ManualEdit] image={image_key} row={resolved_row}")
-        if resolved_row >= 0:
-            self.scan_forced_status_by_index[resolved_row] = "Đã sửa"
 
     def _persist_scan_results_to_db(self, subject_key: str) -> None:
         source_rows = list(self.scan_results_by_subject.get(self._batch_result_subject_key(subject_key), self.scan_results) or [])
