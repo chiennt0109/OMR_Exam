@@ -2870,11 +2870,10 @@ class MainWindow(QMainWindow):
             for cfg_obj in subject_cfgs:
                 if not isinstance(cfg_obj, dict):
                     continue
-                cfg = cfg_obj
                 subject_key = str(self._subject_key_from_cfg(cfg_obj) or "").strip()
                 if not subject_key:
                     continue
-                block = str((cfg or {}).get("block", "") or "").strip()
+                block = str((cfg_obj or {}).get("block", "") or "").strip()
                 source_scan_key = f"{source_prefix}::{subject_key}" if source_prefix else subject_key
                 target_scan_key = f"{target_prefix}::{subject_key}" if target_prefix else subject_key
                 source_rows = self.database.fetch_scan_results_for_subject(source_scan_key)
