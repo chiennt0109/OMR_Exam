@@ -2810,24 +2810,64 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Lưu dưới tên khác", "Vui lòng mở kỳ thi nguồn trước khi sao chép.")
             return
 
-        current_name = str(self.session.exam_name or "").strip() or "Kỳ thi"
-        while True:
-            new_name, ok = QInputDialog.getText(
-                self,
-                "Lưu dưới tên khác",
-                "Nhập tên kỳ thi mới:",
-                text=current_name,
-            )
-            if not ok:
-                return
-            new_name = str(new_name or "").strip()
-            if not new_name:
-                QMessageBox.warning(self, "Lưu dưới tên khác", "Tên kỳ thi không được để trống.")
+        subject_cfgs = list(((self.session.config or {}).get("subject_configs", []) if self.session else []) or [])
+        target_candidates: list[str] = []
+        for cfg in subject_cfgs:
+            key = str(self._subject_key_from_cfg(cfg) or "").strip()
+            if key and key != source_subject:
+                target_candidates.append(key)
+        target_candidates = sorted(set(target_candidates))
+        if not target_candidates:
+            QMessageBox.information(self, "Lưu dưới tên khác", "Không có môn đích để sao chép dữ liệu.")
+            return
+
+        target_subject, ok = QInputDialog.getItem(
+            self,
+            "Lưu dưới tên khác",
+            "Chọn môn đích:",
+            target_candidates,
+            0,
+            False,
+        )
+        if not ok:
+            return
+        target_subject = str(target_subject or "").strip()
+        if not target_subject or target_subject == source_subject:
+            return
+
+        new_session_id = self._generate_session_id(new_name)
+        source_session_id = str(self.current_session_id or "").strip()
+        source_exam_name = str(self.session.exam_name or "").strip().lower()
+        target_exam_name = str(new_name or "").strip().lower()
+        source_prefix = f"{source_session_id}::{source_exam_name}" if source_session_id and source_exam_name else source_session_id
+        target_prefix = f"{new_session_id}::{target_exam_name}" if new_session_id and target_exam_name else new_session_id
+
+        payload = copy.deepcopy(self.session.to_dict())
+        payload["exam_name"] = new_name
+        self.database.save_exam_session(new_session_id, new_name, payload)
+
+        subject_cfgs = list(((payload.get("config", {}) or {}).get("subject_configs", []) if isinstance(payload.get("config", {}), dict) else []) or [])
+        for cfg in subject_cfgs:
+            subject_key = str(self._subject_key_from_cfg(cfg) or "").strip()
+            if not subject_key:
                 continue
-            if self._session_name_exists(new_name):
-                QMessageBox.warning(self, "Lưu dưới tên khác", "Tên kỳ thi đã tồn tại. Vui lòng chọn tên khác.")
-                continue
-            break
+            block = str((cfg or {}).get("block", "") or "").strip()
+            source_scan_key = f"{source_prefix}::{subject_key}" if source_prefix else subject_key
+            target_scan_key = f"{target_prefix}::{subject_key}" if target_prefix else subject_key
+            source_rows = self.database.fetch_scan_results_for_subject(source_scan_key)
+            self.database.replace_scan_results_for_subject(target_scan_key, list(source_rows or []))
+
+            source_score_key = subject_key
+            target_score_key = subject_key
+            source_scores = list(self.database.fetch_scores_for_subject(source_score_key) or [])
+            self.database.conn.execute("DELETE FROM scores WHERE subject_key = ?", (target_score_key,))
+            for score_row in source_scores:
+                self.database.upsert_score_row(
+                    target_score_key,
+                    str((score_row or {}).get("student_id", "") or ""),
+                    str((score_row or {}).get("exam_code", "") or ""),
+                    dict(score_row or {}),
+                )
 
         new_session_id = self._generate_session_id(new_name)
         source_session_id = str(self.current_session_id or "").strip()
