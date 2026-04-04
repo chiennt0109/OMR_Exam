@@ -2810,24 +2810,30 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Lưu dưới tên khác", "Vui lòng mở kỳ thi nguồn trước khi sao chép.")
             return
 
-        current_name = str(self.session.exam_name or "").strip() or "Kỳ thi"
-        while True:
-            new_name, ok = QInputDialog.getText(
-                self,
-                "Lưu dưới tên khác",
-                "Nhập tên kỳ thi mới:",
-                text=current_name,
-            )
-            if not ok:
-                return
-            new_name = str(new_name or "").strip()
-            if not new_name:
-                QMessageBox.warning(self, "Lưu dưới tên khác", "Tên kỳ thi không được để trống.")
-                continue
-            if self._session_name_exists(new_name):
-                QMessageBox.warning(self, "Lưu dưới tên khác", "Tên kỳ thi đã tồn tại. Vui lòng chọn tên khác.")
-                continue
-            break
+        subject_cfgs = list(((self.session.config or {}).get("subject_configs", []) if self.session else []) or [])
+        target_candidates: list[str] = []
+        for cfg in subject_cfgs:
+            key = str(self._subject_key_from_cfg(cfg) or "").strip()
+            if key and key != source_subject:
+                target_candidates.append(key)
+        target_candidates = sorted(set(target_candidates))
+        if not target_candidates:
+            QMessageBox.information(self, "Lưu dưới tên khác", "Không có môn đích để sao chép dữ liệu.")
+            return
+
+        target_subject, ok = QInputDialog.getItem(
+            self,
+            "Lưu dưới tên khác",
+            "Chọn môn đích:",
+            target_candidates,
+            0,
+            False,
+        )
+        if not ok:
+            return
+        target_subject = str(target_subject or "").strip()
+        if not target_subject or target_subject == source_subject:
+            return
 
         new_session_id = self._generate_session_id(new_name)
         source_session_id = str(self.current_session_id or "").strip()
