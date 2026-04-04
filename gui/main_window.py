@@ -2820,7 +2820,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Lưu dưới tên khác", "Không đọc được dữ liệu kỳ thi nguồn.")
             return
 
-        # 1) Chỉ nhập và kiểm tra tên mới trong while; không làm gì khác.
         current_name = str(source_payload.get("exam_name", "") or "").strip() or "Kỳ thi"
         while True:
             new_name, ok = QInputDialog.getText(self, "Lưu dưới tên khác", "Nhập tên kỳ thi mới:", text=current_name)
@@ -2833,9 +2832,24 @@ class MainWindow(QMainWindow):
             if self._session_name_exists(new_name):
                 QMessageBox.warning(self, "Lưu dưới tên khác", "Tên kỳ thi đã tồn tại. Vui lòng chọn tên khác.")
                 continue
-            break
+            block = str((cfg or {}).get("block", "") or "").strip()
+            source_scan_key = f"{source_prefix}::{subject_key}" if source_prefix else subject_key
+            target_scan_key = f"{target_prefix}::{subject_key}" if target_prefix else subject_key
+            source_rows = self.database.fetch_scan_results_for_subject(source_scan_key)
+            self.database.replace_scan_results_for_subject(target_scan_key, list(source_rows or []))
 
-        # 2) Chỉ sau khi tên hợp lệ mới thực hiện copy kỳ thi.
+            source_score_key = subject_key
+            target_score_key = subject_key
+            source_scores = list(self.database.fetch_scores_for_subject(source_score_key) or [])
+            self.database.conn.execute("DELETE FROM scores WHERE subject_key = ?", (target_score_key,))
+            for score_row in source_scores:
+                self.database.upsert_score_row(
+                    target_score_key,
+                    str((score_row or {}).get("student_id", "") or ""),
+                    str((score_row or {}).get("exam_code", "") or ""),
+                    dict(score_row or {}),
+                )
+
         try:
             new_session_id = self._generate_session_id(new_name)
             source_exam_name = str(source_payload.get("exam_name", "") or "").strip().lower()
@@ -2850,16 +2864,16 @@ class MainWindow(QMainWindow):
             subject_cfgs = list(cfg_root.get("subject_configs", []) if isinstance(cfg_root.get("subject_configs", []), list) else [])
 
             subject_key_map: dict[str, str] = {}
-            for subject_cfg in subject_cfgs:
-                if not isinstance(subject_cfg, dict):
+            for cfg_obj in subject_cfgs:
+                if not isinstance(cfg_obj, dict):
                     continue
-                old_key = str(subject_cfg.get("subject_instance_key", "") or "").strip()
-                logical = str(subject_cfg.get("logical_subject_key", "") or "").strip() or str(self._logical_subject_key_from_cfg(subject_cfg) or "General")
+                old_key = str(cfg_obj.get("subject_instance_key", "") or "").strip()
+                logical = str(cfg_obj.get("logical_subject_key", "") or "").strip() or str(self._logical_subject_key_from_cfg(cfg_obj) or "General")
                 new_uid = str(uuid.uuid4())
                 new_key = f"{target_prefix}::{logical}::{new_uid}" if target_prefix else f"{logical}::{new_uid}"
-                subject_cfg["subject_uid"] = new_uid
-                subject_cfg["logical_subject_key"] = logical
-                subject_cfg["subject_instance_key"] = new_key
+                cfg_obj["subject_uid"] = new_uid
+                cfg_obj["logical_subject_key"] = logical
+                cfg_obj["subject_instance_key"] = new_key
                 if old_key:
                     subject_key_map[old_key] = new_key
 
