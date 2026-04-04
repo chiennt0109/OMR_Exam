@@ -1447,9 +1447,9 @@ class MainWindow(QMainWindow):
         self.scan_files: list[Path] = []
         self.scan_blank_questions: dict[int, list[int]] = {}
         self.scan_blank_summary: dict[int, dict[str, list[int]]] = {}
-        self.scan_manual_adjustments: dict[int, list[str]] = {}
-        self.scan_edit_history: dict[int, list[str]] = {}
-        self.scan_last_adjustment: dict[int, str] = {}
+        self.scan_manual_adjustments: dict[str, list[str]] = {}
+        self.scan_edit_history: dict[str, list[str]] = {}
+        self.scan_last_adjustment: dict[str, str] = {}
         self.score_rows = []
         self.scoring_results_by_subject: dict[str, dict[str, dict]] = {}
         self.scoring_phases: list[dict] = []
@@ -1504,7 +1504,7 @@ class MainWindow(QMainWindow):
         self.preview_source_pixmap = QPixmap()
         self.preview_rotation_by_index: dict[int, int] = {}
         self.preview_markers_by_index: dict[int, list[dict[str, float]]] = {}
-        self.scan_forced_status_by_index: dict[int, str] = {}
+        self.scan_forced_status_by_index: dict[str, str] = {}
         self._scan_grid_loading = False
         self._switching_batch_subject = False
         self._template_cache_by_path: dict[str, Template] = {}
@@ -4528,7 +4528,7 @@ class MainWindow(QMainWindow):
                         "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
                         "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
                         "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                        "forced_status": str(self.scan_forced_status_by_index.get(r, "") or ""),
+                        "forced_status": str(self.scan_forced_status_by_index.get(str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""), "") or ""),
                         "answer_string": str(getattr(row_result, "answer_string", "") or ""),
                         "mcq_answers": dict(getattr(row_result, "mcq_answers", {}) or {}),
                         "true_false_answers": dict(getattr(row_result, "true_false_answers", {}) or {}),
@@ -6318,7 +6318,9 @@ class MainWindow(QMainWindow):
                     forced_status = "Lỗi file ảnh"
 
                 if forced_status:
-                    self.scan_forced_status_by_index[idx] = forced_status
+                    image_key_for_result = self._result_identity_key(getattr(result, "image_path", ""))
+                    if image_key_for_result:
+                        self.scan_forced_status_by_index[image_key_for_result] = forced_status
 
                 self._refresh_student_profile_for_result(result)
                 result.answer_string = self._build_answer_string_for_result(result, subject_key_for_results)
@@ -6345,8 +6347,8 @@ class MainWindow(QMainWindow):
         )
 
         forced_status_by_image = {
-            str(result.image_path or ""): str(self.scan_forced_status_by_index.get(idx, "") or "")
-            for idx, result in enumerate(self.scan_results)
+            str(result.image_path or ""): str(self.scan_forced_status_by_index.get(str(result.image_path or ""), "") or "")
+            for result in self.scan_results
         }
         self._populate_scan_grid_from_results(self.scan_results, forced_status_by_image)
         self._finalize_batch_scan_display()
@@ -9136,7 +9138,11 @@ class MainWindow(QMainWindow):
             self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(self.scan_results)
         self.scan_blank_questions = {idx: list(item["blank_map"].get("MCQ", [])) for idx, item in enumerate(row_views)}
         self.scan_blank_summary = {idx: dict(item["blank_map"]) for idx, item in enumerate(row_views)}
-        self.scan_forced_status_by_index = {idx: str(item["forced_status"] or "") for idx, item in enumerate(row_views) if str(item["forced_status"] or "")}
+        self.scan_forced_status_by_index = {
+            self._result_identity_key(str(item.get("image_path", "") or "")): str(item["forced_status"] or "")
+            for item in row_views
+            if self._result_identity_key(str(item.get("image_path", "") or "")) and str(item["forced_status"] or "")
+        }
 
         scan_list = self.scan_list
         selected_image = str(preserve_selection_image_path or "").strip()
@@ -9243,10 +9249,12 @@ class MainWindow(QMainWindow):
         if row_idx is not None and row_idx >= 0:
             self.scan_blank_summary[row_idx] = dict(blank_map)
             self.scan_blank_questions[row_idx] = list(blank_map.get("MCQ", []))
+            image_key_for_row = self._row_image_key(row_idx) or self._result_identity_key(getattr(result, "image_path", ""))
             if effective_forced_status:
-                self.scan_forced_status_by_index[row_idx] = effective_forced_status
-            elif row_idx in self.scan_forced_status_by_index:
-                self.scan_forced_status_by_index.pop(row_idx, None)
+                if image_key_for_row:
+                    self.scan_forced_status_by_index[image_key_for_row] = effective_forced_status
+            elif image_key_for_row and image_key_for_row in self.scan_forced_status_by_index:
+                self.scan_forced_status_by_index.pop(image_key_for_row, None)
 
         setattr(result, "cached_status", status_text)
         setattr(result, "cached_content", content_text)
@@ -9695,11 +9703,19 @@ class MainWindow(QMainWindow):
     def _set_scan_result_at_row(self, idx: int, result: OMRResult) -> None:
         if idx < 0:
             return
-        while len(self.scan_results) <= idx:
-            placeholder = self._build_result_from_saved_table_row(len(self.scan_results))
-            if placeholder is None:
-                placeholder = OMRResult(image_path="")
-            self.scan_results.append(placeholder)
+        result_image = self._result_identity_key(getattr(result, "image_path", ""))
+        if result_image:
+            for i, existing in enumerate(self.scan_results):
+                if self._result_identity_key(getattr(existing, "image_path", "")) == result_image:
+                    if any(j != i and self.scan_results[j] is result for j in range(len(self.scan_results))):
+                        result = self._lightweight_result_copy(result)
+                    self.scan_results[i] = result
+                    return
+        if idx == len(self.scan_results):
+            self.scan_results.append(self._lightweight_result_copy(result))
+            return
+        if idx > len(self.scan_results):
+            return
         if any(i != idx and self.scan_results[i] is result for i in range(len(self.scan_results))):
             result = self._lightweight_result_copy(result)
         self.scan_results[idx] = result
@@ -10266,12 +10282,45 @@ class MainWindow(QMainWindow):
         if not details:
             return
         message = f"({source}) " + "; ".join(details)
-        self.scan_edit_history.setdefault(idx, []).append(message)
-        self.scan_last_adjustment[idx] = message
-        self.scan_manual_adjustments[idx] = sorted(set(self.scan_manual_adjustments.get(idx, []) + details))
-        if 0 <= idx < len(self.scan_results):
-            res = self.scan_results[idx]
-            self.database.log_change("scan_results", str(getattr(res, "image_path", "") or idx), source, "", message, source)
+        image_key = self._row_image_key(idx)
+        if (not image_key) and 0 <= idx < len(self.scan_results):
+            image_key = self._result_identity_key(getattr(self.scan_results[idx], "image_path", ""))
+        if not image_key:
+            return
+        self.scan_edit_history.setdefault(image_key, []).append(message)
+        self.scan_last_adjustment[image_key] = message
+        self.scan_manual_adjustments[image_key] = sorted(set(self.scan_manual_adjustments.get(image_key, []) + details))
+        self.database.log_change("scan_results", image_key, source, "", message, source)
+
+    @staticmethod
+    def _result_identity_key(image_path: str) -> str:
+        return str(image_path or "").strip()
+
+    def _row_image_key(self, row_idx: int) -> str:
+        if row_idx < 0 or (not hasattr(self, "scan_list")) or row_idx >= self.scan_list.rowCount():
+            return ""
+        sid_item = self.scan_list.item(row_idx, 0)
+        return self._result_identity_key(str(sid_item.data(Qt.UserRole) if sid_item else ""))
+
+    def _row_index_by_image_path(self, image_path: str) -> int:
+        key = self._result_identity_key(image_path)
+        if not key or not hasattr(self, "scan_list"):
+            return -1
+        for row in range(self.scan_list.rowCount()):
+            sid_item = self.scan_list.item(row, 0)
+            row_image = self._result_identity_key(str(sid_item.data(Qt.UserRole) if sid_item else ""))
+            if row_image == key:
+                return row
+        return -1
+
+    def _mark_result_manually_edited(self, result: OMRResult, row_idx: int | None = None) -> None:
+        setattr(result, "manually_edited", True)
+        setattr(result, "cached_forced_status", "Đã sửa")
+        image_key = self._result_identity_key(getattr(result, "image_path", ""))
+        resolved_row = row_idx if row_idx is not None and row_idx >= 0 else self._row_index_by_image_path(image_key)
+        print(f"[ManualEdit] image={image_key} row={resolved_row}")
+        if image_key:
+            self.scan_forced_status_by_index[image_key] = "Đã sửa"
 
     @staticmethod
     def _result_identity_key(image_path: str) -> str:
@@ -10338,11 +10387,12 @@ class MainWindow(QMainWindow):
         # Only show edit history when clicking the Status column.
         if col != 6:
             return
-        history = self.scan_edit_history.get(row, [])
+        image_key = self._row_image_key(row)
+        history = self.scan_edit_history.get(image_key, [])
         if not history:
             QMessageBox.information(self, "Lịch sử sửa", "Chưa có lịch sử điều chỉnh trong Status cho bài thi này.")
             return
-        latest = self.scan_last_adjustment.get(row, history[-1])
+        latest = self.scan_last_adjustment.get(image_key, history[-1])
         QMessageBox.information(
             self,
             "Lịch sử sửa bài",
@@ -10358,11 +10408,13 @@ class MainWindow(QMainWindow):
         exam_code_text = str(sid_item.data(Qt.UserRole + 1) if sid_item else "").strip()
         dup = 0
         if not self._student_id_has_recognition_error(sid):
-            for r in range(self.scan_list.rowCount()):
-                it = self.scan_list.item(r, 0)
-                v = (it.text().strip() if it else "")
-                if not self._student_id_has_recognition_error(v) and v == sid:
-                    dup += 1
+            unique_pairs: set[tuple[str, str]] = set()
+            for result in (self._current_scan_results_snapshot() or []):
+                sid_val = str(getattr(result, "student_id", "") or "").strip()
+                img_val = self._result_identity_key(getattr(result, "image_path", ""))
+                if sid_val and (not self._student_id_has_recognition_error(sid_val)):
+                    unique_pairs.add((img_val, sid_val))
+            dup = sum(1 for _img, sid_val in unique_pairs if sid_val == sid)
         status_parts = self._status_parts_for_row("" if self._student_id_has_recognition_error(sid) else sid, exam_code_text, dup)
         return ", ".join(status_parts) if status_parts else "OK"
 
@@ -10382,12 +10434,15 @@ class MainWindow(QMainWindow):
     ) -> None:
         if idx < 0 or idx >= self.scan_list.rowCount():
             return
-        forced_status = self.scan_forced_status_by_index.get(idx, "")
+        image_key = self._row_image_key(idx)
+        forced_status = self.scan_forced_status_by_index.get(image_key, "")
         if not forced_status and idx < len(self.scan_results):
             row_result = self.scan_results[idx]
             if bool(getattr(row_result, "manually_edited", False)):
                 forced_status = "Đã sửa"
-                self.scan_forced_status_by_index[idx] = forced_status
+                row_image = self._result_identity_key(getattr(row_result, "image_path", "")) or image_key
+                if row_image:
+                    self.scan_forced_status_by_index[row_image] = forced_status
         status = forced_status or (
             self._status_text_for_row(
                 idx,
