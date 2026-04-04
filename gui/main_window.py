@@ -7139,36 +7139,36 @@ class MainWindow(QMainWindow):
         }
         blanks: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
 
+        def _display_actual_mapping(actual_questions: list[int], limit: int) -> tuple[list[int], dict[int, int], dict[int, int]]:
+            actual_sorted = sorted(set(int(q) for q in (actual_questions or [])))
+            if limit > 0:
+                actual_sorted = actual_sorted[:limit]
+                if not actual_sorted:
+                    display_questions = list(range(1, limit + 1))
+                    actual_sorted = list(display_questions)
+                else:
+                    contiguous = actual_sorted == list(range(1, len(actual_sorted) + 1))
+                    display_questions = list(actual_sorted) if contiguous else list(range(1, len(actual_sorted) + 1))
+            else:
+                display_questions = list(actual_sorted)
+            display_to_actual = {
+                int(display_q): int(actual_q)
+                for display_q, actual_q in zip(display_questions, actual_sorted)
+            }
+            actual_to_display = {
+                int(actual_q): int(display_q)
+                for display_q, actual_q in zip(display_questions, actual_sorted)
+            }
+            return display_questions, display_to_actual, actual_to_display
+
         for sec in ["MCQ", "TF", "NUMERIC"]:
             limit = max(0, int(configured_counts.get(sec, 0) or 0))
             actual_questions = sorted(set(int(q) for q in (expected_by_section.get(sec, []) or [])))
             if limit <= 0 and not actual_questions:
                 continue
 
-            if limit > 0:
-                display_questions = list(range(1, limit + 1))
-                actual_questions = actual_questions[:limit]
-            else:
-                display_questions = list(actual_questions)
-
-            # Ưu tiên mapping identity cho các câu đã đánh số lại theo section (1..N).
-            actual_to_display = {int(q): int(q) for q in display_questions}
-            # Với dữ liệu cũ dùng số câu toàn cục (ví dụ TF bắt đầu từ 16), map bổ sung theo thứ tự.
-            if limit > 0:
-                mapped_display_idx = 1
-                for actual_q in actual_questions:
-                    if actual_q in actual_to_display:
-                        continue
-                    if mapped_display_idx > limit:
-                        break
-                    while mapped_display_idx in actual_to_display.values() and mapped_display_idx <= limit:
-                        mapped_display_idx += 1
-                    if mapped_display_idx > limit:
-                        break
-                    actual_to_display[int(actual_q)] = int(mapped_display_idx)
-
+            display_questions, display_to_actual, actual_to_display = _display_actual_mapping(actual_questions, limit)
             if sec == "TF":
-                display_to_actual = {int(v): int(k) for k, v in actual_to_display.items()}
                 missing_tf_statements = 0
                 for display_q in display_questions:
                     actual_q = int(display_to_actual.get(int(display_q), int(display_q)))
