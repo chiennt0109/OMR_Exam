@@ -9386,6 +9386,7 @@ class MainWindow(QMainWindow):
             sid_text = ""
 
         def _match_result_pool(pool: list[OMRResult]) -> OMRResult | None:
+            sid_matches: list[OMRResult] = []
             for cand in (pool or []):
                 cand_img = str(getattr(cand, "image_path", "") or "").strip()
                 cand_sid = str(getattr(cand, "student_id", "") or "").strip()
@@ -9393,7 +9394,11 @@ class MainWindow(QMainWindow):
                 if image_path and cand_img == image_path:
                     return cand
                 if (not image_path) and sid_text and cand_sid == sid_text and (not exam_code or cand_code == exam_code):
-                    return cand
+                    sid_matches.append(cand)
+            if len(sid_matches) == 1:
+                return sid_matches[0]
+            if len(sid_matches) > 1:
+                print(f"[CorrectionLoad] row={row_idx} ambiguous_sid_match sid={sid_text} exam_code={exam_code} matches={len(sid_matches)}")
             return None
 
         # 1) current scan_results
@@ -9695,6 +9700,8 @@ class MainWindow(QMainWindow):
             if placeholder is None:
                 placeholder = OMRResult(image_path="")
             self.scan_results.append(placeholder)
+        if any(i != idx and self.scan_results[i] is result for i in range(len(self.scan_results))):
+            result = self._lightweight_result_copy(result)
         self.scan_results[idx] = result
 
     def _rerecognize_selected_scan(self) -> None:
@@ -11278,8 +11285,11 @@ class MainWindow(QMainWindow):
             num_actions_row.setVisible(has_numeric)
 
         def _apply_changes(save_feedback: bool = False) -> bool:
-            result = _current_result()
             idx_local = dialog_state["index"]
+            current_ref = _current_result()
+            if any(i != idx_local and self.scan_results[i] is current_ref for i in range(len(self.scan_results))):
+                self.scan_results[idx_local] = self._lightweight_result_copy(current_ref)
+            result = _current_result()
             try:
                 snapshot = _collect_editor_snapshot(validate=True)
             except Exception as exc:
@@ -11462,6 +11472,9 @@ class MainWindow(QMainWindow):
             return
 
         res = self.scan_results[idx]
+        if any(i != idx and self.scan_results[i] is res for i in range(len(self.scan_results))):
+            res = self._lightweight_result_copy(res)
+            self.scan_results[idx] = res
         old_sid_for_score = str(res.student_id or "").strip()
         changes: list[str] = []
         if "student_id" in patch:
