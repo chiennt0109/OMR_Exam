@@ -253,6 +253,14 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertNotIn('self._trim_result_answers_to_expected_scope(scoped)', block)
         self.assertIn('để luồng hiển thị Batch Scan thống nhất với Template Editor.', block)
 
+    def test_batch_scan_mcq_preview_uses_display_reindex_helper_to_avoid_missing_question_1(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('def _mcq_answers_for_display(self, result) -> dict[int, str]:', source)
+        self.assertIn('if expected_mcq and 1 in expected_mcq:', source)
+        self.assertIn('return {idx + 1: raw[q] for idx, q in enumerate(keys)}', source)
+        self.assertIn('mcq = self._format_mcq_answers(self._mcq_answers_for_display(result))', source)
+        self.assertIn('self._format_mcq_answers(self._mcq_answers_for_display(preview_result))', source)
+
 
     def test_invalidate_scoring_no_undefined_rows_loop_and_lightweight_path(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')

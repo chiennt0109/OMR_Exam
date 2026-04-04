@@ -10187,9 +10187,26 @@ class MainWindow(QMainWindow):
         key = self._subject_answer_key_for_result(result, subject_key)
         return self._answer_string_from_maps(result.mcq_answers or {}, result.true_false_answers or {}, result.numeric_answers or {}, key)
 
+    def _mcq_answers_for_display(self, result) -> dict[int, str]:
+        raw = {int(k): str(v) for k, v in (getattr(result, "mcq_answers", {}) or {}).items()}
+        if not raw:
+            return {}
+        keys = sorted(raw.keys())
+        if keys[0] <= 1:
+            return {int(k): raw[int(k)] for k in keys}
+        contiguous = keys == list(range(keys[0], keys[0] + len(keys)))
+        if not contiguous:
+            return {int(k): raw[int(k)] for k in keys}
+        expected_mcq = sorted(set(int(q) for q in (self._expected_questions_by_section(result).get("MCQ", []) or [])))
+        # Trường hợp lệch index kiểu +1 ở Batch Scan (Template Editor vẫn nhận đủ):
+        # hiển thị lại theo index 1..N để không làm "mất câu 1" trong panel nhận dạng.
+        if expected_mcq and 1 in expected_mcq:
+            return {idx + 1: raw[q] for idx, q in enumerate(keys)}
+        return {int(k): raw[int(k)] for k in keys}
+
     def _short_recognition_text_for_result(self, result) -> str:
         parts: list[str] = []
-        mcq = self._format_mcq_answers(result.mcq_answers or {})
+        mcq = self._format_mcq_answers(self._mcq_answers_for_display(result))
         tf = self._format_tf_answers(result.true_false_answers or {})
         num = self._format_numeric_answers(result.numeric_answers or {})
         if mcq and mcq != "-":
@@ -10677,7 +10694,7 @@ class MainWindow(QMainWindow):
         ]
         if section_counts.get("MCQ", 0) > 0:
             rows.extend([
-                ("MCQ", self._compact_value(self._format_mcq_answers(preview_result.mcq_answers or {}), 220)),
+                ("MCQ", self._compact_value(self._format_mcq_answers(self._mcq_answers_for_display(preview_result)), 220)),
                 ("MCQ không tô", ", ".join(str(x) for x in blank_map.get("MCQ", [])) or "-"),
             ])
         if section_counts.get("TF", 0) > 0:
