@@ -1838,6 +1838,7 @@ class MainWindow(QMainWindow):
         hdr.setSectionResizeMode(8, QHeaderView.ResizeToContents)
         # double click navigation: open selected exam directly.
         self.exam_list_table.cellDoubleClicked.connect(self._handle_exam_list_double_click)
+        self.exam_list_table.itemSelectionChanged.connect(lambda: self._handle_stack_changed(self.stack.currentIndex()))
         layout.addWidget(self.exam_list_table)
         return w
 
@@ -2806,50 +2807,35 @@ class MainWindow(QMainWindow):
             return False
 
     def save_session_as(self) -> None:
-        if not self.session or not self.current_session_id:
-            QMessageBox.information(self, "Lưu dưới tên khác", "Vui lòng mở kỳ thi nguồn trước khi sao chép.")
+        if self.stack.currentIndex() != 0:
+            QMessageBox.information(self, "Lưu dưới tên khác", "Chức năng này chỉ sử dụng trong màn hình danh sách kỳ thi.")
+            return
+        row = self.exam_list_table.currentRow() if hasattr(self, "exam_list_table") else -1
+        source_session_id = self._session_id_for_row(row) if row >= 0 else ""
+        if not source_session_id:
+            QMessageBox.information(self, "Lưu dưới tên khác", "Vui lòng chọn kỳ thi nguồn trong danh sách.")
+            return
+        source_payload = self.database.fetch_exam_session(source_session_id)
+        if not isinstance(source_payload, dict) or not source_payload:
+            QMessageBox.warning(self, "Lưu dưới tên khác", "Không đọc được dữ liệu kỳ thi nguồn.")
             return
 
-        subject_cfgs = list(((self.session.config or {}).get("subject_configs", []) if self.session else []) or [])
-        target_candidates: list[str] = []
-        for cfg in subject_cfgs:
-            key = str(self._subject_key_from_cfg(cfg) or "").strip()
-            if key and key != source_subject:
-                target_candidates.append(key)
-        target_candidates = sorted(set(target_candidates))
-        if not target_candidates:
-            QMessageBox.information(self, "Lưu dưới tên khác", "Không có môn đích để sao chép dữ liệu.")
-            return
-
-        target_subject, ok = QInputDialog.getItem(
-            self,
-            "Lưu dưới tên khác",
-            "Chọn môn đích:",
-            target_candidates,
-            0,
-            False,
-        )
-        if not ok:
-            return
-        target_subject = str(target_subject or "").strip()
-        if not target_subject or target_subject == source_subject:
-            return
-
-        new_session_id = self._generate_session_id(new_name)
-        source_session_id = str(self.current_session_id or "").strip()
-        source_exam_name = str(self.session.exam_name or "").strip().lower()
-        target_exam_name = str(new_name or "").strip().lower()
-        source_prefix = f"{source_session_id}::{source_exam_name}" if source_session_id and source_exam_name else source_session_id
-        target_prefix = f"{new_session_id}::{target_exam_name}" if new_session_id and target_exam_name else new_session_id
-
-        payload = copy.deepcopy(self.session.to_dict())
-        payload["exam_name"] = new_name
-        self.database.save_exam_session(new_session_id, new_name, payload)
-
-        subject_cfgs = list(((payload.get("config", {}) or {}).get("subject_configs", []) if isinstance(payload.get("config", {}), dict) else []) or [])
-        for cfg in subject_cfgs:
-            subject_key = str(self._subject_key_from_cfg(cfg) or "").strip()
-            if not subject_key:
+        current_name = str(source_payload.get("exam_name", "") or "").strip() or "Kỳ thi"
+        while True:
+            new_name, ok = QInputDialog.getText(
+                self,
+                "Lưu dưới tên khác",
+                "Nhập tên kỳ thi mới:",
+                text=current_name,
+            )
+            if not ok:
+                return
+            new_name = str(new_name or "").strip()
+            if not new_name:
+                QMessageBox.warning(self, "Lưu dưới tên khác", "Tên kỳ thi không được để trống.")
+                continue
+            if self._session_name_exists(new_name):
+                QMessageBox.warning(self, "Lưu dưới tên khác", "Tên kỳ thi đã tồn tại. Vui lòng chọn tên khác.")
                 continue
             block = str((cfg or {}).get("block", "") or "").strip()
             source_scan_key = f"{source_prefix}::{subject_key}" if source_prefix else subject_key
@@ -2870,14 +2856,13 @@ class MainWindow(QMainWindow):
                 )
 
         new_session_id = self._generate_session_id(new_name)
-        source_session_id = str(self.current_session_id or "").strip()
-        source_exam_name = str(self.session.exam_name or "").strip().lower()
+        source_exam_name = str(source_payload.get("exam_name", "") or "").strip().lower()
         target_exam_name = str(new_name or "").strip().lower()
         source_prefix = f"{source_session_id}::{source_exam_name}" if source_session_id and source_exam_name else source_session_id
         target_prefix = f"{new_session_id}::{target_exam_name}" if new_session_id and target_exam_name else new_session_id
 
         try:
-            payload = copy.deepcopy(self.session.to_dict())
+            payload = copy.deepcopy(source_payload)
             payload["exam_name"] = new_name
             self.database.save_exam_session(new_session_id, new_name, payload)
 
@@ -3151,7 +3136,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, "act_close_template_module"):
             self.act_close_template_module.setVisible(template_visible)
         if hasattr(self, "act_save_as_subject"):
-            can_save_as = bool(self.session and str(self.current_session_id or "").strip()) and not template_visible
+            row = self.exam_list_table.currentRow() if hasattr(self, "exam_list_table") else -1
+            sid = self._session_id_for_row(row) if row >= 0 else ""
+            can_save_as = (index == 0) and bool(str(sid or "").strip())
             self.act_save_as_subject.setVisible(True)
             self.act_save_as_subject.setEnabled(can_save_as)
 
