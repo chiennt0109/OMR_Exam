@@ -2869,29 +2869,54 @@ class MainWindow(QMainWindow):
                     dict(score_row or {}),
                 )
 
-            source_key_subject = f"{source_prefix}::{subject_key}::{block}" if source_prefix and block else (f"{source_prefix}::{subject_key}" if source_prefix else subject_key)
-            target_key_subject = f"{target_prefix}::{subject_key}::{block}" if target_prefix and block else (f"{target_prefix}::{subject_key}" if target_prefix else subject_key)
-            source_keys = self.database.fetch_answer_keys_for_subject(source_key_subject)
-            self.database.replace_answer_keys_for_subject(target_key_subject, source_keys)
+        new_session_id = self._generate_session_id(new_name)
+        source_session_id = str(self.current_session_id or "").strip()
+        source_exam_name = str(self.session.exam_name or "").strip().lower()
+        target_exam_name = str(new_name or "").strip().lower()
+        source_prefix = f"{source_session_id}::{source_exam_name}" if source_session_id and source_exam_name else source_session_id
+        target_prefix = f"{new_session_id}::{target_exam_name}" if new_session_id and target_exam_name else new_session_id
 
-        source_histories = list(self.database.fetch_recheck_history(source_session_id) or [])
-        for item in source_histories:
-            self.database.add_recheck_history(
-                session_id=new_session_id,
-                exam_name=new_name,
-                subject_key=str(item.get("subject_key", "") or ""),
-                student_code=str(item.get("student_code", "") or ""),
-                exam_code=str(item.get("exam_code", "") or ""),
-                change_text=str(item.get("change_text", "") or ""),
-                old_score=float(item.get("old_score", 0.0) or 0.0),
-                new_score=float(item.get("new_score", 0.0) or 0.0),
-                payload=dict(item.get("payload", {}) or {}),
-            )
+        try:
+            payload = copy.deepcopy(self.session.to_dict())
+            payload["exam_name"] = new_name
+            self.database.save_exam_session(new_session_id, new_name, payload)
 
-        self._upsert_session_registry(new_session_id, new_name)
-        self._save_session_registry()
-        self._refresh_exam_list()
-        QMessageBox.information(self, "Lưu dưới tên khác", f"Đã sao chép kỳ thi thành '{new_name}'.")
+            subject_cfgs = list(((payload.get("config", {}) or {}).get("subject_configs", []) if isinstance(payload.get("config", {}), dict) else []) or [])
+            for cfg in subject_cfgs:
+                subject_key = str(self._subject_key_from_cfg(cfg) or "").strip()
+                if not subject_key:
+                    continue
+                block = str((cfg or {}).get("block", "") or "").strip()
+                source_scan_key = f"{source_prefix}::{subject_key}" if source_prefix else subject_key
+                target_scan_key = f"{target_prefix}::{subject_key}" if target_prefix else subject_key
+                source_rows = self.database.fetch_scan_results_for_subject(source_scan_key)
+                self.database.replace_scan_results_for_subject(target_scan_key, list(source_rows or []))
+
+                source_key_subject = f"{source_prefix}::{subject_key}::{block}" if source_prefix and block else (f"{source_prefix}::{subject_key}" if source_prefix else subject_key)
+                target_key_subject = f"{target_prefix}::{subject_key}::{block}" if target_prefix and block else (f"{target_prefix}::{subject_key}" if target_prefix else subject_key)
+                source_keys = self.database.fetch_answer_keys_for_subject(source_key_subject)
+                self.database.replace_answer_keys_for_subject(target_key_subject, source_keys)
+
+            source_histories = list(self.database.fetch_recheck_history(source_session_id) or [])
+            for item in source_histories:
+                self.database.add_recheck_history(
+                    session_id=new_session_id,
+                    exam_name=new_name,
+                    subject_key=str(item.get("subject_key", "") or ""),
+                    student_code=str(item.get("student_code", "") or ""),
+                    exam_code=str(item.get("exam_code", "") or ""),
+                    change_text=str(item.get("change_text", "") or ""),
+                    old_score=float(item.get("old_score", 0.0) or 0.0),
+                    new_score=float(item.get("new_score", 0.0) or 0.0),
+                    payload=dict(item.get("payload", {}) or {}),
+                )
+
+            self._upsert_session_registry(new_session_id, new_name)
+            self._save_session_registry()
+            self._refresh_exam_list()
+            QMessageBox.information(self, "Lưu dưới tên khác", f"Đã sao chép kỳ thi thành '{new_name}'.")
+        except Exception as exc:
+            QMessageBox.warning(self, "Lưu dưới tên khác", f"Không thể sao chép kỳ thi:\n{exc}")
 
     def close_current_session(self) -> None:
         if self.session_dirty:
