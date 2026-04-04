@@ -2837,7 +2837,23 @@ class MainWindow(QMainWindow):
             if self._session_name_exists(new_name):
                 QMessageBox.warning(self, "Lưu dưới tên khác", "Tên kỳ thi đã tồn tại. Vui lòng chọn tên khác.")
                 continue
-            break
+            block = str((cfg or {}).get("block", "") or "").strip()
+            source_scan_key = f"{source_prefix}::{subject_key}" if source_prefix else subject_key
+            target_scan_key = f"{target_prefix}::{subject_key}" if target_prefix else subject_key
+            source_rows = self.database.fetch_scan_results_for_subject(source_scan_key)
+            self.database.replace_scan_results_for_subject(target_scan_key, list(source_rows or []))
+
+            source_score_key = subject_key
+            target_score_key = subject_key
+            source_scores = list(self.database.fetch_scores_for_subject(source_score_key) or [])
+            self.database.conn.execute("DELETE FROM scores WHERE subject_key = ?", (target_score_key,))
+            for score_row in source_scores:
+                self.database.upsert_score_row(
+                    target_score_key,
+                    str((score_row or {}).get("student_id", "") or ""),
+                    str((score_row or {}).get("exam_code", "") or ""),
+                    dict(score_row or {}),
+                )
 
         new_session_id = self._generate_session_id(new_name)
         source_exam_name = str(source_payload.get("exam_name", "") or "").strip().lower()
