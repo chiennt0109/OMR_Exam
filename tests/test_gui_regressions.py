@@ -244,6 +244,15 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertNotIn('lay.addWidget(QLabel("Nội dung"))', source)
         self.assertIn('setattr(rebuilt, "manual_content_override", "")', source)
 
+    def test_batch_scan_display_keeps_raw_recognition_scope_like_template_editor(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        start = source.find('    def _scoped_result_copy(self, result):')
+        end = source.find('    def _count_mismatch_status_parts(self, result) -> list[str]:', start)
+        block = source[start:end]
+        self.assertIn('scoped = copy.deepcopy(result)', block)
+        self.assertNotIn('self._trim_result_answers_to_expected_scope(scoped)', block)
+        self.assertIn('để luồng hiển thị Batch Scan thống nhất với Template Editor.', block)
+
 
     def test_invalidate_scoring_no_undefined_rows_loop_and_lightweight_path(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')

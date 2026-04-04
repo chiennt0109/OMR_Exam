@@ -5893,8 +5893,6 @@ class MainWindow(QMainWindow):
             self.scan_result_preview.setRowCount(0)
 
         self.scan_results = list(cached.get("scan_results", []))
-        for res in self.scan_results:
-            self._trim_result_answers_to_expected_scope(res)
         self.scan_results_by_subject[key] = list(self.scan_results)
         duplicate_ids: dict[str, int] = {}
         available_exam_codes = self._available_exam_codes()
@@ -6935,8 +6933,9 @@ class MainWindow(QMainWindow):
             result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
 
     def _scoped_result_copy(self, result):
+        # Giữ nguyên payload nhận dạng gốc (không cắt theo answer-key/template)
+        # để luồng hiển thị Batch Scan thống nhất với Template Editor.
         scoped = copy.deepcopy(result)
-        self._trim_result_answers_to_expected_scope(scoped)
         return scoped
 
     def _count_mismatch_status_parts(self, result) -> list[str]:
@@ -7129,7 +7128,6 @@ class MainWindow(QMainWindow):
             self._refresh_student_profile_for_result(result)
             full_name = str(getattr(result, "full_name", "") or "-")
             birth_date = str(getattr(result, "birth_date", "") or "-")
-            self._trim_result_answers_to_expected_scope(result)
             blank_map = self._compute_blank_questions(result)
             blank_questions = blank_map.get("MCQ", [])
             self.scan_blank_questions[idx] = blank_questions
