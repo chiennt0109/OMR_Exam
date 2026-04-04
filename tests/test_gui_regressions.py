@@ -226,6 +226,12 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('list(range(1, max(0, int(configured_counts.get(sec, 0) or 0)) + 1))', source)
         self.assertIn('"MCQ": list(default_by_config["MCQ"]),', source)
 
+    def test_blank_question_fallback_uses_answered_questions_when_expected_numbering_disjoint(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('answered_questions = sorted(set(int(q) for q in section_answers.get(sec, set())))', source)
+        self.assertIn('if (not expected_set) or (expected_set.isdisjoint(answered_set)):', source)
+        self.assertIn('actual_questions = list(answered_questions)', source)
+
 
     def test_invalidate_scoring_no_undefined_rows_loop_and_lightweight_path(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')

@@ -7257,6 +7257,15 @@ class MainWindow(QMainWindow):
         for sec in ["MCQ", "TF", "NUMERIC"]:
             limit = max(0, int(configured_counts.get(sec, 0) or 0))
             actual_questions = sorted(set(int(q) for q in (expected_by_section.get(sec, []) or [])))
+            answered_questions = sorted(set(int(q) for q in section_answers.get(sec, set())))
+            if answered_questions:
+                expected_set = set(actual_questions)
+                answered_set = set(answered_questions)
+                # Khi số thứ tự câu trong đáp án và dữ liệu nhận dạng không giao nhau
+                # (thường gặp sau các luồng import/sửa dữ liệu cũ), ưu tiên câu thực tế đã nhận dạng
+                # để tránh báo "trống" sai ở cột Nội dung.
+                if (not expected_set) or (expected_set.isdisjoint(answered_set)):
+                    actual_questions = list(answered_questions)
             if limit <= 0 and not actual_questions:
                 continue
 
