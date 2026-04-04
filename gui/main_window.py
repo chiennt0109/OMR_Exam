@@ -2652,23 +2652,23 @@ class MainWindow(QMainWindow):
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("File")
-        act_new = file_menu.addAction("Tạo kỳ thi mới")
-        act_new.setShortcut(QKeySequence("Ctrl+N"))
-        act_new.triggered.connect(self.action_create_session)
+        self.act_new_session = file_menu.addAction("Tạo kỳ thi mới")
+        self.act_new_session.setShortcut(QKeySequence("Ctrl+N"))
+        self.act_new_session.triggered.connect(self.action_create_session)
 
-        act_open = file_menu.addAction("Mở từ danh sách")
-        act_open.setShortcut(QKeySequence("Ctrl+O"))
-        act_open.triggered.connect(self.action_open_session)
+        self.act_open_from_list = file_menu.addAction("Mở từ danh sách")
+        self.act_open_from_list.setShortcut(QKeySequence("Ctrl+O"))
+        self.act_open_from_list.triggered.connect(self.action_open_session)
 
-        act_save = file_menu.addAction("Lưu kỳ thi")
-        act_save.setShortcut(QKeySequence("Ctrl+S"))
-        act_save.triggered.connect(self.action_save_session)
+        self.act_save_session = file_menu.addAction("Lưu kỳ thi")
+        self.act_save_session.setShortcut(QKeySequence("Ctrl+S"))
+        self.act_save_session.triggered.connect(self.action_save_session)
 
-        act_save_as = file_menu.addAction("Lưu dưới tên khác")
-        act_save_as.triggered.connect(self.action_save_session_as)
+        self.act_save_as_subject = file_menu.addAction("Lưu dưới tên khác")
+        self.act_save_as_subject.triggered.connect(self.action_save_session_as)
 
-        act_close_current = file_menu.addAction("Đóng kỳ thi hiện tại")
-        act_close_current.triggered.connect(self.action_close_current_session)
+        self.act_close_current_session = file_menu.addAction("Đóng kỳ thi hiện tại")
+        self.act_close_current_session.triggered.connect(self.action_close_current_session)
 
         file_menu.addSeparator()
         self.act_manage_template = file_menu.addAction("Quản lý mẫu giấy thi")
@@ -2806,9 +2806,8 @@ class MainWindow(QMainWindow):
             return False
 
     def save_session_as(self) -> None:
-        if not self.session:
-            self.create_session()
-        if not self.session:
+        if not self.session or not self.current_session_id:
+            QMessageBox.information(self, "Lưu dưới tên khác", "Vui lòng mở kỳ thi nguồn trước khi sao chép.")
             return
 
         current_name = str(self.session.exam_name or "").strip() or "Kỳ thi"
@@ -2830,29 +2829,54 @@ class MainWindow(QMainWindow):
                 continue
             break
 
-        old_session_id = self.current_session_id
-        old_session_path = self.current_session_path
-        old_session_name = self.session.exam_name
-        self.session.exam_name = new_name
-        self.current_session_id = self._generate_session_id(new_name)
-        self.current_session_path = self._session_path_from_id(self.current_session_id)
+        new_session_id = self._generate_session_id(new_name)
+        source_session_id = str(self.current_session_id or "").strip()
+        source_exam_name = str(self.session.exam_name or "").strip().lower()
+        target_exam_name = str(new_name or "").strip().lower()
+        source_prefix = f"{source_session_id}::{source_exam_name}" if source_session_id and source_exam_name else source_session_id
+        target_prefix = f"{new_session_id}::{target_exam_name}" if new_session_id and target_exam_name else new_session_id
 
         try:
-            cfg = dict(self.session.config or {})
-            cfg["scoring_phases"] = list(self.scoring_phases)
-            cfg["scoring_results"] = dict(self.scoring_results_by_subject)
-            self.session.config = cfg
-            self.database.save_exam_session(self.current_session_id, self.session.exam_name, self.session.to_dict())
-            self._upsert_session_registry(self.current_session_id, self.session.exam_name)
+            payload = copy.deepcopy(self.session.to_dict())
+            payload["exam_name"] = new_name
+            self.database.save_exam_session(new_session_id, new_name, payload)
+
+            subject_cfgs = list(((payload.get("config", {}) or {}).get("subject_configs", []) if isinstance(payload.get("config", {}), dict) else []) or [])
+            for cfg in subject_cfgs:
+                subject_key = str(self._subject_key_from_cfg(cfg) or "").strip()
+                if not subject_key:
+                    continue
+                block = str((cfg or {}).get("block", "") or "").strip()
+                source_scan_key = f"{source_prefix}::{subject_key}" if source_prefix else subject_key
+                target_scan_key = f"{target_prefix}::{subject_key}" if target_prefix else subject_key
+                source_rows = self.database.fetch_scan_results_for_subject(source_scan_key)
+                self.database.replace_scan_results_for_subject(target_scan_key, list(source_rows or []))
+
+                source_key_subject = f"{source_prefix}::{subject_key}::{block}" if source_prefix and block else (f"{source_prefix}::{subject_key}" if source_prefix else subject_key)
+                target_key_subject = f"{target_prefix}::{subject_key}::{block}" if target_prefix and block else (f"{target_prefix}::{subject_key}" if target_prefix else subject_key)
+                source_keys = self.database.fetch_answer_keys_for_subject(source_key_subject)
+                self.database.replace_answer_keys_for_subject(target_key_subject, source_keys)
+
+            source_histories = list(self.database.fetch_recheck_history(source_session_id) or [])
+            for item in source_histories:
+                self.database.add_recheck_history(
+                    session_id=new_session_id,
+                    exam_name=new_name,
+                    subject_key=str(item.get("subject_key", "") or ""),
+                    student_code=str(item.get("student_code", "") or ""),
+                    exam_code=str(item.get("exam_code", "") or ""),
+                    change_text=str(item.get("change_text", "") or ""),
+                    old_score=float(item.get("old_score", 0.0) or 0.0),
+                    new_score=float(item.get("new_score", 0.0) or 0.0),
+                    payload=dict(item.get("payload", {}) or {}),
+                )
+
+            self._upsert_session_registry(new_session_id, new_name)
             self._save_session_registry()
             self._refresh_exam_list()
-            self.session_dirty = False
-            QMessageBox.information(self, "Lưu dưới tên khác", "Đã lưu thành kỳ thi mới trong kho hệ thống.")
+            QMessageBox.information(self, "Lưu dưới tên khác", f"Đã sao chép kỳ thi thành '{new_name}'.")
         except Exception as exc:
-            self.current_session_id = old_session_id
-            self.current_session_path = old_session_path
-            self.session.exam_name = old_session_name
-            QMessageBox.warning(self, "Lưu dưới tên khác", f"Không thể lưu kỳ thi:\n{exc}")
+            QMessageBox.warning(self, "Lưu dưới tên khác", f"Không thể sao chép kỳ thi:\n{exc}")
 
     def close_current_session(self) -> None:
         if self.session_dirty:
@@ -2976,10 +3000,7 @@ class MainWindow(QMainWindow):
         self._open_embedded_exam_editor(session_id, draft, payload, is_new=True)
 
     def action_open_session(self) -> None:
-        if not self._confirm_before_switching_work("kỳ thi khác"):
-            return
-        if self._confirm("Mở kỳ thi", "Bạn có chắc muốn mở kỳ thi?"):
-            self.open_session()
+        self._navigate_to("exam_list", context={}, push_current=True, require_confirm=False, reason="open_exam_list")
 
     def action_save_session(self) -> None:
         if self._confirm("Lưu kỳ thi", "Bạn có chắc muốn lưu kỳ thi?"):
@@ -2992,7 +3013,7 @@ class MainWindow(QMainWindow):
             self.save_session()
 
     def action_save_session_as(self) -> None:
-        if self._confirm("Lưu dưới tên khác", "Bạn có chắc muốn lưu kỳ thi dưới tên khác?"):
+        if self._confirm("Lưu dưới tên khác", "Bạn có chắc muốn sao chép toàn bộ kỳ thi sang kỳ thi mới?"):
             self.save_session_as()
 
     def action_close_current_session(self) -> None:
@@ -3089,6 +3110,10 @@ class MainWindow(QMainWindow):
             self._rebuild_template_module_menu(library_mode=template_library_visible, editor_mode=template_editor_visible)
         if hasattr(self, "act_close_template_module"):
             self.act_close_template_module.setVisible(template_visible)
+        if hasattr(self, "act_save_as_subject"):
+            can_save_as = bool(self.session and str(self.current_session_id or "").strip()) and not template_visible
+            self.act_save_as_subject.setVisible(True)
+            self.act_save_as_subject.setEnabled(can_save_as)
 
     def _route_to_stack_index(self, route_name: str) -> int:
         mapping = {
@@ -5354,6 +5379,7 @@ class MainWindow(QMainWindow):
         should_load = bool(selected_key) and (selected_key != previous_active_key or self.scan_list.rowCount() <= 0)
         if should_load:
             self._on_batch_subject_changed(self.batch_subject_combo.currentIndex(), force_reload=False)
+        self._handle_stack_changed(self.stack.currentIndex())
 
     def _selected_batch_subject_config(self) -> dict | None:
         if not hasattr(self, "batch_subject_combo"):
@@ -7139,36 +7165,36 @@ class MainWindow(QMainWindow):
         }
         blanks: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
 
+        def _display_actual_mapping(actual_questions: list[int], limit: int) -> tuple[list[int], dict[int, int], dict[int, int]]:
+            actual_sorted = sorted(set(int(q) for q in (actual_questions or [])))
+            if limit > 0:
+                actual_sorted = actual_sorted[:limit]
+                if not actual_sorted:
+                    display_questions = list(range(1, limit + 1))
+                    actual_sorted = list(display_questions)
+                else:
+                    contiguous = actual_sorted == list(range(1, len(actual_sorted) + 1))
+                    display_questions = list(actual_sorted) if contiguous else list(range(1, len(actual_sorted) + 1))
+            else:
+                display_questions = list(actual_sorted)
+            display_to_actual = {
+                int(display_q): int(actual_q)
+                for display_q, actual_q in zip(display_questions, actual_sorted)
+            }
+            actual_to_display = {
+                int(actual_q): int(display_q)
+                for display_q, actual_q in zip(display_questions, actual_sorted)
+            }
+            return display_questions, display_to_actual, actual_to_display
+
         for sec in ["MCQ", "TF", "NUMERIC"]:
             limit = max(0, int(configured_counts.get(sec, 0) or 0))
             actual_questions = sorted(set(int(q) for q in (expected_by_section.get(sec, []) or [])))
             if limit <= 0 and not actual_questions:
                 continue
 
-            if limit > 0:
-                display_questions = list(range(1, limit + 1))
-                actual_questions = actual_questions[:limit]
-            else:
-                display_questions = list(actual_questions)
-
-            # Ưu tiên mapping identity cho các câu đã đánh số lại theo section (1..N).
-            actual_to_display = {int(q): int(q) for q in display_questions}
-            # Với dữ liệu cũ dùng số câu toàn cục (ví dụ TF bắt đầu từ 16), map bổ sung theo thứ tự.
-            if limit > 0:
-                mapped_display_idx = 1
-                for actual_q in actual_questions:
-                    if actual_q in actual_to_display:
-                        continue
-                    if mapped_display_idx > limit:
-                        break
-                    while mapped_display_idx in actual_to_display.values() and mapped_display_idx <= limit:
-                        mapped_display_idx += 1
-                    if mapped_display_idx > limit:
-                        break
-                    actual_to_display[int(actual_q)] = int(mapped_display_idx)
-
+            display_questions, display_to_actual, actual_to_display = _display_actual_mapping(actual_questions, limit)
             if sec == "TF":
-                display_to_actual = {int(v): int(k) for k, v in actual_to_display.items()}
                 missing_tf_statements = 0
                 for display_q in display_questions:
                     actual_q = int(display_to_actual.get(int(display_q), int(display_q)))
