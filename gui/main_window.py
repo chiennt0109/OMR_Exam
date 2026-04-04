@@ -3152,7 +3152,8 @@ class MainWindow(QMainWindow):
             self.act_close_template_module.setVisible(template_visible)
         if hasattr(self, "act_save_as_subject"):
             can_save_as = bool(self.session and str(self.current_session_id or "").strip()) and not template_visible
-            self.act_save_as_subject.setVisible(can_save_as)
+            self.act_save_as_subject.setVisible(True)
+            self.act_save_as_subject.setEnabled(can_save_as)
 
     def _route_to_stack_index(self, route_name: str) -> int:
         mapping = {
