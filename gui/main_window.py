@@ -2652,23 +2652,23 @@ class MainWindow(QMainWindow):
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("File")
-        act_new = file_menu.addAction("Tạo kỳ thi mới")
-        act_new.setShortcut(QKeySequence("Ctrl+N"))
-        act_new.triggered.connect(self.action_create_session)
+        self.act_new_session = file_menu.addAction("Tạo kỳ thi mới")
+        self.act_new_session.setShortcut(QKeySequence("Ctrl+N"))
+        self.act_new_session.triggered.connect(self.action_create_session)
 
-        act_open = file_menu.addAction("Mở từ danh sách")
-        act_open.setShortcut(QKeySequence("Ctrl+O"))
-        act_open.triggered.connect(self.action_open_session)
+        self.act_open_from_list = file_menu.addAction("Mở từ danh sách")
+        self.act_open_from_list.setShortcut(QKeySequence("Ctrl+O"))
+        self.act_open_from_list.triggered.connect(self.action_open_session)
 
-        act_save = file_menu.addAction("Lưu kỳ thi")
-        act_save.setShortcut(QKeySequence("Ctrl+S"))
-        act_save.triggered.connect(self.action_save_session)
+        self.act_save_session = file_menu.addAction("Lưu kỳ thi")
+        self.act_save_session.setShortcut(QKeySequence("Ctrl+S"))
+        self.act_save_session.triggered.connect(self.action_save_session)
 
-        act_save_as = file_menu.addAction("Lưu dưới tên khác")
-        act_save_as.triggered.connect(self.action_save_session_as)
+        self.act_save_as_subject = file_menu.addAction("Lưu dưới tên khác")
+        self.act_save_as_subject.triggered.connect(self.action_save_session_as)
 
-        act_close_current = file_menu.addAction("Đóng kỳ thi hiện tại")
-        act_close_current.triggered.connect(self.action_close_current_session)
+        self.act_close_current_session = file_menu.addAction("Đóng kỳ thi hiện tại")
+        self.act_close_current_session.triggered.connect(self.action_close_current_session)
 
         file_menu.addSeparator()
         self.act_manage_template = file_menu.addAction("Quản lý mẫu giấy thi")
@@ -2806,53 +2806,63 @@ class MainWindow(QMainWindow):
             return False
 
     def save_session_as(self) -> None:
-        if not self.session:
-            self.create_session()
-        if not self.session:
+        source_subject = str(self._current_batch_subject_key() or "").strip()
+        if not source_subject:
+            QMessageBox.information(self, "Lưu dưới tên khác", "Chức năng này chỉ dùng trong màn hình Batch Scan khi đã chọn môn nguồn.")
             return
 
-        current_name = str(self.session.exam_name or "").strip() or "Kỳ thi"
-        while True:
-            new_name, ok = QInputDialog.getText(
-                self,
-                "Lưu dưới tên khác",
-                "Nhập tên kỳ thi mới:",
-                text=current_name,
-            )
-            if not ok:
-                return
-            new_name = str(new_name or "").strip()
-            if not new_name:
-                QMessageBox.warning(self, "Lưu dưới tên khác", "Tên kỳ thi không được để trống.")
-                continue
-            if self._session_name_exists(new_name):
-                QMessageBox.warning(self, "Lưu dưới tên khác", "Tên kỳ thi đã tồn tại. Vui lòng chọn tên khác.")
-                continue
-            break
+        subject_cfgs = list(((self.session.config or {}).get("subject_configs", []) if self.session else []) or [])
+        target_candidates: list[str] = []
+        for cfg in subject_cfgs:
+            key = str(self._subject_key_from_cfg(cfg) or "").strip()
+            if key and key != source_subject:
+                target_candidates.append(key)
+        target_candidates = sorted(set(target_candidates))
+        if not target_candidates:
+            QMessageBox.information(self, "Lưu dưới tên khác", "Không có môn đích để sao chép dữ liệu.")
+            return
 
-        old_session_id = self.current_session_id
-        old_session_path = self.current_session_path
-        old_session_name = self.session.exam_name
-        self.session.exam_name = new_name
-        self.current_session_id = self._generate_session_id(new_name)
-        self.current_session_path = self._session_path_from_id(self.current_session_id)
+        target_subject, ok = QInputDialog.getItem(
+            self,
+            "Lưu dưới tên khác",
+            "Chọn môn đích:",
+            target_candidates,
+            0,
+            False,
+        )
+        if not ok:
+            return
+        target_subject = str(target_subject or "").strip()
+        if not target_subject or target_subject == source_subject:
+            return
 
-        try:
-            cfg = dict(self.session.config or {})
-            cfg["scoring_phases"] = list(self.scoring_phases)
-            cfg["scoring_results"] = dict(self.scoring_results_by_subject)
-            self.session.config = cfg
-            self.database.save_exam_session(self.current_session_id, self.session.exam_name, self.session.to_dict())
-            self._upsert_session_registry(self.current_session_id, self.session.exam_name)
-            self._save_session_registry()
-            self._refresh_exam_list()
-            self.session_dirty = False
-            QMessageBox.information(self, "Lưu dưới tên khác", "Đã lưu thành kỳ thi mới trong kho hệ thống.")
-        except Exception as exc:
-            self.current_session_id = old_session_id
-            self.current_session_path = old_session_path
-            self.session.exam_name = old_session_name
-            QMessageBox.warning(self, "Lưu dưới tên khác", f"Không thể lưu kỳ thi:\n{exc}")
+        source_results = list(self._collect_current_subject_results_for_save(source_subject) or [])
+        source_rows = [self._serialize_omr_result(result) for result in source_results]
+        target_scoped = self._batch_result_subject_key(target_subject)
+        self.database.replace_scan_results_for_subject(target_scoped, source_rows)
+        copied_results = [self._deserialize_omr_result(row) for row in source_rows]
+        self.scan_results_by_subject[target_scoped] = copied_results
+        if self._current_batch_subject_key() == target_subject:
+            self.scan_results = list(copied_results)
+
+        source_scores = dict(self.scoring_results_by_subject.get(source_subject, {}) or {})
+        self.scoring_results_by_subject[target_subject] = copy.deepcopy(source_scores)
+
+        source_cfg = self._subject_config_by_subject_key(source_subject) or {}
+        target_cfg = self._subject_config_by_subject_key(target_subject)
+        if isinstance(target_cfg, dict):
+            target_cfg["batch_saved"] = bool(source_cfg.get("batch_saved", False))
+            target_cfg["batch_scan_count"] = int(source_cfg.get("batch_scan_count", len(source_results)) or 0)
+            target_cfg["batch_last_saved_at"] = str(source_cfg.get("batch_last_saved_at", "") or "")
+
+        self.session_dirty = True
+        self._persist_session_quietly()
+        self._refresh_batch_subject_controls()
+        QMessageBox.information(
+            self,
+            "Lưu dưới tên khác",
+            f"Đã sao chép toàn bộ dữ liệu từ môn '{source_subject}' sang môn '{target_subject}'.",
+        )
 
     def close_current_session(self) -> None:
         if self.session_dirty:
@@ -2976,10 +2986,7 @@ class MainWindow(QMainWindow):
         self._open_embedded_exam_editor(session_id, draft, payload, is_new=True)
 
     def action_open_session(self) -> None:
-        if not self._confirm_before_switching_work("kỳ thi khác"):
-            return
-        if self._confirm("Mở kỳ thi", "Bạn có chắc muốn mở kỳ thi?"):
-            self.open_session()
+        self._navigate_to("exam_list", context={}, push_current=True, require_confirm=False, reason="open_exam_list")
 
     def action_save_session(self) -> None:
         if self._confirm("Lưu kỳ thi", "Bạn có chắc muốn lưu kỳ thi?"):
@@ -2992,7 +2999,7 @@ class MainWindow(QMainWindow):
             self.save_session()
 
     def action_save_session_as(self) -> None:
-        if self._confirm("Lưu dưới tên khác", "Bạn có chắc muốn lưu kỳ thi dưới tên khác?"):
+        if self._confirm("Lưu dưới tên khác", "Bạn có chắc muốn lưu toàn bộ dữ liệu môn hiện tại sang môn khác?"):
             self.save_session_as()
 
     def action_close_current_session(self) -> None:
@@ -3089,6 +3096,9 @@ class MainWindow(QMainWindow):
             self._rebuild_template_module_menu(library_mode=template_library_visible, editor_mode=template_editor_visible)
         if hasattr(self, "act_close_template_module"):
             self.act_close_template_module.setVisible(template_visible)
+        if hasattr(self, "act_save_as_subject"):
+            has_batch_subject = bool(str(self._current_batch_subject_key() or "").strip())
+            self.act_save_as_subject.setVisible((index == 1) and has_batch_subject)
 
     def _route_to_stack_index(self, route_name: str) -> int:
         mapping = {
@@ -5354,6 +5364,7 @@ class MainWindow(QMainWindow):
         should_load = bool(selected_key) and (selected_key != previous_active_key or self.scan_list.rowCount() <= 0)
         if should_load:
             self._on_batch_subject_changed(self.batch_subject_combo.currentIndex(), force_reload=False)
+        self._handle_stack_changed(self.stack.currentIndex())
 
     def _selected_batch_subject_config(self) -> dict | None:
         if not hasattr(self, "batch_subject_combo"):
