@@ -7245,6 +7245,15 @@ class MainWindow(QMainWindow):
             }
             return display_questions, display_to_actual, actual_to_display
 
+        def _tf_answer_has_mark(value: object) -> bool:
+            if isinstance(value, dict):
+                return any(k in {"a", "b", "c", "d"} for k in value.keys())
+            text = str(value or "").strip().upper()
+            if not text:
+                return False
+            cleaned = text.replace(" ", "").replace("|", "").replace(",", "").replace(";", "").replace(":", "")
+            return any(ch in {"Đ", "S", "T", "F", "1", "0"} for ch in cleaned)
+
         for sec in ["MCQ", "TF", "NUMERIC"]:
             limit = max(0, int(configured_counts.get(sec, 0) or 0))
             actual_questions = sorted(set(int(q) for q in (expected_by_section.get(sec, []) or [])))
@@ -7253,15 +7262,13 @@ class MainWindow(QMainWindow):
 
             display_questions, display_to_actual, actual_to_display = _display_actual_mapping(actual_questions, limit)
             if sec == "TF":
-                missing_tf_statements = 0
+                missing_tf_questions: list[int] = []
                 for display_q in display_questions:
                     actual_q = int(display_to_actual.get(int(display_q), int(display_q)))
-                    flags = tf_payload.get(actual_q, {})
-                    flags = flags if isinstance(flags, dict) else {}
-                    for key in ["a", "b", "c", "d"]:
-                        if key not in flags:
-                            missing_tf_statements += 1
-                blanks[sec] = list(range(1, missing_tf_statements + 1))
+                    tf_value = tf_payload.get(actual_q, {})
+                    if not _tf_answer_has_mark(tf_value):
+                        missing_tf_questions.append(int(display_q))
+                blanks[sec] = missing_tf_questions
                 continue
 
             answered_display = {
