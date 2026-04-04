@@ -2806,9 +2806,8 @@ class MainWindow(QMainWindow):
             return False
 
     def save_session_as(self) -> None:
-        source_subject = str(self._current_batch_subject_key() or "").strip()
-        if not source_subject:
-            QMessageBox.information(self, "Lưu dưới tên khác", "Chức năng này chỉ dùng trong màn hình Batch Scan khi đã chọn môn nguồn.")
+        if not self.session or not self.current_session_id:
+            QMessageBox.information(self, "Lưu dưới tên khác", "Vui lòng mở kỳ thi nguồn trước khi sao chép.")
             return
 
         subject_cfgs = list(((self.session.config or {}).get("subject_configs", []) if self.session else []) or [])
@@ -2836,33 +2835,63 @@ class MainWindow(QMainWindow):
         if not target_subject or target_subject == source_subject:
             return
 
-        source_results = list(self._collect_current_subject_results_for_save(source_subject) or [])
-        source_rows = [self._serialize_omr_result(result) for result in source_results]
-        target_scoped = self._batch_result_subject_key(target_subject)
-        self.database.replace_scan_results_for_subject(target_scoped, source_rows)
-        copied_results = [self._deserialize_omr_result(row) for row in source_rows]
-        self.scan_results_by_subject[target_scoped] = copied_results
-        if self._current_batch_subject_key() == target_subject:
-            self.scan_results = list(copied_results)
+        new_session_id = self._generate_session_id(new_name)
+        source_session_id = str(self.current_session_id or "").strip()
+        source_exam_name = str(self.session.exam_name or "").strip().lower()
+        target_exam_name = str(new_name or "").strip().lower()
+        source_prefix = f"{source_session_id}::{source_exam_name}" if source_session_id and source_exam_name else source_session_id
+        target_prefix = f"{new_session_id}::{target_exam_name}" if new_session_id and target_exam_name else new_session_id
 
-        source_scores = dict(self.scoring_results_by_subject.get(source_subject, {}) or {})
-        self.scoring_results_by_subject[target_subject] = copy.deepcopy(source_scores)
+        payload = copy.deepcopy(self.session.to_dict())
+        payload["exam_name"] = new_name
+        self.database.save_exam_session(new_session_id, new_name, payload)
 
-        source_cfg = self._subject_config_by_subject_key(source_subject) or {}
-        target_cfg = self._subject_config_by_subject_key(target_subject)
-        if isinstance(target_cfg, dict):
-            target_cfg["batch_saved"] = bool(source_cfg.get("batch_saved", False))
-            target_cfg["batch_scan_count"] = int(source_cfg.get("batch_scan_count", len(source_results)) or 0)
-            target_cfg["batch_last_saved_at"] = str(source_cfg.get("batch_last_saved_at", "") or "")
+        subject_cfgs = list(((payload.get("config", {}) or {}).get("subject_configs", []) if isinstance(payload.get("config", {}), dict) else []) or [])
+        for cfg in subject_cfgs:
+            subject_key = str(self._subject_key_from_cfg(cfg) or "").strip()
+            if not subject_key:
+                continue
+            block = str((cfg or {}).get("block", "") or "").strip()
+            source_scan_key = f"{source_prefix}::{subject_key}" if source_prefix else subject_key
+            target_scan_key = f"{target_prefix}::{subject_key}" if target_prefix else subject_key
+            source_rows = self.database.fetch_scan_results_for_subject(source_scan_key)
+            self.database.replace_scan_results_for_subject(target_scan_key, list(source_rows or []))
 
-        self.session_dirty = True
-        self._persist_session_quietly()
-        self._refresh_batch_subject_controls()
-        QMessageBox.information(
-            self,
-            "Lưu dưới tên khác",
-            f"Đã sao chép toàn bộ dữ liệu từ môn '{source_subject}' sang môn '{target_subject}'.",
-        )
+            source_score_key = subject_key
+            target_score_key = subject_key
+            source_scores = list(self.database.fetch_scores_for_subject(source_score_key) or [])
+            self.database.conn.execute("DELETE FROM scores WHERE subject_key = ?", (target_score_key,))
+            for score_row in source_scores:
+                self.database.upsert_score_row(
+                    target_score_key,
+                    str((score_row or {}).get("student_id", "") or ""),
+                    str((score_row or {}).get("exam_code", "") or ""),
+                    dict(score_row or {}),
+                )
+
+            source_key_subject = f"{source_prefix}::{subject_key}::{block}" if source_prefix and block else (f"{source_prefix}::{subject_key}" if source_prefix else subject_key)
+            target_key_subject = f"{target_prefix}::{subject_key}::{block}" if target_prefix and block else (f"{target_prefix}::{subject_key}" if target_prefix else subject_key)
+            source_keys = self.database.fetch_answer_keys_for_subject(source_key_subject)
+            self.database.replace_answer_keys_for_subject(target_key_subject, source_keys)
+
+        source_histories = list(self.database.fetch_recheck_history(source_session_id) or [])
+        for item in source_histories:
+            self.database.add_recheck_history(
+                session_id=new_session_id,
+                exam_name=new_name,
+                subject_key=str(item.get("subject_key", "") or ""),
+                student_code=str(item.get("student_code", "") or ""),
+                exam_code=str(item.get("exam_code", "") or ""),
+                change_text=str(item.get("change_text", "") or ""),
+                old_score=float(item.get("old_score", 0.0) or 0.0),
+                new_score=float(item.get("new_score", 0.0) or 0.0),
+                payload=dict(item.get("payload", {}) or {}),
+            )
+
+        self._upsert_session_registry(new_session_id, new_name)
+        self._save_session_registry()
+        self._refresh_exam_list()
+        QMessageBox.information(self, "Lưu dưới tên khác", f"Đã sao chép kỳ thi thành '{new_name}'.")
 
     def close_current_session(self) -> None:
         if self.session_dirty:
@@ -2999,7 +3028,7 @@ class MainWindow(QMainWindow):
             self.save_session()
 
     def action_save_session_as(self) -> None:
-        if self._confirm("Lưu dưới tên khác", "Bạn có chắc muốn lưu toàn bộ dữ liệu môn hiện tại sang môn khác?"):
+        if self._confirm("Lưu dưới tên khác", "Bạn có chắc muốn sao chép toàn bộ kỳ thi sang kỳ thi mới?"):
             self.save_session_as()
 
     def action_close_current_session(self) -> None:
@@ -3097,8 +3126,8 @@ class MainWindow(QMainWindow):
         if hasattr(self, "act_close_template_module"):
             self.act_close_template_module.setVisible(template_visible)
         if hasattr(self, "act_save_as_subject"):
-            has_batch_subject = bool(str(self._current_batch_subject_key() or "").strip())
-            self.act_save_as_subject.setVisible((index == 1) and has_batch_subject)
+            can_save_as = bool(self.session and str(self.current_session_id or "").strip()) and not template_visible
+            self.act_save_as_subject.setVisible(can_save_as)
 
     def _route_to_stack_index(self, route_name: str) -> int:
         mapping = {
