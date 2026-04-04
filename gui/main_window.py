@@ -7283,11 +7283,33 @@ class MainWindow(QMainWindow):
                 blanks[sec] = missing_tf_statements
                 continue
 
-            answered_display = {
-                int(actual_to_display[q_actual])
-                for q_actual in section_answers.get(sec, set())
-                if int(q_actual) in actual_to_display
-            }
+            if sec == "MCQ":
+                answered_actual_sorted = sorted(int(q) for q in section_answers.get(sec, set()))
+                display_sorted = sorted(int(q) for q in display_questions)
+                shifted_contiguous = (
+                    bool(answered_actual_sorted)
+                    and bool(display_sorted)
+                    and len(answered_actual_sorted) == len(display_sorted)
+                    and display_sorted == list(range(1, len(display_sorted) + 1))
+                    and answered_actual_sorted == list(range(answered_actual_sorted[0], answered_actual_sorted[0] + len(answered_actual_sorted)))
+                    and answered_actual_sorted[0] > 1
+                )
+                if shifted_contiguous:
+                    # Trường hợp nhận dạng lệch +1 chỉ ở index hiển thị (Template Editor vẫn đúng theo vùng tô).
+                    # Với Batch Scan, coi tập câu trả lời là 1..N để cột "Nội dung" không báo trống sai.
+                    answered_display = set(display_sorted)
+                else:
+                    answered_display = {
+                        int(actual_to_display[q_actual])
+                        for q_actual in section_answers.get(sec, set())
+                        if int(q_actual) in actual_to_display
+                    }
+            else:
+                answered_display = {
+                    int(actual_to_display[q_actual])
+                    for q_actual in section_answers.get(sec, set())
+                    if int(q_actual) in actual_to_display
+                }
             blanks[sec] = [int(q_display) for q_display in display_questions if int(q_display) not in answered_display]
         return blanks
         messages: list[str] = []

@@ -261,6 +261,13 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('mcq = self._format_mcq_answers(self._mcq_answers_for_display(result))', source)
         self.assertIn('self._format_mcq_answers(self._mcq_answers_for_display(preview_result))', source)
 
+    def test_mcq_blank_detection_handles_shifted_contiguous_indexes_to_keep_content_consistent(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('shifted_contiguous = (', source)
+        self.assertIn('and display_sorted == list(range(1, len(display_sorted) + 1))', source)
+        self.assertIn('and answered_actual_sorted[0] > 1', source)
+        self.assertIn('answered_display = set(display_sorted)', source)
+
 
     def test_invalidate_scoring_no_undefined_rows_loop_and_lightweight_path(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
