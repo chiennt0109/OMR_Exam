@@ -9317,11 +9317,17 @@ class MainWindow(QMainWindow):
 
     def _update_scan_row_from_result(self, idx: int, result) -> None:
         # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
-        if idx < 0 or idx >= self.scan_list.rowCount():
+        target_idx = int(idx)
+        image_key = self._result_identity_key(getattr(result, "image_path", ""))
+        if image_key:
+            mapped_idx = self._row_index_by_image_path(image_key)
+            if mapped_idx >= 0:
+                target_idx = mapped_idx
+        if target_idx < 0 or target_idx >= self.scan_list.rowCount():
             return
         self._refresh_student_profile_for_result(result)
-        payload = self._build_scan_row_payload_from_result(result, row_idx=idx)
-        self._apply_scan_row_payload_to_grid(idx, payload)
+        payload = self._build_scan_row_payload_from_result(result, row_idx=target_idx)
+        self._apply_scan_row_payload_to_grid(target_idx, payload)
 
     def _current_scan_results_snapshot(self) -> list[OMRResult]:
         # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
@@ -10317,6 +10323,15 @@ class MainWindow(QMainWindow):
                 return row
         return -1
 
+    def _result_by_image_path(self, image_path: str) -> OMRResult | None:
+        image_key = self._result_identity_key(image_path)
+        if not image_key:
+            return None
+        for result in (self.scan_results or []):
+            if self._result_identity_key(getattr(result, "image_path", "")) == image_key:
+                return result
+        return None
+
     def _mark_result_manually_edited(self, result: OMRResult, row_idx: int | None = None) -> None:
         setattr(result, "manually_edited", True)
         setattr(result, "cached_forced_status", "Đã sửa")
@@ -10341,25 +10356,23 @@ class MainWindow(QMainWindow):
         self.database.update_scan_result_payload(self._batch_result_subject_key(subject_key), str(getattr(result, "image_path", "") or ""), self._serialize_omr_result(result), note=note)
 
     def _refresh_all_statuses(self) -> None:
-        if not hasattr(self, "scan_list"):
-            return
-        selected_image_path = ""
-        current_idx = self.scan_list.currentRow()
-        if 0 <= current_idx < self.scan_list.rowCount():
-            selected_item = self.scan_list.item(current_idx, 0)
-            selected_image_path = str(selected_item.data(Qt.UserRole) if selected_item else "")
-        forced_status_by_image = {
-            str(getattr(result, "image_path", "") or ""): str(self.scan_forced_status_by_index.get(idx, "") or "")
-            for idx, result in enumerate(self.scan_results)
-        }
-        self._populate_scan_grid_from_results(
-            list(self.scan_results or []),
-            forced_status_by_image=forced_status_by_image,
-            skip_expensive_checks=False,
-            preserve_selection_image_path=selected_image_path,
-            refresh_statuses=False,
-            rebuild_error_list=False,
-        )
+        duplicate_count_map: dict[str, int] = {}
+        canonical_by_image: dict[str, OMRResult] = {}
+        for res in self.scan_results:
+            canonical_by_image[self._result_identity_key(getattr(res, "image_path", ""))] = res
+        for res in canonical_by_image.values():
+            sid = str(getattr(res, "student_id", "") or "").strip()
+            if not self._student_id_has_recognition_error(sid):
+                duplicate_count_map[sid] = duplicate_count_map.get(sid, 0) + 1
+        subject_scope = self._subject_student_room_scope()
+        available_exam_codes = self._available_exam_codes()
+        for row_idx in range(self.scan_list.rowCount()):
+            self._refresh_row_status(
+                row_idx,
+                duplicate_count_map=duplicate_count_map,
+                subject_scope=subject_scope,
+                available_exam_codes=available_exam_codes,
+            )
 
     def _on_scan_cell_clicked(self, row: int, col: int) -> None:
         if row < 0:
@@ -10416,8 +10429,10 @@ class MainWindow(QMainWindow):
             return
         image_key = self._row_image_key(idx)
         forced_status = self.scan_forced_status_by_index.get(image_key, "")
-        if not forced_status and idx < len(self.scan_results):
+        row_result = self._result_by_image_path(image_key) if image_key else None
+        if row_result is None and idx < len(self.scan_results):
             row_result = self.scan_results[idx]
+        if not forced_status and row_result is not None:
             if bool(getattr(row_result, "manually_edited", False)):
                 forced_status = "Đã sửa"
                 row_image = self._result_identity_key(getattr(row_result, "image_path", "")) or image_key
@@ -10429,9 +10444,7 @@ class MainWindow(QMainWindow):
                 duplicate_count_map=duplicate_count_map,
                 subject_scope=subject_scope,
                 available_exam_codes=available_exam_codes,
-            )
-            if idx < len(self.scan_results)
-            else self._status_text_for_saved_table_row(idx)
+            ) if row_result is not None else self._status_text_for_saved_table_row(idx)
         )
         full_status = str(status or "OK")
         display_status = self._compact_status_text(full_status, max_len=150)
