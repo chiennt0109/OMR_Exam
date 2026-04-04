@@ -7271,13 +7271,18 @@ class MainWindow(QMainWindow):
 
             display_questions, display_to_actual, actual_to_display = _display_actual_mapping(actual_questions, limit)
             if sec == "TF":
-                missing_tf_questions: list[int] = []
+                missing_tf_statements: list[str] = []
                 for display_q in display_questions:
                     actual_q = int(display_to_actual.get(int(display_q), int(display_q)))
                     tf_value = tf_payload.get(actual_q, {})
-                    if not _tf_answer_has_mark(tf_value):
-                        missing_tf_questions.append(int(display_q))
-                blanks[sec] = missing_tf_questions
+                    if isinstance(tf_value, dict):
+                        for key in ["a", "b", "c", "d"]:
+                            if key not in tf_value:
+                                missing_tf_statements.append(f"{int(display_q)}{key}")
+                    elif not _tf_answer_has_mark(tf_value):
+                        for key in ["a", "b", "c", "d"]:
+                            missing_tf_statements.append(f"{int(display_q)}{key}")
+                blanks[sec] = missing_tf_statements
                 continue
 
             answered_display = {
@@ -10854,7 +10859,6 @@ class MainWindow(QMainWindow):
         if idx >= len(self.scan_results):
             sid_item_existing = self.scan_list.item(idx, 0)
             sid = sid_item_existing.text() if sid_item_existing else "-"
-            content = self.scan_list.item(idx, 5).text() if self.scan_list.item(idx, 5) else "-"
             exam_code = str(sid_item_existing.data(Qt.UserRole + 1) if sid_item_existing else "").strip()
             if not exam_code:
                 for r in range(self.scan_result_preview.rowCount()):
@@ -10899,12 +10903,9 @@ class MainWindow(QMainWindow):
                     inp_code.setCurrentIndex(idx_code)
                 else:
                     inp_code.setEditText(exam_code)
-            txt_content = QTextEdit(content)
             form.addRow("Student ID", inp_sid)
             form.addRow("Exam Code", inp_code)
             lay.addLayout(form)
-            lay.addWidget(QLabel("Nội dung"))
-            lay.addWidget(txt_content)
             buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
             buttons.accepted.connect(dlg.accept)
             buttons.rejected.connect(dlg.reject)
@@ -10923,11 +10924,9 @@ class MainWindow(QMainWindow):
             sid_item.setData(Qt.UserRole + 2, old_recognized_short)
             self.scan_list.setItem(idx, 0, sid_item)
             self.scan_list.setItem(idx, 2, QTableWidgetItem(new_exam_code or "-"))
-            manual_content_text = txt_content.toPlainText().strip()
-            self.scan_list.setItem(idx, 5, QTableWidgetItem(manual_content_text or "-"))
             rebuilt = self._build_result_from_saved_table_row(idx)
             if rebuilt is not None:
-                setattr(rebuilt, "manual_content_override", manual_content_text)
+                setattr(rebuilt, "manual_content_override", "")
                 self._mark_result_manually_edited(rebuilt, idx)
                 self._refresh_student_profile_for_result(rebuilt, idx)
                 self._set_scan_result_at_row(idx, rebuilt)
@@ -10936,6 +10935,7 @@ class MainWindow(QMainWindow):
                     self.scan_results_by_subject[self._batch_result_subject_key(subject_key_now)] = list(self.scan_results)
                 self._update_scan_row_from_result(idx, rebuilt)
             else:
+                self.scan_list.setItem(idx, 5, QTableWidgetItem("-"))
                 self._refresh_row_status(idx)
             for r in range(self.scan_result_preview.rowCount()):
                 k = self.scan_result_preview.item(r, 0)

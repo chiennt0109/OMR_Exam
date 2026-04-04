@@ -232,6 +232,18 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('if (not expected_set) or (expected_set.isdisjoint(answered_set)):', source)
         self.assertIn('actual_questions = list(answered_questions)', source)
 
+    def test_tf_blank_detection_counts_by_statements_not_by_question(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('missing_tf_statements: list[str] = []', source)
+        self.assertIn('missing_tf_statements.append(f"{int(display_q)}{key}")', source)
+        self.assertIn('blanks[sec] = missing_tf_statements', source)
+
+    def test_saved_batch_scan_edit_dialog_does_not_expose_content_answer_editor(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertNotIn('txt_content = QTextEdit(content)', source)
+        self.assertNotIn('lay.addWidget(QLabel("Nội dung"))', source)
+        self.assertIn('setattr(rebuilt, "manual_content_override", "")', source)
+
 
     def test_invalidate_scoring_no_undefined_rows_loop_and_lightweight_path(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
