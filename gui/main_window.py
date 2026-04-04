@@ -2822,12 +2822,7 @@ class MainWindow(QMainWindow):
 
         current_name = str(source_payload.get("exam_name", "") or "").strip() or "Kỳ thi"
         while True:
-            new_name, ok = QInputDialog.getText(
-                self,
-                "Lưu dưới tên khác",
-                "Nhập tên kỳ thi mới:",
-                text=current_name,
-            )
+            new_name, ok = QInputDialog.getText(self, "Lưu dưới tên khác", "Nhập tên kỳ thi mới:", text=current_name)
             if not ok:
                 return
             new_name = str(new_name or "").strip()
@@ -2855,41 +2850,69 @@ class MainWindow(QMainWindow):
                     dict(score_row or {}),
                 )
 
-        new_session_id = self._generate_session_id(new_name)
-        source_exam_name = str(source_payload.get("exam_name", "") or "").strip().lower()
-        target_exam_name = str(new_name or "").strip().lower()
-        source_prefix = f"{source_session_id}::{source_exam_name}" if source_session_id and source_exam_name else source_session_id
-        target_prefix = f"{new_session_id}::{target_exam_name}" if new_session_id and target_exam_name else new_session_id
-
         try:
+            new_session_id = self._generate_session_id(new_name)
+            source_exam_name = str(source_payload.get("exam_name", "") or "").strip().lower()
+            target_exam_name = str(new_name or "").strip().lower()
+            source_prefix = f"{source_session_id}::{source_exam_name}" if source_session_id and source_exam_name else source_session_id
+            target_prefix = f"{new_session_id}::{target_exam_name}" if new_session_id and target_exam_name else new_session_id
+
             payload = copy.deepcopy(source_payload)
             payload["exam_name"] = new_name
-            self.database.save_exam_session(new_session_id, new_name, payload)
+            cfg_root = payload.get("config", {}) if isinstance(payload.get("config", {}), dict) else {}
+            payload["config"] = cfg_root
+            subject_cfgs = list(cfg_root.get("subject_configs", []) if isinstance(cfg_root.get("subject_configs", []), list) else [])
 
-            subject_cfgs = list(((payload.get("config", {}) or {}).get("subject_configs", []) if isinstance(payload.get("config", {}), dict) else []) or [])
+            subject_key_map: dict[str, str] = {}
             for cfg_obj in subject_cfgs:
                 if not isinstance(cfg_obj, dict):
                     continue
-                subject_key = str(self._subject_key_from_cfg(cfg_obj) or "").strip()
-                if not subject_key:
-                    continue
-                block = str((cfg_obj or {}).get("block", "") or "").strip()
-                source_scan_key = f"{source_prefix}::{subject_key}" if source_prefix else subject_key
-                target_scan_key = f"{target_prefix}::{subject_key}" if target_prefix else subject_key
-                source_rows = self.database.fetch_scan_results_for_subject(source_scan_key)
-                self.database.replace_scan_results_for_subject(target_scan_key, list(source_rows or []))
+                old_key = str(cfg_obj.get("subject_instance_key", "") or "").strip()
+                logical = str(cfg_obj.get("logical_subject_key", "") or "").strip() or str(self._logical_subject_key_from_cfg(cfg_obj) or "General")
+                new_uid = str(uuid.uuid4())
+                new_key = f"{target_prefix}::{logical}::{new_uid}" if target_prefix else f"{logical}::{new_uid}"
+                cfg_obj["subject_uid"] = new_uid
+                cfg_obj["logical_subject_key"] = logical
+                cfg_obj["subject_instance_key"] = new_key
+                if old_key:
+                    subject_key_map[old_key] = new_key
 
-                source_key_subject = f"{source_prefix}::{subject_key}::{block}" if source_prefix and block else (f"{source_prefix}::{subject_key}" if source_prefix else subject_key)
-                target_key_subject = f"{target_prefix}::{subject_key}::{block}" if target_prefix and block else (f"{target_prefix}::{subject_key}" if target_prefix else subject_key)
-                source_keys = self.database.fetch_answer_keys_for_subject(source_key_subject)
-                self.database.replace_answer_keys_for_subject(target_key_subject, source_keys)
+            cfg_scoring = cfg_root.get("scoring_results", {}) if isinstance(cfg_root.get("scoring_results", {}), dict) else {}
+            if cfg_scoring:
+                remapped_scoring = {}
+                for old_key, rows in cfg_scoring.items():
+                    remapped_scoring[subject_key_map.get(str(old_key), str(old_key))] = rows
+                cfg_root["scoring_results"] = remapped_scoring
+
+            self.database.save_exam_session(new_session_id, new_name, payload)
+
+            for old_subject_key, new_subject_key in subject_key_map.items():
+                source_scan_key = f"{source_prefix}::{old_subject_key}" if source_prefix else old_subject_key
+                target_scan_key = f"{target_prefix}::{new_subject_key}" if target_prefix else new_subject_key
+                source_rows = list(self.database.fetch_scan_results_for_subject(source_scan_key) or [])
+                self.database.replace_scan_results_for_subject(target_scan_key, source_rows)
+
+                source_keys = self.database.fetch_answer_keys_for_subject(old_subject_key)
+                self.database.replace_answer_keys_for_subject(new_subject_key, source_keys)
+
+                source_scores = list(self.database.fetch_scores_for_subject(old_subject_key) or [])
+                self.database.conn.execute("DELETE FROM scores WHERE subject_key = ?", (new_subject_key,))
+                for score_row in source_scores:
+                    self.database.upsert_score_row(
+                        new_subject_key,
+                        str((score_row or {}).get("student_id", "") or ""),
+                        str((score_row or {}).get("exam_code", "") or ""),
+                        dict(score_row or {}),
+                    )
 
             source_histories = list(self.database.fetch_recheck_history(source_session_id) or [])
             for item in source_histories:
+                old_hist_subject = str(item.get("subject_key", "") or "")
+                new_hist_subject = subject_key_map.get(old_hist_subject, old_hist_subject)
                 self.database.add_recheck_history(
                     session_id=new_session_id,
                     exam_name=new_name,
-                    subject_key=str(item.get("subject_key", "") or ""),
+                    subject_key=new_hist_subject,
                     student_code=str(item.get("student_code", "") or ""),
                     exam_code=str(item.get("exam_code", "") or ""),
                     change_text=str(item.get("change_text", "") or ""),
