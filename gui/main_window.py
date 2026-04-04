@@ -1505,6 +1505,12 @@ class MainWindow(QMainWindow):
         self.preview_rotation_by_index: dict[int, int] = {}
         self.preview_markers_by_index: dict[int, list[dict[str, float]]] = {}
         self.scan_forced_status_by_index: dict[str, str] = {}
+        self._student_option_cache_session_id: str = ""
+        self._student_option_labels_cache: list[str] = []
+        self._student_option_sid_map: dict[str, str] = {}
+        self._student_option_profile_map: dict[str, dict[str, str]] = {}
+        self._student_option_sid_set: set[str] = set()
+        self._student_option_cache_signature: str = ""
         self._scan_grid_loading = False
         self._switching_batch_subject = False
         self._template_cache_by_path: dict[str, Template] = {}
@@ -4689,36 +4695,83 @@ class MainWindow(QMainWindow):
         self.exam_code_correction_combo.blockSignals(False)
 
     def _load_student_correction_options(self, current_student_id: str) -> None:
-        self.student_correction_combo.blockSignals(True)
-        self.student_correction_combo.clear()
-        students: list[tuple[str, str, str]] = []
-        if self.current_session_id:
-            payload = self.database.fetch_exam_session(self.current_session_id) or {}
-            session_students = payload.get("students", []) if isinstance(payload.get("students", []), list) else []
-            for item in session_students:
-                if not isinstance(item, dict):
-                    continue
-                extra = item.get("extra", {}) if isinstance(item.get("extra", {}), dict) else {}
-                sid = str(item.get("student_id", "") or "").strip()
+        cache_session_id = str(getattr(self, "_student_option_cache_session_id", "") or "")
+        current_session_id = str(self.current_session_id or "")
+        session_signature = ""
+        if self.session and str(getattr(self.session, "session_id", "") or "") == current_session_id:
+            sig_parts: list[str] = []
+            for st in (self.session.students or []):
+                sid = str(getattr(st, "student_id", "") or "").strip()
                 if not sid:
                     continue
-                students.append((sid, str(item.get("name", "") or "").strip(), str(extra.get("class_name", "") or "").strip()))
-        labels: list[str] = []
-        seen: set[str] = set()
-        for sid, name, class_name in students:
-            if sid in seen:
-                continue
-            seen.add(sid)
-            label = f"[{sid}] - {name or '-'} - {class_name or '-'}"
-            labels.append(label)
-            self.student_correction_combo.addItem(label, sid)
-        if current_student_id and current_student_id not in seen:
+                extra = getattr(st, "extra", {}) if isinstance(getattr(st, "extra", {}), dict) else {}
+                sig_parts.append(f"{sid}|{str(getattr(st, 'name', '') or '').strip()}|{str(extra.get('class_name', '') or '').strip()}")
+            session_signature = "||".join(sorted(sig_parts))
+        if cache_session_id != current_session_id:
+            self._student_option_cache_session_id = current_session_id
+            self._student_option_labels_cache = []
+            self._student_option_sid_map = {}
+            self._student_option_profile_map = {}
+            self._student_option_sid_set = set()
+            self._student_option_cache_signature = ""
+        if session_signature and session_signature != str(getattr(self, "_student_option_cache_signature", "") or ""):
+            self._student_option_labels_cache = []
+            self._student_option_sid_map = {}
+            self._student_option_profile_map = {}
+            self._student_option_sid_set = set()
+            self._student_option_cache_signature = session_signature
+
+        if not isinstance(getattr(self, "_student_option_labels_cache", None), list) or not self._student_option_labels_cache:
+            students: list[tuple[str, str, str]] = []
+            if self.session and str(getattr(self.session, "session_id", "") or "") == current_session_id:
+                for st in (self.session.students or []):
+                    sid = str(getattr(st, "student_id", "") or "").strip()
+                    if not sid:
+                        continue
+                    extra = getattr(st, "extra", {}) if isinstance(getattr(st, "extra", {}), dict) else {}
+                    students.append((sid, str(getattr(st, "name", "") or "").strip(), str(extra.get("class_name", "") or "").strip()))
+            elif current_session_id:
+                payload = self.database.fetch_exam_session(current_session_id) or {}
+                session_students = payload.get("students", []) if isinstance(payload.get("students", []), list) else []
+                for item in session_students:
+                    if not isinstance(item, dict):
+                        continue
+                    extra = item.get("extra", {}) if isinstance(item.get("extra", {}), dict) else {}
+                    sid = str(item.get("student_id", "") or "").strip()
+                    if not sid:
+                        continue
+                    students.append((sid, str(item.get("name", "") or "").strip(), str(extra.get("class_name", "") or "").strip()))
+            labels: list[str] = []
+            sid_map: dict[str, str] = {}
+            profile_map: dict[str, dict[str, str]] = {}
+            sid_set: set[str] = set()
+            for sid, name, class_name in students:
+                if sid in sid_set:
+                    continue
+                sid_set.add(sid)
+                label = f"[{sid}] - {name or '-'} - {class_name or '-'}"
+                labels.append(label)
+                sid_map[label] = sid
+                profile_map[sid] = {"name": name, "class_name": class_name}
+            self._student_option_labels_cache = labels
+            self._student_option_sid_map = sid_map
+            self._student_option_profile_map = profile_map
+            self._student_option_sid_set = sid_set
+            if session_signature:
+                self._student_option_cache_signature = session_signature
+
+        self.student_correction_combo.blockSignals(True)
+        self.student_correction_combo.clear()
+        for label in list(self._student_option_labels_cache):
+            sid = str(self._student_option_sid_map.get(label, "") or "")
+            if sid:
+                self.student_correction_combo.addItem(label, sid)
+        if current_student_id and current_student_id not in set(self._student_option_sid_set):
             label = f"[{current_student_id}] - - -"
-            labels.append(label)
             self.student_correction_combo.addItem(label, current_student_id)
         idx = self.student_correction_combo.findData(current_student_id)
         self.student_correction_combo.setCurrentIndex(max(0, idx))
-        completer = QCompleter(labels, self.student_correction_combo)
+        completer = QCompleter(list(self._student_option_labels_cache), self.student_correction_combo)
         completer.setCaseSensitivity(Qt.CaseInsensitive)
         completer.setFilterMode(Qt.MatchContains)
         self.student_correction_combo.setCompleter(completer)
@@ -10784,9 +10837,7 @@ class MainWindow(QMainWindow):
         left_lay = QVBoxLayout(left)
         form = QFormLayout()
 
-        inp_sid = QComboBox()
-        inp_sid.setEditable(True)
-        inp_sid.setInsertPolicy(QComboBox.NoInsert)
+        inp_sid = QLineEdit()
 
         inp_code = QComboBox()
         inp_code.setEditable(True)
@@ -10929,13 +10980,20 @@ class MainWindow(QMainWindow):
             else:
                 combo.setEditText(value)
 
-        def _valid_student_ids() -> list[str]:
-            values: list[str] = []
-            for i in range(inp_sid.count()):
-                sid_text = str(inp_sid.itemData(i) or "").strip()
-                if sid_text:
-                    values.append(sid_text)
-            return sorted(set(values))
+        student_label_to_sid = dict(getattr(self, "_student_option_sid_map", {}) or {})
+        valid_student_id_set = set(getattr(self, "_student_option_sid_set", set()) or set())
+        sid_pattern = re.compile(r"^\[([^\]]+)\]")
+
+        def _normalize_student_id_input(raw_text: str) -> str:
+            text = str(raw_text or "").strip()
+            if not text:
+                return ""
+            if text in student_label_to_sid:
+                return str(student_label_to_sid[text] or "").strip()
+            match = sid_pattern.match(text)
+            if match:
+                return str(match.group(1) or "").strip()
+            return text
 
         def _configured_exam_codes_for_subject_cfg(subject_cfg: dict | None) -> list[str]:
             codes: set[str] = set()
@@ -11126,12 +11184,11 @@ class MainWindow(QMainWindow):
 
         def _collect_editor_snapshot(validate: bool = True) -> dict[str, object]:
             result = _current_result()
-            student_id_text = str(inp_sid.currentData() or inp_sid.currentText() or "").strip()
+            student_id_text = _normalize_student_id_input(inp_sid.text())
             exam_code_text = str(inp_code.currentData() or inp_code.currentText() or "").strip()
             if validate:
-                valid_student_ids = _valid_student_ids()
                 valid_exam_codes = _valid_exam_codes(self._current_batch_subject_key(), exam_code_text)
-                if valid_student_ids and student_id_text and student_id_text not in valid_student_ids:
+                if valid_student_id_set and student_id_text and student_id_text not in valid_student_id_set:
                     raise ValueError(f"Student ID '{student_id_text}' không có trong danh sách học sinh hợp lệ của ca thi.")
                 if valid_exam_codes and exam_code_text not in {"", "-"} and exam_code_text not in valid_exam_codes:
                     raise ValueError(f"Exam code '{exam_code_text}' không có đáp án hợp lệ cho môn hiện tại.")
@@ -11399,11 +11456,14 @@ class MainWindow(QMainWindow):
             dlg.setWindowTitle(f"Sửa bài thi: {Path(result.image_path).name}")
             self._load_student_correction_options(str(result.student_id or "").strip())
             inp_sid.blockSignals(True)
-            inp_sid.clear()
-            for i in range(self.student_correction_combo.count()):
-                inp_sid.addItem(self.student_correction_combo.itemText(i), self.student_correction_combo.itemData(i))
-            _set_combo_to_value(inp_sid, str((preserve_snapshot or {}).get("student_id", result.student_id or "")))
-            inp_sid.setCompleter(self.student_correction_combo.completer())
+            sid_value = str((preserve_snapshot or {}).get("student_id", result.student_id or "")).strip()
+            inp_sid.setText(sid_value)
+            sid_labels = list(getattr(self, "_student_option_labels_cache", []) or [])
+            sid_completer = QCompleter(sid_labels, inp_sid)
+            sid_completer.setCaseSensitivity(Qt.CaseInsensitive)
+            sid_completer.setFilterMode(Qt.MatchContains)
+            sid_completer.activated.connect(lambda text: inp_sid.setText(_normalize_student_id_input(str(text))))
+            inp_sid.setCompleter(sid_completer)
             inp_sid.blockSignals(False)
 
             subject_key = self._current_batch_subject_key()
