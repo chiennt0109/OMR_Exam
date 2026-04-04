@@ -226,6 +226,48 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('list(range(1, max(0, int(configured_counts.get(sec, 0) or 0)) + 1))', source)
         self.assertIn('"MCQ": list(default_by_config["MCQ"]),', source)
 
+    def test_blank_question_fallback_uses_answered_questions_when_expected_numbering_disjoint(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('answered_questions = sorted(set(int(q) for q in section_answers.get(sec, set())))', source)
+        self.assertIn('if (not expected_set) or (expected_set.isdisjoint(answered_set)):', source)
+        self.assertIn('actual_questions = list(answered_questions)', source)
+
+    def test_tf_blank_detection_counts_by_statements_not_by_question(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('missing_tf_statements: list[str] = []', source)
+        self.assertIn('missing_tf_statements.append(f"{int(display_q)}{key}")', source)
+        self.assertIn('blanks[sec] = missing_tf_statements', source)
+
+    def test_saved_batch_scan_edit_dialog_does_not_expose_content_answer_editor(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertNotIn('txt_content = QTextEdit(content)', source)
+        self.assertNotIn('lay.addWidget(QLabel("Nội dung"))', source)
+        self.assertIn('setattr(rebuilt, "manual_content_override", "")', source)
+
+    def test_batch_scan_display_keeps_raw_recognition_scope_like_template_editor(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        start = source.find('    def _scoped_result_copy(self, result):')
+        end = source.find('    def _count_mismatch_status_parts(self, result) -> list[str]:', start)
+        block = source[start:end]
+        self.assertIn('scoped = copy.deepcopy(result)', block)
+        self.assertNotIn('self._trim_result_answers_to_expected_scope(scoped)', block)
+        self.assertIn('để luồng hiển thị Batch Scan thống nhất với Template Editor.', block)
+
+    def test_batch_scan_mcq_preview_uses_display_reindex_helper_to_avoid_missing_question_1(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('def _mcq_answers_for_display(self, result) -> dict[int, str]:', source)
+        self.assertIn('if expected_mcq and 1 in expected_mcq:', source)
+        self.assertIn('return {idx + 1: raw[q] for idx, q in enumerate(keys)}', source)
+        self.assertIn('mcq = self._format_mcq_answers(self._mcq_answers_for_display(result))', source)
+        self.assertIn('self._format_mcq_answers(self._mcq_answers_for_display(preview_result))', source)
+
+    def test_mcq_blank_detection_handles_shifted_contiguous_indexes_to_keep_content_consistent(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('shifted_contiguous = (', source)
+        self.assertIn('and display_sorted == list(range(1, len(display_sorted) + 1))', source)
+        self.assertIn('and answered_actual_sorted[0] > 1', source)
+        self.assertIn('answered_display = set(display_sorted)', source)
+
 
     def test_invalidate_scoring_no_undefined_rows_loop_and_lightweight_path(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
