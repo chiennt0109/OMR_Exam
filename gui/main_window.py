@@ -4103,18 +4103,43 @@ class MainWindow(QMainWindow):
         top_form = QFormLayout()
         inp_sid = QComboBox(dlg)
         inp_sid.setEditable(True)
-        inp_sid.addItem(str(getattr(result, "student_id", "") or "-"))
+        sid_current = str(getattr(result, "student_id", "") or "-").strip()
+        sid_display_map: dict[str, str] = {}
+        sid_reverse_map: dict[str, str] = {}
+        def _sid_label(sid_text: str) -> str:
+            profile = self._student_profile_by_id(sid_text)
+            label = f"[{sid_text}] - {str(profile.get('name', '') or '-')} - {str(profile.get('class_name', '') or '-')}"
+            sid_display_map[sid_text] = label
+            sid_reverse_map[label] = sid_text
+            return label
+
+        inp_sid.addItem(_sid_label(sid_current), sid_current)
         if self.session:
             for st in (self.session.students or []):
                 sid_val = str(getattr(st, "student_id", "") or "").strip()
-                if sid_val and inp_sid.findText(sid_val) < 0:
-                    inp_sid.addItem(sid_val)
+                if sid_val and inp_sid.findData(sid_val) < 0:
+                    inp_sid.addItem(_sid_label(sid_val), sid_val)
+        inp_sid.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        current_sid_idx = inp_sid.findData(sid_current)
+        if current_sid_idx >= 0:
+            inp_sid.setCurrentIndex(current_sid_idx)
         inp_code = QComboBox(dlg)
         inp_code.setEditable(True)
-        inp_code.addItem(str(getattr(result, "exam_code", "") or "-"))
-        for code in sorted(str(x).strip() for x in (self._fetch_answer_keys_for_subject_scoped(subject_key) or {}).keys() if str(x).strip()):
-            if inp_code.findText(code) < 0:
-                inp_code.addItem(code)
+        code_current = str(getattr(result, "exam_code", "") or "-").strip()
+        if code_current:
+            inp_code.addItem(code_current, code_current)
+        code_candidates: set[str] = set()
+        code_candidates.update(str(x).strip() for x in (self._fetch_answer_keys_for_subject_scoped(subject_key) or {}).keys() if str(x).strip())
+        if self.answer_keys:
+            code_candidates.update(
+                str(item.exam_code).strip()
+                for item in self.answer_keys.keys.values()
+                if str(getattr(item, "subject", "") or "").strip() == str(subject_key or "").strip() and str(getattr(item, "exam_code", "") or "").strip()
+            )
+        for code in sorted(code_candidates):
+            if inp_code.findData(code) < 0 and inp_code.findText(code) < 0:
+                inp_code.addItem(code, code)
+        inp_code.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         top_form.addRow("SBD", inp_sid)
         top_form.addRow("Mã đề", inp_code)
         lay.addLayout(top_form)
@@ -4232,10 +4257,48 @@ class MainWindow(QMainWindow):
         splitter.setSizes([650, 650])
         lay.addWidget(splitter, 1)
 
+        def _current_dialog_snapshot() -> tuple[str, str, list[tuple[str, int, str]]]:
+            sid_text = str(inp_sid.currentData() or inp_sid.currentText() or "").strip()
+            if sid_text in sid_reverse_map:
+                sid_text = sid_reverse_map[sid_text]
+            if sid_text.startswith("[") and "]" in sid_text:
+                sid_text = sid_text[1:].split("]", 1)[0].strip()
+            code_text = str(inp_code.currentData() or inp_code.currentText() or "").strip()
+            rows_payload: list[tuple[str, int, str]] = []
+            for rr in range(grid.rowCount()):
+                sec = str(grid.item(rr, 0).text() if grid.item(rr, 0) else "").strip()
+                q_item = grid.item(rr, 1)
+                q_no = int(q_item.data(Qt.UserRole) if q_item and q_item.data(Qt.UserRole) is not None else 0)
+                val = str(grid.item(rr, 3).text() if grid.item(rr, 3) else "").strip()
+                rows_payload.append((sec, q_no, val))
+            return sid_text, code_text, rows_payload
+
+        initial_snapshot = _current_dialog_snapshot()
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         lay.addWidget(buttons)
-        buttons.accepted.connect(dlg.accept)
-        buttons.rejected.connect(dlg.reject)
+        def _accept_with_confirm() -> None:
+            if QMessageBox.question(
+                dlg,
+                "Xác nhận lưu",
+                "Việc lưu sẽ cập nhật dữ liệu bài làm và điểm. Bạn có chắc muốn lưu?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            ) == QMessageBox.Yes:
+                dlg.accept()
+        def _reject_with_confirm() -> None:
+            if _current_dialog_snapshot() != initial_snapshot:
+                choice = QMessageBox.question(
+                    dlg,
+                    "Hủy chỉnh sửa",
+                    "Bạn đang có thay đổi chưa lưu. Hủy sẽ mất dữ liệu vừa sửa. Tiếp tục hủy?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if choice != QMessageBox.Yes:
+                    return
+            dlg.reject()
+        buttons.accepted.connect(_accept_with_confirm)
+        buttons.rejected.connect(_reject_with_confirm)
         if dlg.exec() != QDialog.Accepted:
             return
 
@@ -4264,8 +4327,13 @@ class MainWindow(QMainWindow):
                     target_key = q_no if q_no in (result.true_false_answers or {}) else int(grid.item(r, 1).text() if grid.item(r, 1) else q_no)
                     result.true_false_answers[target_key] = tf_flags
 
-        result.student_id = str(inp_sid.currentText() or "").strip()
-        result.exam_code = str(inp_code.currentText() or "").strip()
+        sid_selected = str(inp_sid.currentData() or inp_sid.currentText() or "").strip()
+        if sid_selected in sid_reverse_map:
+            sid_selected = sid_reverse_map[sid_selected]
+        if sid_selected.startswith("[") and "]" in sid_selected:
+            sid_selected = sid_selected[1:].split("]", 1)[0].strip()
+        result.student_id = sid_selected
+        result.exam_code = str(inp_code.currentData() or inp_code.currentText() or "").strip()
 
         self.database.update_scan_result_payload(
             self._batch_result_subject_key(subject_key),
@@ -4295,8 +4363,7 @@ class MainWindow(QMainWindow):
         subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
         if subject_key:
             self._apply_subject_section_visibility(subject_key)
-            # load scoring from storage instead of recompute
-            self._load_cached_scoring_results_for_subject(subject_key)
+            self.calculate_scores(subject_key=subject_key, mode="Tính lại toàn bộ", note="auto_refresh_subject_change")
 
     def _sync_current_batch_subject_snapshot(self, persist_to_db: bool = True) -> tuple[str, list[OMRResult]]:
         subject_cfg = self._selected_batch_subject_config()
@@ -4343,6 +4410,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, "scoring_panel"):
             self.scoring_panel.setVisible(True)
         self._current_route_name = "workspace_scoring"
+        selected_subject = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
+        if selected_subject:
+            self.calculate_scores(subject_key=selected_subject, mode="Tính lại toàn bộ", note="auto_refresh_open_scoring")
 
     def _back_to_batch_scan(self) -> None:
         # workspace sub-route
@@ -12052,6 +12122,17 @@ class MainWindow(QMainWindow):
                     setattr(best_row, "scoring_note", "Chấm thông minh")
                     setattr(best_row, "class_name", str(getattr(scan, "class_name", "") or profile.get("class_name", "") or ""))
                     setattr(best_row, "birth_date", str(getattr(scan, "birth_date", "") or profile.get("birth_date", "") or ""))
+                    if best_key_code:
+                        try:
+                            setattr(scan, "exam_code", best_key_code)
+                            self.database.update_scan_result_payload(
+                                self._batch_result_subject_key(subject),
+                                str(getattr(scan, "image_path", "") or ""),
+                                self._serialize_omr_result(scan),
+                                note="smart_scoring_exam_code_pick",
+                            )
+                        except Exception:
+                            pass
                     rows.append(best_row)
                     smart_scored_scans.append({
                         "file": str(getattr(scan, "image_path", "") or "-"),
