@@ -3619,6 +3619,7 @@ class MainWindow(QMainWindow):
         self.scoring_mode_combo.addItems(["Tính lại toàn bộ", "Chỉ tính bài chưa có điểm"])
         self.scoring_phase_note = QLineEdit()
         self.scoring_phase_note.setPlaceholderText("Ghi chú pha chấm điểm (tuỳ chọn)")
+        self.scoring_phase_note.setVisible(False)
         self.scoring_filter_column = QComboBox()
         self.scoring_filter_column.addItems(["Tất cả", "Student ID", "Name", "Lớp", "Ngày sinh", "Exam Code", "Trạng thái"])
         self.scoring_filter_column.currentTextChanged.connect(self._apply_scoring_filter)
@@ -3639,7 +3640,6 @@ class MainWindow(QMainWindow):
         scoring_top.addWidget(self.scoring_mode_combo, 2)
         scoring_top.addWidget(self.scoring_filter_column, 2)
         scoring_top.addWidget(self.scoring_search_value, 3)
-        scoring_top.addWidget(self.scoring_phase_note, 3)
         scoring_top.addWidget(self.btn_scoring_run)
         scoring_top.addWidget(self.btn_scoring_save)
         scoring_top.addWidget(self.btn_scoring_back)
@@ -4100,7 +4100,24 @@ class MainWindow(QMainWindow):
         dlg.setWindowTitle(f"Giải trình điểm - {str(getattr(result, 'student_id', '') or '-')}")
         dlg.resize(1320, 760)
         lay = QVBoxLayout(dlg)
-        lay.addWidget(QLabel(f"SBD: {str(getattr(result, 'student_id', '') or '-')} | Mã đề: {str(getattr(result, 'exam_code', '') or '-') }"))
+        top_form = QFormLayout()
+        inp_sid = QComboBox(dlg)
+        inp_sid.setEditable(True)
+        inp_sid.addItem(str(getattr(result, "student_id", "") or "-"))
+        if self.session:
+            for st in (self.session.students or []):
+                sid_val = str(getattr(st, "student_id", "") or "").strip()
+                if sid_val and inp_sid.findText(sid_val) < 0:
+                    inp_sid.addItem(sid_val)
+        inp_code = QComboBox(dlg)
+        inp_code.setEditable(True)
+        inp_code.addItem(str(getattr(result, "exam_code", "") or "-"))
+        for code in sorted(str(x).strip() for x in (self._fetch_answer_keys_for_subject_scoped(subject_key) or {}).keys() if str(x).strip()):
+            if inp_code.findText(code) < 0:
+                inp_code.addItem(code)
+        top_form.addRow("SBD", inp_sid)
+        top_form.addRow("Mã đề", inp_code)
+        lay.addLayout(top_form)
 
         splitter = QSplitter(Qt.Horizontal, dlg)
         left = QWidget(splitter)
@@ -4148,6 +4165,17 @@ class MainWindow(QMainWindow):
                 return "".join(out)
             return "".join("Đ" if ch in {"T", "Đ", "D", "1"} else "S" for ch in text if ch in {"T", "F", "Đ", "D", "S", "1", "0"})
 
+        def _value_by_actual_or_display(answer_map: dict, q_actual: int, q_display: int) -> object:
+            if q_actual in answer_map:
+                return answer_map.get(q_actual)
+            if q_display in answer_map:
+                return answer_map.get(q_display)
+            if str(q_actual) in answer_map:
+                return answer_map.get(str(q_actual))
+            if str(q_display) in answer_map:
+                return answer_map.get(str(q_display))
+            return ""
+
         def _append_row(section: str, q_display: int, q_actual: int, answer: str, student: str) -> None:
             r = grid.rowCount()
             grid.insertRow(r)
@@ -4165,13 +4193,15 @@ class MainWindow(QMainWindow):
         tf_qs = sorted(int(x) for x in (key.true_false_answers or {}).keys())
         numeric_qs = sorted(int(x) for x in (key.numeric_answers or {}).keys())
         for q_display, q_actual in enumerate(mcq_qs, start=1):
-            _append_row("MCQ", q_display, q_actual, str((key.answers or {}).get(q_actual, "") or ""), str((result.mcq_answers or {}).get(q_actual, "") or ""))
+            student_val = _value_by_actual_or_display((result.mcq_answers or {}), q_actual, q_display)
+            _append_row("MCQ", q_display, q_actual, str((key.answers or {}).get(q_actual, "") or ""), str(student_val or ""))
         for q_display, q_actual in enumerate(tf_qs, start=1):
             answer_flags = (key.true_false_answers or {}).get(q_actual, {}) or {}
-            student_flags = (result.true_false_answers or {}).get(q_actual, {}) or {}
+            student_flags = _value_by_actual_or_display((result.true_false_answers or {}), q_actual, q_display)
             _append_row("TF", q_display, q_actual, _tf_compact(answer_flags), _tf_compact(student_flags))
         for q_display, q_actual in enumerate(numeric_qs, start=1):
-            _append_row("NUMERIC", q_display, q_actual, str((key.numeric_answers or {}).get(q_actual, "") or ""), str((result.numeric_answers or {}).get(q_actual, "") or ""))
+            student_val = _value_by_actual_or_display((result.numeric_answers or {}), q_actual, q_display)
+            _append_row("NUMERIC", q_display, q_actual, str((key.numeric_answers or {}).get(q_actual, "") or ""), str(student_val or ""))
 
         subject_cfg = self._subject_config_by_subject_key(subject_key) or {}
         try:
@@ -4217,9 +4247,11 @@ class MainWindow(QMainWindow):
             if q_no <= 0:
                 continue
             if section == "MCQ":
-                result.mcq_answers[q_no] = student_txt.upper()[:1]
+                target_key = q_no if q_no in (result.mcq_answers or {}) else int(grid.item(r, 1).text() if grid.item(r, 1) else q_no)
+                result.mcq_answers[target_key] = student_txt.upper()[:1]
             elif section == "NUMERIC":
-                result.numeric_answers[q_no] = student_txt
+                target_key = q_no if q_no in (result.numeric_answers or {}) else int(grid.item(r, 1).text() if grid.item(r, 1) else q_no)
+                result.numeric_answers[target_key] = student_txt
             elif section == "TF":
                 tf_flags: dict[str, bool] = {}
                 compact = "".join(ch for ch in student_txt.upper() if ch in {"Đ", "D", "S", "T", "F", "1", "0"})
@@ -4229,7 +4261,11 @@ class MainWindow(QMainWindow):
                     key_flag = ["a", "b", "c", "d"][i] if i < 4 else f"k{i+1}"
                     tf_flags[key_flag] = ch in {"Đ", "D", "T", "1"}
                 if tf_flags:
-                    result.true_false_answers[q_no] = tf_flags
+                    target_key = q_no if q_no in (result.true_false_answers or {}) else int(grid.item(r, 1).text() if grid.item(r, 1) else q_no)
+                    result.true_false_answers[target_key] = tf_flags
+
+        result.student_id = str(inp_sid.currentText() or "").strip()
+        result.exam_code = str(inp_code.currentText() or "").strip()
 
         self.database.update_scan_result_payload(
             self._batch_result_subject_key(subject_key),
@@ -4284,6 +4320,8 @@ class MainWindow(QMainWindow):
     def _show_batch_scan_panel(self) -> None:
         if hasattr(self, "scan_lr_split"):
             self.scan_lr_split.setVisible(True)
+        if hasattr(self, "batch_scan_status_bottom"):
+            self.batch_scan_status_bottom.setVisible(True)
         if hasattr(self, "scoring_panel"):
             self.scoring_panel.setVisible(False)
         self._current_route_name = "workspace_batch_scan"
@@ -4300,6 +4338,8 @@ class MainWindow(QMainWindow):
     def _show_scoring_panel(self) -> None:
         if hasattr(self, "scan_lr_split"):
             self.scan_lr_split.setVisible(False)
+        if hasattr(self, "batch_scan_status_bottom"):
+            self.batch_scan_status_bottom.setVisible(False)
         if hasattr(self, "scoring_panel"):
             self.scoring_panel.setVisible(True)
         self._current_route_name = "workspace_scoring"
@@ -11990,22 +12030,25 @@ class MainWindow(QMainWindow):
                 continue
             key = self.answer_keys.get_flexible(subject, scan.exam_code)
             if not key:
+                exam_code_text = str(getattr(scan, "exam_code", "") or "").strip()
+                allow_smart = (not exam_code_text) or ("?" in exam_code_text)
                 best_row = None
                 best_key_code = ""
-                for candidate_key in all_subject_keys:
-                    try:
-                        cand_row = self.scoring_engine.score(
-                            scan,
-                            candidate_key,
-                            student_name=str(getattr(scan, "full_name", "") or ""),
-                            subject_config=subject_cfg,
-                        )
-                    except Exception:
-                        continue
-                    if best_row is None or float(getattr(cand_row, "score", 0.0) or 0.0) > float(getattr(best_row, "score", 0.0) or 0.0):
-                        best_row = cand_row
-                        best_key_code = str(getattr(candidate_key, "exam_code", "") or "").strip()
-                if best_row is not None:
+                if allow_smart:
+                    for candidate_key in all_subject_keys:
+                        try:
+                            cand_row = self.scoring_engine.score(
+                                scan,
+                                candidate_key,
+                                student_name=str(getattr(scan, "full_name", "") or ""),
+                                subject_config=subject_cfg,
+                            )
+                        except Exception:
+                            continue
+                        if best_row is None or float(getattr(cand_row, "score", 0.0) or 0.0) > float(getattr(best_row, "score", 0.0) or 0.0):
+                            best_row = cand_row
+                            best_key_code = str(getattr(candidate_key, "exam_code", "") or "").strip()
+                if allow_smart and best_row is not None:
                     setattr(best_row, "scoring_note", "Chấm thông minh")
                     setattr(best_row, "class_name", str(getattr(scan, "class_name", "") or profile.get("class_name", "") or ""))
                     setattr(best_row, "birth_date", str(getattr(scan, "birth_date", "") or profile.get("birth_date", "") or ""))
@@ -12017,9 +12060,27 @@ class MainWindow(QMainWindow):
                     })
                     continue
                 missing += 1
+                err_msg = f"Lỗi mã đề: không tìm thấy đáp án cho mã '{exam_code_text or '-'}'"
+                error_row = self.scoring_engine.score_result_from_dict({
+                    "student_id": sid or "-",
+                    "name": str(getattr(scan, "full_name", "") or profile.get("name", "") or "-"),
+                    "subject": subject,
+                    "exam_code": exam_code_text,
+                    "mcq_correct": 0,
+                    "tf_correct": 0,
+                    "numeric_correct": 0,
+                    "correct": 0,
+                    "wrong": 0,
+                    "blank": 0,
+                    "score": 0.0,
+                    "class_name": str(getattr(scan, "class_name", "") or profile.get("class_name", "") or "-"),
+                    "birth_date": str(getattr(scan, "birth_date", "") or profile.get("birth_date", "") or "-"),
+                })
+                setattr(error_row, "scoring_note", err_msg)
+                rows.append(error_row)
                 failed_scans.append({
                     "file": str(getattr(scan, "image_path", "") or "-"),
-                    "reason": f"Thiếu đáp án cho mã đề '{str(getattr(scan, 'exam_code', '') or '').strip() or '-'}'",
+                    "reason": err_msg,
                 })
                 continue
             try:
@@ -12033,12 +12094,31 @@ class MainWindow(QMainWindow):
                 setattr(scored, "birth_date", str(getattr(scan, "birth_date", "") or profile.get("birth_date", "") or ""))
                 rows.append(scored)
             except Exception as exc:
+                err_msg = f"Lỗi chấm điểm: {exc}"
+                error_row = self.scoring_engine.score_result_from_dict({
+                    "student_id": sid or "-",
+                    "name": str(getattr(scan, "full_name", "") or profile.get("name", "") or "-"),
+                    "subject": subject,
+                    "exam_code": str(getattr(scan, "exam_code", "") or ""),
+                    "mcq_correct": 0,
+                    "tf_correct": 0,
+                    "numeric_correct": 0,
+                    "correct": 0,
+                    "wrong": 0,
+                    "blank": 0,
+                    "score": 0.0,
+                    "class_name": str(getattr(scan, "class_name", "") or profile.get("class_name", "") or "-"),
+                    "birth_date": str(getattr(scan, "birth_date", "") or profile.get("birth_date", "") or "-"),
+                })
+                setattr(error_row, "scoring_note", err_msg)
+                rows.append(error_row)
                 failed_scans.append({
                     "file": str(getattr(scan, "image_path", "") or "-"),
-                    "reason": f"Lỗi chấm điểm: {exc}",
+                    "reason": err_msg,
                 })
 
         self.score_rows = rows
+        rows.sort(key=lambda r: (0 if str(getattr(r, "scoring_note", "") or "").startswith("Lỗi") else 1, str(getattr(r, "student_id", "") or "")))
         self.score_preview_table.setRowCount(0)
         for i, r in enumerate(rows):
             sid_key = str(r.student_id or "").strip()
@@ -12067,6 +12147,11 @@ class MainWindow(QMainWindow):
             if status_text != "OK":
                 status_item.setForeground(QColor("red"))
             self.score_preview_table.setItem(i, 12, status_item)
+            if status_text.startswith("Lỗi"):
+                for col in range(self.score_preview_table.columnCount()):
+                    item = self.score_preview_table.item(i, col)
+                    if item:
+                        item.setBackground(QColor(255, 225, 225))
 
         phase = {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
