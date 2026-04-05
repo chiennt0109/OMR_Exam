@@ -12172,7 +12172,8 @@ class MainWindow(QMainWindow):
         if str(note or "").strip() in refresh_notes:
             current_subject, current_results = "", []
         else:
-            current_subject, current_results = self._sync_current_batch_subject_snapshot(persist_to_db=True)
+            # Avoid overwriting DB scan payloads from scoring-review edits with stale batch-grid snapshots.
+            current_subject, current_results = self._sync_current_batch_subject_snapshot(persist_to_db=False)
         subject_scans = self._refresh_scan_results_from_db(subject) or self.scan_results_by_subject.get(self._batch_result_subject_key(subject), [])
         if not subject_scans:
             subject_scans = self._cached_subject_scans_from_config(subject)
