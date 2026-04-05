@@ -4898,7 +4898,9 @@ class MainWindow(QMainWindow):
         if not self.session:
             QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
             return
-        self._sync_current_batch_subject_snapshot(persist_to_db=True)
+        # Do not overwrite DB-canonical scan payloads (may include scoring-review edits)
+        # when merely opening scoring view from batch screen.
+        self._sync_current_batch_subject_snapshot(persist_to_db=False)
         if not self._eligible_scoring_subject_keys():
             QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
             return
