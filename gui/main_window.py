@@ -4098,41 +4098,110 @@ class MainWindow(QMainWindow):
             return
         dlg = QDialog(self)
         dlg.setWindowTitle(f"Giải trình điểm - {str(getattr(result, 'student_id', '') or '-')}")
-        dlg.resize(1100, 680)
+        dlg.resize(1320, 760)
         lay = QVBoxLayout(dlg)
         lay.addWidget(QLabel(f"SBD: {str(getattr(result, 'student_id', '') or '-')} | Mã đề: {str(getattr(result, 'exam_code', '') or '-') }"))
-        lay.addWidget(QLabel("Màn hình này độc lập với Sửa bài tại Batch Scan. Dòng sai được bôi đỏ để tiện so khớp."))
-        grid = QTableWidget(0, 4, dlg)
+
+        splitter = QSplitter(Qt.Horizontal, dlg)
+        left = QWidget(splitter)
+        right = QWidget(splitter)
+        left_lay = QVBoxLayout(left)
+        right_lay = QVBoxLayout(right)
+
+        grid = QTableWidget(0, 4, left)
         grid.setHorizontalHeaderLabels(["Phần", "Câu", "Đáp án", "Bài làm"])
         grid.verticalHeader().setVisible(False)
         grid.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         grid.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         grid.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         grid.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        left_lay.addWidget(grid, 1)
 
-        def _append_row(section: str, q_no: int, answer: str, student: str) -> None:
+        score_info = QLabel("")
+        score_info.setWordWrap(True)
+        left_lay.addWidget(score_info)
+
+        right_lay.addWidget(QLabel("Ảnh bài làm"))
+        preview = QLabel("Không tải được ảnh bài làm")
+        preview.setAlignment(Qt.AlignCenter)
+        preview_scroll = QScrollArea(right)
+        preview_scroll.setWidgetResizable(True)
+        preview_scroll.setWidget(preview)
+        right_lay.addWidget(preview_scroll, 1)
+
+        def _tf_compact(value: object) -> str:
+            if isinstance(value, dict):
+                out = []
+                for key_flag in ["a", "b", "c", "d"]:
+                    if key_flag in value:
+                        out.append("Đ" if bool(value.get(key_flag)) else "S")
+                return "".join(out)
+            text = str(value or "").strip().upper()
+            if not text:
+                return ""
+            if ":" in text or "," in text:
+                out = []
+                for token in [x.strip() for x in text.split(",") if x.strip()]:
+                    _, _, val = token.partition(":")
+                    marker = str(val or token).strip().upper()
+                    out.append("Đ" if marker in {"T", "TRUE", "1", "Đ", "D", "ĐÚNG", "DUNG"} else "S")
+                return "".join(out)
+            return "".join("Đ" if ch in {"T", "Đ", "D", "1"} else "S" for ch in text if ch in {"T", "F", "Đ", "D", "S", "1", "0"})
+
+        def _append_row(section: str, q_display: int, q_actual: int, answer: str, student: str) -> None:
             r = grid.rowCount()
             grid.insertRow(r)
             grid.setItem(r, 0, QTableWidgetItem(section))
-            grid.setItem(r, 1, QTableWidgetItem(str(q_no)))
+            q_item = QTableWidgetItem(str(q_display))
+            q_item.setData(Qt.UserRole, int(q_actual))
+            grid.setItem(r, 1, q_item)
             grid.setItem(r, 2, QTableWidgetItem(str(answer)))
             edit_item = QTableWidgetItem(str(student))
             if str(answer).strip().upper() != str(student).strip().upper():
                 edit_item.setBackground(QColor(255, 225, 225))
             grid.setItem(r, 3, edit_item)
 
-        for q in sorted(int(x) for x in (key.answers or {}).keys()):
-            _append_row("MCQ", q, str((key.answers or {}).get(q, "") or ""), str((result.mcq_answers or {}).get(q, "") or ""))
-        for q in sorted(int(x) for x in (key.true_false_answers or {}).keys()):
-            answer_flags = (key.true_false_answers or {}).get(q, {}) or {}
-            student_flags = (result.true_false_answers or {}).get(q, {}) or {}
-            ans = ",".join(f"{k}:{'T' if bool(v) else 'F'}" for k, v in sorted(answer_flags.items()))
-            stu = ",".join(f"{k}:{'T' if bool(v) else 'F'}" for k, v in sorted(student_flags.items()))
-            _append_row("TF", q, ans, stu)
-        for q in sorted(int(x) for x in (key.numeric_answers or {}).keys()):
-            _append_row("NUMERIC", q, str((key.numeric_answers or {}).get(q, "") or ""), str((result.numeric_answers or {}).get(q, "") or ""))
+        mcq_qs = sorted(int(x) for x in (key.answers or {}).keys())
+        tf_qs = sorted(int(x) for x in (key.true_false_answers or {}).keys())
+        numeric_qs = sorted(int(x) for x in (key.numeric_answers or {}).keys())
+        for q_display, q_actual in enumerate(mcq_qs, start=1):
+            _append_row("MCQ", q_display, q_actual, str((key.answers or {}).get(q_actual, "") or ""), str((result.mcq_answers or {}).get(q_actual, "") or ""))
+        for q_display, q_actual in enumerate(tf_qs, start=1):
+            answer_flags = (key.true_false_answers or {}).get(q_actual, {}) or {}
+            student_flags = (result.true_false_answers or {}).get(q_actual, {}) or {}
+            _append_row("TF", q_display, q_actual, _tf_compact(answer_flags), _tf_compact(student_flags))
+        for q_display, q_actual in enumerate(numeric_qs, start=1):
+            _append_row("NUMERIC", q_display, q_actual, str((key.numeric_answers or {}).get(q_actual, "") or ""), str((result.numeric_answers or {}).get(q_actual, "") or ""))
 
-        lay.addWidget(grid, 1)
+        subject_cfg = self._subject_config_by_subject_key(subject_key) or {}
+        try:
+            scored_row = self.scoring_engine.score(
+                result,
+                key,
+                student_name=str(getattr(result, "full_name", "") or ""),
+                subject_config=subject_cfg,
+            )
+            formula_txt = self.scoring_engine.describe_formula(key, subject_cfg)
+            score_info.setText(f"Điểm hiện tại: {float(getattr(scored_row, 'score', 0.0) or 0.0):g}\nCông thức: {formula_txt}")
+        except Exception:
+            score_info.setText("Điểm hiện tại: -")
+
+        pix = QPixmap(str(getattr(result, "image_path", "") or ""))
+        if pix.isNull():
+            preview.setText("Không tải được ảnh bài làm")
+        else:
+            preview.setText("")
+            scaled = pix.scaledToWidth(640, Qt.SmoothTransformation)
+            preview.setPixmap(scaled)
+            preview.setMinimumSize(scaled.size())
+
+        splitter.addWidget(left)
+        splitter.addWidget(right)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([650, 650])
+        lay.addWidget(splitter, 1)
+
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         lay.addWidget(buttons)
         buttons.accepted.connect(dlg.accept)
@@ -4142,23 +4211,25 @@ class MainWindow(QMainWindow):
 
         for r in range(grid.rowCount()):
             section = str(grid.item(r, 0).text() if grid.item(r, 0) else "").strip().upper()
-            q_no_txt = str(grid.item(r, 1).text() if grid.item(r, 1) else "").strip()
+            q_item = grid.item(r, 1)
+            q_no = int(q_item.data(Qt.UserRole) if q_item and q_item.data(Qt.UserRole) is not None else 0)
             student_txt = str(grid.item(r, 3).text() if grid.item(r, 3) else "").strip()
-            if not q_no_txt.lstrip("-").isdigit():
+            if q_no <= 0:
                 continue
-            q_no = int(q_no_txt)
             if section == "MCQ":
-                result.mcq_answers[q_no] = student_txt.upper()
+                result.mcq_answers[q_no] = student_txt.upper()[:1]
             elif section == "NUMERIC":
                 result.numeric_answers[q_no] = student_txt
             elif section == "TF":
-                flags: dict[str, bool] = {}
-                for part in [x.strip() for x in student_txt.split(",") if x.strip()]:
-                    key_flag, _, val_flag = part.partition(":")
-                    if key_flag:
-                        flags[str(key_flag).strip().lower()] = str(val_flag).strip().upper() in {"T", "TRUE", "1", "ĐÚNG", "DUNG"}
-                if flags:
-                    result.true_false_answers[q_no] = flags
+                tf_flags: dict[str, bool] = {}
+                compact = "".join(ch for ch in student_txt.upper() if ch in {"Đ", "D", "S", "T", "F", "1", "0"})
+                expected_len = max(1, len(_tf_compact((key.true_false_answers or {}).get(q_no, {}) or {})))
+                compact = compact[:expected_len]
+                for i, ch in enumerate(compact):
+                    key_flag = ["a", "b", "c", "d"][i] if i < 4 else f"k{i+1}"
+                    tf_flags[key_flag] = ch in {"Đ", "D", "T", "1"}
+                if tf_flags:
+                    result.true_false_answers[q_no] = tf_flags
 
         self.database.update_scan_result_payload(
             self._batch_result_subject_key(subject_key),
