@@ -4024,7 +4024,8 @@ class MainWindow(QMainWindow):
             self.score_preview_table.setItem(i, 3, QTableWidgetItem(birth_date))
             self.score_preview_table.setItem(i, 4, QTableWidgetItem(r.exam_code))
             self.score_preview_table.setItem(i, 5, QTableWidgetItem(str(getattr(r, "mcq_correct", 0))))
-            self.score_preview_table.setItem(i, 6, QTableWidgetItem(str(getattr(r, "tf_correct", 0))))
+            tf_statement_count = self._tf_statement_correct_count(str(getattr(r, "tf_compare", "") or ""))
+            self.score_preview_table.setItem(i, 6, QTableWidgetItem(str(tf_statement_count)))
             self.score_preview_table.setItem(i, 7, QTableWidgetItem(str(getattr(r, "numeric_correct", 0))))
             self.score_preview_table.setItem(i, 8, QTableWidgetItem(str(r.correct)))
             self.score_preview_table.setItem(i, 9, QTableWidgetItem(str(r.wrong)))
@@ -4104,6 +4105,20 @@ class MainWindow(QMainWindow):
             f"<a href='edited' style='color:#1565c0;font-weight:600'>Đã sửa {int(edited_count)}</a> | "
             f"<a href='pending' style='color:#6d4c41;font-weight:600'>Chưa chấm/Cần chấm lại {int(pending_count)}</a>"
         )
+
+    @staticmethod
+    def _tf_statement_correct_count(tf_compare_text: str) -> int:
+        total = 0
+        for token in [x.strip() for x in str(tf_compare_text or "").split(";") if x.strip()]:
+            _, _, pair = token.partition(":")
+            key_txt, _, marked_txt = pair.partition("|")
+            key_norm = "".join(ch for ch in str(key_txt or "").upper() if ch in {"T", "F", "Đ", "D", "S"})
+            mark_norm = "".join(ch for ch in str(marked_txt or "").upper() if ch in {"T", "F", "Đ", "D", "S"})
+            limit = min(len(key_norm), len(mark_norm))
+            for i in range(limit):
+                if key_norm[i] == mark_norm[i]:
+                    total += 1
+        return total
 
     def _find_scoring_scan_result(self, subject_key: str, student_id: str, exam_code: str = "") -> OMRResult | None:
         subject = str(subject_key or "").strip()
@@ -12364,7 +12379,8 @@ class MainWindow(QMainWindow):
             self.score_preview_table.setItem(i, 3, QTableWidgetItem(birth_date))
             self.score_preview_table.setItem(i, 4, QTableWidgetItem(r.exam_code))
             self.score_preview_table.setItem(i, 5, QTableWidgetItem(str(getattr(r, "mcq_correct", 0))))
-            self.score_preview_table.setItem(i, 6, QTableWidgetItem(str(getattr(r, "tf_correct", 0))))
+            tf_statement_count = self._tf_statement_correct_count(str(getattr(r, "tf_compare", "") or ""))
+            self.score_preview_table.setItem(i, 6, QTableWidgetItem(str(tf_statement_count)))
             self.score_preview_table.setItem(i, 7, QTableWidgetItem(str(getattr(r, "numeric_correct", 0))))
             self.score_preview_table.setItem(i, 8, QTableWidgetItem(str(r.correct)))
             self.score_preview_table.setItem(i, 9, QTableWidgetItem(str(r.wrong)))
