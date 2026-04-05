@@ -6705,6 +6705,41 @@ class MainWindow(QMainWindow):
             mode = str(self.batch_recognition_mode_combo.currentData() or "auto")
             setattr(self.omr_processor, "alignment_profile", mode)
         file_scope_mode = str(self.batch_file_scope_combo.currentData() or "new_only") if hasattr(self, "batch_file_scope_combo") else "new_only"
+        subject_key_for_reset = self._subject_key_from_cfg(subject_cfg) if isinstance(subject_cfg, dict) else ""
+        if file_scope_mode == "all" and subject_key_for_reset:
+            has_scoring = bool(self.scoring_results_by_subject.get(subject_key_for_reset, {}))
+            try:
+                has_scoring = has_scoring or bool(self.database.fetch_scores_for_subject(subject_key_for_reset))
+            except Exception:
+                pass
+            if has_scoring:
+                confirm_reset = QMessageBox.question(
+                    self,
+                    "Nhận dạng toàn bộ",
+                    "Môn này đã có điểm. Nhận dạng toàn bộ sẽ xoá toàn bộ điểm đã tính trước đó và chấm lại từ đầu.\n\nBạn có muốn tiếp tục không?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if confirm_reset != QMessageBox.Yes:
+                    return
+                self._persist_scoring_results_for_subject(
+                    subject_key_for_reset,
+                    [],
+                    mode="reset_by_batch_scan_all",
+                    note="reset_before_batch_scan_all",
+                    mark_saved=False,
+                )
+                self.scoring_phases = [p for p in (self.scoring_phases or []) if str((p or {}).get("subject", "") or "").strip() != subject_key_for_reset]
+                if self.session:
+                    cfg_session = dict(self.session.config or {})
+                    cfg_session["scoring_phases"] = list(self.scoring_phases)
+                    cfg_session["scoring_results"] = dict(self.scoring_results_by_subject)
+                    self.session.config = cfg_session
+                    self.session_dirty = True
+                    self._persist_session_quietly()
+                if hasattr(self, "score_preview_table"):
+                    self.score_preview_table.setRowCount(0)
+                self._update_scoring_status_bar(0, 0, 0, 0)
         api_file = str(getattr(self, "batch_api_file_value", QLineEdit("-")).text() if hasattr(self, "batch_api_file_value") else "").strip()
         if api_file and api_file != "-":
             self._run_batch_scan_from_api_file(subject_cfg or {}, file_scope_mode, api_file)
