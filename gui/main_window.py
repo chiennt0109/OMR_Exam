@@ -4485,7 +4485,6 @@ class MainWindow(QMainWindow):
             subject_scores[sid_key] = row_payload
             self.scoring_results_by_subject[subject_key] = subject_scores
         self.calculate_scores(subject_key=subject_key, mode="Tính lại toàn bộ", note="scoring_review_edit")
-        self._load_cached_scoring_results_for_subject(subject_key)
 
     def _handle_scoring_subject_changed(self, _index: int) -> None:
         subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
@@ -12181,16 +12180,17 @@ class MainWindow(QMainWindow):
                 self.scan_results_by_subject[self._batch_result_subject_key(subject)] = list(subject_scans)
         cfg = self._selected_batch_subject_config()
         current_key = self._subject_key_from_cfg(cfg) if cfg else ""
-        if current_key == subject and current_subject == subject and current_results:
+        # Scoring grid must always reflect canonical DB-backed scan data.
+        # Only fallback to in-memory snapshots when DB has no records.
+        if not subject_scans and current_key == subject and current_subject == subject and current_results:
             subject_scans = list(current_results)
-        elif current_key == subject and hasattr(self, "scan_list") and self.scan_list.rowCount() > 0:
+        elif not subject_scans and current_key == subject and hasattr(self, "scan_list") and self.scan_list.rowCount() > 0:
             subject_scans = self._current_scan_results_snapshot()
             self.scan_results = list(subject_scans)
             self.scan_results_by_subject[self._batch_result_subject_key(subject)] = list(subject_scans)
-        elif not subject_scans and self.scan_results:
-            if current_key == subject:
-                subject_scans = list(self.scan_results)
-                self.scan_results_by_subject[self._batch_result_subject_key(subject)] = list(subject_scans)
+        elif not subject_scans and self.scan_results and current_key == subject:
+            subject_scans = list(self.scan_results)
+            self.scan_results_by_subject[self._batch_result_subject_key(subject)] = list(subject_scans)
         if not subject_scans:
             QMessageBox.warning(self, "Missing data", "Môn này chưa có dữ liệu Batch Scan để tính điểm.")
             return []
