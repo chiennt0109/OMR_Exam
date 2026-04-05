@@ -3660,6 +3660,10 @@ class MainWindow(QMainWindow):
         scoring_panel_layout.addWidget(self.score_preview_table, 7)
         self.scoring_status_bar = QLabel("Thống kê chấm điểm: Thành công 0 | Lỗi 0 | Đã sửa 0")
         self.scoring_status_bar.setStyleSheet("QLabel { padding: 4px 8px; background: #f4f6f8; border: 1px solid #d0d7de; }")
+        self.scoring_status_filter_mode = "all"
+        self.scoring_status_bar.setTextFormat(Qt.RichText)
+        self.scoring_status_bar.setOpenExternalLinks(False)
+        self.scoring_status_bar.linkActivated.connect(self._handle_scoring_status_filter_link)
         scoring_panel_layout.addWidget(self.scoring_status_bar)
 
         layout.addWidget(self.progress)
@@ -4005,6 +4009,7 @@ class MainWindow(QMainWindow):
         success_count = 0
         error_count = 0
         edited_count = 0
+        pending_count = 0
         for i, r in enumerate(loaded_rows):
             payload = cached_rows.get(str(r.student_id or "").strip(), {}) if isinstance(cached_rows, dict) else {}
             recheck_score = payload.get("recheck_score", "") if isinstance(payload, dict) else ""
@@ -4028,6 +4033,14 @@ class MainWindow(QMainWindow):
             status_item = QTableWidgetItem(status_text)
             if status_text != "OK":
                 status_item.setForeground(QColor("red"))
+            category = "success"
+            if status_text.startswith("Lỗi"):
+                category = "error"
+            elif status_text == "Đã sửa":
+                category = "edited"
+            elif status_text in {"Chưa chấm", "Cần chấm lại"}:
+                category = "pending"
+            status_item.setData(Qt.UserRole, category)
             self.score_preview_table.setItem(i, 12, status_item)
             if status_text.startswith("Lỗi"):
                 error_count += 1
@@ -4035,8 +4048,10 @@ class MainWindow(QMainWindow):
                 success_count += 1
             if status_text == "Đã sửa":
                 edited_count += 1
+            if status_text in {"Chưa chấm", "Cần chấm lại"}:
+                pending_count += 1
         self._apply_scoring_filter()
-        self._update_scoring_status_bar(success_count, error_count, edited_count)
+        self._update_scoring_status_bar(success_count, error_count, edited_count, pending_count)
 
     @staticmethod
     def _scoring_filter_column_from_combo_index(combo_index: int) -> int | None:
@@ -4061,24 +4076,33 @@ class MainWindow(QMainWindow):
         value = _normalize(self.scoring_search_value.text() if hasattr(self, "scoring_search_value") else "")
         col = self._scoring_filter_column_from_combo_index(self.scoring_filter_column.currentIndex()) if hasattr(self, "scoring_filter_column") else None
         for i in range(self.score_preview_table.rowCount()):
+            status_item = self.score_preview_table.item(i, 12)
+            status_category = str(status_item.data(Qt.UserRole) if status_item else "success")
+            status_ok = self.scoring_status_filter_mode in {"all", "", status_category}
             if not value:
-                self.score_preview_table.setRowHidden(i, False)
+                self.score_preview_table.setRowHidden(i, not status_ok)
                 continue
             if col is None:
                 row_text = " | ".join(_normalize(self.score_preview_table.item(i, j).text() if self.score_preview_table.item(i, j) else "") for j in range(self.score_preview_table.columnCount()))
             else:
                 item = self.score_preview_table.item(i, col)
                 row_text = _normalize(item.text() if item else "")
-            self.score_preview_table.setRowHidden(i, value not in row_text)
+            self.score_preview_table.setRowHidden(i, (value not in row_text) or (not status_ok))
 
-    def _update_scoring_status_bar(self, success_count: int, error_count: int, edited_count: int) -> None:
+    def _handle_scoring_status_filter_link(self, link: str) -> None:
+        self.scoring_status_filter_mode = str(link or "all").strip() or "all"
+        self._apply_scoring_filter()
+
+    def _update_scoring_status_bar(self, success_count: int, error_count: int, edited_count: int, pending_count: int = 0) -> None:
         if not hasattr(self, "scoring_status_bar"):
             return
         self.scoring_status_bar.setText(
             f"Thống kê chấm điểm: "
-            f"<span style='color:#0b7a0b;font-weight:600'>Thành công {int(success_count)}</span> | "
-            f"<span style='color:#c62828;font-weight:600'>Lỗi {int(error_count)}</span> | "
-            f"<span style='color:#1565c0;font-weight:600'>Đã sửa {int(edited_count)}</span>"
+            f"<a href='all'><b>Tất cả</b></a> | "
+            f"<a href='success' style='color:#0b7a0b;font-weight:600'>Thành công {int(success_count)}</a> | "
+            f"<a href='error' style='color:#c62828;font-weight:600'>Lỗi {int(error_count)}</a> | "
+            f"<a href='edited' style='color:#1565c0;font-weight:600'>Đã sửa {int(edited_count)}</a> | "
+            f"<a href='pending' style='color:#6d4c41;font-weight:600'>Chưa chấm/Cần chấm lại {int(pending_count)}</a>"
         )
 
     def _find_scoring_scan_result(self, subject_key: str, student_id: str, exam_code: str = "") -> OMRResult | None:
@@ -4210,6 +4234,8 @@ class MainWindow(QMainWindow):
             _orig_key_release(event)
             if grid.currentColumn() != 3:
                 return
+            sec_item = grid.item(grid.currentRow(), 0)
+            section_text = str(sec_item.text() if sec_item else "").strip().upper()
             cur_item = grid.currentItem()
             if cur_item is not None:
                 txt = str(cur_item.text() or "")
@@ -4219,7 +4245,12 @@ class MainWindow(QMainWindow):
                     cur_item.setText(up_txt)
                     grid.blockSignals(False)
             key_code = int(getattr(event, "key", lambda: 0)() or 0)
-            if (65 <= key_code <= 90) or (48 <= key_code <= 57):
+            move_next = False
+            if section_text == "MCQ":
+                move_next = (65 <= key_code <= 90) or (48 <= key_code <= 57)
+            elif section_text in {"TF", "NUMERIC"}:
+                move_next = key_code in {Qt.Key_Return, Qt.Key_Enter, Qt.Key_Tab}
+            if move_next:
                 r = grid.currentRow()
                 if 0 <= r < grid.rowCount() - 1:
                     grid.setCurrentCell(r + 1, 3)
@@ -12315,6 +12346,7 @@ class MainWindow(QMainWindow):
         success_count = 0
         error_count = 0
         edited_count = 0
+        pending_count = 0
         for i, r in enumerate(rows):
             sid_key = str(r.student_id or "").strip()
             existing_payload = prev_subject_scores.get(sid_key, {}) if sid_key else {}
@@ -12341,6 +12373,14 @@ class MainWindow(QMainWindow):
             status_item = QTableWidgetItem(status_text)
             if status_text != "OK":
                 status_item.setForeground(QColor("red"))
+            category = "success"
+            if status_text.startswith("Lỗi"):
+                category = "error"
+            elif status_text == "Đã sửa":
+                category = "edited"
+            elif status_text in {"Chưa chấm", "Cần chấm lại"}:
+                category = "pending"
+            status_item.setData(Qt.UserRole, category)
             self.score_preview_table.setItem(i, 12, status_item)
             if status_text.startswith("Lỗi"):
                 for col in range(self.score_preview_table.columnCount()):
@@ -12352,6 +12392,8 @@ class MainWindow(QMainWindow):
                 success_count += 1
             if status_text == "Đã sửa":
                 edited_count += 1
+            if status_text in {"Chưa chấm", "Cần chấm lại"}:
+                pending_count += 1
 
         phase = {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -12422,7 +12464,10 @@ class MainWindow(QMainWindow):
         )
         self._refresh_scoring_phase_table()
         self._apply_scoring_filter()
-        self._update_scoring_status_bar(success_count, error_count, edited_count)
+        scanned_sid_set = {str(getattr(x, "student_id", "") or "").strip() for x in (subject_scans or []) if str(getattr(x, "student_id", "") or "").strip()}
+        scored_sid_set = {str(getattr(x, "student_id", "") or "").strip() for x in rows if str(getattr(x, "student_id", "") or "").strip()}
+        pending_count += len(scanned_sid_set - scored_sid_set)
+        self._update_scoring_status_bar(success_count, error_count, edited_count, pending_count)
         return rows
 
     def action_open_recheck(self) -> None:
