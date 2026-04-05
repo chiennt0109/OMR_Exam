@@ -4120,6 +4120,7 @@ class MainWindow(QMainWindow):
                 if sid_val and inp_sid.findData(sid_val) < 0:
                     inp_sid.addItem(_sid_label(sid_val), sid_val)
         inp_sid.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        inp_sid.setMinimumContentsLength(32)
         current_sid_idx = inp_sid.findData(sid_current)
         if current_sid_idx >= 0:
             inp_sid.setCurrentIndex(current_sid_idx)
@@ -4140,6 +4141,17 @@ class MainWindow(QMainWindow):
             if inp_code.findData(code) < 0 and inp_code.findText(code) < 0:
                 inp_code.addItem(code, code)
         inp_code.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        inp_code.setMinimumContentsLength(16)
+
+        def _fit_combo_popup_width(combo: QComboBox) -> None:
+            try:
+                fm = combo.fontMetrics()
+                longest = max((len(combo.itemText(i)) for i in range(combo.count())), default=12)
+                combo.view().setMinimumWidth(max(combo.width(), fm.averageCharWidth() * max(12, longest) + 40))
+            except Exception:
+                pass
+        _fit_combo_popup_width(inp_sid)
+        _fit_combo_popup_width(inp_code)
         top_form.addRow("SBD", inp_sid)
         top_form.addRow("Mã đề", inp_code)
         lay.addLayout(top_form)
@@ -12041,7 +12053,11 @@ class MainWindow(QMainWindow):
 
     def calculate_scores(self, subject_key: str = "", mode: str = "Tính lại toàn bộ", note: str = "") -> list:
         subject = (subject_key or self._resolve_preferred_scoring_subject() or "General").strip()
-        current_subject, current_results = self._sync_current_batch_subject_snapshot(persist_to_db=True)
+        refresh_notes = {"scoring_review_edit", "auto_refresh_subject_change", "auto_refresh_open_scoring"}
+        if str(note or "").strip() in refresh_notes:
+            current_subject, current_results = "", []
+        else:
+            current_subject, current_results = self._sync_current_batch_subject_snapshot(persist_to_db=True)
         subject_scans = self._refresh_scan_results_from_db(subject) or self.scan_results_by_subject.get(self._batch_result_subject_key(subject), [])
         if not subject_scans:
             subject_scans = self._cached_subject_scans_from_config(subject)
@@ -12101,7 +12117,8 @@ class MainWindow(QMainWindow):
             key = self.answer_keys.get_flexible(subject, scan.exam_code)
             if not key:
                 exam_code_text = str(getattr(scan, "exam_code", "") or "").strip()
-                allow_smart = (not exam_code_text) or ("?" in exam_code_text)
+                has_student_identity = bool(sid and (profile.get("name") or profile.get("class_name") or profile.get("birth_date")))
+                allow_smart = (not exam_code_text) or ("?" in exam_code_text) or (bool(exam_code_text) and has_student_identity)
                 best_row = None
                 best_key_code = ""
                 if allow_smart:
