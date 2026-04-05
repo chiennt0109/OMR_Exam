@@ -4064,11 +4064,13 @@ class MainWindow(QMainWindow):
         code = str(exam_code or "").strip()
         if not subject or not sid:
             return None
+        sid_norm = self._normalized_student_id_for_match(sid)
         rows = self.database.fetch_scan_results_for_subject(self._batch_result_subject_key(subject)) or []
         best_match: OMRResult | None = None
         for payload in rows:
             res = self._deserialize_omr_result(payload)
-            if str(getattr(res, "student_id", "") or "").strip() != sid:
+            res_sid = str(getattr(res, "student_id", "") or "").strip()
+            if res_sid != sid and self._normalized_student_id_for_match(res_sid) != sid_norm:
                 continue
             if code and str(getattr(res, "exam_code", "") or "").strip() == code:
                 return res
@@ -4081,7 +4083,7 @@ class MainWindow(QMainWindow):
             return
         sid = str(self.score_preview_table.item(row, 0).text() if self.score_preview_table.item(row, 0) else "").strip()
         exam_code = str(self.score_preview_table.item(row, 4).text() if self.score_preview_table.item(row, 4) else "").strip()
-        subject = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
+        subject = str(self.scoring_subject_combo.currentData() or self.scoring_subject_combo.currentText() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
         if not sid or not subject:
             return
         result = self._find_scoring_scan_result(subject, sid, exam_code)
@@ -4152,6 +4154,15 @@ class MainWindow(QMainWindow):
                 pass
         _fit_combo_popup_width(inp_sid)
         _fit_combo_popup_width(inp_code)
+        def _attach_combo_filter(combo: QComboBox) -> None:
+            if combo.lineEdit() is None:
+                return
+            completer = QCompleter([combo.itemText(i) for i in range(combo.count())], combo)
+            completer.setCaseSensitivity(Qt.CaseInsensitive)
+            completer.setFilterMode(Qt.MatchContains)
+            combo.setCompleter(completer)
+        _attach_combo_filter(inp_sid)
+        _attach_combo_filter(inp_code)
         top_form.addRow("SBD", inp_sid)
         top_form.addRow("Mã đề", inp_code)
         lay.addLayout(top_form)
@@ -4370,6 +4381,7 @@ class MainWindow(QMainWindow):
             subject_scores[sid_key] = row_payload
             self.scoring_results_by_subject[subject_key] = subject_scores
         self.calculate_scores(subject_key=subject_key, mode="Tính lại toàn bộ", note="scoring_review_edit")
+        self._load_cached_scoring_results_for_subject(subject_key)
 
     def _handle_scoring_subject_changed(self, _index: int) -> None:
         subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
