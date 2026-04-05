@@ -3658,6 +3658,9 @@ class MainWindow(QMainWindow):
         scoring_panel_layout.setContentsMargins(0, 0, 0, 0)
         scoring_panel_layout.addLayout(scoring_top)
         scoring_panel_layout.addWidget(self.score_preview_table, 7)
+        self.scoring_status_bar = QLabel("Thống kê chấm điểm: Thành công 0 | Lỗi 0 | Đã sửa 0")
+        self.scoring_status_bar.setStyleSheet("QLabel { padding: 4px 8px; background: #f4f6f8; border: 1px solid #d0d7de; }")
+        scoring_panel_layout.addWidget(self.scoring_status_bar)
 
         layout.addWidget(self.progress)
         layout.addWidget(self.scan_lr_split)
@@ -3999,6 +4002,9 @@ class MainWindow(QMainWindow):
         loaded_rows.sort(key=lambda row: str(row.student_id or ""))
         self.score_rows = list(loaded_rows)
         self.score_preview_table.setRowCount(0)
+        success_count = 0
+        error_count = 0
+        edited_count = 0
         for i, r in enumerate(loaded_rows):
             payload = cached_rows.get(str(r.student_id or "").strip(), {}) if isinstance(cached_rows, dict) else {}
             recheck_score = payload.get("recheck_score", "") if isinstance(payload, dict) else ""
@@ -4023,7 +4029,14 @@ class MainWindow(QMainWindow):
             if status_text != "OK":
                 status_item.setForeground(QColor("red"))
             self.score_preview_table.setItem(i, 12, status_item)
+            if status_text.startswith("Lỗi"):
+                error_count += 1
+            else:
+                success_count += 1
+            if status_text == "Đã sửa":
+                edited_count += 1
         self._apply_scoring_filter()
+        self._update_scoring_status_bar(success_count, error_count, edited_count)
 
     @staticmethod
     def _scoring_filter_column_from_combo_index(combo_index: int) -> int | None:
@@ -4057,6 +4070,16 @@ class MainWindow(QMainWindow):
                 item = self.score_preview_table.item(i, col)
                 row_text = _normalize(item.text() if item else "")
             self.score_preview_table.setRowHidden(i, value not in row_text)
+
+    def _update_scoring_status_bar(self, success_count: int, error_count: int, edited_count: int) -> None:
+        if not hasattr(self, "scoring_status_bar"):
+            return
+        self.scoring_status_bar.setText(
+            f"Thống kê chấm điểm: "
+            f"<span style='color:#0b7a0b;font-weight:600'>Thành công {int(success_count)}</span> | "
+            f"<span style='color:#c62828;font-weight:600'>Lỗi {int(error_count)}</span> | "
+            f"<span style='color:#1565c0;font-weight:600'>Đã sửa {int(edited_count)}</span>"
+        )
 
     def _find_scoring_scan_result(self, subject_key: str, student_id: str, exam_code: str = "") -> OMRResult | None:
         subject = str(subject_key or "").strip()
@@ -4181,6 +4204,41 @@ class MainWindow(QMainWindow):
         grid.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         grid.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         left_lay.addWidget(grid, 1)
+        _orig_key_release = grid.keyReleaseEvent
+
+        def _grid_key_release(event) -> None:
+            _orig_key_release(event)
+            if grid.currentColumn() != 3:
+                return
+            cur_item = grid.currentItem()
+            if cur_item is not None:
+                txt = str(cur_item.text() or "")
+                up_txt = txt.upper()
+                if txt != up_txt:
+                    grid.blockSignals(True)
+                    cur_item.setText(up_txt)
+                    grid.blockSignals(False)
+            key_code = int(getattr(event, "key", lambda: 0)() or 0)
+            if (65 <= key_code <= 90) or (48 <= key_code <= 57):
+                r = grid.currentRow()
+                if 0 <= r < grid.rowCount() - 1:
+                    grid.setCurrentCell(r + 1, 3)
+                elif r == grid.rowCount() - 1:
+                    grid.setCurrentCell(r, 3)
+
+        grid.keyReleaseEvent = _grid_key_release  # type: ignore[method-assign]
+
+        def _normalize_grid_cell_text(item: QTableWidgetItem) -> None:
+            if item is None or item.column() != 3:
+                return
+            txt = str(item.text() or "")
+            up_txt = txt.upper()
+            if txt != up_txt:
+                grid.blockSignals(True)
+                item.setText(up_txt)
+                grid.blockSignals(False)
+
+        grid.itemChanged.connect(_normalize_grid_cell_text)
 
         score_info = QLabel("")
         score_info.setWordWrap(True)
@@ -12126,6 +12184,30 @@ class MainWindow(QMainWindow):
                 setattr(scan, "class_name", profile.get("class_name"))
             if mode_text == "Chỉ tính bài chưa có điểm" and sid and sid in prev_subject_scores:
                 continue
+            full_name = str(getattr(scan, "full_name", "") or profile.get("name", "") or "").strip()
+            class_name = str(getattr(scan, "class_name", "") or profile.get("class_name", "") or "").strip()
+            birth_date = str(getattr(scan, "birth_date", "") or profile.get("birth_date", "") or "").strip()
+            if not sid or not full_name or not class_name or not birth_date:
+                err_msg = "Lỗi thông tin thí sinh: thiếu SBD/Họ tên/Lớp/Ngày sinh"
+                error_row = self.scoring_engine.score_result_from_dict({
+                    "student_id": sid or "-",
+                    "name": full_name or "-",
+                    "subject": subject,
+                    "exam_code": str(getattr(scan, "exam_code", "") or ""),
+                    "mcq_correct": 0,
+                    "tf_correct": 0,
+                    "numeric_correct": 0,
+                    "correct": 0,
+                    "wrong": 0,
+                    "blank": 0,
+                    "score": 0.0,
+                    "class_name": class_name or "-",
+                    "birth_date": birth_date or "-",
+                })
+                setattr(error_row, "scoring_note", err_msg)
+                rows.append(error_row)
+                failed_scans.append({"file": str(getattr(scan, "image_path", "") or "-"), "reason": err_msg})
+                continue
             key = self.answer_keys.get_flexible(subject, scan.exam_code)
             if not key:
                 exam_code_text = str(getattr(scan, "exam_code", "") or "").strip()
@@ -12230,6 +12312,9 @@ class MainWindow(QMainWindow):
         self.score_rows = rows
         rows.sort(key=lambda r: (0 if str(getattr(r, "scoring_note", "") or "").startswith("Lỗi") else 1, str(getattr(r, "student_id", "") or "")))
         self.score_preview_table.setRowCount(0)
+        success_count = 0
+        error_count = 0
+        edited_count = 0
         for i, r in enumerate(rows):
             sid_key = str(r.student_id or "").strip()
             existing_payload = prev_subject_scores.get(sid_key, {}) if sid_key else {}
@@ -12262,6 +12347,11 @@ class MainWindow(QMainWindow):
                     item = self.score_preview_table.item(i, col)
                     if item:
                         item.setBackground(QColor(255, 225, 225))
+                error_count += 1
+            else:
+                success_count += 1
+            if status_text == "Đã sửa":
+                edited_count += 1
 
         phase = {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -12332,6 +12422,7 @@ class MainWindow(QMainWindow):
         )
         self._refresh_scoring_phase_table()
         self._apply_scoring_filter()
+        self._update_scoring_status_bar(success_count, error_count, edited_count)
         return rows
 
     def action_open_recheck(self) -> None:
