@@ -1500,7 +1500,7 @@ class MainWindow(QMainWindow):
         self.embedded_exam_session: ExamSession | None = None
         self.embedded_exam_original_payload: dict | None = None
         self.embedded_exam_is_new: bool = False
-        self.preview_zoom_factor = 1.0
+        self.preview_zoom_factor = 0.3
         self.preview_source_pixmap = QPixmap()
         self.preview_rotation_by_index: dict[int, int] = {}
         self.preview_markers_by_index: dict[int, list[dict[str, float]]] = {}
@@ -3553,7 +3553,7 @@ class MainWindow(QMainWindow):
         self.btn_zoom_out = QPushButton("-")
         self.btn_zoom_out.setMaximumWidth(36)
         self.btn_zoom_out.clicked.connect(self._zoom_preview_out)
-        self.btn_zoom_reset = QPushButton("100%")
+        self.btn_zoom_reset = QPushButton("30%")
         self.btn_zoom_reset.setMaximumWidth(60)
         self.btn_zoom_reset.clicked.connect(self._zoom_preview_reset)
         self.btn_zoom_in = QPushButton("+")
@@ -4389,7 +4389,7 @@ class MainWindow(QMainWindow):
             preview.setText("Không tải được ảnh bài làm")
         else:
             preview.setText("")
-            scaled = pix.scaled(int(pix.width() * 0.3), int(pix.height() * 0.3), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            scaled = pix.scaledToWidth(640, Qt.SmoothTransformation)
             preview.setPixmap(scaled)
             preview.setMinimumSize(scaled.size())
 
@@ -6519,9 +6519,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, "progress"):
             self.progress.setValue(0)
         self.preview_source_pixmap = QPixmap()
-        self.preview_zoom_factor = 1.0
+        self.preview_zoom_factor = 0.3
         if hasattr(self, "btn_zoom_reset"):
-            self.btn_zoom_reset.setText("100%")
+            self.btn_zoom_reset.setText("30%")
         if hasattr(self, "btn_save_batch_subject"):
             self.btn_save_batch_subject.setEnabled(False)
         self._update_batch_scan_bottom_status_text()
@@ -10511,9 +10511,9 @@ class MainWindow(QMainWindow):
         self.btn_zoom_reset.setText(f"{int(self.preview_zoom_factor*100)}%")
 
     def _zoom_preview_reset(self) -> None:
-        self.preview_zoom_factor = 1.0
+        self.preview_zoom_factor = 0.3
         self._render_preview_pixmap()
-        self.btn_zoom_reset.setText("100%")
+        self.btn_zoom_reset.setText("30%")
 
     @staticmethod
     def _compact_value(value, limit: int = 120) -> str:
@@ -10538,7 +10538,7 @@ class MainWindow(QMainWindow):
             self.scan_image_preview.setPixmap(QPixmap())
             self.scan_image_preview.setText("Không có ảnh tương ứng cho dòng đã lưu")
             self.scan_image_preview.clear_markers()
-            self.btn_zoom_reset.setText("100%")
+            self.btn_zoom_reset.setText("30%")
         else:
             rotation = int(self.preview_rotation_by_index.get(row, 0) or 0) % 360
             if rotation:
