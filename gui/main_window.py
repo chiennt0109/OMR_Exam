@@ -2216,6 +2216,7 @@ class MainWindow(QMainWindow):
             self._populate_scan_grid_from_results(self.scan_results)
             self._rebuild_error_list()
             self._refresh_all_statuses()
+            self._update_batch_scan_bottom_status_text()
             if self.scan_list.rowCount() > 0:
                 target_row = min(row, self.scan_list.rowCount() - 1)
                 self.scan_list.selectRow(target_row)
@@ -3605,6 +3606,9 @@ class MainWindow(QMainWindow):
         self.batch_scan_status_bottom.setWordWrap(False)
         self.batch_scan_status_bottom.setFixedHeight(22)
         self.batch_scan_status_bottom.setStyleSheet("QLabel { padding: 2px 8px; color: #444; }")
+        self.batch_status_filter_mode = "all"
+        self.batch_scan_status_bottom.setOpenExternalLinks(False)
+        self.batch_scan_status_bottom.linkActivated.connect(self._handle_batch_status_filter_link)
 
         # Create scoring widgets with explicit parent to avoid lifecycle issues
         # on some PySide6 builds (preventing "Internal C++ object ... already deleted").
@@ -6027,10 +6031,11 @@ class MainWindow(QMainWindow):
         if error_count > 0:
             bar_text += (
                 " | "
-                f"<span style='color:#c62828;font-weight:600'>Lỗi nhận dạng: {error_count}</span> | "
-                f"<span style='color:#6a1b9a;font-weight:600'>Trùng SBD: {duplicate_count}</span> | "
-                f"<span style='color:#ef6c00;font-weight:600'>Sai mã đề: {wrong_code_count}</span> | "
-                f"<span style='color:#1565c0;font-weight:600'>Đã sửa: {edited_count}</span>"
+                f"<a href='all'><b>Tất cả</b></a> | "
+                f"<a href='error' style='color:#c62828;font-weight:600'>Lỗi nhận dạng: {error_count}</a> | "
+                f"<a href='duplicate' style='color:#6a1b9a;font-weight:600'>Trùng SBD: {duplicate_count}</a> | "
+                f"<a href='wrong_code' style='color:#ef6c00;font-weight:600'>Sai mã đề: {wrong_code_count}</a> | "
+                f"<a href='edited' style='color:#1565c0;font-weight:600'>Đã sửa: {edited_count}</a>"
             )
             self.batch_scan_status_bottom.setTextFormat(Qt.RichText)
         else:
@@ -9587,8 +9592,18 @@ class MainWindow(QMainWindow):
         value = _normalize(self.search_value.text())
         col = self._scan_filter_column_from_combo_index(self.filter_column.currentIndex())
         for i in range(self.scan_list.rowCount()):
+            status_text = str(self.scan_list.item(i, 6).text() if self.scan_list.item(i, 6) else "").strip().lower()
+            status_ok = True
+            if self.batch_status_filter_mode == "error":
+                status_ok = bool(status_text and status_text != "ok")
+            elif self.batch_status_filter_mode == "duplicate":
+                status_ok = "trùng sbd" in status_text or "duplicate" in status_text
+            elif self.batch_status_filter_mode == "wrong_code":
+                status_ok = ("mã đề" in status_text) and ("sai" in status_text or "không" in status_text or "?" in status_text)
+            elif self.batch_status_filter_mode == "edited":
+                status_ok = "đã sửa" in status_text
             if not value:
-                self.scan_list.setRowHidden(i, False)
+                self.scan_list.setRowHidden(i, not status_ok)
                 continue
             if col is None:
                 searchable = []
@@ -9599,8 +9614,12 @@ class MainWindow(QMainWindow):
             else:
                 item = self.scan_list.item(i, col)
                 cell = _normalize(item.text() if item else "")
-            self.scan_list.setRowHidden(i, value not in cell)
+            self.scan_list.setRowHidden(i, (value not in cell) or (not status_ok))
         self._update_batch_scan_bottom_status_text()
+
+    def _handle_batch_status_filter_link(self, link: str) -> None:
+        self.batch_status_filter_mode = str(link or "all").strip() or "all"
+        self._apply_scan_filter()
 
     def _on_scan_header_clicked(self, section: int) -> None:
         combo_index = self._scan_filter_combo_index_from_header_section(section)
@@ -12034,6 +12053,7 @@ class MainWindow(QMainWindow):
             dialog_saved_images.add(_current_result_image_key())
             self.btn_save_batch_subject.setEnabled(False)
             invalidated = self._invalidate_scoring_for_student_ids([old_sid_for_score, str(result.student_id or "").strip()], reason="dialog_edit")
+            self._update_batch_scan_bottom_status_text()
             loaded_snapshots[_current_result_image_key()] = _snapshot_from_result(result)
             print(f"[EditDialogSave] row={idx_local} image={_current_result_image_key()} changes={len(changes)}")
             if save_feedback:
@@ -12144,6 +12164,7 @@ class MainWindow(QMainWindow):
                         self._update_scan_row_from_result(saved_idx, saved_result)
                         self._persist_single_scan_result_to_db(saved_result, note="dialog_close_sync")
                 self._refresh_all_statuses()
+                self._update_batch_scan_bottom_status_text()
                 current_idx = dialog_state["index"]
                 if 0 <= current_idx < len(self.scan_results):
                     self.scan_list.setCurrentCell(current_idx, 0)
