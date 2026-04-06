@@ -10414,6 +10414,17 @@ class MainWindow(QMainWindow):
         if old_result is None:
             QMessageBox.warning(self, "Nhận dạng lại", "Không tìm thấy dữ liệu dòng đang chọn để nhận dạng lại.")
             return
+        subject_key = self._current_batch_subject_key()
+        if subject_key and self._scan_has_existing_score(subject_key, old_result):
+            confirm_rerun = QMessageBox.question(
+                self,
+                "Nhận dạng lại ảnh chọn",
+                "Bài thi này đã có điểm. Nhận dạng lại ảnh đã chọn có thể làm thay đổi điểm đã tính.\n\nBạn có muốn tiếp tục không?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if confirm_rerun != QMessageBox.Yes:
+                return
         image_path = str(old_result.image_path or "").strip()
         if not image_path or not Path(image_path).exists():
             QMessageBox.warning(self, "Nhận dạng lại", f"Không tìm thấy ảnh để nhận dạng lại:\n{image_path or '-'}")
@@ -10436,12 +10447,16 @@ class MainWindow(QMainWindow):
 
         recognized_template_path = str(getattr(old_result, "recognized_template_path", "") or "").strip()
         template_path = recognized_template_path or self._resolve_template_path_for_subject(self._selected_batch_subject_config() or self._resolve_subject_config_for_batch())
-        new_result = self._recognize_image_with_exact_template(process_path, template_path, source_tag="rerecognize_selected", allow_retry=False)
-        if temp_rotated_path:
-            try:
-                Path(temp_rotated_path).unlink(missing_ok=True)
-            except Exception:
-                pass
+        wait_dlg = self._open_wait_progress("Đang nhận dạng lại ảnh đã chọn...")
+        try:
+            new_result = self._recognize_image_with_exact_template(process_path, template_path, source_tag="rerecognize_selected", allow_retry=False)
+        finally:
+            if temp_rotated_path:
+                try:
+                    Path(temp_rotated_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            self._close_wait_progress(wait_dlg)
         new_result.image_path = image_path
 
         sid = (new_result.student_id or "").strip()
@@ -10482,6 +10497,30 @@ class MainWindow(QMainWindow):
             f"Số lỗi nhận dạng: {len(rec_errors)}"
         )
         QMessageBox.information(self, "Kết quả nhận dạng lại", summary)
+
+    def _scan_has_existing_score(self, subject_key: str, result: OMRResult) -> bool:
+        if not subject_key or result is None:
+            return False
+        sid = str(getattr(result, "student_id", "") or "").strip()
+        exam_code = str(getattr(result, "exam_code", "") or "").strip()
+
+        in_memory_scores = self.scoring_results_by_subject.get(subject_key, {}) or {}
+        if sid and sid in in_memory_scores:
+            return True
+
+        db_rows = []
+        try:
+            db_rows = list(self.database.fetch_scores_for_subject(subject_key) or [])
+        except Exception:
+            db_rows = []
+        for row in db_rows:
+            row_sid = str((row or {}).get("student_id", "") or "").strip()
+            row_exam = str((row or {}).get("exam_code", "") or "").strip()
+            if sid and sid == row_sid:
+                return True
+            if exam_code and row_exam and exam_code == row_exam and ((not sid) or (not row_sid)):
+                return True
+        return False
 
     def _render_preview_pixmap(self) -> None:
         if self.preview_source_pixmap.isNull():
