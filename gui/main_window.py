@@ -11844,6 +11844,8 @@ class MainWindow(QMainWindow):
             result = _current_result()
             student_id_text = _normalize_student_id_input(inp_sid.text())
             exam_code_text = str(inp_code.currentData() or inp_code.currentText() or "").strip()
+            if exam_code_text == "-":
+                exam_code_text = ""
             if validate:
                 valid_exam_codes = _valid_exam_codes(self._current_batch_subject_key(), exam_code_text)
                 if valid_student_id_set and student_id_text and student_id_text not in valid_student_id_set:
@@ -12086,6 +12088,9 @@ class MainWindow(QMainWindow):
             if not changes:
                 return True
 
+            # Clear legacy manual-content text so Batch Scan "Nội dung" always reflects
+            # the current structured answers edited in this dialog.
+            setattr(result, "manual_content_override", "")
             self._mark_result_manually_edited(result, idx_local)
             self._refresh_student_profile_for_result(result)
             scoped = self._scoped_result_copy(result)
