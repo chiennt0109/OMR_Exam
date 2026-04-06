@@ -11455,6 +11455,7 @@ class MainWindow(QMainWindow):
                 if subject_key_now:
                     self.scan_results_by_subject[self._batch_result_subject_key(subject_key_now)] = list(self.scan_results)
                 self._update_scan_row_from_result(idx, rebuilt)
+                self._persist_single_scan_result_to_db(rebuilt, note="saved_row_edit")
             else:
                 self._refresh_row_status(idx)
             for r in range(self.scan_result_preview.rowCount()):
@@ -12087,6 +12088,9 @@ class MainWindow(QMainWindow):
 
             self._mark_result_manually_edited(result, idx_local)
             self._refresh_student_profile_for_result(result)
+            scoped = self._scoped_result_copy(result)
+            self.scan_blank_summary[idx_local] = self._compute_blank_questions(scoped)
+            self._update_scan_row_from_result(idx_local, result)
             self._record_adjustment(idx_local, changes, "dialog_edit")
             self._persist_single_scan_result_to_db(result, note="dialog_edit")
             dialog_saved_images.add(_current_result_image_key())
