@@ -2195,6 +2195,7 @@ class MainWindow(QMainWindow):
         if confirm != QMessageBox.Yes:
             return
 
+        wait_dlg = self._open_wait_progress("Đang xoá bản ghi và cập nhật danh sách...")
         subject_key = self._current_batch_subject_key()
         scoped_subject = self._batch_result_subject_key(subject_key)
         candidate_subject_keys: list[str] = [scoped_subject]
@@ -2204,25 +2205,29 @@ class MainWindow(QMainWindow):
             candidate_subject_keys.append(legacy_scoped)
         if subject_key and subject_key not in candidate_subject_keys:
             candidate_subject_keys.append(subject_key)
-        # Keep direct delete by current subject key for compatibility with legacy flows/tests.
-        self.database.delete_scan_result(subject_key, image_path)
-        for key in candidate_subject_keys:
-            self.database.delete_scan_result(key, image_path)
-        self.scan_results = [x for x in self._refresh_scan_results_from_db(subject_key) if str(getattr(x, "image_path", "") or "") != ""]
-        self.scan_results_by_subject[scoped_subject] = list(self.scan_results)
-        self._populate_scan_grid_from_results(self.scan_results)
-        self._rebuild_error_list()
-        self._refresh_all_statuses()
-        if self.scan_list.rowCount() > 0:
-            target_row = min(row, self.scan_list.rowCount() - 1)
-            self.scan_list.selectRow(target_row)
-            self._on_scan_selected()
-        else:
-            self.scan_result_preview.setRowCount(0)
-            self.result_preview.clear()
-            self.manual_edit.clear()
-            self.scan_image_preview.setText("Chọn bài thi ở danh sách bên trái")
-            self.scan_image_preview.clear_markers()
+        try:
+            QApplication.processEvents()
+            # Keep direct delete by current subject key for compatibility with legacy flows/tests.
+            self.database.delete_scan_result(subject_key, image_path)
+            for key in candidate_subject_keys:
+                self.database.delete_scan_result(key, image_path)
+            self.scan_results = [x for x in self._refresh_scan_results_from_db(subject_key) if str(getattr(x, "image_path", "") or "") != ""]
+            self.scan_results_by_subject[scoped_subject] = list(self.scan_results)
+            self._populate_scan_grid_from_results(self.scan_results)
+            self._rebuild_error_list()
+            self._refresh_all_statuses()
+            if self.scan_list.rowCount() > 0:
+                target_row = min(row, self.scan_list.rowCount() - 1)
+                self.scan_list.selectRow(target_row)
+                self._on_scan_selected()
+            else:
+                self.scan_result_preview.setRowCount(0)
+                self.result_preview.clear()
+                self.manual_edit.clear()
+                self.scan_image_preview.setText("Chọn bài thi ở danh sách bên trái")
+                self.scan_image_preview.clear_markers()
+        finally:
+            self._close_wait_progress(wait_dlg)
 
     def _refresh_exam_list(self) -> None:
         self.exam_list_table.setRowCount(len(self.session_registry))
@@ -3295,8 +3300,10 @@ class MainWindow(QMainWindow):
             self.apply_manual_correction()
 
     def action_calculate_scores(self) -> None:
-        if not self._confirm_before_switching_work("màn hình Tính điểm"):
-            return
+        # From Batch Scan -> Scoring: do not prompt save when no real batch edits.
+        if self.stack.currentIndex() != 1 or bool(hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled()):
+            if not self._confirm_before_switching_work("màn hình Tính điểm"):
+                return
         self._open_scoring_view()
 
     def action_export_results(self) -> None:
@@ -3688,8 +3695,13 @@ class MainWindow(QMainWindow):
                 return
             if choice == "save" and not self._save_batch_for_selected_subject():
                 return
-        self._clear_batch_display_caches()
-        self._return_to_current_exam_from_batch_scan()
+        wait_dlg = self._open_wait_progress("Đang đóng Batch Scan và đồng bộ dữ liệu...")
+        try:
+            QApplication.processEvents()
+            self._clear_batch_display_caches()
+            self._return_to_current_exam_from_batch_scan()
+        finally:
+            self._close_wait_progress(wait_dlg)
 
     def _clear_batch_display_caches(self) -> None:
         for result in list(getattr(self, "scan_results", []) or []):
@@ -4373,7 +4385,7 @@ class MainWindow(QMainWindow):
             preview.setText("Không tải được ảnh bài làm")
         else:
             preview.setText("")
-            scaled = pix.scaledToWidth(640, Qt.SmoothTransformation)
+            scaled = pix.scaled(int(pix.width() * 0.3), int(pix.height() * 0.3), Qt.KeepAspectRatio, Qt.SmoothTransformation)
             preview.setPixmap(scaled)
             preview.setMinimumSize(scaled.size())
 
@@ -5997,7 +6009,32 @@ class MainWindow(QMainWindow):
         if hasattr(self, "scan_list"):
             visible_rows = sum(1 for r in range(total_rows) if not self.scan_list.isRowHidden(r))
         file_status = str(self.batch_scan_state_value.text() if hasattr(self, "batch_scan_state_value") else "-").strip() or "-"
+        error_count = duplicate_count = wrong_code_count = edited_count = 0
+        if hasattr(self, "scan_list"):
+            for r in range(total_rows):
+                status_item = self.scan_list.item(r, 6)
+                status_txt = str(status_item.text() if status_item else "").strip()
+                low = status_txt.lower()
+                if status_txt and status_txt != "OK":
+                    error_count += 1
+                if "trùng sbd" in low or "duplicate" in low:
+                    duplicate_count += 1
+                if "mã đề" in low and ("sai" in low or "không" in low or "?" in status_txt):
+                    wrong_code_count += 1
+                if "đã sửa" in low:
+                    edited_count += 1
         bar_text = f"Trạng thái file: {file_status} | Lọc: {visible_rows}/{total_rows}"
+        if error_count > 0:
+            bar_text += (
+                " | "
+                f"<span style='color:#c62828;font-weight:600'>Lỗi nhận dạng: {error_count}</span> | "
+                f"<span style='color:#6a1b9a;font-weight:600'>Trùng SBD: {duplicate_count}</span> | "
+                f"<span style='color:#ef6c00;font-weight:600'>Sai mã đề: {wrong_code_count}</span> | "
+                f"<span style='color:#1565c0;font-weight:600'>Đã sửa: {edited_count}</span>"
+            )
+            self.batch_scan_status_bottom.setTextFormat(Qt.RichText)
+        else:
+            self.batch_scan_status_bottom.setTextFormat(Qt.PlainText)
         self.batch_scan_status_bottom.setText(bar_text)
         self.batch_scan_status_bottom.setToolTip(bar_text)
 
