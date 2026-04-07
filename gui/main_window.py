@@ -12532,36 +12532,45 @@ class MainWindow(QMainWindow):
             expected_questions_state["MCQ"] = list(expected.get("MCQ", []) or [])
             expected_questions_state["TF"] = list(expected.get("TF", []) or [])
             expected_questions_state["NUMERIC"] = list(expected.get("NUMERIC", []) or [])
-            mcq_questions = list(expected.get("MCQ", []) or [])
-            mcq_allowed = set(mcq_questions)
             mcq_map_actual_to_display = question_mapping_state.get("MCQ", {}).get("actual_to_display", {}) or {}
             mcq_data = data_snapshot.get("mcq_answers", {}) or {}
+            mcq_data_display_keys = {
+                int(mcq_map_actual_to_display.get(int(q), int(q)))
+                for q in mcq_data.keys()
+            }
+            mcq_questions = sorted(set(expected.get("MCQ", []) or []).union(mcq_data_display_keys))
             mcq_data_display = {
                 int(mcq_map_actual_to_display.get(int(q), int(q))): str(v)
                 for q, v in mcq_data.items()
-                if int(mcq_map_actual_to_display.get(int(q), int(q))) in mcq_allowed
+                if int(mcq_map_actual_to_display.get(int(q), int(q))) in set(mcq_questions)
             }
             mcq_widget, mcq_edits = _build_mcq_grid(mcq_questions, mcq_data_display)
 
             tf_data = data_snapshot.get("true_false_answers", {}) or {}
-            tf_questions = list(expected.get("TF", []) or [])
-            tf_allowed = set(tf_questions)
             tf_map_actual_to_display = question_mapping_state.get("TF", {}).get("actual_to_display", {}) or {}
+            tf_data_display_keys = {
+                int(tf_map_actual_to_display.get(int(q), int(q)))
+                for q in tf_data.keys()
+            }
+            tf_questions = sorted(set(expected.get("TF", []) or []).union(tf_data_display_keys))
             tf_data = {
                 int(tf_map_actual_to_display.get(int(q), int(q))): dict(v or {})
                 for q, v in tf_data.items()
-                if int(tf_map_actual_to_display.get(int(q), int(q))) in tf_allowed
+                if int(tf_map_actual_to_display.get(int(q), int(q))) in set(tf_questions)
             }
             table_tf = _build_tf_table(tf_questions, tf_data)
 
             numeric_data = data_snapshot.get("numeric_answers", {}) or {}
-            numeric_questions = list(expected.get("NUMERIC", []) or [])
-            numeric_allowed = set(numeric_questions)
             numeric_map_actual_to_display = question_mapping_state.get("NUMERIC", {}).get("actual_to_display", {}) or {}
+            numeric_data_display_keys = {
+                int(numeric_map_actual_to_display.get(int(q), int(q)))
+                for q in numeric_data.keys()
+            }
+            numeric_questions = sorted(set(expected.get("NUMERIC", []) or []).union(numeric_data_display_keys))
             numeric_data = {
                 int(numeric_map_actual_to_display.get(int(q), int(q))): str(v)
                 for q, v in numeric_data.items()
-                if int(numeric_map_actual_to_display.get(int(q), int(q))) in numeric_allowed
+                if int(numeric_map_actual_to_display.get(int(q), int(q))) in set(numeric_questions)
             }
             table_num = _build_pair_table(numeric_questions, numeric_data, "Ví dụ: -12.5")
             _clear_layout(mcq_host_lay)
@@ -12573,9 +12582,9 @@ class MainWindow(QMainWindow):
             editor_refs["mcq_edits"] = mcq_edits
             editor_refs["table_tf"] = table_tf
             editor_refs["table_num"] = table_num
-            has_mcq = bool(expected.get("MCQ", []))
-            has_tf = bool(expected.get("TF", []))
-            has_numeric = bool(expected.get("NUMERIC", []))
+            has_mcq = bool(mcq_questions)
+            has_tf = bool(tf_questions)
+            has_numeric = bool(numeric_questions)
             mcq_label.setVisible(has_mcq)
             mcq_host.setVisible(has_mcq)
             mcq_hint_row.setVisible(has_mcq)
