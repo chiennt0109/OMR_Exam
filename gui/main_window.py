@@ -11093,6 +11093,21 @@ class MainWindow(QMainWindow):
     def _persist_single_scan_result_to_db(self, result: OMRResult, note: str = "") -> None:
         subject_key = self._current_batch_subject_key()
         result.answer_string = self._build_answer_string_for_result(result, subject_key)
+        row_idx = self._row_index_by_image_path(str(getattr(result, "image_path", "") or ""))
+        if hasattr(self, "scan_list") and 0 <= row_idx < self.scan_list.rowCount():
+            status_item = self.scan_list.item(row_idx, 6)
+            content_item = self.scan_list.item(row_idx, 5)
+            manual_override = str(self.scan_list.item(row_idx, 0).data(Qt.UserRole + 11) if self.scan_list.item(row_idx, 0) else "").strip()
+            full_status = str(status_item.toolTip() if status_item and status_item.toolTip() else (status_item.text() if status_item else "")).strip()
+            if full_status:
+                setattr(result, "cached_status", full_status)
+                if full_status == "Đã sửa":
+                    setattr(result, "cached_forced_status", "Đã sửa")
+                    setattr(result, "manually_edited", True)
+            if content_item:
+                setattr(result, "cached_content", str(content_item.text() or ""))
+            if manual_override:
+                setattr(result, "manual_content_override", manual_override)
         self.database.update_scan_result_payload(self._batch_result_subject_key(subject_key), str(getattr(result, "image_path", "") or ""), self._serialize_omr_result(result), note=note)
 
     def _refresh_all_statuses(self) -> None:
@@ -11178,14 +11193,22 @@ class MainWindow(QMainWindow):
                 row_image = self._result_identity_key(getattr(row_result, "image_path", "")) or image_key
                 if row_image:
                     self.scan_forced_status_by_index[row_image] = forced_status
-        status = forced_status or (
-            self._status_text_for_row(
-                idx,
-                duplicate_count_map=duplicate_count_map,
-                subject_scope=subject_scope,
-                available_exam_codes=available_exam_codes,
-            ) if row_result is not None else self._status_text_for_saved_table_row(idx)
-        )
+        cached_status = str(getattr(row_result, "cached_status", "") or "").strip() if row_result is not None else ""
+        if forced_status:
+            status = forced_status
+        elif cached_status:
+            status = cached_status
+        else:
+            status = (
+                self._status_text_for_row(
+                    idx,
+                    duplicate_count_map=duplicate_count_map,
+                    subject_scope=subject_scope,
+                    available_exam_codes=available_exam_codes,
+                ) if row_result is not None else self._status_text_for_saved_table_row(idx)
+            )
+            if row_result is not None:
+                setattr(row_result, "cached_status", str(status or "OK"))
         full_status = str(status or "OK")
         display_status = self._compact_status_text(full_status, max_len=150)
         item = QTableWidgetItem(display_status)
