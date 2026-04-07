@@ -12128,6 +12128,9 @@ class MainWindow(QMainWindow):
             self._update_scan_row_from_result(idx_local, result)
             self._record_adjustment(idx_local, changes, "dialog_edit")
             self._persist_single_scan_result_to_db(result, note="dialog_edit")
+            subject_key_now = self._current_batch_subject_key()
+            if subject_key_now:
+                self.scan_results_by_subject[self._batch_result_subject_key(subject_key_now)] = list(self.scan_results)
             dialog_saved_images.add(_current_result_image_key())
             self.btn_save_batch_subject.setEnabled(False)
             invalidated = self._invalidate_scoring_for_student_ids([old_sid_for_score, str(result.student_id or "").strip()], reason="dialog_edit")
@@ -12241,6 +12244,9 @@ class MainWindow(QMainWindow):
                         self.scan_blank_summary[saved_idx] = self._compute_blank_questions(scoped_saved)
                         self._update_scan_row_from_result(saved_idx, saved_result)
                         self._persist_single_scan_result_to_db(saved_result, note="dialog_close_sync")
+                subject_key_now = self._current_batch_subject_key()
+                if subject_key_now:
+                    self.scan_results_by_subject[self._batch_result_subject_key(subject_key_now)] = list(self.scan_results)
                 self._refresh_all_statuses()
                 self._update_batch_scan_bottom_status_text()
                 current_idx = dialog_state["index"]
