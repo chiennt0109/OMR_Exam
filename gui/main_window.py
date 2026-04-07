@@ -7315,7 +7315,7 @@ class MainWindow(QMainWindow):
             mcq_map: dict[int, str] = {}
             for idx_q, q_no in enumerate(row_mcq_questions):
                 raw_ch = str(mcq_source[idx_q]).upper() if idx_q < len(mcq_source) else ""
-                mcq_map[int(q_no)] = raw_ch if raw_ch in {"A", "B", "C", "D", "E"} else ""
+                mcq_map[int(q_no)] = raw_ch if raw_ch and raw_ch != "_" else ""
 
             tf_map: dict[int, dict[str, bool]] = {}
             for idx_q, q_no in enumerate(row_tf_questions):
