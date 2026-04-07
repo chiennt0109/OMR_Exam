@@ -9932,6 +9932,7 @@ class MainWindow(QMainWindow):
         setattr(result, "cached_recognized_short", recognized_short)
         setattr(result, "cached_blank_summary", dict(blank_map))
         setattr(result, "manual_content_override", manual_content_override)
+        setattr(result, "cached_forced_status", effective_forced_status)
 
         return {
             "result": result,
@@ -10633,14 +10634,43 @@ class MainWindow(QMainWindow):
             return c2 if c2 else "0"
         return c
 
-    def _available_exam_codes(self) -> set[str]:
+    def _available_exam_codes(self, subject_key: str = "") -> set[str]:
         out: set[str] = set()
-        for x in (self.imported_exam_codes or []):
-            raw = str(x).strip()
-            if not raw:
-                continue
-            out.add(raw)
-            out.add(self._normalize_exam_code_text(raw))
+        subject = str(subject_key or self._current_batch_subject_key() or "").strip()
+        if subject:
+            cfg = self._subject_config_by_subject_key(subject) or {}
+            imported_cfg = cfg.get("imported_answer_keys", {}) if isinstance(cfg.get("imported_answer_keys", {}), dict) else {}
+            for raw in imported_cfg.keys():
+                code_text = str(raw).strip()
+                if not code_text:
+                    continue
+                out.add(code_text)
+                out.add(self._normalize_exam_code_text(code_text))
+            try:
+                fetched = self._fetch_answer_keys_for_subject_scoped(subject)
+            except Exception:
+                fetched = {}
+            for raw in (fetched or {}).keys():
+                code_text = str(raw).strip()
+                if not code_text:
+                    continue
+                out.add(code_text)
+                out.add(self._normalize_exam_code_text(code_text))
+            if self.answer_keys is not None:
+                for key_obj in self.answer_keys.keys.values():
+                    key_subject = str(getattr(key_obj, "subject", "") or "").strip()
+                    code_text = str(getattr(key_obj, "exam_code", "") or "").strip()
+                    if key_subject != subject or not code_text:
+                        continue
+                    out.add(code_text)
+                    out.add(self._normalize_exam_code_text(code_text))
+        if not out:
+            for x in (self.imported_exam_codes or []):
+                raw = str(x).strip()
+                if not raw:
+                    continue
+                out.add(raw)
+                out.add(self._normalize_exam_code_text(raw))
         return {v for v in out if v}
 
     def _subject_answer_key_for_result(self, result, subject_key: str = ""):
@@ -11063,6 +11093,21 @@ class MainWindow(QMainWindow):
     def _persist_single_scan_result_to_db(self, result: OMRResult, note: str = "") -> None:
         subject_key = self._current_batch_subject_key()
         result.answer_string = self._build_answer_string_for_result(result, subject_key)
+        row_idx = self._row_index_by_image_path(str(getattr(result, "image_path", "") or ""))
+        if hasattr(self, "scan_list") and 0 <= row_idx < self.scan_list.rowCount():
+            status_item = self.scan_list.item(row_idx, 6)
+            content_item = self.scan_list.item(row_idx, 5)
+            manual_override = str(self.scan_list.item(row_idx, 0).data(Qt.UserRole + 11) if self.scan_list.item(row_idx, 0) else "").strip()
+            full_status = str(status_item.toolTip() if status_item and status_item.toolTip() else (status_item.text() if status_item else "")).strip()
+            if full_status:
+                setattr(result, "cached_status", full_status)
+                if full_status == "Đã sửa":
+                    setattr(result, "cached_forced_status", "Đã sửa")
+                    setattr(result, "manually_edited", True)
+            if content_item:
+                setattr(result, "cached_content", str(content_item.text() or ""))
+            if manual_override:
+                setattr(result, "manual_content_override", manual_override)
         self.database.update_scan_result_payload(self._batch_result_subject_key(subject_key), str(getattr(result, "image_path", "") or ""), self._serialize_omr_result(result), note=note)
 
     def _refresh_all_statuses(self) -> None:
@@ -11148,14 +11193,22 @@ class MainWindow(QMainWindow):
                 row_image = self._result_identity_key(getattr(row_result, "image_path", "")) or image_key
                 if row_image:
                     self.scan_forced_status_by_index[row_image] = forced_status
-        status = forced_status or (
-            self._status_text_for_row(
-                idx,
-                duplicate_count_map=duplicate_count_map,
-                subject_scope=subject_scope,
-                available_exam_codes=available_exam_codes,
-            ) if row_result is not None else self._status_text_for_saved_table_row(idx)
-        )
+        cached_status = str(getattr(row_result, "cached_status", "") or "").strip() if row_result is not None else ""
+        if forced_status:
+            status = forced_status
+        elif cached_status:
+            status = cached_status
+        else:
+            status = (
+                self._status_text_for_row(
+                    idx,
+                    duplicate_count_map=duplicate_count_map,
+                    subject_scope=subject_scope,
+                    available_exam_codes=available_exam_codes,
+                ) if row_result is not None else self._status_text_for_saved_table_row(idx)
+            )
+            if row_result is not None:
+                setattr(row_result, "cached_status", str(status or "OK"))
         full_status = str(status or "OK")
         display_status = self._compact_status_text(full_status, max_len=150)
         item = QTableWidgetItem(display_status)
@@ -12098,6 +12151,9 @@ class MainWindow(QMainWindow):
             self._update_scan_row_from_result(idx_local, result)
             self._record_adjustment(idx_local, changes, "dialog_edit")
             self._persist_single_scan_result_to_db(result, note="dialog_edit")
+            subject_key_now = self._current_batch_subject_key()
+            if subject_key_now:
+                self.scan_results_by_subject[self._batch_result_subject_key(subject_key_now)] = list(self.scan_results)
             dialog_saved_images.add(_current_result_image_key())
             self.btn_save_batch_subject.setEnabled(False)
             invalidated = self._invalidate_scoring_for_student_ids([old_sid_for_score, str(result.student_id or "").strip()], reason="dialog_edit")
@@ -12211,6 +12267,9 @@ class MainWindow(QMainWindow):
                         self.scan_blank_summary[saved_idx] = self._compute_blank_questions(scoped_saved)
                         self._update_scan_row_from_result(saved_idx, saved_result)
                         self._persist_single_scan_result_to_db(saved_result, note="dialog_close_sync")
+                subject_key_now = self._current_batch_subject_key()
+                if subject_key_now:
+                    self.scan_results_by_subject[self._batch_result_subject_key(subject_key_now)] = list(self.scan_results)
                 self._refresh_all_statuses()
                 self._update_batch_scan_bottom_status_text()
                 current_idx = dialog_state["index"]
