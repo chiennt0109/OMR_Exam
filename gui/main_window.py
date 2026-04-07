@@ -7553,6 +7553,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        answer_text = str(getattr(result, "answer_string", "") or "").strip()
+        if not answer_text:
+            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        if answer_text:
+            return answer_text
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
@@ -7879,6 +7885,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        answer_text = str(getattr(result, "answer_string", "") or "").strip()
+        if not answer_text:
+            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        if answer_text:
+            return answer_text
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
@@ -8006,6 +8018,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        answer_text = str(getattr(result, "answer_string", "") or "").strip()
+        if not answer_text:
+            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        if answer_text:
+            return answer_text
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
@@ -8122,6 +8140,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        answer_text = str(getattr(result, "answer_string", "") or "").strip()
+        if not answer_text:
+            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        if answer_text:
+            return answer_text
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
@@ -8238,6 +8262,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        answer_text = str(getattr(result, "answer_string", "") or "").strip()
+        if not answer_text:
+            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        if answer_text:
+            return answer_text
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
@@ -8354,6 +8384,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        answer_text = str(getattr(result, "answer_string", "") or "").strip()
+        if not answer_text:
+            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        if answer_text:
+            return answer_text
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
@@ -8470,6 +8506,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        answer_text = str(getattr(result, "answer_string", "") or "").strip()
+        if not answer_text:
+            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        if answer_text:
+            return answer_text
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
@@ -8586,6 +8628,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        answer_text = str(getattr(result, "answer_string", "") or "").strip()
+        if not answer_text:
+            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        if answer_text:
+            return answer_text
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
@@ -8702,6 +8750,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        answer_text = str(getattr(result, "answer_string", "") or "").strip()
+        if not answer_text:
+            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        if answer_text:
+            return answer_text
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
@@ -8818,6 +8872,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        answer_text = str(getattr(result, "answer_string", "") or "").strip()
+        if not answer_text:
+            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        if answer_text:
+            return answer_text
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
@@ -8934,6 +8994,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        answer_text = str(getattr(result, "answer_string", "") or "").strip()
+        if not answer_text:
+            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        if answer_text:
+            return answer_text
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
@@ -9050,6 +9116,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        answer_text = str(getattr(result, "answer_string", "") or "").strip()
+        if not answer_text:
+            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        if answer_text:
+            return answer_text
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
@@ -9166,6 +9238,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        answer_text = str(getattr(result, "answer_string", "") or "").strip()
+        if not answer_text:
+            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        if answer_text:
+            return answer_text
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
@@ -9282,6 +9360,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        answer_text = str(getattr(result, "answer_string", "") or "").strip()
+        if not answer_text:
+            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        if answer_text:
+            return answer_text
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
@@ -9398,6 +9482,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        answer_text = str(getattr(result, "answer_string", "") or "").strip()
+        if not answer_text:
+            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        if answer_text:
+            return answer_text
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
@@ -9514,6 +9604,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        answer_text = str(getattr(result, "answer_string", "") or "").strip()
+        if not answer_text:
+            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        if answer_text:
+            return answer_text
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = blank_map.get(sec, [])
