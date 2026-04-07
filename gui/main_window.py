@@ -4621,6 +4621,7 @@ class MainWindow(QMainWindow):
             "recognized_fill_threshold": float(getattr(result, "recognized_fill_threshold", 0.45) or 0.45),
             "recognized_empty_threshold": float(getattr(result, "recognized_empty_threshold", 0.20) or 0.20),
             "recognized_certainty_margin": float(getattr(result, "recognized_certainty_margin", 0.08) or 0.08),
+            "answer_string_api_mode": bool(getattr(result, "answer_string_api_mode", False)),
         }
 
     @staticmethod
@@ -4653,6 +4654,7 @@ class MainWindow(QMainWindow):
         setattr(result, "recognized_fill_threshold", float(payload.get("recognized_fill_threshold", 0.45) or 0.45))
         setattr(result, "recognized_empty_threshold", float(payload.get("recognized_empty_threshold", 0.20) or 0.20))
         setattr(result, "recognized_certainty_margin", float(payload.get("recognized_certainty_margin", 0.08) or 0.08))
+        setattr(result, "answer_string_api_mode", bool(payload.get("answer_string_api_mode", False)))
         result.sync_legacy_aliases()
         return result
 
@@ -6700,6 +6702,8 @@ class MainWindow(QMainWindow):
                 result = retried
         result.sync_legacy_aliases()
         subject_key = self._current_batch_subject_key() or self._resolve_preferred_scoring_subject()
+        is_api_flow = "api" in str(source_tag or "").lower()
+        setattr(result, "answer_string_api_mode", bool(is_api_flow))
         scoped = self._scoped_result_copy(result)
         result.answer_string = self._build_answer_string_for_result(scoped, subject_key)
         blank_map = self._compute_blank_questions(scoped)
@@ -7377,6 +7381,7 @@ class MainWindow(QMainWindow):
             result.mcq_answers = mcq_map
             result.true_false_answers = tf_map
             result.numeric_answers = numeric_map
+            setattr(result, "answer_string_api_mode", True)
             if expected_len > 0:
                 result.answer_string = rebuilt_answer[:expected_len]
             else:
@@ -7691,16 +7696,17 @@ class MainWindow(QMainWindow):
         tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
         numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
         answer_string_text = str(getattr(result, "answer_string", "") or "").strip()
+        answer_string_compact = answer_string_text.replace(";", "")
         # Fallback từ chuỗi bài làm đã lưu khi map đáp án còn thiếu (đặc biệt sau luồng sửa -> lưu -> load fallback).
-        if answer_string_text and (not mcq_payload or not tf_payload or not numeric_payload):
+        if answer_string_compact and (not mcq_payload or not tf_payload or not numeric_payload):
             answer_key = self._subject_answer_key_for_result(result, subject_key)
             if answer_key is not None:
                 cursor = 0
                 if not mcq_payload:
                     for q in sorted(int(k) for k in (getattr(answer_key, "answers", {}) or {}).keys()):
-                        if cursor >= len(answer_string_text):
+                        if cursor >= len(answer_string_compact):
                             break
-                        ch = answer_string_text[cursor]
+                        ch = answer_string_compact[cursor]
                         cursor += 1
                         if ch and ch != "_":
                             mcq_payload[int(q)] = str(ch).upper()
@@ -7708,7 +7714,7 @@ class MainWindow(QMainWindow):
                     cursor += len(sorted(int(k) for k in (getattr(answer_key, "answers", {}) or {}).keys()))
                 if not tf_payload:
                     for q in sorted(int(k) for k in (getattr(answer_key, "true_false_answers", {}) or {}).keys()):
-                        chunk = answer_string_text[cursor: cursor + 4]
+                        chunk = answer_string_compact[cursor: cursor + 4]
                         cursor += 4
                         if not chunk:
                             break
@@ -7730,7 +7736,7 @@ class MainWindow(QMainWindow):
                         raw_key = str((getattr(answer_key, "numeric_answers", {}) or {}).get(q, "") or "")
                         normalized_key = str(raw_key).strip().replace(" ", "").lstrip("+").replace(".", ",")
                         width = len(normalized_key) if normalized_key else max(1, len(raw_key.strip()))
-                        chunk = answer_string_text[cursor: cursor + width]
+                        chunk = answer_string_compact[cursor: cursor + width]
                         cursor += width
                         if not chunk:
                             break
@@ -10699,7 +10705,14 @@ class MainWindow(QMainWindow):
         return None
 
     @staticmethod
-    def _answer_string_from_maps(mcq_answers: dict[int, str], tf_answers: dict[int, dict[str, bool]], numeric_answers: dict[int, str], answer_key) -> str:
+    def _answer_string_from_maps(
+        mcq_answers: dict[int, str],
+        tf_answers: dict[int, dict[str, bool]],
+        numeric_answers: dict[int, str],
+        answer_key,
+        *,
+        use_semicolon: bool = True,
+    ) -> str:
         if answer_key is None:
             return ""
 
@@ -10728,11 +10741,18 @@ class MainWindow(QMainWindow):
             if len(student_text) < width:
                 student_text = student_text + ("_" * (width - len(student_text)))
             parts.append(student_text)
-        return "".join(parts)
+        return ";".join(parts) if use_semicolon else "".join(parts)
 
     def _build_answer_string_for_result(self, result, subject_key: str = "") -> str:
         key = self._subject_answer_key_for_result(result, subject_key)
-        return self._answer_string_from_maps(result.mcq_answers or {}, result.true_false_answers or {}, result.numeric_answers or {}, key)
+        use_semicolon = not bool(getattr(result, "answer_string_api_mode", False))
+        return self._answer_string_from_maps(
+            result.mcq_answers or {},
+            result.true_false_answers or {},
+            result.numeric_answers or {},
+            key,
+            use_semicolon=use_semicolon,
+        )
 
     def _short_recognition_text_for_result(self, result) -> str:
         parts: list[str] = []
