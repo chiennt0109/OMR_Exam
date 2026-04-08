@@ -7564,40 +7564,20 @@ class MainWindow(QMainWindow):
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if not answer_text:
-            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
-        parsed_blank_map: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
-        if ";" in answer_text:
-            expected = self._expected_questions_by_section(result)
-            mcq_q = sorted(int(q) for q in (expected.get("MCQ", []) or []))
-            tf_q = sorted(int(q) for q in (expected.get("TF", []) or []))
-            num_q = sorted(int(q) for q in (expected.get("NUMERIC", []) or []))
-            tokens = [tok.strip() for tok in answer_text.split(";")]
-            cursor = 0
-            for q in mcq_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                if token == "_" or token == "":
-                    parsed_blank_map["MCQ"].append(int(q))
-            for q in tf_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["TF"].append(int(q))
-            for q in num_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["NUMERIC"].append(int(q))
+        if not is_api_mode:
+            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+            if rebuilt:
+                setattr(result, "answer_string", rebuilt)
+                return rebuilt
+        if answer_text:
+            return answer_text
 
-        effective_blank_map = parsed_blank_map if any(parsed_blank_map.values()) else dict(blank_map or {})
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
-            vals = list(effective_blank_map.get(sec, []) or [])
+            vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
@@ -7919,40 +7899,20 @@ class MainWindow(QMainWindow):
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if not answer_text:
-            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
-        parsed_blank_map: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
-        if ";" in answer_text:
-            expected = self._expected_questions_by_section(result)
-            mcq_q = sorted(int(q) for q in (expected.get("MCQ", []) or []))
-            tf_q = sorted(int(q) for q in (expected.get("TF", []) or []))
-            num_q = sorted(int(q) for q in (expected.get("NUMERIC", []) or []))
-            tokens = [tok.strip() for tok in answer_text.split(";")]
-            cursor = 0
-            for q in mcq_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                if token == "_" or token == "":
-                    parsed_blank_map["MCQ"].append(int(q))
-            for q in tf_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["TF"].append(int(q))
-            for q in num_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["NUMERIC"].append(int(q))
+        if not is_api_mode:
+            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+            if rebuilt:
+                setattr(result, "answer_string", rebuilt)
+                return rebuilt
+        if answer_text:
+            return answer_text
 
-        effective_blank_map = parsed_blank_map if any(parsed_blank_map.values()) else dict(blank_map or {})
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
-            vals = list(effective_blank_map.get(sec, []) or [])
+            vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
@@ -8075,40 +8035,20 @@ class MainWindow(QMainWindow):
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if not answer_text:
-            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
-        parsed_blank_map: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
-        if ";" in answer_text:
-            expected = self._expected_questions_by_section(result)
-            mcq_q = sorted(int(q) for q in (expected.get("MCQ", []) or []))
-            tf_q = sorted(int(q) for q in (expected.get("TF", []) or []))
-            num_q = sorted(int(q) for q in (expected.get("NUMERIC", []) or []))
-            tokens = [tok.strip() for tok in answer_text.split(";")]
-            cursor = 0
-            for q in mcq_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                if token == "_" or token == "":
-                    parsed_blank_map["MCQ"].append(int(q))
-            for q in tf_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["TF"].append(int(q))
-            for q in num_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["NUMERIC"].append(int(q))
+        if not is_api_mode:
+            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+            if rebuilt:
+                setattr(result, "answer_string", rebuilt)
+                return rebuilt
+        if answer_text:
+            return answer_text
 
-        effective_blank_map = parsed_blank_map if any(parsed_blank_map.values()) else dict(blank_map or {})
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
-            vals = list(effective_blank_map.get(sec, []) or [])
+            vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
@@ -8220,40 +8160,20 @@ class MainWindow(QMainWindow):
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if not answer_text:
-            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
-        parsed_blank_map: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
-        if ";" in answer_text:
-            expected = self._expected_questions_by_section(result)
-            mcq_q = sorted(int(q) for q in (expected.get("MCQ", []) or []))
-            tf_q = sorted(int(q) for q in (expected.get("TF", []) or []))
-            num_q = sorted(int(q) for q in (expected.get("NUMERIC", []) or []))
-            tokens = [tok.strip() for tok in answer_text.split(";")]
-            cursor = 0
-            for q in mcq_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                if token == "_" or token == "":
-                    parsed_blank_map["MCQ"].append(int(q))
-            for q in tf_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["TF"].append(int(q))
-            for q in num_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["NUMERIC"].append(int(q))
+        if not is_api_mode:
+            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+            if rebuilt:
+                setattr(result, "answer_string", rebuilt)
+                return rebuilt
+        if answer_text:
+            return answer_text
 
-        effective_blank_map = parsed_blank_map if any(parsed_blank_map.values()) else dict(blank_map or {})
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
-            vals = list(effective_blank_map.get(sec, []) or [])
+            vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
@@ -8365,40 +8285,20 @@ class MainWindow(QMainWindow):
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if not answer_text:
-            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
-        parsed_blank_map: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
-        if ";" in answer_text:
-            expected = self._expected_questions_by_section(result)
-            mcq_q = sorted(int(q) for q in (expected.get("MCQ", []) or []))
-            tf_q = sorted(int(q) for q in (expected.get("TF", []) or []))
-            num_q = sorted(int(q) for q in (expected.get("NUMERIC", []) or []))
-            tokens = [tok.strip() for tok in answer_text.split(";")]
-            cursor = 0
-            for q in mcq_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                if token == "_" or token == "":
-                    parsed_blank_map["MCQ"].append(int(q))
-            for q in tf_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["TF"].append(int(q))
-            for q in num_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["NUMERIC"].append(int(q))
+        if not is_api_mode:
+            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+            if rebuilt:
+                setattr(result, "answer_string", rebuilt)
+                return rebuilt
+        if answer_text:
+            return answer_text
 
-        effective_blank_map = parsed_blank_map if any(parsed_blank_map.values()) else dict(blank_map or {})
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
-            vals = list(effective_blank_map.get(sec, []) or [])
+            vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
@@ -8510,40 +8410,20 @@ class MainWindow(QMainWindow):
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if not answer_text:
-            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
-        parsed_blank_map: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
-        if ";" in answer_text:
-            expected = self._expected_questions_by_section(result)
-            mcq_q = sorted(int(q) for q in (expected.get("MCQ", []) or []))
-            tf_q = sorted(int(q) for q in (expected.get("TF", []) or []))
-            num_q = sorted(int(q) for q in (expected.get("NUMERIC", []) or []))
-            tokens = [tok.strip() for tok in answer_text.split(";")]
-            cursor = 0
-            for q in mcq_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                if token == "_" or token == "":
-                    parsed_blank_map["MCQ"].append(int(q))
-            for q in tf_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["TF"].append(int(q))
-            for q in num_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["NUMERIC"].append(int(q))
+        if not is_api_mode:
+            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+            if rebuilt:
+                setattr(result, "answer_string", rebuilt)
+                return rebuilt
+        if answer_text:
+            return answer_text
 
-        effective_blank_map = parsed_blank_map if any(parsed_blank_map.values()) else dict(blank_map or {})
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
-            vals = list(effective_blank_map.get(sec, []) or [])
+            vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
@@ -8655,40 +8535,20 @@ class MainWindow(QMainWindow):
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if not answer_text:
-            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
-        parsed_blank_map: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
-        if ";" in answer_text:
-            expected = self._expected_questions_by_section(result)
-            mcq_q = sorted(int(q) for q in (expected.get("MCQ", []) or []))
-            tf_q = sorted(int(q) for q in (expected.get("TF", []) or []))
-            num_q = sorted(int(q) for q in (expected.get("NUMERIC", []) or []))
-            tokens = [tok.strip() for tok in answer_text.split(";")]
-            cursor = 0
-            for q in mcq_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                if token == "_" or token == "":
-                    parsed_blank_map["MCQ"].append(int(q))
-            for q in tf_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["TF"].append(int(q))
-            for q in num_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["NUMERIC"].append(int(q))
+        if not is_api_mode:
+            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+            if rebuilt:
+                setattr(result, "answer_string", rebuilt)
+                return rebuilt
+        if answer_text:
+            return answer_text
 
-        effective_blank_map = parsed_blank_map if any(parsed_blank_map.values()) else dict(blank_map or {})
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
-            vals = list(effective_blank_map.get(sec, []) or [])
+            vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
@@ -8800,40 +8660,20 @@ class MainWindow(QMainWindow):
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if not answer_text:
-            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
-        parsed_blank_map: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
-        if ";" in answer_text:
-            expected = self._expected_questions_by_section(result)
-            mcq_q = sorted(int(q) for q in (expected.get("MCQ", []) or []))
-            tf_q = sorted(int(q) for q in (expected.get("TF", []) or []))
-            num_q = sorted(int(q) for q in (expected.get("NUMERIC", []) or []))
-            tokens = [tok.strip() for tok in answer_text.split(";")]
-            cursor = 0
-            for q in mcq_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                if token == "_" or token == "":
-                    parsed_blank_map["MCQ"].append(int(q))
-            for q in tf_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["TF"].append(int(q))
-            for q in num_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["NUMERIC"].append(int(q))
+        if not is_api_mode:
+            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+            if rebuilt:
+                setattr(result, "answer_string", rebuilt)
+                return rebuilt
+        if answer_text:
+            return answer_text
 
-        effective_blank_map = parsed_blank_map if any(parsed_blank_map.values()) else dict(blank_map or {})
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
-            vals = list(effective_blank_map.get(sec, []) or [])
+            vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
@@ -8945,40 +8785,20 @@ class MainWindow(QMainWindow):
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if not answer_text:
-            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
-        parsed_blank_map: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
-        if ";" in answer_text:
-            expected = self._expected_questions_by_section(result)
-            mcq_q = sorted(int(q) for q in (expected.get("MCQ", []) or []))
-            tf_q = sorted(int(q) for q in (expected.get("TF", []) or []))
-            num_q = sorted(int(q) for q in (expected.get("NUMERIC", []) or []))
-            tokens = [tok.strip() for tok in answer_text.split(";")]
-            cursor = 0
-            for q in mcq_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                if token == "_" or token == "":
-                    parsed_blank_map["MCQ"].append(int(q))
-            for q in tf_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["TF"].append(int(q))
-            for q in num_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["NUMERIC"].append(int(q))
+        if not is_api_mode:
+            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+            if rebuilt:
+                setattr(result, "answer_string", rebuilt)
+                return rebuilt
+        if answer_text:
+            return answer_text
 
-        effective_blank_map = parsed_blank_map if any(parsed_blank_map.values()) else dict(blank_map or {})
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
-            vals = list(effective_blank_map.get(sec, []) or [])
+            vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
@@ -9090,40 +8910,20 @@ class MainWindow(QMainWindow):
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if not answer_text:
-            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
-        parsed_blank_map: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
-        if ";" in answer_text:
-            expected = self._expected_questions_by_section(result)
-            mcq_q = sorted(int(q) for q in (expected.get("MCQ", []) or []))
-            tf_q = sorted(int(q) for q in (expected.get("TF", []) or []))
-            num_q = sorted(int(q) for q in (expected.get("NUMERIC", []) or []))
-            tokens = [tok.strip() for tok in answer_text.split(";")]
-            cursor = 0
-            for q in mcq_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                if token == "_" or token == "":
-                    parsed_blank_map["MCQ"].append(int(q))
-            for q in tf_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["TF"].append(int(q))
-            for q in num_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["NUMERIC"].append(int(q))
+        if not is_api_mode:
+            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+            if rebuilt:
+                setattr(result, "answer_string", rebuilt)
+                return rebuilt
+        if answer_text:
+            return answer_text
 
-        effective_blank_map = parsed_blank_map if any(parsed_blank_map.values()) else dict(blank_map or {})
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
-            vals = list(effective_blank_map.get(sec, []) or [])
+            vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
@@ -9235,40 +9035,20 @@ class MainWindow(QMainWindow):
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if not answer_text:
-            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
-        parsed_blank_map: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
-        if ";" in answer_text:
-            expected = self._expected_questions_by_section(result)
-            mcq_q = sorted(int(q) for q in (expected.get("MCQ", []) or []))
-            tf_q = sorted(int(q) for q in (expected.get("TF", []) or []))
-            num_q = sorted(int(q) for q in (expected.get("NUMERIC", []) or []))
-            tokens = [tok.strip() for tok in answer_text.split(";")]
-            cursor = 0
-            for q in mcq_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                if token == "_" or token == "":
-                    parsed_blank_map["MCQ"].append(int(q))
-            for q in tf_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["TF"].append(int(q))
-            for q in num_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["NUMERIC"].append(int(q))
+        if not is_api_mode:
+            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+            if rebuilt:
+                setattr(result, "answer_string", rebuilt)
+                return rebuilt
+        if answer_text:
+            return answer_text
 
-        effective_blank_map = parsed_blank_map if any(parsed_blank_map.values()) else dict(blank_map or {})
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
-            vals = list(effective_blank_map.get(sec, []) or [])
+            vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
@@ -9380,40 +9160,20 @@ class MainWindow(QMainWindow):
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if not answer_text:
-            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
-        parsed_blank_map: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
-        if ";" in answer_text:
-            expected = self._expected_questions_by_section(result)
-            mcq_q = sorted(int(q) for q in (expected.get("MCQ", []) or []))
-            tf_q = sorted(int(q) for q in (expected.get("TF", []) or []))
-            num_q = sorted(int(q) for q in (expected.get("NUMERIC", []) or []))
-            tokens = [tok.strip() for tok in answer_text.split(";")]
-            cursor = 0
-            for q in mcq_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                if token == "_" or token == "":
-                    parsed_blank_map["MCQ"].append(int(q))
-            for q in tf_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["TF"].append(int(q))
-            for q in num_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["NUMERIC"].append(int(q))
+        if not is_api_mode:
+            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+            if rebuilt:
+                setattr(result, "answer_string", rebuilt)
+                return rebuilt
+        if answer_text:
+            return answer_text
 
-        effective_blank_map = parsed_blank_map if any(parsed_blank_map.values()) else dict(blank_map or {})
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
-            vals = list(effective_blank_map.get(sec, []) or [])
+            vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
@@ -9525,40 +9285,20 @@ class MainWindow(QMainWindow):
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if not answer_text:
-            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
-        parsed_blank_map: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
-        if ";" in answer_text:
-            expected = self._expected_questions_by_section(result)
-            mcq_q = sorted(int(q) for q in (expected.get("MCQ", []) or []))
-            tf_q = sorted(int(q) for q in (expected.get("TF", []) or []))
-            num_q = sorted(int(q) for q in (expected.get("NUMERIC", []) or []))
-            tokens = [tok.strip() for tok in answer_text.split(";")]
-            cursor = 0
-            for q in mcq_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                if token == "_" or token == "":
-                    parsed_blank_map["MCQ"].append(int(q))
-            for q in tf_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["TF"].append(int(q))
-            for q in num_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["NUMERIC"].append(int(q))
+        if not is_api_mode:
+            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+            if rebuilt:
+                setattr(result, "answer_string", rebuilt)
+                return rebuilt
+        if answer_text:
+            return answer_text
 
-        effective_blank_map = parsed_blank_map if any(parsed_blank_map.values()) else dict(blank_map or {})
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
-            vals = list(effective_blank_map.get(sec, []) or [])
+            vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
@@ -9670,40 +9410,20 @@ class MainWindow(QMainWindow):
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if not answer_text:
-            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
-        parsed_blank_map: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
-        if ";" in answer_text:
-            expected = self._expected_questions_by_section(result)
-            mcq_q = sorted(int(q) for q in (expected.get("MCQ", []) or []))
-            tf_q = sorted(int(q) for q in (expected.get("TF", []) or []))
-            num_q = sorted(int(q) for q in (expected.get("NUMERIC", []) or []))
-            tokens = [tok.strip() for tok in answer_text.split(";")]
-            cursor = 0
-            for q in mcq_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                if token == "_" or token == "":
-                    parsed_blank_map["MCQ"].append(int(q))
-            for q in tf_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["TF"].append(int(q))
-            for q in num_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["NUMERIC"].append(int(q))
+        if not is_api_mode:
+            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+            if rebuilt:
+                setattr(result, "answer_string", rebuilt)
+                return rebuilt
+        if answer_text:
+            return answer_text
 
-        effective_blank_map = parsed_blank_map if any(parsed_blank_map.values()) else dict(blank_map or {})
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
-            vals = list(effective_blank_map.get(sec, []) or [])
+            vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
@@ -9815,40 +9535,20 @@ class MainWindow(QMainWindow):
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if not answer_text:
-            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
-        parsed_blank_map: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
-        if ";" in answer_text:
-            expected = self._expected_questions_by_section(result)
-            mcq_q = sorted(int(q) for q in (expected.get("MCQ", []) or []))
-            tf_q = sorted(int(q) for q in (expected.get("TF", []) or []))
-            num_q = sorted(int(q) for q in (expected.get("NUMERIC", []) or []))
-            tokens = [tok.strip() for tok in answer_text.split(";")]
-            cursor = 0
-            for q in mcq_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                if token == "_" or token == "":
-                    parsed_blank_map["MCQ"].append(int(q))
-            for q in tf_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["TF"].append(int(q))
-            for q in num_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["NUMERIC"].append(int(q))
+        if not is_api_mode:
+            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+            if rebuilt:
+                setattr(result, "answer_string", rebuilt)
+                return rebuilt
+        if answer_text:
+            return answer_text
 
-        effective_blank_map = parsed_blank_map if any(parsed_blank_map.values()) else dict(blank_map or {})
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
-            vals = list(effective_blank_map.get(sec, []) or [])
+            vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
@@ -9960,40 +9660,20 @@ class MainWindow(QMainWindow):
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if not answer_text:
-            subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-            answer_text = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
-        parsed_blank_map: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
-        if ";" in answer_text:
-            expected = self._expected_questions_by_section(result)
-            mcq_q = sorted(int(q) for q in (expected.get("MCQ", []) or []))
-            tf_q = sorted(int(q) for q in (expected.get("TF", []) or []))
-            num_q = sorted(int(q) for q in (expected.get("NUMERIC", []) or []))
-            tokens = [tok.strip() for tok in answer_text.split(";")]
-            cursor = 0
-            for q in mcq_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                if token == "_" or token == "":
-                    parsed_blank_map["MCQ"].append(int(q))
-            for q in tf_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["TF"].append(int(q))
-            for q in num_q:
-                token = tokens[cursor] if cursor < len(tokens) else ""
-                cursor += 1
-                compact = token.replace(" ", "")
-                if not compact or all(ch == "_" for ch in compact):
-                    parsed_blank_map["NUMERIC"].append(int(q))
+        if not is_api_mode:
+            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
+            if rebuilt:
+                setattr(result, "answer_string", rebuilt)
+                return rebuilt
+        if answer_text:
+            return answer_text
 
-        effective_blank_map = parsed_blank_map if any(parsed_blank_map.values()) else dict(blank_map or {})
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
-            vals = list(effective_blank_map.get(sec, []) or [])
+            vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
         return " | ".join(blank_parts) if blank_parts else ""
