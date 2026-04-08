@@ -10870,31 +10870,52 @@ class MainWindow(QMainWindow):
         if answer_key is None:
             return ""
 
-        def _question_numbers(valid_map, invalid_map) -> list[int]:
+        def _question_numbers(valid_map, invalid_map, fallback_map=None) -> list[int]:
             nums = set()
             for src in [valid_map or {}, invalid_map or {}]:
                 for key in src.keys():
                     if str(key).strip().lstrip("-").isdigit():
                         nums.add(int(key))
+            for key in (fallback_map or {}).keys():
+                if str(key).strip().lstrip("-").isdigit():
+                    nums.add(int(key))
             return sorted(nums)
 
         invalid_rows = getattr(answer_key, "invalid_answer_rows", {}) or {}
         parts: list[str] = []
-        for q_no in _question_numbers(getattr(answer_key, "answers", {}) or {}, (invalid_rows.get("MCQ", {}) or {})):
+        for q_no in _question_numbers(
+            getattr(answer_key, "answers", {}) or {},
+            (invalid_rows.get("MCQ", {}) or {}),
+            mcq_answers or {},
+        ):
             value = str((mcq_answers or {}).get(q_no, "") or "").strip().upper()[:1]
             parts.append(value or "_")
-        for q_no in _question_numbers(getattr(answer_key, "true_false_answers", {}) or {}, (invalid_rows.get("TF", {}) or {})):
+        for q_no in _question_numbers(
+            getattr(answer_key, "true_false_answers", {}) or {},
+            (invalid_rows.get("TF", {}) or {}),
+            tf_answers or {},
+        ):
             flags = (tf_answers or {}).get(q_no, {}) or {}
             for key in ["a", "b", "c", "d"]:
                 parts.append("Đ" if key in flags and bool(flags.get(key)) else ("S" if key in flags else "_"))
-        for q_no in _question_numbers(getattr(answer_key, "numeric_answers", {}) or {}, (invalid_rows.get("NUMERIC", {}) or {})):
+        numeric_valid = getattr(answer_key, "numeric_answers", {}) or {}
+        numeric_invalid = (invalid_rows.get("NUMERIC", {}) or {})
+        for q_no in _question_numbers(
+            numeric_valid,
+            numeric_invalid,
+            numeric_answers or {},
+        ):
             raw_key = str((getattr(answer_key, "numeric_answers", {}) or {}).get(q_no, ((invalid_rows.get("NUMERIC", {}) or {}).get(q_no, ""))) or "")
+            student_text_full = str((numeric_answers or {}).get(q_no, "") or "").strip().replace(" ", "").lstrip("+").replace(".", ",")
             normalized_key = str(raw_key).strip().replace(" ", "").lstrip("+").replace(".", ",")
-            width = len(normalized_key) if normalized_key else max(1, len(raw_key.strip()))
-            student_text = str((numeric_answers or {}).get(q_no, "") or "").strip().replace(" ", "").lstrip("+").replace(".", ",")[:width]
-            if len(student_text) < width:
-                student_text = student_text + ("_" * (width - len(student_text)))
-            parts.append(student_text)
+            if normalized_key:
+                width = len(normalized_key)
+                student_text = student_text_full[:width]
+                if len(student_text) < width:
+                    student_text = student_text + ("_" * (width - len(student_text)))
+                parts.append(student_text)
+            else:
+                parts.append(student_text_full or "_")
         return ";".join(parts) if use_semicolon else "".join(parts)
 
     def _build_answer_string_for_result(self, result, subject_key: str = "") -> str:
