@@ -4351,16 +4351,35 @@ class MainWindow(QMainWindow):
             q_item = QTableWidgetItem(str(q_display))
             q_item.setData(Qt.UserRole, int(q_actual))
             grid.setItem(r, 1, q_item)
-            grid.setItem(r, 2, QTableWidgetItem(str(answer)))
+            answer_item = QTableWidgetItem(str(answer))
+            if str(answer).strip().upper() == "G":
+                answer_item.setBackground(QColor(255, 244, 179))
+            grid.setItem(r, 2, answer_item)
             edit_item = QTableWidgetItem(str(student))
             if str(answer).strip().upper() != str(student).strip().upper():
                 edit_item.setBackground(QColor(255, 225, 225))
             grid.setItem(r, 3, edit_item)
 
         section_limits = self._subject_section_question_counts(subject_key)
-        mcq_qs = sorted(int(x) for x in (key.answers or {}).keys())
-        tf_qs = sorted(int(x) for x in (key.true_false_answers or {}).keys())
-        numeric_qs = sorted(int(x) for x in (key.numeric_answers or {}).keys())
+        invalid_rows = dict(getattr(key, "invalid_answer_rows", {}) or {})
+        mcq_qs = sorted(
+            {
+                int(x)
+                for x in list((key.answers or {}).keys()) + list((invalid_rows.get("MCQ", {}) or {}).keys())
+            }
+        )
+        tf_qs = sorted(
+            {
+                int(x)
+                for x in list((key.true_false_answers or {}).keys()) + list((invalid_rows.get("TF", {}) or {}).keys())
+            }
+        )
+        numeric_qs = sorted(
+            {
+                int(x)
+                for x in list((key.numeric_answers or {}).keys()) + list((invalid_rows.get("NUMERIC", {}) or {}).keys())
+            }
+        )
         mcq_limit = int(section_limits.get("MCQ", 0) or 0)
         tf_limit = int(section_limits.get("TF", 0) or 0)
         numeric_limit = int(section_limits.get("NUMERIC", 0) or 0)
@@ -4372,14 +4391,31 @@ class MainWindow(QMainWindow):
             numeric_qs = numeric_qs[:numeric_limit]
         for q_display, q_actual in enumerate(mcq_qs, start=1):
             student_val = _value_by_actual_or_display((result.mcq_answers or {}), q_actual, q_display)
-            _append_row("MCQ", q_display, q_actual, str((key.answers or {}).get(q_actual, "") or ""), str(student_val or ""))
+            answer_val = str(
+                (key.answers or {}).get(
+                    q_actual,
+                    (invalid_rows.get("MCQ", {}) or {}).get(q_actual, ""),
+                )
+                or ""
+            )
+            _append_row("MCQ", q_display, q_actual, answer_val, str(student_val or ""))
         for q_display, q_actual in enumerate(tf_qs, start=1):
             answer_flags = (key.true_false_answers or {}).get(q_actual, {}) or {}
             student_flags = _value_by_actual_or_display((result.true_false_answers or {}), q_actual, q_display)
-            _append_row("TF", q_display, q_actual, _tf_compact(answer_flags), _tf_compact(student_flags))
+            answer_text = _tf_compact(answer_flags)
+            if not answer_text:
+                answer_text = str((invalid_rows.get("TF", {}) or {}).get(q_actual, "") or "").strip().upper()
+            _append_row("TF", q_display, q_actual, answer_text, _tf_compact(student_flags))
         for q_display, q_actual in enumerate(numeric_qs, start=1):
             student_val = _value_by_actual_or_display((result.numeric_answers or {}), q_actual, q_display)
-            _append_row("NUMERIC", q_display, q_actual, str((key.numeric_answers or {}).get(q_actual, "") or ""), str(student_val or ""))
+            answer_val = str(
+                (key.numeric_answers or {}).get(
+                    q_actual,
+                    (invalid_rows.get("NUMERIC", {}) or {}).get(q_actual, ""),
+                )
+                or ""
+            )
+            _append_row("NUMERIC", q_display, q_actual, answer_val, str(student_val or ""))
 
         subject_cfg = self._subject_config_by_subject_key(subject_key) or {}
         try:
