@@ -12055,6 +12055,13 @@ class MainWindow(QMainWindow):
         form.addRow("Student ID", inp_sid)
         form.addRow("Exam Code", inp_code)
         left_lay.addLayout(form)
+        answer_grid = QTableWidget(0, 3)
+        answer_grid.setHorizontalHeaderLabels(["Phần", "Câu", "Bài làm"])
+        answer_grid.verticalHeader().setVisible(False)
+        answer_grid.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        answer_grid.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        answer_grid.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        left_lay.addWidget(answer_grid, 1)
         left_lay.addWidget(mcq_label)
         left_lay.addWidget(mcq_host)
         mcq_hint_row = QWidget()
@@ -12135,7 +12142,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(splitter)
         QTimer.singleShot(0, lambda s=splitter: s.setSizes([max(1, s.width() // 2), max(1, s.width() // 2)]))
 
-        editor_refs: dict[str, object] = {"mcq_edits": {}, "table_tf": None, "table_num": None}
+        editor_refs: dict[str, object] = {"mcq_edits": {}, "table_tf": None, "table_num": None, "answer_grid": answer_grid}
         expected_questions_state: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
         question_mapping_state: dict[str, dict[str, dict[int, int]]] = {
             "MCQ": {"display_to_actual": {}, "actual_to_display": {}},
@@ -12397,6 +12404,37 @@ class MainWindow(QMainWindow):
                 "true_false_answers": {},
                 "numeric_answers": {},
             }
+            answer_grid_local = editor_refs.get("answer_grid")
+            if isinstance(answer_grid_local, QTableWidget):
+                for r in range(answer_grid_local.rowCount()):
+                    sec_item = answer_grid_local.item(r, 0)
+                    q_item = answer_grid_local.item(r, 1)
+                    v_item = answer_grid_local.item(r, 2)
+                    sec = str(sec_item.text() if sec_item else "").strip().upper()
+                    q_text = str(q_item.text() if q_item else "").strip()
+                    v_text = str(v_item.text() if v_item else "").strip()
+                    if not q_text.lstrip('-').isdigit():
+                        continue
+                    display_q = int(q_text)
+                    if sec == "MCQ":
+                        actual_q = int(question_mapping_state.get("MCQ", {}).get("display_to_actual", {}).get(display_q, display_q))
+                        if v_text:
+                            snapshot["mcq_answers"][actual_q] = str(v_text).upper()[:1]
+                    elif sec == "TF":
+                        actual_q = int(question_mapping_state.get("TF", {}).get("display_to_actual", {}).get(display_q, display_q))
+                        compact = "".join(ch for ch in str(v_text).upper() if ch in {"Đ", "D", "S", "_", "T", "F", "1", "0"})
+                        flags: dict[str, bool] = {}
+                        for i, ch in enumerate(compact[:4]):
+                            key_flag = ["a", "b", "c", "d"][i]
+                            if ch == "_":
+                                continue
+                            flags[key_flag] = ch in {"Đ", "D", "T", "1"}
+                        if flags:
+                            snapshot["true_false_answers"][actual_q] = flags
+                    elif sec == "NUMERIC":
+                        actual_q = int(question_mapping_state.get("NUMERIC", {}).get("display_to_actual", {}).get(display_q, display_q))
+                        snapshot["numeric_answers"][actual_q] = v_text
+                return snapshot
             mcq_edits = editor_refs.get("mcq_edits", {}) or {}
             for q_no, edit in mcq_edits.items():
                 v_text = str(edit.text() if edit else "").strip().upper()[:1]
@@ -12544,7 +12582,6 @@ class MainWindow(QMainWindow):
                 for q, v in mcq_data.items()
                 if int(mcq_map_actual_to_display.get(int(q), int(q))) in set(mcq_questions)
             }
-            mcq_widget, mcq_edits = _build_mcq_grid(mcq_questions, mcq_data_display)
 
             tf_data = data_snapshot.get("true_false_answers", {}) or {}
             tf_map_actual_to_display = question_mapping_state.get("TF", {}).get("actual_to_display", {}) or {}
@@ -12558,7 +12595,6 @@ class MainWindow(QMainWindow):
                 for q, v in tf_data.items()
                 if int(tf_map_actual_to_display.get(int(q), int(q))) in set(tf_questions)
             }
-            table_tf = _build_tf_table(tf_questions, tf_data)
 
             numeric_data = data_snapshot.get("numeric_answers", {}) or {}
             numeric_map_actual_to_display = question_mapping_state.get("NUMERIC", {}).get("actual_to_display", {}) or {}
@@ -12572,28 +12608,47 @@ class MainWindow(QMainWindow):
                 for q, v in numeric_data.items()
                 if int(numeric_map_actual_to_display.get(int(q), int(q))) in set(numeric_questions)
             }
-            table_num = _build_pair_table(numeric_questions, numeric_data, "Ví dụ: -12.5")
-            _clear_layout(mcq_host_lay)
-            _clear_layout(tf_host_lay)
-            _clear_layout(numeric_host_lay)
-            mcq_host_lay.addWidget(mcq_widget)
-            tf_host_lay.addWidget(table_tf)
-            numeric_host_lay.addWidget(table_num)
-            editor_refs["mcq_edits"] = mcq_edits
-            editor_refs["table_tf"] = table_tf
-            editor_refs["table_num"] = table_num
-            has_mcq = bool(mcq_questions)
-            has_tf = bool(tf_questions)
-            has_numeric = bool(numeric_questions)
-            mcq_label.setVisible(has_mcq)
-            mcq_host.setVisible(has_mcq)
-            mcq_hint_row.setVisible(has_mcq)
-            tf_label.setVisible(has_tf)
-            tf_host.setVisible(has_tf)
-            tf_actions_row.setVisible(has_tf)
-            numeric_label.setVisible(has_numeric)
-            numeric_host.setVisible(has_numeric)
-            num_actions_row.setVisible(has_numeric)
+            grid_local = editor_refs.get("answer_grid")
+            if isinstance(grid_local, QTableWidget):
+                grid_local.blockSignals(True)
+                grid_local.setRowCount(0)
+                for q in mcq_questions:
+                    r = grid_local.rowCount()
+                    grid_local.insertRow(r)
+                    grid_local.setItem(r, 0, QTableWidgetItem("MCQ"))
+                    grid_local.setItem(r, 1, QTableWidgetItem(str(int(q))))
+                    grid_local.setItem(r, 2, QTableWidgetItem(str(mcq_data_display.get(int(q), "") or "")))
+                for q in tf_questions:
+                    flags = dict(tf_data.get(int(q), {}) or {})
+                    token = "".join(("Đ" if bool(flags.get(k)) else ("S" if k in flags else "_")) for k in ["a", "b", "c", "d"])
+                    r = grid_local.rowCount()
+                    grid_local.insertRow(r)
+                    grid_local.setItem(r, 0, QTableWidgetItem("TF"))
+                    grid_local.setItem(r, 1, QTableWidgetItem(str(int(q))))
+                    grid_local.setItem(r, 2, QTableWidgetItem(token))
+                for q in numeric_questions:
+                    r = grid_local.rowCount()
+                    grid_local.insertRow(r)
+                    grid_local.setItem(r, 0, QTableWidgetItem("NUMERIC"))
+                    grid_local.setItem(r, 1, QTableWidgetItem(str(int(q))))
+                    grid_local.setItem(r, 2, QTableWidgetItem(str(numeric_data.get(int(q), "") or "")))
+                for r in range(grid_local.rowCount()):
+                    sec_item = grid_local.item(r, 0)
+                    q_item = grid_local.item(r, 1)
+                    if sec_item:
+                        sec_item.setFlags(sec_item.flags() & ~Qt.ItemIsEditable)
+                    if q_item:
+                        q_item.setFlags(q_item.flags() & ~Qt.ItemIsEditable)
+                grid_local.blockSignals(False)
+            mcq_label.setVisible(False)
+            mcq_host.setVisible(False)
+            mcq_hint_row.setVisible(False)
+            tf_label.setVisible(False)
+            tf_host.setVisible(False)
+            tf_actions_row.setVisible(False)
+            numeric_label.setVisible(False)
+            numeric_host.setVisible(False)
+            num_actions_row.setVisible(False)
 
         def _apply_changes(save_feedback: bool = False) -> bool:
             idx_local = dialog_state["index"]
