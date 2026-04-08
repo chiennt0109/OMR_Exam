@@ -6297,6 +6297,20 @@ class MainWindow(QMainWindow):
                     setattr(restored, "full_name", str(row.get("full_name", "") or ""))
                     setattr(restored, "birth_date", str(row.get("birth_date", "") or ""))
                     setattr(restored, "exam_room", str(row.get("exam_room", "") or ""))
+                else:
+                    restored.image_path = str(row.get("image_path", "") or restored.image_path or "")
+                restored.student_id = str(row.get("student_id", "") or getattr(restored, "student_id", "") or "")
+                restored.exam_code = str(row.get("exam_code", "") or getattr(restored, "exam_code", "") or "")
+                setattr(restored, "full_name", str(row.get("full_name", "") or getattr(restored, "full_name", "") or ""))
+                setattr(restored, "birth_date", str(row.get("birth_date", "") or getattr(restored, "birth_date", "") or ""))
+                setattr(restored, "exam_room", str(row.get("exam_room", "") or getattr(restored, "exam_room", "") or ""))
+                setattr(restored, "manual_content_override", str(row.get("manual_content_override", "") or getattr(restored, "manual_content_override", "") or ""))
+                restored.answer_string = self._normalize_non_api_answer_string(restored, subject_key)
+                payload = self._build_scan_row_payload_from_result(restored, row_idx=None)
+                setattr(restored, "cached_content", str(payload.get("content", "") or ""))
+                setattr(restored, "cached_status", str(payload.get("status", "") or ""))
+                setattr(restored, "cached_recognized_short", str(payload.get("recognized_short", "") or ""))
+                self._debug_scan_result_state("restore_subject_batch_saved_rows", restored)
                 self.scan_results.append(restored)
             if self.scan_results:
                 self._populate_scan_grid_from_results(self.scan_results, skip_expensive_checks=not has_deserialized_payload)
@@ -6312,6 +6326,8 @@ class MainWindow(QMainWindow):
         self._update_batch_scan_scope_summary()
         source_label = source if not source_hint else f"{source}({source_hint})"
         print(f"[BatchLoad] subject={subject_key} source={source_label} rows={self.scan_list.rowCount()} errors={self.error_list.count()}")
+        if self.scan_results:
+            self._debug_scan_result_state("restore_subject_loaded_first_row", self.scan_results[0])
         self._close_wait_progress(wait_dlg)
         return source != "empty"
 
@@ -6324,19 +6340,43 @@ class MainWindow(QMainWindow):
         rows: list[dict] = []
         for r in range(self.scan_list.rowCount()):
             sid_item = self.scan_list.item(r, 0)
-            row_result = self.scan_results[r] if r < len(self.scan_results) else self._build_result_from_saved_table_row(r)
-            serialized = self._serialize_omr_result(row_result) if row_result is not None else {}
+            serialized_payload = sid_item.data(Qt.UserRole + 10) if sid_item else None
+            row_result = None
+            if isinstance(serialized_payload, dict) and serialized_payload:
+                try:
+                    row_result = self._deserialize_omr_result(serialized_payload)
+                except Exception:
+                    row_result = None
+            if row_result is None and r < len(self.scan_results):
+                row_result = self._lightweight_result_copy(self.scan_results[r])
+            if row_result is None:
+                row_result = self._build_result_from_saved_table_row(r)
+            if row_result is None:
+                row_result = OMRResult(image_path=str(sid_item.data(Qt.UserRole) if sid_item else ""))
+
+            sid_text = str(sid_item.text() if sid_item else "").strip()
+            row_result.student_id = "" if sid_text in {"", "-"} else sid_text
+            row_result.exam_code = str(sid_item.data(Qt.UserRole + 1) if sid_item else "").strip()
+            row_result.image_path = str(sid_item.data(Qt.UserRole) if sid_item else "").strip() or str(getattr(row_result, "image_path", "") or "")
+            setattr(row_result, "exam_room", str(self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else ""))
+            setattr(row_result, "full_name", str(self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else ""))
+            setattr(row_result, "birth_date", str(self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else ""))
+            setattr(row_result, "manual_content_override", str(sid_item.data(Qt.UserRole + 11) if sid_item else "").strip())
+            row_result.answer_string = self._normalize_non_api_answer_string(row_result, key)
+            row_payload = self._build_scan_row_payload_from_result(row_result, row_idx=r)
+            self._debug_scan_result_state("cache_working_batch_state", row_result)
+            serialized = dict(row_payload.get("serialized_result", {}) or self._serialize_omr_result(row_result))
             rows.append(
                 {
-                    "student_id": sid_item.text() if sid_item else "-",
-                    "image_path": str(sid_item.data(Qt.UserRole) if sid_item else ""),
-                    "exam_code": str(sid_item.data(Qt.UserRole + 1) if sid_item else ""),
-                    "recognized_short": str(sid_item.data(Qt.UserRole + 2) if sid_item else ""),
-                    "exam_room": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                    "full_name": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                    "birth_date": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                    "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                    "status": self.scan_list.item(r, 6).text() if self.scan_list.item(r, 6) else "-",
+                    "student_id": str(row_payload.get("student_id", "-") or "-"),
+                    "image_path": str(row_payload.get("image_path", "") or ""),
+                    "exam_code": str(row_payload.get("exam_code", "") or ""),
+                    "recognized_short": str(row_payload.get("recognized_short", "") or ""),
+                    "exam_room": str(row_payload.get("exam_room", "-") or "-"),
+                    "full_name": str(row_payload.get("full_name", "-") or "-"),
+                    "birth_date": str(row_payload.get("birth_date", "-") or "-"),
+                    "content": str(row_payload.get("content", "-") or "-"),
+                    "status": str(row_payload.get("status", "-") or "-"),
                     "answer_string": str(getattr(row_result, "answer_string", "") or ""),
                     "mcq_answers": dict(getattr(row_result, "mcq_answers", {}) or {}),
                     "true_false_answers": dict(getattr(row_result, "true_false_answers", {}) or {}),
@@ -6351,6 +6391,7 @@ class MainWindow(QMainWindow):
                         {"code": str(getattr(i, "code", "") or ""), "message": str(getattr(i, "message", "") or "")}
                         for i in (getattr(row_result, "issues", []) or [])
                     ],
+                    "manual_content_override": str(row_payload.get("manual_content_override", "") or ""),
                     "serialized_result": serialized,
                 }
             )
@@ -6446,6 +6487,20 @@ class MainWindow(QMainWindow):
                     setattr(restored, "full_name", str(row.get("full_name", "") or ""))
                     setattr(restored, "birth_date", str(row.get("birth_date", "") or ""))
                     setattr(restored, "exam_room", str(row.get("exam_room", "") or ""))
+                else:
+                    restored.image_path = str(row.get("image_path", "") or restored.image_path or "")
+                restored.student_id = str(row.get("student_id", "") or getattr(restored, "student_id", "") or "")
+                restored.exam_code = str(row.get("exam_code", "") or getattr(restored, "exam_code", "") or "")
+                setattr(restored, "full_name", str(row.get("full_name", "") or getattr(restored, "full_name", "") or ""))
+                setattr(restored, "birth_date", str(row.get("birth_date", "") or getattr(restored, "birth_date", "") or ""))
+                setattr(restored, "exam_room", str(row.get("exam_room", "") or getattr(restored, "exam_room", "") or ""))
+                setattr(restored, "manual_content_override", str(row.get("manual_content_override", "") or getattr(restored, "manual_content_override", "") or ""))
+                restored.answer_string = self._normalize_non_api_answer_string(restored, key)
+                payload = self._build_scan_row_payload_from_result(restored, row_idx=None)
+                setattr(restored, "cached_content", str(payload.get("content", "") or ""))
+                setattr(restored, "cached_status", str(payload.get("status", "") or ""))
+                setattr(restored, "cached_recognized_short", str(payload.get("recognized_short", "") or ""))
+                self._debug_scan_result_state("restore_working_rows_fallback", restored)
                 restored_rows.append(restored)
             if restored_rows:
                 self.scan_results = list(restored_rows)
@@ -6484,6 +6539,8 @@ class MainWindow(QMainWindow):
         if hasattr(self, "btn_save_batch_subject"):
             cached_dirty = bool(cached.get("dirty", False))
             self.btn_save_batch_subject.setEnabled(cached_dirty and self.scan_list.rowCount() > 0)
+        if self.scan_results:
+            self._debug_scan_result_state("restore_working_state_first_row", self.scan_results[0])
         return self.scan_list.rowCount() > 0
 
     def _batch_runtime_key(self, subject_key_or_cfg) -> str:
@@ -10092,20 +10149,28 @@ class MainWindow(QMainWindow):
             sid_item = self.scan_list.item(idx, 0)
             sid_text = str(sid_item.text() if sid_item else "").strip()
             image_path = str(sid_item.data(Qt.UserRole) if sid_item else "").strip()
-            matched_base = None
-            image_key = self._result_identity_key(image_path)
-            if image_key and image_key in base_by_image and base_by_image[image_key]:
-                matched_base = base_by_image[image_key].pop(0)
-            if matched_base is not None:
-                result = self._lightweight_result_copy(matched_base)
-            elif image_key:
-                fallback = self._build_result_from_saved_table_row(idx)
-                result = fallback if fallback is not None else OMRResult(image_path=image_path)
-            elif idx < len(base):
-                result = self._lightweight_result_copy(base[idx])
-            else:
-                fallback = self._build_result_from_saved_table_row(idx)
-                result = fallback if fallback is not None else OMRResult(image_path="")
+            serialized_payload = sid_item.data(Qt.UserRole + 10) if sid_item else None
+            result = None
+            if isinstance(serialized_payload, dict) and serialized_payload:
+                try:
+                    result = self._deserialize_omr_result(serialized_payload)
+                except Exception:
+                    result = None
+            if result is None:
+                matched_base = None
+                image_key = self._result_identity_key(image_path)
+                if image_key and image_key in base_by_image and base_by_image[image_key]:
+                    matched_base = base_by_image[image_key].pop(0)
+                if matched_base is not None:
+                    result = self._lightweight_result_copy(matched_base)
+                elif image_key:
+                    fallback = self._build_result_from_saved_table_row(idx)
+                    result = fallback if fallback is not None else OMRResult(image_path=image_path)
+                elif idx < len(base):
+                    result = self._lightweight_result_copy(base[idx])
+                else:
+                    fallback = self._build_result_from_saved_table_row(idx)
+                    result = fallback if fallback is not None else OMRResult(image_path="")
 
             result.student_id = "" if sid_text in {"", "-"} else sid_text
             result.exam_code = str(sid_item.data(Qt.UserRole + 1) if sid_item else "").strip()
@@ -10114,8 +10179,13 @@ class MainWindow(QMainWindow):
             setattr(result, "exam_room", str(self.scan_list.item(idx, 1).text() if self.scan_list.item(idx, 1) else ""))
             setattr(result, "full_name", str(self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else ""))
             setattr(result, "birth_date", str(self.scan_list.item(idx, 4).text() if self.scan_list.item(idx, 4) else ""))
+            setattr(result, "manual_content_override", str(sid_item.data(Qt.UserRole + 11) if sid_item else "").strip())
             result.answer_string = self._normalize_non_api_answer_string(result)
-            print(f"[SnapshotRow] row={idx} image={image_key} sid={result.student_id}")
+            payload = self._build_scan_row_payload_from_result(result, row_idx=idx)
+            setattr(result, "cached_content", str(payload.get("content", "") or ""))
+            setattr(result, "cached_status", str(payload.get("status", "") or ""))
+            setattr(result, "cached_recognized_short", str(payload.get("recognized_short", "") or ""))
+            self._debug_scan_result_state("current_scan_results_snapshot", result)
             out.append(result)
         return out
 
@@ -10247,6 +10317,9 @@ class MainWindow(QMainWindow):
                 result = restored
             except Exception:
                 pass
+        result.image_path = image_path or str(getattr(result, "image_path", "") or "")
+        result.student_id = student_id
+        result.exam_code = exam_code
         room_text = str(self.scan_list.item(idx, 1).text() if self.scan_list.item(idx, 1) else "").strip()
         if not room_text and student_id:
             room_text = str(self._subject_room_for_student_id(student_id) or "").strip()
@@ -10254,10 +10327,13 @@ class MainWindow(QMainWindow):
         result.full_name = str(self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else "")
         result.birth_date = str(self.scan_list.item(idx, 4).text() if self.scan_list.item(idx, 4) else "")
         manual_content_override = str(sid_item.data(Qt.UserRole + 11) if sid_item else "").strip()
-        if manual_content_override:
-            setattr(result, "manual_content_override", manual_content_override)
+        setattr(result, "manual_content_override", manual_content_override)
         result.answer_string = self._normalize_non_api_answer_string(result)
-        self._debug_scan_result_state("build_from_saved_row", result)
+        payload = self._build_scan_row_payload_from_result(result, row_idx=idx)
+        setattr(result, "cached_content", str(payload.get("content", "") or ""))
+        setattr(result, "cached_status", str(payload.get("status", "") or ""))
+        setattr(result, "cached_recognized_short", str(payload.get("recognized_short", "") or ""))
+        self._debug_scan_result_state("build_result_from_saved_table_row", result)
         result.sync_legacy_aliases()
         return result
 
