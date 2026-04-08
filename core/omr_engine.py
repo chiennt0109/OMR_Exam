@@ -790,6 +790,57 @@ class OMRProcessor:
         t = (15.0 + 20.0 * self._fill_level) if threshold is None else float(threshold)
         return [bool(v >= t) for v in np.asarray(scores, dtype=np.float32).tolist()]
 
+
+    def _mcq_row_edge_boost(self, row_idx: int, q_count: int) -> float:
+        if q_count <= 0:
+            return 1.0
+        if row_idx == 0:
+            return 1.08
+        if row_idx == q_count - 1:
+            return 1.04
+        if row_idx == 1:
+            return 1.03
+        return 1.0
+
+    def _mcq_soft_fallback_pick(
+        self,
+        row: np.ndarray,
+        zone: Zone,
+        zone_type_name: str,
+        row_idx: int,
+        q_count: int,
+    ) -> tuple[int | None, float, str]:
+        # Soft fallback is intentionally limited to the first MCQ row,
+        # which is the row most likely to be clipped by the block title / border.
+        if row_idx != 0:
+            return None, 0.0, "disabled"
+        arr = np.asarray(row, dtype=np.float32).reshape(-1)
+        if arr.size == 0:
+            return None, 0.0, "empty"
+        order = np.argsort(arr)[::-1]
+        top_i = int(order[0])
+        top = float(arr[top_i])
+        second = float(arr[int(order[1])]) if len(order) > 1 else 0.0
+        delta = float(top - second)
+        ratio = float(top / max(second, 1e-6))
+
+        strict_thr = self._row_pick_threshold(arr, zone, zone_type_name, is_column=False)
+        score_floor = self._zone_score_floor(zone, zone_type_name)
+        delta_floor = self._zone_delta_floor(zone, zone_type_name)
+        ratio_floor = self._zone_ratio_floor(zone, zone_type_name)
+
+        soft_thr = max(score_floor * 0.82, strict_thr * 0.86, float(np.mean(arr) + 4.0), float(np.median(arr) + 5.0))
+        soft_delta = max(2.2, delta_floor * 0.78)
+        soft_ratio = max(1.10, ratio_floor * 0.92)
+
+        if top < soft_thr:
+            return None, max(0.0, top - soft_thr), "below soft threshold"
+        if delta < soft_delta:
+            return None, max(0.0, delta - soft_delta), "soft ambiguous"
+        if ratio < soft_ratio:
+            return None, max(0.0, ratio - soft_ratio), "soft weak ratio"
+        return top_i, delta, "soft ok"
+
     def _decode_mcq_zone(self, mat: np.ndarray, zone: Zone, result: OMRResult) -> None:
         grid = zone.grid
         if grid is None:
@@ -802,16 +853,20 @@ class OMRProcessor:
         confs: list[float] = []
         q_count = min(int(getattr(grid, "question_count", 0) or rows), rows)
         for r in range(q_count):
-            row = mat[r]
-            thr = self._row_pick_threshold(row, zone, ztype, is_column=False)
+            row = np.asarray(mat[r], dtype=np.float32).reshape(-1)
+            edge_boost = self._mcq_row_edge_boost(r, q_count)
+            boosted_row = row * edge_boost if edge_boost != 1.0 else row
+            thr = self._row_pick_threshold(boosted_row, zone, ztype, is_column=False)
             idx, conf, reason = self._pick_best_index(
-                row,
+                boosted_row,
                 thr,
                 self._zone_delta_floor(zone, ztype),
                 absolute_floor=self._zone_score_floor(zone, ztype),
                 delta_floor=self._zone_delta_floor(zone, ztype),
                 ratio_floor=self._zone_ratio_floor(zone, ztype),
             )
+            if idx is None:
+                idx, conf, reason = self._mcq_soft_fallback_pick(boosted_row, zone, ztype, r, q_count)
             qno = int(getattr(grid, "question_start", 1) or 1) + r
             if idx is None:
                 continue
