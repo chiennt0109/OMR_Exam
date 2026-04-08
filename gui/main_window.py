@@ -4531,7 +4531,8 @@ class MainWindow(QMainWindow):
         self.scan_results = list(current_results)
         self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(current_results)
         for result in current_results:
-            result.answer_string = self._build_answer_string_for_result(result, subject_key)
+            result.answer_string = self._normalize_non_api_answer_string(result, subject_key)
+            self._debug_scan_result_state("sync_snapshot", result)
             if persist_to_db:
                 self.database.upsert_scan_result(self._batch_result_subject_key(subject_key), self._serialize_omr_result(result))
         return subject_key, current_results
@@ -5081,19 +5082,22 @@ class MainWindow(QMainWindow):
             batch_rows_payload = []
             for r in range(self.scan_list.rowCount()):
                 row_result = current_results[r] if r < len(current_results) else self._build_result_from_saved_table_row(r)
+                row_payload = self._build_scan_row_payload_from_result(row_result, row_idx=r) if row_result is not None else {}
                 serialized = self._serialize_omr_result(row_result) if row_result is not None else {}
+                if row_result is not None:
+                    self._debug_scan_result_state("save_batch_row", row_result)
                 batch_rows_payload.append(
                     {
-                        "student_id": self.scan_list.item(r, 0).text() if self.scan_list.item(r, 0) else "-",
-                        "exam_room": self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else "-",
-                        "full_name": self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "-",
-                        "birth_date": self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "-",
-                        "content": self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else "-",
-                        "status": self.scan_list.item(r, 6).text() if self.scan_list.item(r, 6) else "-",
-                        "exam_code": str(self.scan_list.item(r, 0).data(Qt.UserRole + 1) if self.scan_list.item(r, 0) else ""),
-                        "recognized_short": str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ""),
-                        "image_path": str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""),
-                        "forced_status": str(self.scan_forced_status_by_index.get(str(self.scan_list.item(r, 0).data(Qt.UserRole) if self.scan_list.item(r, 0) else ""), "") or ""),
+                        "student_id": str(row_payload.get("student_id", "-") or "-"),
+                        "exam_room": str(row_payload.get("exam_room", "-") or "-"),
+                        "full_name": str(row_payload.get("full_name", "-") or "-"),
+                        "birth_date": str(row_payload.get("birth_date", "-") or "-"),
+                        "content": str(row_payload.get("content", "-") or "-"),
+                        "status": str(row_payload.get("status", "-") or "-"),
+                        "exam_code": str(row_payload.get("exam_code", "") or ""),
+                        "recognized_short": str(row_payload.get("recognized_short", "") or ""),
+                        "image_path": str(row_payload.get("image_path", "") or ""),
+                        "forced_status": str(row_payload.get("forced_status", "") or ""),
                         "answer_string": str(getattr(row_result, "answer_string", "") or ""),
                         "mcq_answers": dict(getattr(row_result, "mcq_answers", {}) or {}),
                         "true_false_answers": dict(getattr(row_result, "true_false_answers", {}) or {}),
@@ -7565,18 +7569,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        normalized = self._normalize_non_api_answer_string(result)
+        if normalized:
+            return normalized
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
-        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-
         if answer_text:
             return answer_text
-        if not is_api_mode:
-            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
-            if rebuilt:
-                setattr(result, "answer_string", rebuilt)
-                return rebuilt
-
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -7900,18 +7898,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        normalized = self._normalize_non_api_answer_string(result)
+        if normalized:
+            return normalized
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
-        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-
         if answer_text:
             return answer_text
-        if not is_api_mode:
-            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
-            if rebuilt:
-                setattr(result, "answer_string", rebuilt)
-                return rebuilt
-
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -8036,18 +8028,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        normalized = self._normalize_non_api_answer_string(result)
+        if normalized:
+            return normalized
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
-        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-
         if answer_text:
             return answer_text
-        if not is_api_mode:
-            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
-            if rebuilt:
-                setattr(result, "answer_string", rebuilt)
-                return rebuilt
-
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -8161,18 +8147,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        normalized = self._normalize_non_api_answer_string(result)
+        if normalized:
+            return normalized
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
-        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-
         if answer_text:
             return answer_text
-        if not is_api_mode:
-            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
-            if rebuilt:
-                setattr(result, "answer_string", rebuilt)
-                return rebuilt
-
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -8286,18 +8266,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        normalized = self._normalize_non_api_answer_string(result)
+        if normalized:
+            return normalized
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
-        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-
         if answer_text:
             return answer_text
-        if not is_api_mode:
-            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
-            if rebuilt:
-                setattr(result, "answer_string", rebuilt)
-                return rebuilt
-
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -8411,18 +8385,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        normalized = self._normalize_non_api_answer_string(result)
+        if normalized:
+            return normalized
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
-        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-
         if answer_text:
             return answer_text
-        if not is_api_mode:
-            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
-            if rebuilt:
-                setattr(result, "answer_string", rebuilt)
-                return rebuilt
-
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -8536,18 +8504,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        normalized = self._normalize_non_api_answer_string(result)
+        if normalized:
+            return normalized
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
-        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-
         if answer_text:
             return answer_text
-        if not is_api_mode:
-            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
-            if rebuilt:
-                setattr(result, "answer_string", rebuilt)
-                return rebuilt
-
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -8661,18 +8623,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        normalized = self._normalize_non_api_answer_string(result)
+        if normalized:
+            return normalized
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
-        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-
         if answer_text:
             return answer_text
-        if not is_api_mode:
-            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
-            if rebuilt:
-                setattr(result, "answer_string", rebuilt)
-                return rebuilt
-
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -8786,18 +8742,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        normalized = self._normalize_non_api_answer_string(result)
+        if normalized:
+            return normalized
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
-        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-
         if answer_text:
             return answer_text
-        if not is_api_mode:
-            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
-            if rebuilt:
-                setattr(result, "answer_string", rebuilt)
-                return rebuilt
-
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -8911,18 +8861,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        normalized = self._normalize_non_api_answer_string(result)
+        if normalized:
+            return normalized
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
-        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-
         if answer_text:
             return answer_text
-        if not is_api_mode:
-            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
-            if rebuilt:
-                setattr(result, "answer_string", rebuilt)
-                return rebuilt
-
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -9036,18 +8980,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        normalized = self._normalize_non_api_answer_string(result)
+        if normalized:
+            return normalized
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
-        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-
         if answer_text:
             return answer_text
-        if not is_api_mode:
-            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
-            if rebuilt:
-                setattr(result, "answer_string", rebuilt)
-                return rebuilt
-
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -9161,18 +9099,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        normalized = self._normalize_non_api_answer_string(result)
+        if normalized:
+            return normalized
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
-        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-
         if answer_text:
             return answer_text
-        if not is_api_mode:
-            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
-            if rebuilt:
-                setattr(result, "answer_string", rebuilt)
-                return rebuilt
-
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -9286,18 +9218,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        normalized = self._normalize_non_api_answer_string(result)
+        if normalized:
+            return normalized
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
-        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-
         if answer_text:
             return answer_text
-        if not is_api_mode:
-            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
-            if rebuilt:
-                setattr(result, "answer_string", rebuilt)
-                return rebuilt
-
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -9411,18 +9337,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        normalized = self._normalize_non_api_answer_string(result)
+        if normalized:
+            return normalized
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
-        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-
         if answer_text:
             return answer_text
-        if not is_api_mode:
-            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
-            if rebuilt:
-                setattr(result, "answer_string", rebuilt)
-                return rebuilt
-
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -9536,18 +9456,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        normalized = self._normalize_non_api_answer_string(result)
+        if normalized:
+            return normalized
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
-        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-
         if answer_text:
             return answer_text
-        if not is_api_mode:
-            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
-            if rebuilt:
-                setattr(result, "answer_string", rebuilt)
-                return rebuilt
-
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -9661,18 +9575,12 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        normalized = self._normalize_non_api_answer_string(result)
+        if normalized:
+            return normalized
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
-        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-
         if answer_text:
             return answer_text
-        if not is_api_mode:
-            rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
-            if rebuilt:
-                setattr(result, "answer_string", rebuilt)
-                return rebuilt
-
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -10206,6 +10114,7 @@ class MainWindow(QMainWindow):
             setattr(result, "exam_room", str(self.scan_list.item(idx, 1).text() if self.scan_list.item(idx, 1) else ""))
             setattr(result, "full_name", str(self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else ""))
             setattr(result, "birth_date", str(self.scan_list.item(idx, 4).text() if self.scan_list.item(idx, 4) else ""))
+            result.answer_string = self._normalize_non_api_answer_string(result)
             print(f"[SnapshotRow] row={idx} image={image_key} sid={result.student_id}")
             out.append(result)
         return out
@@ -10347,6 +10256,8 @@ class MainWindow(QMainWindow):
         manual_content_override = str(sid_item.data(Qt.UserRole + 11) if sid_item else "").strip()
         if manual_content_override:
             setattr(result, "manual_content_override", manual_content_override)
+        result.answer_string = self._normalize_non_api_answer_string(result)
+        self._debug_scan_result_state("build_from_saved_row", result)
         result.sync_legacy_aliases()
         return result
 
@@ -11284,30 +11195,48 @@ class MainWindow(QMainWindow):
     def _persist_scan_results_to_db(self, subject_key: str) -> None:
         source_rows = list(self.scan_results_by_subject.get(self._batch_result_subject_key(subject_key), self.scan_results) or [])
         for result in source_rows:
-            result.answer_string = self._build_answer_string_for_result(result, subject_key)
+            result.answer_string = self._normalize_non_api_answer_string(result, subject_key)
         rows = [self._serialize_omr_result(x) for x in source_rows]
         self.database.replace_scan_results_for_subject(self._batch_result_subject_key(subject_key), rows)
         self.database.log_change("scan_results", self._batch_result_subject_key(subject_key), "replace_subject_rows", "", f"{len(rows)} rows", "batch_save")
         self._refresh_scan_results_from_db(subject_key)
 
+    def _normalize_non_api_answer_string(self, result: OMRResult, subject_key: str = "") -> str:
+        if result is None:
+            return ""
+        answer_text = str(getattr(result, "answer_string", "") or "").strip()
+        if bool(getattr(result, "answer_string_api_mode", False)):
+            return answer_text
+        if answer_text:
+            return answer_text
+        subject = str(subject_key or self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+        rebuilt = str(self._build_answer_string_for_result(result, subject) or "").strip()
+        if rebuilt:
+            setattr(result, "answer_string", rebuilt)
+        return rebuilt
+
+    @staticmethod
+    def _debug_scan_result_state(tag: str, result: OMRResult | None) -> None:
+        if result is None:
+            print(f"[ScanState:{tag}] result=None")
+            return
+        print(
+            f"[ScanState:{tag}] "
+            f"image_path={str(getattr(result, 'image_path', '') or '')} "
+            f"student_id={str(getattr(result, 'student_id', '') or '')} "
+            f"exam_code={str(getattr(result, 'exam_code', '') or '')} "
+            f"answer_string={str(getattr(result, 'answer_string', '') or '')} "
+            f"manual_content_override={str(getattr(result, 'manual_content_override', '') or '')} "
+            f"cached_content={str(getattr(result, 'cached_content', '') or '')} "
+            f"cached_status={str(getattr(result, 'cached_status', '') or '')}"
+        )
+
     def _persist_single_scan_result_to_db(self, result: OMRResult, note: str = "") -> None:
         subject_key = self._current_batch_subject_key()
-        result.answer_string = self._build_answer_string_for_result(result, subject_key)
+        result.answer_string = self._normalize_non_api_answer_string(result, subject_key)
         row_idx = self._row_index_by_image_path(str(getattr(result, "image_path", "") or ""))
-        if hasattr(self, "scan_list") and 0 <= row_idx < self.scan_list.rowCount():
-            status_item = self.scan_list.item(row_idx, 6)
-            content_item = self.scan_list.item(row_idx, 5)
-            manual_override = str(self.scan_list.item(row_idx, 0).data(Qt.UserRole + 11) if self.scan_list.item(row_idx, 0) else "").strip()
-            full_status = str(status_item.toolTip() if status_item and status_item.toolTip() else (status_item.text() if status_item else "")).strip()
-            if full_status:
-                setattr(result, "cached_status", full_status)
-                if full_status == "Đã sửa":
-                    setattr(result, "cached_forced_status", "Đã sửa")
-                    setattr(result, "manually_edited", True)
-            if content_item:
-                setattr(result, "cached_content", str(content_item.text() or ""))
-            if manual_override:
-                setattr(result, "manual_content_override", manual_override)
+        self._build_scan_row_payload_from_result(result, row_idx=row_idx if row_idx >= 0 else None)
+        self._debug_scan_result_state("persist_single_before_db", result)
         self.database.update_scan_result_payload(self._batch_result_subject_key(subject_key), str(getattr(result, "image_path", "") or ""), self._serialize_omr_result(result), note=note)
 
     def _refresh_all_statuses(self) -> None:
