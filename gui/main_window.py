@@ -7626,12 +7626,20 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
-        normalized = self._normalize_non_api_answer_string(result)
-        if normalized:
-            return normalized
-        answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if answer_text:
-            return answer_text
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+        if parts:
+            return " | ".join(parts)
+
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -7640,6 +7648,9 @@ class MainWindow(QMainWindow):
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
+        if result is None:
+            return
+
         code_text = str(getattr(result, "exam_code", "") or "").strip()
         avail_codes = self._available_exam_codes()
         code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
@@ -7647,25 +7658,25 @@ class MainWindow(QMainWindow):
             return
 
         subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-        counts = self._subject_section_question_counts(subject_key)
+        if not subject_key:
+            return
+        if self.template is None:
+            return
 
-        def _trim_map(data: dict, limit: int, cast_value):
+        expected = self._expected_questions_by_section(result)
+        if not any(expected.get(sec, []) for sec in ["MCQ", "TF", "NUMERIC"]):
+            return
+
+        def _trim_map_by_expected(data: dict, expected_questions: list[int], cast_value):
             normalized = {int(q): cast_value(v) for q, v in (data or {}).items()}
-            if limit <= 0:
+            expected_set = sorted({int(q) for q in (expected_questions or []) if str(q).strip().lstrip('-').isdigit() and int(q) > 0})
+            if not expected_set:
                 return normalized
-            local_keys = sorted(k for k in normalized.keys() if 1 <= int(k) <= limit)
-            keep_keys: list[int] = list(local_keys[:limit])
-            if len(keep_keys) < limit:
-                legacy_keys = [k for k in sorted(normalized.keys()) if k not in keep_keys]
-                for k in legacy_keys:
-                    keep_keys.append(int(k))
-                    if len(keep_keys) >= limit:
-                        break
-            return {int(k): normalized[int(k)] for k in keep_keys}
+            return {q: normalized[q] for q in expected_set if q in normalized}
 
-        result.mcq_answers = _trim_map(result.mcq_answers or {}, int(counts.get("MCQ", 0) or 0), lambda v: str(v))
-        result.true_false_answers = _trim_map(result.true_false_answers or {}, int(counts.get("TF", 0) or 0), lambda v: dict(v or {}))
-        result.numeric_answers = _trim_map(result.numeric_answers or {}, int(counts.get("NUMERIC", 0) or 0), lambda v: str(v))
+        result.mcq_answers = _trim_map_by_expected(result.mcq_answers or {}, list(expected.get("MCQ", []) or []), lambda v: str(v))
+        result.true_false_answers = _trim_map_by_expected(result.true_false_answers or {}, list(expected.get("TF", []) or []), lambda v: dict(v or {}))
+        result.numeric_answers = _trim_map_by_expected(result.numeric_answers or {}, list(expected.get("NUMERIC", []) or []), lambda v: str(v))
 
     def _count_mismatch_status_parts(self, result) -> list[str]:
         expected = self._expected_questions_by_section(result)
@@ -7773,8 +7784,10 @@ class MainWindow(QMainWindow):
         numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
         answer_string_text = str(getattr(result, "answer_string", "") or "").strip()
         answer_string_compact = answer_string_text.replace(";", "")
-        # Fallback từ chuỗi bài làm đã lưu khi map đáp án còn thiếu (đặc biệt sau luồng sửa -> lưu -> load fallback).
-        if answer_string_compact and (not mcq_payload or not tf_payload or not numeric_payload):
+        is_api_answer_string = bool(getattr(result, "answer_string_api_mode", False))
+        # Only API answer string may backfill missing maps.
+        # Non-API display must always come from canonical answer maps.
+        if is_api_answer_string and answer_string_compact and (not mcq_payload or not tf_payload or not numeric_payload):
             answer_key = self._subject_answer_key_for_result(result, subject_key)
             if answer_key is not None:
                 cursor = 0
@@ -7955,12 +7968,20 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
-        normalized = self._normalize_non_api_answer_string(result)
-        if normalized:
-            return normalized
-        answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if answer_text:
-            return answer_text
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+        if parts:
+            return " | ".join(parts)
+
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -7969,6 +7990,9 @@ class MainWindow(QMainWindow):
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
+        if result is None:
+            return
+
         code_text = str(getattr(result, "exam_code", "") or "").strip()
         avail_codes = self._available_exam_codes()
         code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
@@ -7976,25 +8000,25 @@ class MainWindow(QMainWindow):
             return
 
         subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-        counts = self._subject_section_question_counts(subject_key)
+        if not subject_key:
+            return
+        if self.template is None:
+            return
 
-        def _trim_map(data: dict, limit: int, cast_value):
+        expected = self._expected_questions_by_section(result)
+        if not any(expected.get(sec, []) for sec in ["MCQ", "TF", "NUMERIC"]):
+            return
+
+        def _trim_map_by_expected(data: dict, expected_questions: list[int], cast_value):
             normalized = {int(q): cast_value(v) for q, v in (data or {}).items()}
-            if limit <= 0:
+            expected_set = sorted({int(q) for q in (expected_questions or []) if str(q).strip().lstrip('-').isdigit() and int(q) > 0})
+            if not expected_set:
                 return normalized
-            local_keys = sorted(k for k in normalized.keys() if 1 <= int(k) <= limit)
-            keep_keys: list[int] = list(local_keys[:limit])
-            if len(keep_keys) < limit:
-                legacy_keys = [k for k in sorted(normalized.keys()) if k not in keep_keys]
-                for k in legacy_keys:
-                    keep_keys.append(int(k))
-                    if len(keep_keys) >= limit:
-                        break
-            return {int(k): normalized[int(k)] for k in keep_keys}
+            return {q: normalized[q] for q in expected_set if q in normalized}
 
-        result.mcq_answers = _trim_map(result.mcq_answers or {}, int(counts.get("MCQ", 0) or 0), lambda v: str(v))
-        result.true_false_answers = _trim_map(result.true_false_answers or {}, int(counts.get("TF", 0) or 0), lambda v: dict(v or {}))
-        result.numeric_answers = _trim_map(result.numeric_answers or {}, int(counts.get("NUMERIC", 0) or 0), lambda v: str(v))
+        result.mcq_answers = _trim_map_by_expected(result.mcq_answers or {}, list(expected.get("MCQ", []) or []), lambda v: str(v))
+        result.true_false_answers = _trim_map_by_expected(result.true_false_answers or {}, list(expected.get("TF", []) or []), lambda v: dict(v or {}))
+        result.numeric_answers = _trim_map_by_expected(result.numeric_answers or {}, list(expected.get("NUMERIC", []) or []), lambda v: str(v))
 
     def _count_mismatch_status_parts(self, result) -> list[str]:
         expected = self._expected_questions_by_section(result)
@@ -8085,12 +8109,20 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
-        normalized = self._normalize_non_api_answer_string(result)
-        if normalized:
-            return normalized
-        answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if answer_text:
-            return answer_text
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+        if parts:
+            return " | ".join(parts)
+
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -8204,12 +8236,20 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
-        normalized = self._normalize_non_api_answer_string(result)
-        if normalized:
-            return normalized
-        answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if answer_text:
-            return answer_text
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+        if parts:
+            return " | ".join(parts)
+
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -8323,12 +8363,20 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
-        normalized = self._normalize_non_api_answer_string(result)
-        if normalized:
-            return normalized
-        answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if answer_text:
-            return answer_text
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+        if parts:
+            return " | ".join(parts)
+
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -8442,12 +8490,20 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
-        normalized = self._normalize_non_api_answer_string(result)
-        if normalized:
-            return normalized
-        answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if answer_text:
-            return answer_text
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+        if parts:
+            return " | ".join(parts)
+
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -8561,12 +8617,20 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
-        normalized = self._normalize_non_api_answer_string(result)
-        if normalized:
-            return normalized
-        answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if answer_text:
-            return answer_text
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+        if parts:
+            return " | ".join(parts)
+
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -8680,12 +8744,20 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
-        normalized = self._normalize_non_api_answer_string(result)
-        if normalized:
-            return normalized
-        answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if answer_text:
-            return answer_text
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+        if parts:
+            return " | ".join(parts)
+
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -8799,12 +8871,20 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
-        normalized = self._normalize_non_api_answer_string(result)
-        if normalized:
-            return normalized
-        answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if answer_text:
-            return answer_text
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+        if parts:
+            return " | ".join(parts)
+
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -8918,12 +8998,20 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
-        normalized = self._normalize_non_api_answer_string(result)
-        if normalized:
-            return normalized
-        answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if answer_text:
-            return answer_text
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+        if parts:
+            return " | ".join(parts)
+
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -9037,12 +9125,20 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
-        normalized = self._normalize_non_api_answer_string(result)
-        if normalized:
-            return normalized
-        answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if answer_text:
-            return answer_text
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+        if parts:
+            return " | ".join(parts)
+
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -9156,12 +9252,20 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
-        normalized = self._normalize_non_api_answer_string(result)
-        if normalized:
-            return normalized
-        answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if answer_text:
-            return answer_text
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+        if parts:
+            return " | ".join(parts)
+
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -9275,12 +9379,20 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
-        normalized = self._normalize_non_api_answer_string(result)
-        if normalized:
-            return normalized
-        answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if answer_text:
-            return answer_text
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+        if parts:
+            return " | ".join(parts)
+
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -9394,12 +9506,20 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
-        normalized = self._normalize_non_api_answer_string(result)
-        if normalized:
-            return normalized
-        answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if answer_text:
-            return answer_text
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+        if parts:
+            return " | ".join(parts)
+
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -9513,12 +9633,20 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
-        normalized = self._normalize_non_api_answer_string(result)
-        if normalized:
-            return normalized
-        answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if answer_text:
-            return answer_text
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+        if parts:
+            return " | ".join(parts)
+
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -9632,12 +9760,20 @@ class MainWindow(QMainWindow):
         return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
     def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
-        normalized = self._normalize_non_api_answer_string(result)
-        if normalized:
-            return normalized
-        answer_text = str(getattr(result, "answer_string", "") or "").strip()
-        if answer_text:
-            return answer_text
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+        if parts:
+            return " | ".join(parts)
+
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
@@ -9646,6 +9782,9 @@ class MainWindow(QMainWindow):
         return " | ".join(blank_parts) if blank_parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
+        if result is None:
+            return
+
         code_text = str(getattr(result, "exam_code", "") or "").strip()
         avail_codes = self._available_exam_codes()
         code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
@@ -9653,25 +9792,25 @@ class MainWindow(QMainWindow):
             return
 
         subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-        counts = self._subject_section_question_counts(subject_key)
+        if not subject_key:
+            return
+        if self.template is None:
+            return
 
-        def _trim_map(data: dict, limit: int, cast_value):
+        expected = self._expected_questions_by_section(result)
+        if not any(expected.get(sec, []) for sec in ["MCQ", "TF", "NUMERIC"]):
+            return
+
+        def _trim_map_by_expected(data: dict, expected_questions: list[int], cast_value):
             normalized = {int(q): cast_value(v) for q, v in (data or {}).items()}
-            if limit <= 0:
+            expected_set = sorted({int(q) for q in (expected_questions or []) if str(q).strip().lstrip('-').isdigit() and int(q) > 0})
+            if not expected_set:
                 return normalized
-            local_keys = sorted(k for k in normalized.keys() if 1 <= int(k) <= limit)
-            keep_keys: list[int] = list(local_keys[:limit])
-            if len(keep_keys) < limit:
-                legacy_keys = [k for k in sorted(normalized.keys()) if k not in keep_keys]
-                for k in legacy_keys:
-                    keep_keys.append(int(k))
-                    if len(keep_keys) >= limit:
-                        break
-            return {int(k): normalized[int(k)] for k in keep_keys}
+            return {q: normalized[q] for q in expected_set if q in normalized}
 
-        result.mcq_answers = _trim_map(result.mcq_answers or {}, int(counts.get("MCQ", 0) or 0), lambda v: str(v))
-        result.true_false_answers = _trim_map(result.true_false_answers or {}, int(counts.get("TF", 0) or 0), lambda v: dict(v or {}))
-        result.numeric_answers = _trim_map(result.numeric_answers or {}, int(counts.get("NUMERIC", 0) or 0), lambda v: str(v))
+        result.mcq_answers = _trim_map_by_expected(result.mcq_answers or {}, list(expected.get("MCQ", []) or []), lambda v: str(v))
+        result.true_false_answers = _trim_map_by_expected(result.true_false_answers or {}, list(expected.get("TF", []) or []), lambda v: dict(v or {}))
+        result.numeric_answers = _trim_map_by_expected(result.numeric_answers or {}, list(expected.get("NUMERIC", []) or []), lambda v: str(v))
 
     def _count_mismatch_status_parts(self, result) -> list[str]:
         expected = self._expected_questions_by_section(result)
