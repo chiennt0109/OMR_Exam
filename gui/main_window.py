@@ -4632,6 +4632,7 @@ class MainWindow(QMainWindow):
             "recognized_empty_threshold": float(getattr(result, "recognized_empty_threshold", 0.20) or 0.20),
             "recognized_certainty_margin": float(getattr(result, "recognized_certainty_margin", 0.08) or 0.08),
             "answer_string_api_mode": bool(getattr(result, "answer_string_api_mode", False)),
+            "answer_string": str(getattr(result, "answer_string", "") or ""),
         }
 
     @staticmethod
@@ -4665,6 +4666,7 @@ class MainWindow(QMainWindow):
         setattr(result, "recognized_empty_threshold", float(payload.get("recognized_empty_threshold", 0.20) or 0.20))
         setattr(result, "recognized_certainty_margin", float(payload.get("recognized_certainty_margin", 0.08) or 0.08))
         setattr(result, "answer_string_api_mode", bool(payload.get("answer_string_api_mode", False)))
+        setattr(result, "answer_string", str(payload.get("answer_string", "") or ""))
         result.sync_legacy_aliases()
         return result
 
@@ -7567,13 +7569,13 @@ class MainWindow(QMainWindow):
         is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
         subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
+        if answer_text:
+            return answer_text
         if not is_api_mode:
             rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
             if rebuilt:
                 setattr(result, "answer_string", rebuilt)
                 return rebuilt
-        if answer_text:
-            return answer_text
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
@@ -7902,13 +7904,13 @@ class MainWindow(QMainWindow):
         is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
         subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
+        if answer_text:
+            return answer_text
         if not is_api_mode:
             rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
             if rebuilt:
                 setattr(result, "answer_string", rebuilt)
                 return rebuilt
-        if answer_text:
-            return answer_text
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
@@ -8038,13 +8040,13 @@ class MainWindow(QMainWindow):
         is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
         subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
+        if answer_text:
+            return answer_text
         if not is_api_mode:
             rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
             if rebuilt:
                 setattr(result, "answer_string", rebuilt)
                 return rebuilt
-        if answer_text:
-            return answer_text
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
@@ -8163,13 +8165,13 @@ class MainWindow(QMainWindow):
         is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
         subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
+        if answer_text:
+            return answer_text
         if not is_api_mode:
             rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
             if rebuilt:
                 setattr(result, "answer_string", rebuilt)
                 return rebuilt
-        if answer_text:
-            return answer_text
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
@@ -8288,13 +8290,13 @@ class MainWindow(QMainWindow):
         is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
         subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
+        if answer_text:
+            return answer_text
         if not is_api_mode:
             rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
             if rebuilt:
                 setattr(result, "answer_string", rebuilt)
                 return rebuilt
-        if answer_text:
-            return answer_text
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
@@ -8413,13 +8415,13 @@ class MainWindow(QMainWindow):
         is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
         subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
+        if answer_text:
+            return answer_text
         if not is_api_mode:
             rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
             if rebuilt:
                 setattr(result, "answer_string", rebuilt)
                 return rebuilt
-        if answer_text:
-            return answer_text
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
@@ -8538,13 +8540,13 @@ class MainWindow(QMainWindow):
         is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
         subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
+        if answer_text:
+            return answer_text
         if not is_api_mode:
             rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
             if rebuilt:
                 setattr(result, "answer_string", rebuilt)
                 return rebuilt
-        if answer_text:
-            return answer_text
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
@@ -8663,13 +8665,13 @@ class MainWindow(QMainWindow):
         is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
         subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
+        if answer_text:
+            return answer_text
         if not is_api_mode:
             rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
             if rebuilt:
                 setattr(result, "answer_string", rebuilt)
                 return rebuilt
-        if answer_text:
-            return answer_text
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
@@ -8788,13 +8790,13 @@ class MainWindow(QMainWindow):
         is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
         subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
+        if answer_text:
+            return answer_text
         if not is_api_mode:
             rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
             if rebuilt:
                 setattr(result, "answer_string", rebuilt)
                 return rebuilt
-        if answer_text:
-            return answer_text
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
@@ -8913,13 +8915,13 @@ class MainWindow(QMainWindow):
         is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
         subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
+        if answer_text:
+            return answer_text
         if not is_api_mode:
             rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
             if rebuilt:
                 setattr(result, "answer_string", rebuilt)
                 return rebuilt
-        if answer_text:
-            return answer_text
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
@@ -9038,13 +9040,13 @@ class MainWindow(QMainWindow):
         is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
         subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
+        if answer_text:
+            return answer_text
         if not is_api_mode:
             rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
             if rebuilt:
                 setattr(result, "answer_string", rebuilt)
                 return rebuilt
-        if answer_text:
-            return answer_text
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
@@ -9163,13 +9165,13 @@ class MainWindow(QMainWindow):
         is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
         subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
+        if answer_text:
+            return answer_text
         if not is_api_mode:
             rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
             if rebuilt:
                 setattr(result, "answer_string", rebuilt)
                 return rebuilt
-        if answer_text:
-            return answer_text
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
@@ -9288,13 +9290,13 @@ class MainWindow(QMainWindow):
         is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
         subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
+        if answer_text:
+            return answer_text
         if not is_api_mode:
             rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
             if rebuilt:
                 setattr(result, "answer_string", rebuilt)
                 return rebuilt
-        if answer_text:
-            return answer_text
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
@@ -9413,13 +9415,13 @@ class MainWindow(QMainWindow):
         is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
         subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
+        if answer_text:
+            return answer_text
         if not is_api_mode:
             rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
             if rebuilt:
                 setattr(result, "answer_string", rebuilt)
                 return rebuilt
-        if answer_text:
-            return answer_text
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
@@ -9538,13 +9540,13 @@ class MainWindow(QMainWindow):
         is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
         subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
+        if answer_text:
+            return answer_text
         if not is_api_mode:
             rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
             if rebuilt:
                 setattr(result, "answer_string", rebuilt)
                 return rebuilt
-        if answer_text:
-            return answer_text
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
@@ -9663,13 +9665,13 @@ class MainWindow(QMainWindow):
         is_api_mode = bool(getattr(result, "answer_string_api_mode", False))
         subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
 
+        if answer_text:
+            return answer_text
         if not is_api_mode:
             rebuilt = str(self._build_answer_string_for_result(result, subject_key) or "").strip()
             if rebuilt:
                 setattr(result, "answer_string", rebuilt)
                 return rebuilt
-        if answer_text:
-            return answer_text
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
@@ -10871,11 +10873,14 @@ class MainWindow(QMainWindow):
             return ""
 
         def _question_numbers(valid_map, invalid_map, fallback_map=None) -> list[int]:
-            nums = set()
+            primary_nums = set()
             for src in [valid_map or {}, invalid_map or {}]:
                 for key in src.keys():
                     if str(key).strip().lstrip("-").isdigit():
-                        nums.add(int(key))
+                        primary_nums.add(int(key))
+            if primary_nums:
+                return sorted(primary_nums)
+            nums = set()
             for key in (fallback_map or {}).keys():
                 if str(key).strip().lstrip("-").isdigit():
                     nums.add(int(key))
