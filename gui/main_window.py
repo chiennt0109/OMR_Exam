@@ -5430,7 +5430,12 @@ class MainWindow(QMainWindow):
         self._refresh_student_profile_for_result(result, idx)
         scoped = self._scoped_result_copy(result)
         self.scan_blank_summary[idx] = self._compute_blank_questions(scoped)
-        self.scan_list.setItem(idx, 5, QTableWidgetItem(self._build_recognition_content_text(scoped, self.scan_blank_summary[idx])))
+        expected = self._expected_questions_by_section(scoped)
+        self.scan_list.setItem(
+            idx,
+            5,
+            QTableWidgetItem(self._build_recognition_content_text(result, self.scan_blank_summary[idx], expected)),
+        )
         sid_item = self.scan_list.item(idx, 0)
         if sid_item:
             sid_item.setText((result.student_id or "").strip() or "-")
@@ -6780,9 +6785,10 @@ class MainWindow(QMainWindow):
         scoped = self._scoped_result_copy(result)
         result.answer_string = self._build_answer_string_for_result(scoped, subject_key)
         blank_map = self._compute_blank_questions(scoped)
+        expected_by_section = self._expected_questions_by_section(scoped)
         cached_status = ", ".join(self._status_parts_for_result(result, 1)) or "OK"
         setattr(result, "cached_status", cached_status)
-        setattr(result, "cached_content", self._build_recognition_content_text(scoped, blank_map))
+        setattr(result, "cached_content", self._build_recognition_content_text(result, blank_map, expected_by_section))
         setattr(result, "cached_recognized_short", self._short_recognition_text_for_result(scoped))
         if source_tag:
             setattr(result, "cached_forced_status", str(source_tag))
@@ -7623,20 +7629,67 @@ class MainWindow(QMainWindow):
     def _format_numeric_answers(answers: dict[int, str]) -> str:
         if not answers:
             return "-"
-        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+        chunks: list[str] = []
+        for q, v in sorted(answers.items(), key=lambda x: int(x[0])):
+            value = str(v).strip()
+            chunks.append(f"{int(q)}={value if value else '_'}")
+        return "; ".join(chunks)
 
-    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+    @staticmethod
+    def _format_mcq_answers_with_expected(answers: dict[int, str], expected_questions: list[int]) -> str:
+        expected = sorted({int(q) for q in (expected_questions or []) if int(q) > 0})
+        if not expected:
+            return MainWindow._format_mcq_answers(answers)
+        chunks: list[str] = []
+        for q in expected:
+            ans = str((answers or {}).get(int(q), "") or "").strip().upper()
+            chunks.append(f"{int(q)}{ans if ans else '_'}")
+        return "; ".join(chunks) if chunks else "-"
+
+    @staticmethod
+    def _format_tf_answers_with_expected(answers: dict[int, dict[str, bool]], expected_questions: list[int]) -> str:
+        expected = sorted({int(q) for q in (expected_questions or []) if int(q) > 0})
+        if not expected:
+            return MainWindow._format_tf_answers(answers)
+        chunks: list[str] = []
+        for q in expected:
+            flags = dict((answers or {}).get(int(q), {}) or {})
+            marks = "".join(("Đ" if bool(flags.get(k)) else "S") if k in flags else "_" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks) if chunks else "-"
+
+    @staticmethod
+    def _format_numeric_answers_with_expected(answers: dict[int, str], expected_questions: list[int]) -> str:
+        expected = sorted({int(q) for q in (expected_questions or []) if int(q) > 0})
+        if not expected:
+            return MainWindow._format_numeric_answers(answers)
+        chunks: list[str] = []
+        for q in expected:
+            value = str((answers or {}).get(int(q), "") or "").strip()
+            chunks.append(f"{int(q)}={value if value else '_'}")
+        return "; ".join(chunks) if chunks else "-"
+
+    def _build_recognition_content_text(
+        self,
+        result,
+        blank_map: dict[str, list[int]],
+        expected_by_section: dict[str, list[int]] | None = None,
+    ) -> str:
         mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
         tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
         numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+        expected = expected_by_section or {}
+        expected_mcq = list(expected.get("MCQ", []) or [])
+        expected_tf = list(expected.get("TF", []) or [])
+        expected_numeric = list(expected.get("NUMERIC", []) or [])
 
         parts: list[str] = []
-        if mcq_payload:
-            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
-        if tf_payload:
-            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
-        if numeric_payload:
-            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+        if mcq_payload or expected_mcq:
+            parts.append(f"MCQ: {self._format_mcq_answers_with_expected(mcq_payload, expected_mcq)}")
+        if tf_payload or expected_tf:
+            parts.append(f"TF: {self._format_tf_answers_with_expected(tf_payload, expected_tf)}")
+        if numeric_payload or expected_numeric:
+            parts.append(f"NUM: {self._format_numeric_answers_with_expected(numeric_payload, expected_numeric)}")
         if parts:
             return " | ".join(parts)
 
@@ -7965,20 +8018,67 @@ class MainWindow(QMainWindow):
     def _format_numeric_answers(answers: dict[int, str]) -> str:
         if not answers:
             return "-"
-        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+        chunks: list[str] = []
+        for q, v in sorted(answers.items(), key=lambda x: int(x[0])):
+            value = str(v).strip()
+            chunks.append(f"{int(q)}={value if value else '_'}")
+        return "; ".join(chunks)
 
-    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+    @staticmethod
+    def _format_mcq_answers_with_expected(answers: dict[int, str], expected_questions: list[int]) -> str:
+        expected = sorted({int(q) for q in (expected_questions or []) if int(q) > 0})
+        if not expected:
+            return MainWindow._format_mcq_answers(answers)
+        chunks: list[str] = []
+        for q in expected:
+            ans = str((answers or {}).get(int(q), "") or "").strip().upper()
+            chunks.append(f"{int(q)}{ans if ans else '_'}")
+        return "; ".join(chunks) if chunks else "-"
+
+    @staticmethod
+    def _format_tf_answers_with_expected(answers: dict[int, dict[str, bool]], expected_questions: list[int]) -> str:
+        expected = sorted({int(q) for q in (expected_questions or []) if int(q) > 0})
+        if not expected:
+            return MainWindow._format_tf_answers(answers)
+        chunks: list[str] = []
+        for q in expected:
+            flags = dict((answers or {}).get(int(q), {}) or {})
+            marks = "".join(("Đ" if bool(flags.get(k)) else "S") if k in flags else "_" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks) if chunks else "-"
+
+    @staticmethod
+    def _format_numeric_answers_with_expected(answers: dict[int, str], expected_questions: list[int]) -> str:
+        expected = sorted({int(q) for q in (expected_questions or []) if int(q) > 0})
+        if not expected:
+            return MainWindow._format_numeric_answers(answers)
+        chunks: list[str] = []
+        for q in expected:
+            value = str((answers or {}).get(int(q), "") or "").strip()
+            chunks.append(f"{int(q)}={value if value else '_'}")
+        return "; ".join(chunks) if chunks else "-"
+
+    def _build_recognition_content_text(
+        self,
+        result,
+        blank_map: dict[str, list[int]],
+        expected_by_section: dict[str, list[int]] | None = None,
+    ) -> str:
         mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
         tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
         numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+        expected = expected_by_section or {}
+        expected_mcq = list(expected.get("MCQ", []) or [])
+        expected_tf = list(expected.get("TF", []) or [])
+        expected_numeric = list(expected.get("NUMERIC", []) or [])
 
         parts: list[str] = []
-        if mcq_payload:
-            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
-        if tf_payload:
-            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
-        if numeric_payload:
-            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+        if mcq_payload or expected_mcq:
+            parts.append(f"MCQ: {self._format_mcq_answers_with_expected(mcq_payload, expected_mcq)}")
+        if tf_payload or expected_tf:
+            parts.append(f"TF: {self._format_tf_answers_with_expected(tf_payload, expected_tf)}")
+        if numeric_payload or expected_numeric:
+            parts.append(f"NUM: {self._format_numeric_answers_with_expected(numeric_payload, expected_numeric)}")
         if parts:
             return " | ".join(parts)
 
@@ -8106,20 +8206,33 @@ class MainWindow(QMainWindow):
     def _format_numeric_answers(answers: dict[int, str]) -> str:
         if not answers:
             return "-"
-        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+        chunks: list[str] = []
+        for q, v in sorted(answers.items(), key=lambda x: int(x[0])):
+            value = str(v).strip()
+            chunks.append(f"{int(q)}={value if value else '_'}")
+        return "; ".join(chunks)
 
-    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+    def _build_recognition_content_text(
+        self,
+        result,
+        blank_map: dict[str, list[int]],
+        expected_by_section: dict[str, list[int]] | None = None,
+    ) -> str:
         mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
         tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
         numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+        expected = expected_by_section or {}
+        expected_mcq = list(expected.get("MCQ", []) or [])
+        expected_tf = list(expected.get("TF", []) or [])
+        expected_numeric = list(expected.get("NUMERIC", []) or [])
 
         parts: list[str] = []
-        if mcq_payload:
-            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
-        if tf_payload:
-            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
-        if numeric_payload:
-            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+        if mcq_payload or expected_mcq:
+            parts.append(f"MCQ: {self._format_mcq_answers_with_expected(mcq_payload, expected_mcq)}")
+        if tf_payload or expected_tf:
+            parts.append(f"TF: {self._format_tf_answers_with_expected(tf_payload, expected_tf)}")
+        if numeric_payload or expected_numeric:
+            parts.append(f"NUM: {self._format_numeric_answers_with_expected(numeric_payload, expected_numeric)}")
         if parts:
             return " | ".join(parts)
 
@@ -8233,20 +8346,33 @@ class MainWindow(QMainWindow):
     def _format_numeric_answers(answers: dict[int, str]) -> str:
         if not answers:
             return "-"
-        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+        chunks: list[str] = []
+        for q, v in sorted(answers.items(), key=lambda x: int(x[0])):
+            value = str(v).strip()
+            chunks.append(f"{int(q)}={value if value else '_'}")
+        return "; ".join(chunks)
 
-    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+    def _build_recognition_content_text(
+        self,
+        result,
+        blank_map: dict[str, list[int]],
+        expected_by_section: dict[str, list[int]] | None = None,
+    ) -> str:
         mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
         tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
         numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+        expected = expected_by_section or {}
+        expected_mcq = list(expected.get("MCQ", []) or [])
+        expected_tf = list(expected.get("TF", []) or [])
+        expected_numeric = list(expected.get("NUMERIC", []) or [])
 
         parts: list[str] = []
-        if mcq_payload:
-            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
-        if tf_payload:
-            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
-        if numeric_payload:
-            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+        if mcq_payload or expected_mcq:
+            parts.append(f"MCQ: {self._format_mcq_answers_with_expected(mcq_payload, expected_mcq)}")
+        if tf_payload or expected_tf:
+            parts.append(f"TF: {self._format_tf_answers_with_expected(tf_payload, expected_tf)}")
+        if numeric_payload or expected_numeric:
+            parts.append(f"NUM: {self._format_numeric_answers_with_expected(numeric_payload, expected_numeric)}")
         if parts:
             return " | ".join(parts)
 
@@ -9757,20 +9883,33 @@ class MainWindow(QMainWindow):
     def _format_numeric_answers(answers: dict[int, str]) -> str:
         if not answers:
             return "-"
-        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+        chunks: list[str] = []
+        for q, v in sorted(answers.items(), key=lambda x: int(x[0])):
+            value = str(v).strip()
+            chunks.append(f"{int(q)}={value if value else '_'}")
+        return "; ".join(chunks)
 
-    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+    def _build_recognition_content_text(
+        self,
+        result,
+        blank_map: dict[str, list[int]],
+        expected_by_section: dict[str, list[int]] | None = None,
+    ) -> str:
         mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
         tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
         numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+        expected = expected_by_section or {}
+        expected_mcq = list(expected.get("MCQ", []) or [])
+        expected_tf = list(expected.get("TF", []) or [])
+        expected_numeric = list(expected.get("NUMERIC", []) or [])
 
         parts: list[str] = []
-        if mcq_payload:
-            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
-        if tf_payload:
-            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
-        if numeric_payload:
-            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+        if mcq_payload or expected_mcq:
+            parts.append(f"MCQ: {self._format_mcq_answers_with_expected(mcq_payload, expected_mcq)}")
+        if tf_payload or expected_tf:
+            parts.append(f"TF: {self._format_tf_answers_with_expected(tf_payload, expected_tf)}")
+        if numeric_payload or expected_numeric:
+            parts.append(f"NUM: {self._format_numeric_answers_with_expected(numeric_payload, expected_numeric)}")
         if parts:
             return " | ".join(parts)
 
@@ -9838,10 +9977,11 @@ class MainWindow(QMainWindow):
         for idx, res in enumerate(self.scan_results):
             scoped = self._scoped_result_copy(res)
             blank_map = self._compute_blank_questions(scoped)
+            expected = self._expected_questions_by_section(scoped)
             self.scan_blank_summary[idx] = blank_map
             self.scan_blank_questions[idx] = blank_map.get("MCQ", [])
             if idx < self.scan_list.rowCount():
-                self.scan_list.setItem(idx, 5, QTableWidgetItem(self._build_recognition_content_text(scoped, blank_map)))
+                self.scan_list.setItem(idx, 5, QTableWidgetItem(self._build_recognition_content_text(res, blank_map, expected)))
                 sid_item = self.scan_list.item(idx, 0)
                 if sid_item:
                     sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(scoped))
@@ -10158,8 +10298,10 @@ class MainWindow(QMainWindow):
         available_exam_codes: set[str] | None = None,
         forced_status: str = "",
     ) -> dict:
-        scoped = self._scoped_result_copy(result)
-        blank_map = self._compute_blank_questions(scoped)
+        display_result = copy.deepcopy(result)
+        scoped_result = self._scoped_result_copy(result)
+        blank_map = self._compute_blank_questions(scoped_result)
+        expected_by_section = self._expected_questions_by_section(scoped_result)
         sid = str(getattr(result, "student_id", "") or "").strip()
         exam_code_text = str(getattr(result, "exam_code", "") or "").strip()
         room_text = str(self._subject_room_for_student_id(sid) or "").strip() if sid else ""
@@ -10180,8 +10322,12 @@ class MainWindow(QMainWindow):
         effective_forced_status = str(forced_status or manual_override_status or "").strip()
         status_text = effective_forced_status or (", ".join(status_parts) if status_parts else "OK")
         manual_content_override = str(getattr(result, "manual_content_override", "") or "").strip()
-        content_text = manual_content_override if manual_content_override else self._build_recognition_content_text(scoped, blank_map)
-        recognized_short = self._short_recognition_text_for_result(scoped)
+        content_text = (
+            manual_content_override
+            if manual_content_override
+            else self._build_recognition_content_text(display_result, blank_map, expected_by_section)
+        )
+        recognized_short = self._short_recognition_text_for_result(scoped_result)
 
         if row_idx is not None and row_idx >= 0:
             self.scan_blank_summary[row_idx] = dict(blank_map)
