@@ -4357,9 +4357,19 @@ class MainWindow(QMainWindow):
                 edit_item.setBackground(QColor(255, 225, 225))
             grid.setItem(r, 3, edit_item)
 
+        section_limits = self._subject_section_question_counts(subject_key)
         mcq_qs = sorted(int(x) for x in (key.answers or {}).keys())
         tf_qs = sorted(int(x) for x in (key.true_false_answers or {}).keys())
         numeric_qs = sorted(int(x) for x in (key.numeric_answers or {}).keys())
+        mcq_limit = int(section_limits.get("MCQ", 0) or 0)
+        tf_limit = int(section_limits.get("TF", 0) or 0)
+        numeric_limit = int(section_limits.get("NUMERIC", 0) or 0)
+        if mcq_limit > 0:
+            mcq_qs = mcq_qs[:mcq_limit]
+        if tf_limit > 0:
+            tf_qs = tf_qs[:tf_limit]
+        if numeric_limit > 0:
+            numeric_qs = numeric_qs[:numeric_limit]
         for q_display, q_actual in enumerate(mcq_qs, start=1):
             student_val = _value_by_actual_or_display((result.mcq_answers or {}), q_actual, q_display)
             _append_row("MCQ", q_display, q_actual, str((key.answers or {}).get(q_actual, "") or ""), str(student_val or ""))
@@ -12570,6 +12580,7 @@ class MainWindow(QMainWindow):
             expected_questions_state["MCQ"] = list(expected.get("MCQ", []) or [])
             expected_questions_state["TF"] = list(expected.get("TF", []) or [])
             expected_questions_state["NUMERIC"] = list(expected.get("NUMERIC", []) or [])
+            section_limits = self._subject_section_question_counts(self._current_batch_subject_key())
             mcq_map_actual_to_display = question_mapping_state.get("MCQ", {}).get("actual_to_display", {}) or {}
             mcq_data = data_snapshot.get("mcq_answers", {}) or {}
             mcq_data_display_keys = {
@@ -12577,6 +12588,9 @@ class MainWindow(QMainWindow):
                 for q in mcq_data.keys()
             }
             mcq_questions = sorted(set(expected.get("MCQ", []) or []).union(mcq_data_display_keys))
+            mcq_limit = int(section_limits.get("MCQ", 0) or 0)
+            if mcq_limit > 0:
+                mcq_questions = list(mcq_questions[:mcq_limit])
             mcq_data_display = {
                 int(mcq_map_actual_to_display.get(int(q), int(q))): str(v)
                 for q, v in mcq_data.items()
@@ -12590,6 +12604,9 @@ class MainWindow(QMainWindow):
                 for q in tf_data.keys()
             }
             tf_questions = sorted(set(expected.get("TF", []) or []).union(tf_data_display_keys))
+            tf_limit = int(section_limits.get("TF", 0) or 0)
+            if tf_limit > 0:
+                tf_questions = list(tf_questions[:tf_limit])
             tf_data = {
                 int(tf_map_actual_to_display.get(int(q), int(q))): dict(v or {})
                 for q, v in tf_data.items()
@@ -12603,6 +12620,9 @@ class MainWindow(QMainWindow):
                 for q in numeric_data.keys()
             }
             numeric_questions = sorted(set(expected.get("NUMERIC", []) or []).union(numeric_data_display_keys))
+            numeric_limit = int(section_limits.get("NUMERIC", 0) or 0)
+            if numeric_limit > 0:
+                numeric_questions = list(numeric_questions[:numeric_limit])
             numeric_data = {
                 int(numeric_map_actual_to_display.get(int(q), int(q))): str(v)
                 for q, v in numeric_data.items()
