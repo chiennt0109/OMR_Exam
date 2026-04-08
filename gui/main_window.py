@@ -7969,33 +7969,43 @@ class MainWindow(QMainWindow):
                     template_expected["NUMERIC"].extend(rng)
             template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
 
-        expected_by_section = dict(template_expected)
+        expected_by_section = {sec: list(vals) for sec, vals in template_expected.items()}
         subject_key_name = self.active_batch_subject_key
         if not subject_key_name and self.session and self.session.subjects:
             subject_key_name = self.session.subjects[0]
         if self.answer_keys and subject_key_name:
             key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
             if key:
+                full_credit = getattr(key, "full_credit_questions", {}) or {}
+                invalid_rows = getattr(key, "invalid_answer_rows", {}) or {}
+
+                def _extra_for_section(sec: str) -> set[int]:
+                    extra: set[int] = set()
+                    for q in list((full_credit.get(sec, []) or [])):
+                        try:
+                            extra.add(int(q))
+                        except Exception:
+                            continue
+                    for q in dict((invalid_rows.get(sec, {}) or {})).keys():
+                        try:
+                            extra.add(int(q))
+                        except Exception:
+                            continue
+                    return extra
+
                 key_sections = {
-                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
-                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
-                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys()) | _extra_for_section("MCQ")),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys()) | _extra_for_section("TF")),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys()) | _extra_for_section("NUMERIC")),
                 }
                 for sec in ["MCQ", "TF", "NUMERIC"]:
-                    template_set = set(template_expected.get(sec, []))
                     key_set = set(key_sections[sec])
-                    if not key_set:
-                        expected_by_section[sec] = []
-                    elif template_set:
-                        overlap = sorted(template_set & key_set)
-                        if overlap:
-                            expected_by_section[sec] = overlap
-                        else:
-                            # When numbering between template and answer-key differs,
-                            # prioritize answer-key numbering to keep section slicing correct.
-                            expected_by_section[sec] = key_sections[sec]
-                    else:
+                    if key_set:
+                        # For display/content scope: always preserve answer-key numbering.
                         expected_by_section[sec] = key_sections[sec]
+        if not any(expected_by_section.get(sec, []) for sec in ["MCQ", "TF", "NUMERIC"]):
+            # fallback only when answer-key scope is unavailable.
+            return {sec: list(vals) for sec, vals in template_expected.items()}
         return expected_by_section
 
     @staticmethod
@@ -9834,33 +9844,42 @@ class MainWindow(QMainWindow):
                     template_expected["NUMERIC"].extend(rng)
             template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
 
-        expected_by_section = dict(template_expected)
+        expected_by_section = {sec: list(vals) for sec, vals in template_expected.items()}
         subject_key_name = self.active_batch_subject_key
         if not subject_key_name and self.session and self.session.subjects:
             subject_key_name = self.session.subjects[0]
         if self.answer_keys and subject_key_name:
             key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
             if key:
+                full_credit = getattr(key, "full_credit_questions", {}) or {}
+                invalid_rows = getattr(key, "invalid_answer_rows", {}) or {}
+
+                def _extra_for_section(sec: str) -> set[int]:
+                    extra: set[int] = set()
+                    for q in list((full_credit.get(sec, []) or [])):
+                        try:
+                            extra.add(int(q))
+                        except Exception:
+                            continue
+                    for q in dict((invalid_rows.get(sec, {}) or {})).keys():
+                        try:
+                            extra.add(int(q))
+                        except Exception:
+                            continue
+                    return extra
+
                 key_sections = {
-                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
-                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
-                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys()) | _extra_for_section("MCQ")),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys()) | _extra_for_section("TF")),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys()) | _extra_for_section("NUMERIC")),
                 }
                 for sec in ["MCQ", "TF", "NUMERIC"]:
-                    template_set = set(template_expected.get(sec, []))
-                    key_set = set(key_sections[sec])
-                    if not key_set:
-                        expected_by_section[sec] = []
-                    elif template_set:
-                        overlap = sorted(template_set & key_set)
-                        if overlap:
-                            expected_by_section[sec] = overlap
-                        else:
-                            # When numbering between template and answer-key differs,
-                            # prioritize answer-key numbering to keep section slicing correct.
-                            expected_by_section[sec] = key_sections[sec]
-                    else:
+                    if key_sections[sec]:
+                        # Display scope must preserve answer-key numbering and special rows.
                         expected_by_section[sec] = key_sections[sec]
+
+        if not any(expected_by_section.get(sec, []) for sec in ["MCQ", "TF", "NUMERIC"]):
+            return {sec: list(vals) for sec, vals in template_expected.items()}
         return expected_by_section
 
     @staticmethod
@@ -10301,7 +10320,7 @@ class MainWindow(QMainWindow):
         display_result = copy.deepcopy(result)
         scoped_result = self._scoped_result_copy(result)
         blank_map = self._compute_blank_questions(scoped_result)
-        expected_by_section = self._expected_questions_by_section(scoped_result)
+        expected_by_section = self._expected_questions_by_section(display_result)
         sid = str(getattr(result, "student_id", "") or "").strip()
         exam_code_text = str(getattr(result, "exam_code", "") or "").strip()
         room_text = str(self._subject_room_for_student_id(sid) or "").strip() if sid else ""
