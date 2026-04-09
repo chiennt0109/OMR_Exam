@@ -11295,61 +11295,7 @@ class MainWindow(QMainWindow):
 
         preview_result = self._lightweight_result_copy(result)
         section_counts = self._subject_section_question_counts(self._current_batch_subject_key())
-        default_by_config = {
-            sec: list(range(1, max(0, int(section_counts.get(sec, 0) or 0)) + 1))
-            for sec in ["MCQ", "TF", "NUMERIC"]
-        }
-        answer_key = self._subject_answer_key_for_result(preview_result, self._current_batch_subject_key())
-        if answer_key is not None:
-            expected_actual = {
-                "MCQ": sorted(set(int(q) for q in (answer_key.answers or {}).keys())) or list(default_by_config["MCQ"]),
-                "TF": sorted(set(int(q) for q in (answer_key.true_false_answers or {}).keys())) or list(default_by_config["TF"]),
-                "NUMERIC": sorted(set(int(q) for q in (answer_key.numeric_answers or {}).keys())) or list(default_by_config["NUMERIC"]),
-            }
-        else:
-            expected_actual = {
-                "MCQ": list(default_by_config["MCQ"]),
-                "TF": list(default_by_config["TF"]),
-                "NUMERIC": list(default_by_config["NUMERIC"]),
-            }
-        expected_display: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
-        actual_to_display: dict[str, dict[int, int]] = {"MCQ": {}, "TF": {}, "NUMERIC": {}}
-        for sec in ["MCQ", "TF", "NUMERIC"]:
-            limit = max(0, int(section_counts.get(sec, 0) or 0))
-            if limit <= 0:
-                continue
-            actual_questions = sorted(set(int(q) for q in (expected_actual.get(sec, []) or [])))[:limit]
-            if not actual_questions:
-                display_questions = list(range(1, limit + 1))
-                actual_questions = list(display_questions)
-            else:
-                contiguous = actual_questions == list(range(1, len(actual_questions) + 1))
-                display_questions = list(actual_questions) if contiguous else list(range(1, len(actual_questions) + 1))
-            expected_display[sec] = list(display_questions)
-            actual_to_display[sec] = {
-                int(actual_q): int(display_q)
-                for display_q, actual_q in zip(display_questions, actual_questions)
-            }
-        mcq_display = {
-            int(actual_to_display["MCQ"].get(int(q), int(q))): str(v)
-            for q, v in (preview_result.mcq_answers or {}).items()
-        }
-        tf_display = {
-            int(actual_to_display["TF"].get(int(q), int(q))): dict(v or {})
-            for q, v in (preview_result.true_false_answers or {}).items()
-        }
-        num_display = {
-            int(actual_to_display["NUMERIC"].get(int(q), int(q))): str(v)
-            for q, v in (preview_result.numeric_answers or {}).items()
-        }
-        blank_map = {
-            "MCQ": [q for q in expected_display.get("MCQ", []) if not str((mcq_display or {}).get(int(q), "") or "").strip()],
-            "TF": [
-                q for q in expected_display.get("TF", [])
-                if not all(k in dict((tf_display or {}).get(int(q), {}) or {}) for k in ["a", "b", "c", "d"])
-            ],
-            "NUMERIC": [q for q in expected_display.get("NUMERIC", []) if not str((num_display or {}).get(int(q), "") or "").strip()],
-        }
+        blank_map = self.scan_blank_summary.get(index) or self._compute_blank_questions(self._scoped_result_copy(result))
         rows = [
             ("File ảnh", img_path.name),
             ("STUDENT ID", result.student_id or "-"),
