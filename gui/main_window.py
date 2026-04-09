@@ -11331,7 +11331,7 @@ class MainWindow(QMainWindow):
             int(actual_to_display["NUMERIC"].get(int(q), int(q))): str(v)
             for q, v in (preview_result.numeric_answers or {}).items()
         }
-        blank_map = self.scan_blank_summary.get(index) or self._compute_blank_questions(self._scoped_result_copy(result))
+        blank_map = self.scan_blank_summary.get(index) or self._compute_blank_questions(self._lightweight_result_copy(result))
 
         mcq_text = self._compact_value(self._format_mcq_answers_with_expected(mcq_display, expected_display.get("MCQ", [])), 220)
         tf_text = self._compact_value(self._format_tf_answers_with_expected(tf_display, expected_display.get("TF", [])), 220)
@@ -13264,9 +13264,9 @@ def _patched_build_scan_row_payload_from_result(self, result, row_idx=None, dupl
         setattr(result, "cached_content", "")
         return payload
 
-    blank_map = payload.get("blank_map") if isinstance(payload, dict) else None
-    if not isinstance(blank_map, dict):
-        blank_map = self._compute_blank_questions(self._scoped_result_copy(result))
+    blank_map = self._compute_blank_questions(self._lightweight_result_copy(result))
+    payload["blank_map"] = dict(blank_map)
+    setattr(result, "cached_blank_summary", dict(blank_map))
     content_text = self._patched_build_blank_only_content_text(result, blank_map)
     payload["content"] = content_text
     setattr(result, "cached_content", content_text)
