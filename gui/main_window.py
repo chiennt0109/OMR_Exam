@@ -11331,15 +11331,7 @@ class MainWindow(QMainWindow):
             int(actual_to_display["NUMERIC"].get(int(q), int(q))): str(v)
             for q, v in (preview_result.numeric_answers or {}).items()
         }
-
-        blank_map = {
-            "MCQ": [q for q in expected_display.get("MCQ", []) if not str((mcq_display or {}).get(int(q), "") or "").strip()],
-            "TF": [
-                q for q in expected_display.get("TF", [])
-                if not all(k in dict((tf_display or {}).get(int(q), {}) or {}) for k in ["a", "b", "c", "d"])
-            ],
-            "NUMERIC": [q for q in expected_display.get("NUMERIC", []) if not str((num_display or {}).get(int(q), "") or "").strip()],
-        }
+        blank_map = self.scan_blank_summary.get(index) or self._compute_blank_questions(self._scoped_result_copy(result))
 
         mcq_text = self._compact_value(self._format_mcq_answers_with_expected(mcq_display, expected_display.get("MCQ", [])), 220)
         tf_text = self._compact_value(self._format_tf_answers_with_expected(tf_display, expected_display.get("TF", [])), 220)
