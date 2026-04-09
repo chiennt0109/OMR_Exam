@@ -3859,13 +3859,6 @@ class MainWindow(QMainWindow):
         if not rows and (not has_session_scope) and scoped_subject != subject:
             # Legacy fallback (older sessions saved by raw subject key).
             rows = self.database.fetch_scan_results_for_subject(subject)
-        if not rows:
-            cached_results = self._cached_subject_scans_from_config(subject)
-            if cached_results:
-                for result in cached_results:
-                    result.answer_string = self._build_answer_string_for_result(result, subject)
-                self.database.replace_scan_results_for_subject(scoped_subject, [self._serialize_omr_result(x) for x in cached_results])
-                rows = self.database.fetch_scan_results_for_subject(scoped_subject)
         refreshed: list[OMRResult] = []
         for item in rows:
             try:
@@ -5905,69 +5898,12 @@ class MainWindow(QMainWindow):
         loaded_results: list[OMRResult] = list(self._refresh_scan_results_from_db(subject_key) or [])
         source = "database" if loaded_results else "empty"
         scoped_subject = self._batch_result_subject_key(subject_key)
-        has_session_scope = bool(str(self.current_session_id or "").strip())
         if not loaded_results:
             self.scan_results_by_subject[scoped_subject] = []
-        if (not has_session_scope) and (not loaded_results) and isinstance(cfg.get("batch_saved_results", []), list) and cfg.get("batch_saved_results"):
-            for item in (cfg.get("batch_saved_results", []) or []):
-                if not isinstance(item, dict):
-                    continue
-                try:
-                    loaded_results.append(self._deserialize_omr_result(item))
-                except Exception:
-                    continue
-            source = "batch_saved_results"
-
         if loaded_results:
             self.scan_results = list(loaded_results)
             self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(self.scan_results)
             self._populate_scan_grid_from_results(self.scan_results, skip_expensive_checks=False)
-        elif (not has_session_scope) and isinstance(cfg.get("batch_saved_rows", []), list) and cfg.get("batch_saved_rows"):
-            self.scan_results = []
-            rows_fallback = cfg.get("batch_saved_rows", []) or []
-            has_deserialized_payload = False
-            for idx, row in enumerate(rows_fallback):
-                if not isinstance(row, dict):
-                    continue
-                serialized_result = dict(row.get("serialized_result", {}) or {})
-                restored = None
-                if serialized_result:
-                    try:
-                        restored = self._deserialize_omr_result(serialized_result)
-                        has_deserialized_payload = True
-                    except Exception:
-                        restored = None
-                if restored is None:
-                    restored = OMRResult(
-                        image_path=str(row.get("image_path", "") or ""),
-                        student_id=str(row.get("student_id", "") or ""),
-                        exam_code=str(row.get("exam_code", "") or ""),
-                        mcq_answers={},
-                        true_false_answers={},
-                        numeric_answers={},
-                    )
-                    setattr(restored, "full_name", str(row.get("full_name", "") or ""))
-                    setattr(restored, "birth_date", str(row.get("birth_date", "") or ""))
-                    setattr(restored, "exam_room", str(row.get("exam_room", "") or ""))
-                else:
-                    restored.image_path = str(row.get("image_path", "") or restored.image_path or "")
-                restored.student_id = str(row.get("student_id", "") or getattr(restored, "student_id", "") or "")
-                restored.exam_code = str(row.get("exam_code", "") or getattr(restored, "exam_code", "") or "")
-                setattr(restored, "full_name", str(row.get("full_name", "") or getattr(restored, "full_name", "") or ""))
-                setattr(restored, "birth_date", str(row.get("birth_date", "") or getattr(restored, "birth_date", "") or ""))
-                setattr(restored, "exam_room", str(row.get("exam_room", "") or getattr(restored, "exam_room", "") or ""))
-                setattr(restored, "manual_content_override", str(row.get("manual_content_override", "") or getattr(restored, "manual_content_override", "") or ""))
-                restored.answer_string = self._normalize_non_api_answer_string(restored, subject_key)
-                payload = self._build_scan_row_payload_from_result(restored, row_idx=None)
-                setattr(restored, "cached_content", str(payload.get("content", "") or ""))
-                setattr(restored, "cached_status", str(payload.get("status", "") or ""))
-                setattr(restored, "cached_recognized_short", str(payload.get("recognized_short", "") or ""))
-                self._debug_scan_result_state("restore_subject_batch_saved_rows", restored)
-                self.scan_results.append(restored)
-            if self.scan_results:
-                self._populate_scan_grid_from_results(self.scan_results, skip_expensive_checks=not has_deserialized_payload)
-            self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(self.scan_results)
-            source = "batch_saved_rows"
         else:
             source = "empty"
 
