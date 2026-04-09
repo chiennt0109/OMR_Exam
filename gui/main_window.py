@@ -11356,8 +11356,46 @@ class MainWindow(QMainWindow):
             self.scan_image_preview.set_markers(self._marker_positions_for_result(result))
 
         preview_result = self._scoped_result_copy(result)
-        blank_map = self.scan_blank_summary.get(index) or self._compute_blank_questions(preview_result)
         section_counts = self._subject_section_question_counts(self._current_batch_subject_key())
+        expected_actual = self._expected_questions_by_section(preview_result)
+        expected_display: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        actual_to_display: dict[str, dict[int, int]] = {"MCQ": {}, "TF": {}, "NUMERIC": {}}
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            limit = max(0, int(section_counts.get(sec, 0) or 0))
+            if limit <= 0:
+                continue
+            actual_questions = sorted(set(int(q) for q in (expected_actual.get(sec, []) or [])))[:limit]
+            if not actual_questions:
+                display_questions = list(range(1, limit + 1))
+                actual_questions = list(display_questions)
+            else:
+                contiguous = actual_questions == list(range(1, len(actual_questions) + 1))
+                display_questions = list(actual_questions) if contiguous else list(range(1, len(actual_questions) + 1))
+            expected_display[sec] = list(display_questions)
+            actual_to_display[sec] = {
+                int(actual_q): int(display_q)
+                for display_q, actual_q in zip(display_questions, actual_questions)
+            }
+        mcq_display = {
+            int(actual_to_display["MCQ"].get(int(q), int(q))): str(v)
+            for q, v in (preview_result.mcq_answers or {}).items()
+        }
+        tf_display = {
+            int(actual_to_display["TF"].get(int(q), int(q))): dict(v or {})
+            for q, v in (preview_result.true_false_answers or {}).items()
+        }
+        num_display = {
+            int(actual_to_display["NUMERIC"].get(int(q), int(q))): str(v)
+            for q, v in (preview_result.numeric_answers or {}).items()
+        }
+        blank_map = {
+            "MCQ": [q for q in expected_display.get("MCQ", []) if not str((mcq_display or {}).get(int(q), "") or "").strip()],
+            "TF": [
+                q for q in expected_display.get("TF", [])
+                if not all(k in dict((tf_display or {}).get(int(q), {}) or {}) for k in ["a", "b", "c", "d"])
+            ],
+            "NUMERIC": [q for q in expected_display.get("NUMERIC", []) if not str((num_display or {}).get(int(q), "") or "").strip()],
+        }
         rows = [
             ("File ảnh", img_path.name),
             ("STUDENT ID", result.student_id or "-"),
@@ -11365,17 +11403,17 @@ class MainWindow(QMainWindow):
         ]
         if section_counts.get("MCQ", 0) > 0:
             rows.extend([
-                ("MCQ", self._compact_value(self._format_mcq_answers(preview_result.mcq_answers or {}), 220)),
+                ("MCQ", self._compact_value(self._format_mcq_answers_with_expected(mcq_display, expected_display.get("MCQ", [])), 220)),
                 ("MCQ không tô", ", ".join(str(x) for x in blank_map.get("MCQ", [])) or "-"),
             ])
         if section_counts.get("TF", 0) > 0:
             rows.extend([
-                ("TF", self._compact_value(self._format_tf_answers(preview_result.true_false_answers or {}), 220)),
+                ("TF", self._compact_value(self._format_tf_answers_with_expected(tf_display, expected_display.get("TF", [])), 220)),
                 ("TF không tô", ", ".join(str(x) for x in blank_map.get("TF", [])) or "-"),
             ])
         if section_counts.get("NUMERIC", 0) > 0:
             rows.extend([
-                ("NUM", self._compact_value(self._format_numeric_answers(preview_result.numeric_answers or {}), 220)),
+                ("NUM", self._compact_value(self._format_numeric_answers_with_expected(num_display, expected_display.get("NUMERIC", [])), 220)),
                 ("NUMERIC không tô", ", ".join(str(x) for x in blank_map.get("NUMERIC", [])) or "-"),
             ])
         self.scan_result_preview.setRowCount(0)
