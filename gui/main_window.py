@@ -5912,7 +5912,6 @@ class MainWindow(QMainWindow):
         self._current_batch_data_source = source
         self._batch_loaded_runtime_key = runtime_key if source != "empty" else ""
         self._update_batch_scan_scope_summary()
-        source_label = source if not source_hint else f"{source}({source_hint})"
         if self.scan_results:
             self._debug_scan_result_state("restore_subject_loaded_first_row", self.scan_results[0])
         self._close_wait_progress(wait_dlg)
@@ -13274,8 +13273,7 @@ def _patched_build_scan_row_payload_from_result(self, result, row_idx=None, dupl
     blank_map = payload.get("blank_map") if isinstance(payload, dict) else None
     if not isinstance(blank_map, dict):
         blank_map = self._compute_blank_questions(self._scoped_result_copy(result))
-    expected_by_section = self._expected_questions_by_section(result)
-    content_text = self._build_recognition_content_text(result, blank_map, expected_by_section=expected_by_section)
+    content_text = self._patched_build_blank_only_content_text(result, blank_map)
     payload["content"] = content_text
     setattr(result, "cached_content", content_text)
     return payload
