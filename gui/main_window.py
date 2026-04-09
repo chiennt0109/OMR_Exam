@@ -11296,6 +11296,9 @@ class MainWindow(QMainWindow):
         preview_result = self._lightweight_result_copy(result)
         section_counts = self._subject_section_question_counts(self._current_batch_subject_key())
         blank_map = self.scan_blank_summary.get(index) or self._compute_blank_questions(self._scoped_result_copy(result))
+        mcq_text = self._compact_value(self._format_mcq_answers(preview_result.mcq_answers or {}), 220)
+        tf_text = self._compact_value(self._format_tf_answers(preview_result.true_false_answers or {}), 220)
+        num_text = self._compact_value(self._format_numeric_answers(preview_result.numeric_answers or {}), 220)
         rows = [
             ("File ảnh", img_path.name),
             ("STUDENT ID", result.student_id or "-"),
@@ -11303,17 +11306,17 @@ class MainWindow(QMainWindow):
         ]
         if section_counts.get("MCQ", 0) > 0:
             rows.extend([
-                ("MCQ", self._compact_value(self._format_mcq_answers_with_expected(mcq_display, expected_display.get("MCQ", [])), 220)),
+                ("MCQ", mcq_text),
                 ("MCQ không tô", ", ".join(str(x) for x in blank_map.get("MCQ", [])) or "-"),
             ])
         if section_counts.get("TF", 0) > 0:
             rows.extend([
-                ("TF", self._compact_value(self._format_tf_answers_with_expected(tf_display, expected_display.get("TF", [])), 220)),
+                ("TF", tf_text),
                 ("TF không tô", ", ".join(str(x) for x in blank_map.get("TF", [])) or "-"),
             ])
         if section_counts.get("NUMERIC", 0) > 0:
             rows.extend([
-                ("NUM", self._compact_value(self._format_numeric_answers_with_expected(num_display, expected_display.get("NUMERIC", [])), 220)),
+                ("NUM", num_text),
                 ("NUMERIC không tô", ", ".join(str(x) for x in blank_map.get("NUMERIC", [])) or "-"),
             ])
         self.scan_result_preview.setRowCount(0)
