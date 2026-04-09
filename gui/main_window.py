@@ -4182,18 +4182,26 @@ class MainWindow(QMainWindow):
         if not subject_cfg or not hasattr(self, "scan_list"):
             return "", []
         subject_key = self._subject_key_from_cfg(subject_cfg)
-        if not subject_key or self.scan_list.rowCount() <= 0:
+        if not subject_key:
+            return "", []
+        subject_db_key = self._batch_result_subject_key(subject_key)
+        if self.scan_list.rowCount() <= 0:
+            if persist_to_db:
+                self.database.replace_scan_results_for_subject(subject_db_key, [])
             return subject_key, []
 
         self._refresh_all_statuses()
         current_results = self._current_scan_results_snapshot()
         self.scan_results = list(current_results)
-        self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(current_results)
+        self.scan_results_by_subject[subject_db_key] = list(current_results)
         for result in current_results:
             result.answer_string = self._normalize_non_api_answer_string(result, subject_key)
             self._debug_scan_result_state("sync_snapshot", result)
-            if persist_to_db:
-                self.database.upsert_scan_result(self._batch_result_subject_key(subject_key), self._serialize_omr_result(result))
+        if persist_to_db:
+            self.database.replace_scan_results_for_subject(
+                subject_db_key,
+                [self._serialize_omr_result(result) for result in current_results],
+            )
         return subject_key, current_results
 
     # [deduplicated] removed duplicate method block(s): _back_to_batch_scan, _build_correction_tab, _cached_subject_scans_from_config, _deserialize_omr_result, _eligible_scoring_subject_keys, _ensure_answer_keys_for_subject, _is_subject_marked_batched, _open_scoring_view, _populate_scoring_subjects, _refresh_scoring_phase_table, _resolve_preferred_scoring_subject, _run_scoring_from_panel, _save_batch_for_selected_subject, _serialize_omr_result, _show_batch_scan_panel, _show_scoring_panel, _subject_config_by_subject_key, _subject_configs_for_scoring, _subject_key_from_cfg
