@@ -11295,29 +11295,55 @@ class MainWindow(QMainWindow):
 
         preview_result = self._lightweight_result_copy(result)
         section_counts = self._subject_section_question_counts(self._current_batch_subject_key())
-        expected_by_section = self._expected_questions_by_section(preview_result)
-        blank_map = self.scan_blank_summary.get(index) or self._compute_blank_questions(self._scoped_result_copy(result))
-        mcq_text = self._compact_value(
-            self._format_mcq_answers_with_expected(
-                preview_result.mcq_answers or {},
-                list(expected_by_section.get("MCQ", []) or []),
-            ),
-            220,
-        )
-        tf_text = self._compact_value(
-            self._format_tf_answers_with_expected(
-                preview_result.true_false_answers or {},
-                list(expected_by_section.get("TF", []) or []),
-            ),
-            220,
-        )
-        num_text = self._compact_value(
-            self._format_numeric_answers_with_expected(
-                preview_result.numeric_answers or {},
-                list(expected_by_section.get("NUMERIC", []) or []),
-            ),
-            220,
-        )
+        expected_actual = self._expected_questions_by_section(preview_result)
+
+        def _build_display_mapping(actual_questions: list[int], limit: int) -> tuple[list[int], dict[int, int], dict[int, int]]:
+            actual_sorted = sorted(set(int(q) for q in (actual_questions or [])))
+            if limit > 0:
+                actual_sorted = actual_sorted[:limit]
+                if not actual_sorted:
+                    actual_sorted = list(range(1, limit + 1))
+            display_questions = list(range(1, len(actual_sorted) + 1))
+            actual_to_display = {int(a): int(d) for d, a in zip(display_questions, actual_sorted)}
+            display_to_actual = {int(d): int(a) for d, a in zip(display_questions, actual_sorted)}
+            return display_questions, actual_to_display, display_to_actual
+
+        expected_display: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        actual_to_display: dict[str, dict[int, int]] = {"MCQ": {}, "TF": {}, "NUMERIC": {}}
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            sec_limit = max(0, int(section_counts.get(sec, 0) or 0))
+            display_qs, map_actual_to_display, _map_display_to_actual = _build_display_mapping(
+                list(expected_actual.get(sec, []) or []),
+                sec_limit,
+            )
+            expected_display[sec] = list(display_qs)
+            actual_to_display[sec] = dict(map_actual_to_display)
+
+        mcq_display = {
+            int(actual_to_display["MCQ"].get(int(q), int(q))): str(v)
+            for q, v in (preview_result.mcq_answers or {}).items()
+        }
+        tf_display = {
+            int(actual_to_display["TF"].get(int(q), int(q))): dict(v or {})
+            for q, v in (preview_result.true_false_answers or {}).items()
+        }
+        num_display = {
+            int(actual_to_display["NUMERIC"].get(int(q), int(q))): str(v)
+            for q, v in (preview_result.numeric_answers or {}).items()
+        }
+
+        blank_map = {
+            "MCQ": [q for q in expected_display.get("MCQ", []) if not str((mcq_display or {}).get(int(q), "") or "").strip()],
+            "TF": [
+                q for q in expected_display.get("TF", [])
+                if not all(k in dict((tf_display or {}).get(int(q), {}) or {}) for k in ["a", "b", "c", "d"])
+            ],
+            "NUMERIC": [q for q in expected_display.get("NUMERIC", []) if not str((num_display or {}).get(int(q), "") or "").strip()],
+        }
+
+        mcq_text = self._compact_value(self._format_mcq_answers_with_expected(mcq_display, expected_display.get("MCQ", [])), 220)
+        tf_text = self._compact_value(self._format_tf_answers_with_expected(tf_display, expected_display.get("TF", [])), 220)
+        num_text = self._compact_value(self._format_numeric_answers_with_expected(num_display, expected_display.get("NUMERIC", [])), 220)
         rows = [
             ("File ảnh", img_path.name),
             ("STUDENT ID", result.student_id or "-"),
