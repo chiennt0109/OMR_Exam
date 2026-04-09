@@ -1,3 +1,7 @@
+import sys
+
+sys.dont_write_bytecode = True
+
 from models.database import bootstrap_application_db
 
 
