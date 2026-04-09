@@ -1199,7 +1199,6 @@ class NewExamDialog(QDialog):
         return idx if 0 <= idx < len(self.subject_configs) else -1
 
     def _handle_subject_table_double_click(self, row: int, col: int) -> None:
-        print(f"[DblClick] subject_table row={row} col={col} -> edit_subject")
         if row < 0 or row >= len(self.subject_configs):
             return
         self.subject_table.selectRow(row)
@@ -2065,7 +2064,6 @@ class MainWindow(QMainWindow):
 
     def _handle_exam_list_double_click(self, row: int, col: int) -> None:
         # double click navigation: route row double click to exam editor action.
-        print(f"[DblClick] exam_list row={row} col={col} -> edit_registry_session")
         sid = self._session_id_for_row(row)
         if not sid:
             return
@@ -2074,7 +2072,6 @@ class MainWindow(QMainWindow):
 
     def _handle_template_library_double_click(self, row: int, col: int) -> None:
         # double click navigation: route row double click to template edit action.
-        print(f"[DblClick] template_library row={row} col={col} -> edit_template")
         if row < 0:
             return
         self.template_library_table.selectRow(row)
@@ -2082,7 +2079,6 @@ class MainWindow(QMainWindow):
 
     def _handle_scan_list_double_click(self, row: int, col: int) -> None:
         # double click navigation: route row double click to scan edit action.
-        print(f"[DblClick] scan_list row={row} col={col} -> edit_scan")
         if row < 0 or row >= self.scan_list.rowCount():
             return
         self.scan_list.selectRow(row)
@@ -3226,7 +3222,6 @@ class MainWindow(QMainWindow):
             }
             fallback_name = parent_map.get(self._current_route_name, default_route)
             target = {"name": fallback_name, "context": {"session_id": self.current_session_id} if self.current_session_id else {}}
-        print(f"[Route] back target={target.get('name')}")
         self._navigate_to(
             str(target.get("name", default_route) or default_route),
             context=dict(target.get("context", {}) or {}),
@@ -3688,7 +3683,6 @@ class MainWindow(QMainWindow):
 
     def _close_batch_scan_view(self) -> None:
         route_ctx = dict(self._current_route_context or {})
-        print(f"[BatchClose] route={self._current_route_name} context={route_ctx}")
         subject_key = self._current_batch_subject_key()
         if subject_key and hasattr(self, "scan_list") and self.scan_list.rowCount() > 0:
             self._sync_current_batch_subject_snapshot(persist_to_db=False)
@@ -3776,7 +3770,6 @@ class MainWindow(QMainWindow):
         elif origin == "workspace_scoring":
             # keep deterministic fallback when context was opened from scoring but exam context is gone.
             target = "exam_list"
-        print(f"[BatchClose] return_target={target}")
         if target == "exam_editor":
             if self.embedded_exam_dialog and str(self.embedded_exam_session_id or "").strip() == str(self.current_session_id or "").strip():
                 self._navigate_to(
@@ -4726,7 +4719,6 @@ class MainWindow(QMainWindow):
         try:
             selected_instance = self._ensure_subject_instance_key(subject_cfg)
             subject_cfgs, source = self._resolve_current_session_subject_configs_for_update()
-            print(f"[BatchSave] source={source} selected_subject_instance_key={selected_instance}")
             if not subject_cfgs:
                 QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy danh sách môn trong kỳ thi hiện tại để cập nhật.")
                 return False
@@ -4734,7 +4726,6 @@ class MainWindow(QMainWindow):
                 if isinstance(item, dict):
                     self._ensure_subject_instance_key(item, idx)
             matched_idx = self._find_subject_config_index_for_batch_save(subject_cfg, subject_cfgs)
-            print(f"[BatchSave] matched_subject_index={matched_idx}")
 
             subject_key, current_results = self._sync_current_batch_subject_snapshot(persist_to_db=True)
             if not subject_key:
@@ -4789,11 +4780,6 @@ class MainWindow(QMainWindow):
             if matched_idx < 0:
                 available_instances = [str((x or {}).get("subject_instance_key", "") or "") for x in subject_cfgs if isinstance(x, dict)]
                 available_logicals = [str(self._logical_subject_key_from_cfg(x) or "") for x in subject_cfgs if isinstance(x, dict)]
-                print(
-                    "[BatchSave] match_failed "
-                    f"selected_instance={selected_instance} available_instances={available_instances} "
-                    f"selected_logical={self._logical_subject_key_from_cfg(subject_cfg)} available_logicals={available_logicals}"
-                )
                 QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
                 return False
 
@@ -4834,7 +4820,6 @@ class MainWindow(QMainWindow):
             self._update_batch_scan_scope_summary()
             self.btn_save_batch_subject.setEnabled(False)
             reload_ok = self._load_batch_subject_state(target, source_hint="after_save")
-            print(f"[BatchSave] subject={subject_key} rows={row_count} reload_ok={reload_ok}")
             QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
             return True
         except Exception as exc:
@@ -5819,11 +5804,9 @@ class MainWindow(QMainWindow):
                 cfg = self._merge_saved_batch_snapshot(cfg)
                 next_runtime_key = self._batch_runtime_key(cfg)
             if previous_runtime_key and previous_runtime_key != next_runtime_key:
-                print(f"[BatchSubject] cache old_runtime_key={previous_runtime_key}")
                 self._cache_working_batch_state(previous_runtime_key)
             if cfg:
                 self.active_batch_subject_key = next_runtime_key
-                print(f"[BatchSubject] switching new_runtime_key={self.active_batch_subject_key}")
             else:
                 self.active_batch_subject_key = None
             current_rows = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
@@ -5861,7 +5844,6 @@ class MainWindow(QMainWindow):
                 self.batch_context_value.setText("-")
             self._current_batch_data_source = "empty"
             self._batch_loaded_runtime_key = ""
-            print(f"[BatchLoad] subject=- source=empty rows=0 errors=0")
             self._close_wait_progress(wait_dlg)
             return False
 
@@ -5904,7 +5886,6 @@ class MainWindow(QMainWindow):
             self._finalize_batch_scan_display(refresh_statuses=True)
             self.btn_save_batch_subject.setEnabled(False)
             self._update_batch_scan_scope_summary()
-            print(f"[BatchLoad] subject={subject_key} source=working_cache rows={self.scan_list.rowCount()} errors={self.error_list.count()}")
             self._close_wait_progress(wait_dlg)
             return True
 
@@ -5993,7 +5974,6 @@ class MainWindow(QMainWindow):
         self._batch_loaded_runtime_key = runtime_key if source != "empty" else ""
         self._update_batch_scan_scope_summary()
         source_label = source if not source_hint else f"{source}({source_hint})"
-        print(f"[BatchLoad] subject={subject_key} source={source_label} rows={self.scan_list.rowCount()} errors={self.error_list.count()}")
         if self.scan_results:
             self._debug_scan_result_state("restore_subject_loaded_first_row", self.scan_results[0])
         self._close_wait_progress(wait_dlg)
@@ -6425,7 +6405,6 @@ class MainWindow(QMainWindow):
         self.template = loaded_template
         setattr(self, "_active_template_path", str(pth.resolve()))
         self._apply_template_recognition_settings(self.template, sync_mode_selector=False)
-        print(f"[Recognize] image={image_path} template={path_text} source={source_tag or 'unknown'}")
         # Keep batch recognition aligned with Template Editor's "Test Recognition" path:
         # run_recognition_test(..., fast_production_test=True) keeps fast production behavior
         # but also forces identifier recognition to reduce SID/ExamCode drift between screens.
@@ -6659,11 +6638,6 @@ class MainWindow(QMainWindow):
         self.scan_forced_status_by_index.clear()
 
         self._apply_template_recognition_settings(self.template, sync_mode_selector=False)
-        print(
-            f"[BatchRecognize] subject={subject_key_for_results} template={template_path} "
-            f"profile={getattr(self.omr_processor, 'alignment_profile', '')} "
-            f"thresholds={getattr(self.omr_processor, 'fill_threshold', '-')}/{getattr(self.omr_processor, 'empty_threshold', '-')}/{getattr(self.omr_processor, 'certainty_margin', '-')}"
-        )
         batch_started = time.perf_counter()
 
         def on_progress(current: int, total: int, image_path: str):
@@ -9863,7 +9837,6 @@ class MainWindow(QMainWindow):
                 profile = self._student_profile_by_id(sid) if sid else {}
                 room_text = str((profile or {}).get("exam_room", "") or "").strip()
             setattr(result, "exam_room", room_text)
-            print(f"[GridPopulate] sid={sid} room={room_text} exam_code={exam_code_text}")
             forced_status = str(forced_status_by_image.get(image_path, "") or "")
             status_override = ""
             if forced_status:
@@ -10194,8 +10167,6 @@ class MainWindow(QMainWindow):
                     sid_matches.append(cand)
             if len(sid_matches) == 1:
                 return sid_matches[0]
-            if len(sid_matches) > 1:
-                print(f"[CorrectionLoad] row={row_idx} ambiguous_sid_match sid={sid_text} exam_code={exam_code} matches={len(sid_matches)}")
             return None
 
         # 1) current scan_results
@@ -10203,7 +10174,6 @@ class MainWindow(QMainWindow):
             direct = self.scan_results[row_idx]
             direct_img = self._result_identity_key(getattr(direct, "image_path", ""))
             if self._result_has_recognition_payload(direct) and ((not image_path) or (direct_img == self._result_identity_key(image_path))):
-                print(f"[CorrectionLoad] row={row_idx} source=scan_results has_mcq={bool(direct.mcq_answers)} has_tf={bool(direct.true_false_answers)} has_num={bool(direct.numeric_answers)} answer_string_len={len(str(getattr(direct,'answer_string','') or ''))}")
                 return direct
 
         # 2) scan_results_by_subject
@@ -10211,7 +10181,6 @@ class MainWindow(QMainWindow):
         subject_pool = list(self.scan_results_by_subject.get(self._batch_result_subject_key(subject_key), []) or [])
         matched = _match_result_pool(subject_pool)
         if matched is not None and self._result_has_recognition_payload(matched):
-            print(f"[CorrectionLoad] row={row_idx} source=scan_results_by_subject has_mcq={bool(matched.mcq_answers)} has_tf={bool(matched.true_false_answers)} has_num={bool(matched.numeric_answers)} answer_string_len={len(str(getattr(matched,'answer_string','') or ''))}")
             return self._lightweight_result_copy(matched)
 
         # 3) working cache scan_results
@@ -10220,7 +10189,6 @@ class MainWindow(QMainWindow):
         working_results = list(working.get("scan_results", []) or [])
         matched = _match_result_pool(working_results)
         if matched is not None and self._result_has_recognition_payload(matched):
-            print(f"[CorrectionLoad] row={row_idx} source=working_cache has_mcq={bool(matched.mcq_answers)} has_tf={bool(matched.true_false_answers)} has_num={bool(matched.numeric_answers)} answer_string_len={len(str(getattr(matched,'answer_string','') or ''))}")
             return self._lightweight_result_copy(matched)
 
         # 4) DB
@@ -10233,7 +10201,6 @@ class MainWindow(QMainWindow):
                 continue
         matched = _match_result_pool(db_pool)
         if matched is not None and self._result_has_recognition_payload(matched):
-            print(f"[CorrectionLoad] row={row_idx} source=db has_mcq={bool(matched.mcq_answers)} has_tf={bool(matched.true_false_answers)} has_num={bool(matched.numeric_answers)} answer_string_len={len(str(getattr(matched,'answer_string','') or ''))}")
             return self._lightweight_result_copy(matched)
 
         # 5/6) batch_saved_results or serialized payload from row snapshot
@@ -10247,7 +10214,6 @@ class MainWindow(QMainWindow):
             except Exception:
                 continue
             if _match_result_pool([cand]) is not None:
-                print(f"[CorrectionLoad] row={row_idx} source=batch_saved_results has_mcq={bool(cand.mcq_answers)} has_tf={bool(cand.true_false_answers)} has_num={bool(cand.numeric_answers)} answer_string_len={len(str(getattr(cand,'answer_string','') or ''))}")
                 return cand
 
         if isinstance(working, dict):
@@ -10257,11 +10223,9 @@ class MainWindow(QMainWindow):
                 if isinstance(sr, dict) and sr:
                     try:
                         cand = self._deserialize_omr_result(sr)
-                        print(f"[CorrectionLoad] row={row_idx} source=row_serialized has_mcq={bool(cand.mcq_answers)} has_tf={bool(cand.true_false_answers)} has_num={bool(cand.numeric_answers)} answer_string_len={len(str(getattr(cand,'answer_string','') or ''))}")
                         return cand
                     except Exception:
                         pass
-        print(f"[CorrectionFallback] row={row_idx} reason=minimal_fallback")
         return self._build_result_from_saved_table_row(row_idx)
 
     def _build_result_from_saved_table_row(self, idx: int) -> OMRResult | None:
@@ -10930,7 +10894,6 @@ class MainWindow(QMainWindow):
                 status_parts.append("SBD không có trong danh sách")
             else:
                 room_text = self._subject_room_for_student_id(sid_text, cfg)
-                print(f"[StatusCheck] sid={sid_text} room={room_text} room_missing={self._is_missing_room_for_status(room_text)}")
                 if self._is_missing_room_for_status(room_text):
                     status_parts.append("Thiếu phòng thi")
                 else:
@@ -11026,7 +10989,6 @@ class MainWindow(QMainWindow):
             return ""
         cfg = subject_cfg if isinstance(subject_cfg, dict) else (self._selected_batch_subject_config() or {})
         mapping_by_room = self._normalized_exam_room_mapping_by_room(cfg)
-        print(f"[RoomResolve] sid={sid} sid_norm={sid_norm} exam_room_name={cfg.get('exam_room_name','')} mapping_rooms={list(mapping_by_room.keys())}")
         if mapping_by_room:
             matched_rooms = [room for room, sids in mapping_by_room.items() if sid_norm in sids]
             if matched_rooms:
@@ -11035,10 +10997,8 @@ class MainWindow(QMainWindow):
                 if preferred_norm:
                     for room in matched_rooms:
                         if self._normalized_room_for_match(room) == preferred_norm:
-                            print(f"[RoomResolve] resolved_room={room}")
                             return str(room or "").strip()
                 picked = sorted(matched_rooms, key=lambda x: self._normalized_room_for_match(x))[0]
-                print(f"[RoomResolve] resolved_room={picked}")
                 return str(picked or "").strip()
 
         room_name = str(cfg.get("exam_room_name", "") or "").strip()
@@ -11046,12 +11006,10 @@ class MainWindow(QMainWindow):
         if room_name and mapping_text:
             chunks = [x.strip() for x in mapping_text.replace(";", ",").replace("\n", ",").split(",") if x.strip()]
             if sid_norm in {self._normalized_student_id_for_match(x) for x in chunks if x}:
-                print(f"[RoomResolve] resolved_room={room_name}")
                 return room_name
 
         prof = self._student_profile_by_id(sid)
         fallback_room = str(prof.get("exam_room", "") or "")
-        print(f"[RoomResolve] resolved_room={fallback_room}")
         return fallback_room
 
     @staticmethod
@@ -11231,7 +11189,6 @@ class MainWindow(QMainWindow):
         setattr(result, "cached_forced_status", "Đã sửa")
         image_key = self._result_identity_key(getattr(result, "image_path", ""))
         resolved_row = row_idx if row_idx is not None and row_idx >= 0 else self._row_index_by_image_path(image_key)
-        print(f"[ManualEdit] image={image_key} row={resolved_row}")
         if image_key:
             self.scan_forced_status_by_index[image_key] = "Đã sửa"
 
@@ -11261,18 +11218,7 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _debug_scan_result_state(tag: str, result: OMRResult | None) -> None:
         if result is None:
-            print(f"[ScanState:{tag}] result=None")
             return
-        print(
-            f"[ScanState:{tag}] "
-            f"image_path={str(getattr(result, 'image_path', '') or '')} "
-            f"student_id={str(getattr(result, 'student_id', '') or '')} "
-            f"exam_code={str(getattr(result, 'exam_code', '') or '')} "
-            f"answer_string={str(getattr(result, 'answer_string', '') or '')} "
-            f"manual_content_override={str(getattr(result, 'manual_content_override', '') or '')} "
-            f"cached_content={str(getattr(result, 'cached_content', '') or '')} "
-            f"cached_status={str(getattr(result, 'cached_status', '') or '')}"
-        )
 
     def _persist_single_scan_result_to_db(self, result: OMRResult, note: str = "") -> None:
         subject_key = self._current_batch_subject_key()
@@ -12417,7 +12363,6 @@ class MainWindow(QMainWindow):
             invalidated = self._invalidate_scoring_for_student_ids([old_sid_for_score, str(result.student_id or "").strip()], reason="dialog_edit")
             self._update_batch_scan_bottom_status_text()
             loaded_snapshots[_current_result_image_key()] = _snapshot_from_result(result)
-            print(f"[EditDialogSave] row={idx_local} image={_current_result_image_key()} changes={len(changes)}")
             if save_feedback:
                 notices = ["Đã lưu thay đổi cho bài hiện tại."]
                 if invalidated > 0:
@@ -12433,7 +12378,6 @@ class MainWindow(QMainWindow):
             self.scan_list.setCurrentCell(new_index, 0)
             result = self.scan_results[new_index]
             image_key = self._result_identity_key(getattr(result, "image_path", ""))
-            print(f"[EditDialogOpen] row={new_index} image={image_key}")
             dlg.setWindowTitle(f"Sửa bài thi: {Path(result.image_path).name}")
             self._load_student_correction_options(str(result.student_id or "").strip())
             inp_sid.blockSignals(True)
@@ -12535,7 +12479,6 @@ class MainWindow(QMainWindow):
                     self.scan_list.setCurrentCell(current_idx, 0)
                     self._update_scan_preview(current_idx)
                     self._sync_correction_detail_panel(self.scan_results[current_idx], rebuild_editor=False)
-            print(f"[EditDialogClose] saved_images={len(dialog_saved_images)} current_row={dialog_state['index']}")
             dlg.accept()
 
         inp_code.currentIndexChanged.connect(lambda _=0: _rebuild_for_exam_code_change())
