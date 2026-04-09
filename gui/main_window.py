@@ -5827,7 +5827,9 @@ class MainWindow(QMainWindow):
             self._switching_batch_subject = False
 
     def _load_batch_subject_state(self, subject_cfg: dict | None, source_hint: str = "", force_reload: bool = False) -> bool:
-        cfg = self._merge_saved_batch_snapshot(subject_cfg or {}) if isinstance(subject_cfg, dict) else {}
+        cfg = dict(subject_cfg or {}) if isinstance(subject_cfg, dict) else {}
+        if cfg and not str(self.current_session_id or "").strip():
+            cfg = self._merge_saved_batch_snapshot(cfg)
         if cfg and not force_reload:
             pre_subject_key = self._subject_key_from_cfg(cfg)
             pre_runtime_key = self._batch_runtime_key(pre_subject_key)
