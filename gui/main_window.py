@@ -5895,9 +5895,10 @@ class MainWindow(QMainWindow):
         loaded_results: list[OMRResult] = list(self._refresh_scan_results_from_db(subject_key) or [])
         source = "database" if loaded_results else "empty"
         scoped_subject = self._batch_result_subject_key(subject_key)
+        has_session_scope = bool(str(self.current_session_id or "").strip())
         if not loaded_results:
             self.scan_results_by_subject[scoped_subject] = []
-        if not loaded_results and isinstance(cfg.get("batch_saved_results", []), list) and cfg.get("batch_saved_results"):
+        if (not has_session_scope) and (not loaded_results) and isinstance(cfg.get("batch_saved_results", []), list) and cfg.get("batch_saved_results"):
             for item in (cfg.get("batch_saved_results", []) or []):
                 if not isinstance(item, dict):
                     continue
@@ -5911,7 +5912,7 @@ class MainWindow(QMainWindow):
             self.scan_results = list(loaded_results)
             self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(self.scan_results)
             self._populate_scan_grid_from_results(self.scan_results, skip_expensive_checks=False)
-        elif isinstance(cfg.get("batch_saved_rows", []), list) and cfg.get("batch_saved_rows"):
+        elif (not has_session_scope) and isinstance(cfg.get("batch_saved_rows", []), list) and cfg.get("batch_saved_rows"):
             self.scan_results = []
             rows_fallback = cfg.get("batch_saved_rows", []) or []
             has_deserialized_payload = False
