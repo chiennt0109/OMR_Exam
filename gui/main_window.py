@@ -11303,17 +11303,17 @@ class MainWindow(QMainWindow):
         ]
         if section_counts.get("MCQ", 0) > 0:
             rows.extend([
-                ("MCQ", self._compact_value(self._format_mcq_answers(preview_result.mcq_answers or {}), 220)),
+                ("MCQ", self._compact_value(self._format_mcq_answers_with_expected(mcq_display, expected_display.get("MCQ", [])), 220)),
                 ("MCQ không tô", ", ".join(str(x) for x in blank_map.get("MCQ", [])) or "-"),
             ])
         if section_counts.get("TF", 0) > 0:
             rows.extend([
-                ("TF", self._compact_value(self._format_tf_answers(preview_result.true_false_answers or {}), 220)),
+                ("TF", self._compact_value(self._format_tf_answers_with_expected(tf_display, expected_display.get("TF", [])), 220)),
                 ("TF không tô", ", ".join(str(x) for x in blank_map.get("TF", [])) or "-"),
             ])
         if section_counts.get("NUMERIC", 0) > 0:
             rows.extend([
-                ("NUM", self._compact_value(self._format_numeric_answers(preview_result.numeric_answers or {}), 220)),
+                ("NUM", self._compact_value(self._format_numeric_answers_with_expected(num_display, expected_display.get("NUMERIC", [])), 220)),
                 ("NUMERIC không tô", ", ".join(str(x) for x in blank_map.get("NUMERIC", [])) or "-"),
             ])
         self.scan_result_preview.setRowCount(0)
