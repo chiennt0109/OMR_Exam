@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
+    QWidget,
 )
 
 from core.omr_engine import OMRResult
