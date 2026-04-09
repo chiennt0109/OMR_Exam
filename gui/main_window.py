@@ -11969,10 +11969,27 @@ class MainWindow(QMainWindow):
             }
             key = _answer_key_for_exam_code(exam_code_text)
             if key is not None:
+                full_credit = getattr(key, "full_credit_questions", {}) or {}
+                invalid_rows = getattr(key, "invalid_answer_rows", {}) or {}
+
+                def _extra_for_section(sec: str) -> set[int]:
+                    extra: set[int] = set()
+                    for q in list((full_credit.get(sec, []) or [])):
+                        try:
+                            extra.add(int(q))
+                        except Exception:
+                            continue
+                    for q in dict((invalid_rows.get(sec, {}) or {})).keys():
+                        try:
+                            extra.add(int(q))
+                        except Exception:
+                            continue
+                    return extra
+
                 expected = {
-                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())) or list(default_by_config["MCQ"]),
-                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())) or list(default_by_config["TF"]),
-                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())) or list(default_by_config["NUMERIC"]),
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys()) | _extra_for_section("MCQ")) or list(default_by_config["MCQ"]),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys()) | _extra_for_section("TF")) or list(default_by_config["TF"]),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys()) | _extra_for_section("NUMERIC")) or list(default_by_config["NUMERIC"]),
                 }
             else:
                 expected = {
@@ -13235,11 +13252,19 @@ def _patched_build_recognition_content_text(self, result, blank_map: dict[str, l
         parsed_parts.append(f"NUM: {num}")
 
     blank_parts = []
+    expected = expected_by_section or self._expected_questions_by_section(result) or {}
+    tf_expected_questions = list(expected.get("TF", []) or [])
+    tf_flags = dict(getattr(result, "true_false_answers", {}) or {})
+    tf_blank_statements = 0
+    for q in tf_expected_questions:
+        flags = dict(tf_flags.get(int(q), {}) or {})
+        tf_blank_statements += sum(1 for key in ["a", "b", "c", "d"] if key not in flags)
+
     for sec in ["MCQ", "TF", "NUMERIC"]:
         vals = list((blank_map or {}).get(sec, []) or [])
         if vals:
             if sec == "TF":
-                blank_parts.append(f"{sec} trống: {len(vals)}")
+                blank_parts.append(f"{sec} trống: {len(vals)} câu/{tf_blank_statements} ý")
             else:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
     merged = parsed_parts + blank_parts
@@ -13292,7 +13317,8 @@ def _patched_build_scan_row_payload_from_result(self, result, row_idx=None, dupl
     blank_map = payload.get("blank_map") if isinstance(payload, dict) else None
     if not isinstance(blank_map, dict):
         blank_map = self._compute_blank_questions(self._scoped_result_copy(result))
-    content_text = self._patched_build_blank_only_content_text(result, blank_map) if hasattr(self, '_patched_build_blank_only_content_text') else _patched_build_blank_only_content_text(self, result, blank_map)
+    expected_by_section = self._expected_questions_by_section(result)
+    content_text = self._build_recognition_content_text(result, blank_map, expected_by_section=expected_by_section)
     payload["content"] = content_text
     setattr(result, "cached_content", content_text)
     return payload
