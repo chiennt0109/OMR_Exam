@@ -5892,23 +5892,12 @@ class MainWindow(QMainWindow):
             self._close_wait_progress(wait_dlg)
             return True
 
+        loaded_results: list[OMRResult] = list(self._refresh_scan_results_from_db(subject_key) or [])
+        source = "database" if loaded_results else "empty"
         scoped_subject = self._batch_result_subject_key(subject_key)
-        db_rows = self.database.fetch_scan_results_for_subject(scoped_subject)
-        if not db_rows:
-            sid = str(self.current_session_id or "").strip()
-            legacy_scoped = f"{sid}::{subject_key}" if sid else ""
-            if legacy_scoped and legacy_scoped != scoped_subject:
-                db_rows = self.database.fetch_scan_results_for_subject(legacy_scoped)
-        loaded_results: list[OMRResult] = []
-        source = "empty"
-        if db_rows:
-            for item in db_rows:
-                try:
-                    loaded_results.append(self._deserialize_omr_result(item))
-                except Exception:
-                    continue
-            source = "database"
-        elif isinstance(cfg.get("batch_saved_results", []), list) and cfg.get("batch_saved_results"):
+        if not loaded_results:
+            self.scan_results_by_subject[scoped_subject] = []
+        if not loaded_results and isinstance(cfg.get("batch_saved_results", []), list) and cfg.get("batch_saved_results"):
             for item in (cfg.get("batch_saved_results", []) or []):
                 if not isinstance(item, dict):
                     continue
