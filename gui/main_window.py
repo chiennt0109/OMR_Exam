@@ -5829,7 +5829,7 @@ class MainWindow(QMainWindow):
 
     def _load_batch_subject_state(self, subject_cfg: dict | None, source_hint: str = "", force_reload: bool = False) -> bool:
         cfg = dict(subject_cfg or {}) if isinstance(subject_cfg, dict) else {}
-        if cfg and not str(self.current_session_id or "").strip():
+        if cfg:
             cfg = self._merge_saved_batch_snapshot(cfg)
         if cfg and not force_reload:
             pre_subject_key = self._subject_key_from_cfg(cfg)
@@ -5895,10 +5895,50 @@ class MainWindow(QMainWindow):
             self._close_wait_progress(wait_dlg)
             return True
 
+        saved_rows = list(cfg.get("batch_saved_rows", []) if isinstance(cfg.get("batch_saved_rows", []), list) else [])
+        saved_rows_by_image = {
+            self._result_identity_key(str((row or {}).get("image_path", "") or "")): dict(row or {})
+            for row in saved_rows
+            if isinstance(row, dict) and self._result_identity_key(str((row or {}).get("image_path", "") or ""))
+        }
         loaded_results: list[OMRResult] = list(self._refresh_scan_results_from_db(subject_key) or [])
+        if loaded_results and saved_rows_by_image:
+            hydrated_results: list[OMRResult] = []
+            for res in loaded_results:
+                image_key = self._result_identity_key(str(getattr(res, "image_path", "") or ""))
+                row_payload = saved_rows_by_image.get(image_key, {}) if image_key else {}
+                hydrated_results.append(self._hydrate_result_from_saved_row_payload(res, row_payload) or res)
+            loaded_results = hydrated_results
         source = "database" if loaded_results else "empty"
         scoped_subject = self._batch_result_subject_key(subject_key)
         if not loaded_results:
+            saved_results_payload = list(cfg.get("batch_saved_results", []) if isinstance(cfg.get("batch_saved_results", []), list) else [])
+            restored_results: list[OMRResult] = []
+            for raw in saved_results_payload:
+                if not isinstance(raw, dict):
+                    continue
+                try:
+                    restored = self._deserialize_omr_result(raw)
+                except Exception:
+                    continue
+                image_key = self._result_identity_key(str(getattr(restored, "image_path", "") or ""))
+                row_payload = saved_rows_by_image.get(image_key, {}) if image_key else {}
+                restored_results.append(self._hydrate_result_from_saved_row_payload(restored, row_payload) or restored)
+            if restored_results:
+                loaded_results = restored_results
+                source = "saved_snapshot"
+            elif saved_rows:
+                restored_results = []
+                for row in saved_rows:
+                    if not isinstance(row, dict):
+                        continue
+                    restored = self._hydrate_result_from_saved_row_payload(None, row)
+                    if restored is not None:
+                        restored.answer_string = self._normalize_non_api_answer_string(restored, subject_key)
+                        restored_results.append(restored)
+                if restored_results:
+                    loaded_results = restored_results
+                    source = "saved_rows"
             self.scan_results_by_subject[scoped_subject] = []
         if loaded_results:
             self.scan_results = list(loaded_results)
@@ -5917,6 +5957,155 @@ class MainWindow(QMainWindow):
         self._close_wait_progress(wait_dlg)
         return source != "empty"
 
+    @staticmethod
+    def _normalized_mcq_answer_map(raw_map: object) -> dict[int, str]:
+        normalized: dict[int, str] = {}
+        if not isinstance(raw_map, dict):
+            return normalized
+        for q_raw, ans in raw_map.items():
+            try:
+                q_no = int(q_raw)
+            except Exception:
+                continue
+            normalized[q_no] = str(ans or "").strip().upper()
+        return normalized
+
+    @staticmethod
+    def _normalized_tf_answer_map(raw_map: object) -> dict[int, dict[str, bool]]:
+        normalized: dict[int, dict[str, bool]] = {}
+        if not isinstance(raw_map, dict):
+            return normalized
+        for q_raw, flags_raw in raw_map.items():
+            try:
+                q_no = int(q_raw)
+            except Exception:
+                continue
+            flags_src = flags_raw if isinstance(flags_raw, dict) else {}
+            flags: dict[str, bool] = {}
+            for key_raw, flag in flags_src.items():
+                key = str(key_raw or "").strip().lower()
+                if key in {"a", "b", "c", "d"}:
+                    flags[key] = bool(flag)
+            if flags:
+                normalized[q_no] = flags
+        return normalized
+
+    @staticmethod
+    def _normalized_numeric_answer_map(raw_map: object) -> dict[int, str]:
+        normalized: dict[int, str] = {}
+        if not isinstance(raw_map, dict):
+            return normalized
+        for q_raw, value in raw_map.items():
+            try:
+                q_no = int(q_raw)
+            except Exception:
+                continue
+            normalized[q_no] = str(value or "").strip()
+        return normalized
+
+    def _hydrate_result_from_saved_row_payload(self, result: OMRResult | None, row_payload: dict | None) -> OMRResult | None:
+        if result is None and not isinstance(row_payload, dict):
+            return result
+        row = dict(row_payload or {}) if isinstance(row_payload, dict) else {}
+        if result is None:
+            result = OMRResult(
+                image_path=str(row.get("image_path", "") or ""),
+                student_id=str(row.get("student_id", "") or ""),
+                exam_code=str(row.get("exam_code", "") or ""),
+            )
+
+        payload_sources: list[dict] = []
+        serialized_payload = dict(row.get("serialized_result", {}) or {}) if isinstance(row.get("serialized_result", {}), dict) else {}
+        if serialized_payload:
+            payload_sources.append(serialized_payload)
+        if row:
+            payload_sources.append(row)
+
+        current_mcq = self._normalized_mcq_answer_map(getattr(result, "mcq_answers", {}) or {})
+        current_tf = self._normalized_tf_answer_map(getattr(result, "true_false_answers", {}) or {})
+        current_numeric = self._normalized_numeric_answer_map(getattr(result, "numeric_answers", {}) or {})
+
+        for payload in payload_sources:
+            payload_mcq = self._normalized_mcq_answer_map(payload.get("mcq_answers", {}) or {})
+            if payload_mcq and (not current_mcq or len(current_mcq) < len(payload_mcq)):
+                current_mcq = dict(payload_mcq)
+
+            payload_tf = self._normalized_tf_answer_map(payload.get("true_false_answers", {}) or {})
+            if payload_tf:
+                merged_tf = dict(current_tf)
+                for q_no, flags in payload_tf.items():
+                    existing = dict(merged_tf.get(q_no, {}) or {})
+                    if len(existing) < len(flags):
+                        merged_tf[q_no] = dict(flags)
+                    else:
+                        for key, value in flags.items():
+                            if key not in existing:
+                                existing[key] = bool(value)
+                        merged_tf[q_no] = existing
+                current_tf = merged_tf
+
+            payload_numeric = self._normalized_numeric_answer_map(payload.get("numeric_answers", {}) or {})
+            if payload_numeric:
+                merged_numeric = dict(current_numeric)
+                for q_no, value in payload_numeric.items():
+                    current_value = str(merged_numeric.get(q_no, "") or "").strip()
+                    payload_value = str(value or "").strip()
+                    if (q_no not in merged_numeric) or (not current_value and payload_value):
+                        merged_numeric[q_no] = payload_value
+                current_numeric = merged_numeric
+
+            for attr_name in [
+                "image_path",
+                "student_id",
+                "exam_code",
+                "full_name",
+                "birth_date",
+                "exam_room",
+                "class_name",
+                "answer_string",
+                "manual_content_override",
+                "cached_content",
+                "cached_status",
+                "cached_recognized_short",
+                "recognized_template_path",
+                "recognized_alignment_profile",
+            ]:
+                current_value = str(getattr(result, attr_name, "") or "").strip()
+                payload_value = str(payload.get(attr_name, "") or "").strip()
+                if payload_value and not current_value:
+                    setattr(result, attr_name, payload_value)
+
+            current_errors = list(getattr(result, "recognition_errors", []) or [])
+            payload_errors = [str(x) for x in (payload.get("recognition_errors", []) or []) if str(x or "").strip()]
+            if payload_errors and not current_errors:
+                setattr(result, "recognition_errors", payload_errors)
+
+            for attr_name, default_value in [
+                ("recognized_fill_threshold", 0.45),
+                ("recognized_empty_threshold", 0.20),
+                ("recognized_certainty_margin", 0.08),
+            ]:
+                current_value = getattr(result, attr_name, None)
+                payload_value = payload.get(attr_name, None)
+                if payload_value is not None and (current_value is None or float(current_value or default_value) == float(default_value)):
+                    try:
+                        setattr(result, attr_name, float(payload_value))
+                    except Exception:
+                        pass
+
+            cached_blank_summary = dict(payload.get("cached_blank_summary", {}) or {}) if isinstance(payload.get("cached_blank_summary", {}), dict) else {}
+            if cached_blank_summary and not dict(getattr(result, "cached_blank_summary", {}) or {}):
+                setattr(result, "cached_blank_summary", cached_blank_summary)
+
+        if current_mcq:
+            result.mcq_answers = current_mcq
+        if current_tf:
+            result.true_false_answers = current_tf
+        if current_numeric:
+            result.numeric_answers = current_numeric
+        result.sync_legacy_aliases()
+        return result
+
     def _cache_working_batch_state(self, subject_key: str) -> None:
         # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
         key = self._batch_runtime_key(subject_key)
@@ -5924,6 +6113,7 @@ class MainWindow(QMainWindow):
             return
 
         rows: list[dict] = []
+        cached_scan_results: list[OMRResult] = []
         for r in range(self.scan_list.rowCount()):
             sid_item = self.scan_list.item(r, 0)
             serialized_payload = sid_item.data(Qt.UserRole + 10) if sid_item else None
@@ -5952,6 +6142,10 @@ class MainWindow(QMainWindow):
             row_payload = self._build_scan_row_payload_from_result(row_result, row_idx=r)
             self._debug_scan_result_state("cache_working_batch_state", row_result)
             serialized = dict(row_payload.get("serialized_result", {}) or self._serialize_omr_result(row_result))
+            try:
+                cached_scan_results.append(self._deserialize_omr_result(serialized))
+            except Exception:
+                cached_scan_results.append(self._lightweight_result_copy(row_result))
             rows.append(
                 {
                     "student_id": str(row_payload.get("student_id", "-") or "-"),
@@ -5999,7 +6193,7 @@ class MainWindow(QMainWindow):
             selected_image_path = str(item.data(Qt.UserRole) if item else "")
         self.batch_working_state_by_subject[key] = {
             "runtime_key": key,
-            "scan_results": list(self.scan_results_by_subject.get(key, self.scan_results or [])),
+            "scan_results": list(cached_scan_results),
             "rows": rows,
             "preview": preview_rows,
             "selected_row": int(selected_row),
@@ -6022,9 +6216,23 @@ class MainWindow(QMainWindow):
         if hasattr(self, "scan_result_preview"):
             self.scan_result_preview.setRowCount(0)
 
-        self.scan_results = list(cached.get("scan_results", []))
-        for res in self.scan_results:
-            self._trim_result_answers_to_expected_scope(res)
+        rows_fallback = cached.get("rows", []) if isinstance(cached.get("rows", []), list) else []
+        rows_by_image = {
+            self._result_identity_key(str((row or {}).get("image_path", "") or "")): dict(row or {})
+            for row in rows_fallback
+            if isinstance(row, dict) and self._result_identity_key(str((row or {}).get("image_path", "") or ""))
+        }
+        self.scan_results = []
+        for raw in list(cached.get("scan_results", [])):
+            if not isinstance(raw, OMRResult):
+                continue
+            restored = self._lightweight_result_copy(raw)
+            image_key = self._result_identity_key(str(getattr(restored, "image_path", "") or ""))
+            row_payload = rows_by_image.get(image_key, {}) if image_key else {}
+            restored = self._hydrate_result_from_saved_row_payload(restored, row_payload) or restored
+            self._trim_result_answers_to_expected_scope(restored)
+            restored.answer_string = self._normalize_non_api_answer_string(restored, key)
+            self.scan_results.append(restored)
         self.scan_results_by_subject[key] = list(self.scan_results)
         duplicate_ids: dict[str, int] = {}
         available_exam_codes = self._available_exam_codes()
@@ -6081,6 +6289,7 @@ class MainWindow(QMainWindow):
                 setattr(restored, "birth_date", str(row.get("birth_date", "") or getattr(restored, "birth_date", "") or ""))
                 setattr(restored, "exam_room", str(row.get("exam_room", "") or getattr(restored, "exam_room", "") or ""))
                 setattr(restored, "manual_content_override", str(row.get("manual_content_override", "") or getattr(restored, "manual_content_override", "") or ""))
+                restored = self._hydrate_result_from_saved_row_payload(restored, row) or restored
                 restored.answer_string = self._normalize_non_api_answer_string(restored, key)
                 payload = self._build_scan_row_payload_from_result(restored, row_idx=None)
                 setattr(restored, "cached_content", str(payload.get("content", "") or ""))
@@ -9972,6 +10181,7 @@ class MainWindow(QMainWindow):
         sid_item.setData(Qt.UserRole + 2, str(payload.get("recognized_short", "") or ""))
         sid_item.setData(Qt.UserRole + 10, dict(payload.get("serialized_result", {}) or {}))
         sid_item.setData(Qt.UserRole + 11, str(payload.get("manual_content_override", "") or ""))
+        sid_item.setData(Qt.UserRole + 12, dict(payload or {}))
         self.scan_list.setItem(row_idx, 0, sid_item)
         self.scan_list.setItem(row_idx, 1, QTableWidgetItem(str(payload.get("exam_room", "") or "-")))
         self.scan_list.setItem(row_idx, 2, QTableWidgetItem(str(payload.get("exam_code", "") or "-")))
@@ -10180,12 +10390,14 @@ class MainWindow(QMainWindow):
         exam_code = str(sid_item.data(Qt.UserRole + 1) if sid_item else "").strip()
         result = OMRResult(image_path=image_path, student_id=student_id, exam_code=exam_code)
         serialized_payload = sid_item.data(Qt.UserRole + 10) if sid_item else None
+        row_payload = sid_item.data(Qt.UserRole + 12) if sid_item else None
         if isinstance(serialized_payload, dict) and serialized_payload:
             try:
                 restored = self._deserialize_omr_result(serialized_payload)
                 result = restored
             except Exception:
                 pass
+        result = self._hydrate_result_from_saved_row_payload(result, row_payload) or result
         result.image_path = image_path or str(getattr(result, "image_path", "") or "")
         result.student_id = student_id
         result.exam_code = exam_code
@@ -13378,6 +13590,609 @@ MainWindow._patched_build_blank_only_content_text = _patched_build_blank_only_co
 MainWindow._build_scan_row_payload_from_result = _patched_build_scan_row_payload_from_result
 MainWindow._load_batch_subject_state = _patched_load_batch_subject_state
 MainWindow._save_batch_for_selected_subject = _patched_save_batch_for_selected_subject
+
+
+
+def _patched_rehydrate_cached_batch_row(self, row_payload: dict, subject_key: str = "") -> OMRResult | None:
+    if not isinstance(row_payload, dict):
+        return None
+    serialized = dict(row_payload.get("serialized_result", {}) or {})
+    result = None
+    if serialized:
+        try:
+            result = self._deserialize_omr_result(serialized)
+        except Exception:
+            result = None
+    if result is None:
+        result = OMRResult(
+            image_path=str(row_payload.get("image_path", "") or ""),
+            student_id=str(row_payload.get("student_id", "") or ""),
+            exam_code=str(row_payload.get("exam_code", "") or ""),
+            mcq_answers={},
+            true_false_answers={},
+            numeric_answers={},
+        )
+
+    def _to_int_str_map(raw: object) -> dict[int, str]:
+        out: dict[int, str] = {}
+        if not isinstance(raw, dict):
+            return out
+        for k, v in raw.items():
+            try:
+                q = int(k)
+            except Exception:
+                continue
+            out[q] = str(v or "")
+        return out
+
+    def _to_int_bool_map(raw: object) -> dict[int, dict[str, bool]]:
+        out: dict[int, dict[str, bool]] = {}
+        if not isinstance(raw, dict):
+            return out
+        for k, v in raw.items():
+            try:
+                q = int(k)
+            except Exception:
+                continue
+            flags: dict[str, bool] = {}
+            if isinstance(v, dict):
+                for sub, flag in v.items():
+                    sub_key = str(sub or "").strip().lower()
+                    if sub_key in {"a", "b", "c", "d"}:
+                        flags[sub_key] = bool(flag)
+            out[q] = flags
+        return out
+
+    row_mcq = _to_int_str_map(row_payload.get("mcq_answers", {}))
+    row_tf = _to_int_bool_map(row_payload.get("true_false_answers", {}))
+    row_num = _to_int_str_map(row_payload.get("numeric_answers", {}))
+
+    current_mcq = _to_int_str_map(getattr(result, "mcq_answers", {}) or {})
+    current_tf = _to_int_bool_map(getattr(result, "true_false_answers", {}) or {})
+    current_num = _to_int_str_map(getattr(result, "numeric_answers", {}) or {})
+
+    if row_mcq:
+        current_mcq.update({q: v for q, v in row_mcq.items() if str(v or "").strip()})
+    if row_tf:
+        for q, flags in row_tf.items():
+            merged = dict(current_tf.get(q, {}) or {})
+            for sub, flag in flags.items():
+                merged[str(sub)] = bool(flag)
+            if merged:
+                current_tf[q] = merged
+    if row_num:
+        current_num.update({q: v for q, v in row_num.items() if str(v or "").strip()})
+
+    result.mcq_answers = current_mcq
+    result.true_false_answers = current_tf
+    result.numeric_answers = current_num
+    result.image_path = str(row_payload.get("image_path", "") or getattr(result, "image_path", "") or "")
+    result.student_id = str(row_payload.get("student_id", "") or getattr(result, "student_id", "") or "")
+    result.exam_code = str(row_payload.get("exam_code", "") or getattr(result, "exam_code", "") or "")
+    setattr(result, "exam_room", str(row_payload.get("exam_room", "") or getattr(result, "exam_room", "") or ""))
+    setattr(result, "full_name", str(row_payload.get("full_name", "") or getattr(result, "full_name", "") or ""))
+    setattr(result, "birth_date", str(row_payload.get("birth_date", "") or getattr(result, "birth_date", "") or ""))
+    setattr(result, "manual_content_override", str(row_payload.get("manual_content_override", "") or getattr(result, "manual_content_override", "") or ""))
+    setattr(result, "cached_content", str(row_payload.get("content", "") or getattr(result, "cached_content", "") or ""))
+    setattr(result, "cached_status", str(row_payload.get("status", "") or getattr(result, "cached_status", "") or ""))
+    setattr(result, "cached_recognized_short", str(row_payload.get("recognized_short", "") or getattr(result, "cached_recognized_short", "") or ""))
+    setattr(result, "recognized_template_path", str(row_payload.get("recognized_template_path", "") or getattr(result, "recognized_template_path", "") or ""))
+    setattr(result, "recognized_alignment_profile", str(row_payload.get("recognized_alignment_profile", "") or getattr(result, "recognized_alignment_profile", "") or ""))
+    setattr(result, "recognized_fill_threshold", float(row_payload.get("recognized_fill_threshold", getattr(result, "recognized_fill_threshold", 0.45)) or 0.45))
+    setattr(result, "recognized_empty_threshold", float(row_payload.get("recognized_empty_threshold", getattr(result, "recognized_empty_threshold", 0.20)) or 0.20))
+    setattr(result, "recognized_certainty_margin", float(row_payload.get("recognized_certainty_margin", getattr(result, "recognized_certainty_margin", 0.08)) or 0.08))
+    recognition_errors = row_payload.get("recognition_errors", None)
+    if isinstance(recognition_errors, list):
+        result.recognition_errors = [str(x) for x in recognition_errors]
+    issues_payload = row_payload.get("issues", None)
+    if isinstance(issues_payload, list) and not getattr(result, "issues", None):
+        hydrated_issues = []
+        for item in issues_payload:
+            if not isinstance(item, dict):
+                continue
+            try:
+                hydrated_issues.append(RecognitionContext(code=str(item.get("code", "") or ""), message=str(item.get("message", "") or "")))
+            except Exception:
+                pass
+        if hydrated_issues:
+            setattr(result, "issues", hydrated_issues)
+
+    answer_string_text = str(row_payload.get("answer_string", "") or getattr(result, "answer_string", "") or "")
+    if answer_string_text:
+        result.answer_string = answer_string_text
+    else:
+        result.answer_string = self._normalize_non_api_answer_string(result, subject_key)
+    result.sync_legacy_aliases()
+    return result
+
+
+def _patched_cache_working_batch_state_v3(self, subject_key: str) -> None:
+    key = self._batch_runtime_key(subject_key)
+    if not key or not hasattr(self, "scan_list"):
+        return
+
+    rows: list[dict] = []
+    cached_scan_results: list[OMRResult] = []
+    for r in range(self.scan_list.rowCount()):
+        sid_item = self.scan_list.item(r, 0)
+        row_result = None
+        serialized_payload = sid_item.data(Qt.UserRole + 10) if sid_item else None
+        if isinstance(serialized_payload, dict) and serialized_payload:
+            try:
+                row_result = self._deserialize_omr_result(serialized_payload)
+            except Exception:
+                row_result = None
+        if row_result is None:
+            row_result = self._restore_full_result_for_row(r)
+        if row_result is None:
+            row_result = OMRResult(image_path=str(sid_item.data(Qt.UserRole) if sid_item else ""))
+
+        sid_text = str(sid_item.text() if sid_item else "").strip()
+        row_result.student_id = "" if sid_text in {"", "-"} else sid_text
+        row_result.exam_code = str(sid_item.data(Qt.UserRole + 1) if sid_item else "").strip()
+        row_result.image_path = str(sid_item.data(Qt.UserRole) if sid_item else "").strip() or str(getattr(row_result, "image_path", "") or "")
+        setattr(row_result, "exam_room", str(self.scan_list.item(r, 1).text() if self.scan_list.item(r, 1) else ""))
+        setattr(row_result, "full_name", str(self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else ""))
+        setattr(row_result, "birth_date", str(self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else ""))
+        setattr(row_result, "manual_content_override", str(sid_item.data(Qt.UserRole + 11) if sid_item else "").strip())
+        row_result.answer_string = self._normalize_non_api_answer_string(row_result, key)
+        row_payload = self._build_scan_row_payload_from_result(row_result, row_idx=r)
+        serialized = dict(row_payload.get("serialized_result", {}) or self._serialize_omr_result(row_result))
+        row_dict = {
+            "student_id": str(row_payload.get("student_id", "-") or "-"),
+            "image_path": str(row_payload.get("image_path", "") or ""),
+            "exam_code": str(row_payload.get("exam_code", "") or ""),
+            "recognized_short": str(row_payload.get("recognized_short", "") or ""),
+            "exam_room": str(row_payload.get("exam_room", "-") or "-"),
+            "full_name": str(row_payload.get("full_name", "-") or "-"),
+            "birth_date": str(row_payload.get("birth_date", "-") or "-"),
+            "content": str(row_payload.get("content", "-") or "-"),
+            "status": str(row_payload.get("status", "-") or "-"),
+            "answer_string": str(getattr(row_result, "answer_string", "") or ""),
+            "mcq_answers": dict(getattr(row_result, "mcq_answers", {}) or {}),
+            "true_false_answers": dict(getattr(row_result, "true_false_answers", {}) or {}),
+            "numeric_answers": dict(getattr(row_result, "numeric_answers", {}) or {}),
+            "recognition_errors": list(getattr(row_result, "recognition_errors", []) or []),
+            "recognized_template_path": str(getattr(row_result, "recognized_template_path", "") or ""),
+            "recognized_alignment_profile": str(getattr(row_result, "recognized_alignment_profile", "") or ""),
+            "recognized_fill_threshold": float(getattr(row_result, "recognized_fill_threshold", 0.45) or 0.45),
+            "recognized_empty_threshold": float(getattr(row_result, "recognized_empty_threshold", 0.20) or 0.20),
+            "recognized_certainty_margin": float(getattr(row_result, "recognized_certainty_margin", 0.08) or 0.08),
+            "issues": [
+                {"code": str(getattr(i, "code", "") or ""), "message": str(getattr(i, "message", "") or "")}
+                for i in (getattr(row_result, "issues", []) or [])
+            ],
+            "manual_content_override": str(row_payload.get("manual_content_override", "") or ""),
+            "serialized_result": serialized,
+        }
+        rows.append(row_dict)
+        try:
+            cached_scan_results.append(self._deserialize_omr_result(serialized))
+        except Exception:
+            cached_scan_results.append(self._lightweight_result_copy(row_result))
+
+    preview_rows: list[dict] = []
+    if hasattr(self, "scan_result_preview"):
+        for r in range(self.scan_result_preview.rowCount()):
+            preview_rows.append(
+                {
+                    "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
+                    "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
+                }
+            )
+
+    selected_row = self.scan_list.currentRow() if hasattr(self, "scan_list") else -1
+    selected_image_path = ""
+    if 0 <= selected_row < self.scan_list.rowCount():
+        item = self.scan_list.item(selected_row, 0)
+        selected_image_path = str(item.data(Qt.UserRole) if item else "")
+    self.batch_working_state_by_subject[key] = {
+        "runtime_key": key,
+        "scan_results": list(cached_scan_results),
+        "rows": rows,
+        "preview": preview_rows,
+        "selected_row": int(selected_row),
+        "selected_image_path": selected_image_path,
+        "preview_rotation_by_index": dict(getattr(self, "preview_rotation_by_index", {}) or {}),
+        "preview_markers_by_index": dict(getattr(self, "preview_markers_by_index", {}) or {}),
+        "dirty": bool(hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled()),
+    }
+
+
+def _patched_restore_cached_working_batch_state_v3(self, subject_key: str) -> bool:
+    key = self._batch_runtime_key(subject_key)
+    cached = self.batch_working_state_by_subject.get(key)
+    if not isinstance(cached, dict):
+        return False
+    if str(cached.get("runtime_key", "") or "") not in {"", key}:
+        return False
+    if hasattr(self, "scan_list"):
+        self.scan_list.setRowCount(0)
+    if hasattr(self, "scan_result_preview"):
+        self.scan_result_preview.setRowCount(0)
+
+    rows_fallback = cached.get("rows", []) if isinstance(cached.get("rows", []), list) else []
+    restored_rows: list[OMRResult] = []
+    for row in rows_fallback:
+        restored = self._patched_rehydrate_cached_batch_row(row, key)
+        if restored is None:
+            continue
+        try:
+            self._trim_result_answers_to_expected_scope(restored)
+        except Exception:
+            pass
+        restored_rows.append(restored)
+
+    if not restored_rows:
+        for res in list(cached.get("scan_results", []) or []):
+            try:
+                candidate = self._lightweight_result_copy(res)
+            except Exception:
+                candidate = res
+            if candidate is None:
+                continue
+            try:
+                self._trim_result_answers_to_expected_scope(candidate)
+            except Exception:
+                pass
+            restored_rows.append(candidate)
+
+    self.scan_results = list(restored_rows)
+    self.scan_results_by_subject[key] = list(self.scan_results)
+    subject_current = str(self._current_batch_subject_key() or "").strip()
+    if subject_current:
+        self.scan_results_by_subject[self._batch_result_subject_key(subject_current)] = list(self.scan_results)
+
+    if self.scan_results:
+        self._populate_scan_grid_from_results(self.scan_results, skip_expensive_checks=False)
+
+    for row in (cached.get("preview", []) if isinstance(cached.get("preview", []), list) else []):
+        if not isinstance(row, dict):
+            continue
+        r = self.scan_result_preview.rowCount()
+        self.scan_result_preview.insertRow(r)
+        self.scan_result_preview.setItem(r, 0, QTableWidgetItem(str(row.get("label", ""))))
+        self.scan_result_preview.setItem(r, 1, QTableWidgetItem(str(row.get("value", ""))))
+
+    self.preview_rotation_by_index = dict(cached.get("preview_rotation_by_index", {}) or {})
+    self.preview_markers_by_index = dict(cached.get("preview_markers_by_index", {}) or {})
+    selected_image_path = str(cached.get("selected_image_path", "") or "")
+    selected_row = int(cached.get("selected_row", 0) or 0)
+    picked_row = -1
+    if selected_image_path and hasattr(self, "scan_list"):
+        for r in range(self.scan_list.rowCount()):
+            item = self.scan_list.item(r, 0)
+            if str(item.data(Qt.UserRole) if item else "") == selected_image_path:
+                picked_row = r
+                break
+    if picked_row < 0:
+        picked_row = selected_row if 0 <= selected_row < self.scan_list.rowCount() else (0 if self.scan_list.rowCount() > 0 else -1)
+    if picked_row >= 0 and hasattr(self, "scan_list"):
+        self.scan_list.selectRow(picked_row)
+        self.scan_list.setCurrentCell(picked_row, 0)
+        self._on_scan_selected()
+    else:
+        self._clear_batch_preview_panels()
+
+    if hasattr(self, "btn_save_batch_subject"):
+        cached_dirty = bool(cached.get("dirty", False))
+        self.btn_save_batch_subject.setEnabled(cached_dirty and self.scan_list.rowCount() > 0)
+    return self.scan_list.rowCount() > 0
+
+
+MainWindow._patched_rehydrate_cached_batch_row = _patched_rehydrate_cached_batch_row
+MainWindow._cache_working_batch_state = _patched_cache_working_batch_state_v3
+MainWindow._restore_cached_working_batch_state = _patched_restore_cached_working_batch_state_v3
+
+
+
+def _patched_expected_questions_by_section_v2(self, result) -> dict[str, list[int]]:
+    template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+    if self.template:
+        for z in self.template.zones:
+            if not z.grid:
+                continue
+            count = int(z.grid.question_count or z.grid.rows or 0)
+            start = int(z.grid.question_start)
+            rng = list(range(start, start + max(0, count)))
+            if z.zone_type.value == "MCQ_BLOCK":
+                template_expected["MCQ"].extend(rng)
+            elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                template_expected["TF"].extend(rng)
+            elif z.zone_type.value == "NUMERIC_BLOCK":
+                template_expected["NUMERIC"].extend(rng)
+        template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+    expected_by_section = {sec: list(vals) for sec, vals in template_expected.items()}
+
+    cfg = self._selected_batch_subject_config() or self._resolve_subject_config_for_batch() or {}
+    subject_key_name = ""
+    if isinstance(cfg, dict) and cfg:
+        try:
+            subject_key_name = str(self._subject_key_from_cfg(cfg) or "").strip()
+        except Exception:
+            subject_key_name = ""
+    if not subject_key_name:
+        try:
+            subject_key_name = str(self._current_batch_subject_key() or "").strip()
+        except Exception:
+            subject_key_name = ""
+    if not subject_key_name:
+        subject_key_name = str(getattr(self, 'active_batch_subject_key', '') or '').strip()
+
+    if self.answer_keys and subject_key_name:
+        key = self.answer_keys.get(subject_key_name, str(getattr(result, 'exam_code', '') or '').strip())
+        if key:
+            full_credit = getattr(key, 'full_credit_questions', {}) or {}
+            invalid_rows = getattr(key, 'invalid_answer_rows', {}) or {}
+
+            def _extra_for_section(sec: str) -> set[int]:
+                extra: set[int] = set()
+                for q in list((full_credit.get(sec, []) or [])):
+                    try:
+                        extra.add(int(q))
+                    except Exception:
+                        continue
+                for q in dict((invalid_rows.get(sec, {}) or {})).keys():
+                    try:
+                        extra.add(int(q))
+                    except Exception:
+                        continue
+                return extra
+
+            key_sections = {
+                'MCQ': sorted(set(int(q) for q in (getattr(key, 'answers', {}) or {}).keys()) | _extra_for_section('MCQ')),
+                'TF': sorted(set(int(q) for q in (getattr(key, 'true_false_answers', {}) or {}).keys()) | _extra_for_section('TF')),
+                'NUMERIC': sorted(set(int(q) for q in (getattr(key, 'numeric_answers', {}) or {}).keys()) | _extra_for_section('NUMERIC')),
+            }
+            for sec in ['MCQ', 'TF', 'NUMERIC']:
+                if key_sections[sec]:
+                    expected_by_section[sec] = key_sections[sec]
+
+    configured_counts = self._subject_section_question_counts(subject_key_name)
+    for sec in ['MCQ', 'TF', 'NUMERIC']:
+        limit = max(0, int(configured_counts.get(sec, 0) or 0))
+        if limit <= 0:
+            expected_by_section[sec] = []
+        elif expected_by_section.get(sec):
+            expected_by_section[sec] = sorted(expected_by_section.get(sec, []))[:limit]
+        else:
+            expected_by_section[sec] = list(range(1, limit + 1))
+    return expected_by_section
+
+
+def _patched_cache_working_batch_state_v4(self, subject_key: str) -> None:
+    key = self._batch_runtime_key(subject_key)
+    if not key or not hasattr(self, 'scan_list'):
+        return
+    rows: list[dict] = []
+    cached_scan_results: list[OMRResult] = []
+    for r in range(self.scan_list.rowCount()):
+        row_result = self._restore_full_result_for_row(r)
+        if row_result is None:
+            sid_item = self.scan_list.item(r, 0)
+            row_result = OMRResult(image_path=str(sid_item.data(Qt.UserRole) if sid_item else ''))
+        try:
+            payload = self._build_scan_row_payload_from_result(row_result, row_idx=r)
+        except Exception:
+            payload = {
+                'image_path': str(getattr(row_result, 'image_path', '') or ''),
+                'student_id': str(getattr(row_result, 'student_id', '') or ''),
+                'exam_room': str(getattr(row_result, 'exam_room', '') or '-'),
+                'exam_code': str(getattr(row_result, 'exam_code', '') or ''),
+                'full_name': str(getattr(row_result, 'full_name', '') or '-'),
+                'birth_date': str(getattr(row_result, 'birth_date', '') or '-'),
+                'content': str(self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else ''),
+                'status': str(self.scan_list.item(r, 6).toolTip() if self.scan_list.item(r, 6) and self.scan_list.item(r, 6).toolTip() else self.scan_list.item(r, 6).text() if self.scan_list.item(r, 6) else 'OK'),
+                'recognized_short': str(self.scan_list.item(r, 0).data(Qt.UserRole + 2) if self.scan_list.item(r, 0) else ''),
+                'manual_content_override': str(self.scan_list.item(r, 0).data(Qt.UserRole + 11) if self.scan_list.item(r, 0) else ''),
+                'serialized_result': self._serialize_omr_result(row_result),
+            }
+        serialized = dict(payload.get('serialized_result', {}) or self._serialize_omr_result(row_result))
+        blank_map = dict(getattr(row_result, 'cached_blank_summary', {}) or {})
+        if not blank_map:
+            try:
+                blank_map = self._compute_blank_questions(self._lightweight_result_copy(row_result))
+            except Exception:
+                blank_map = {'MCQ': [], 'TF': [], 'NUMERIC': []}
+        row_dict = {
+            'student_id': str(payload.get('student_id', '-') or '-'),
+            'image_path': str(payload.get('image_path', '') or ''),
+            'exam_code': str(payload.get('exam_code', '') or ''),
+            'recognized_short': str(payload.get('recognized_short', '') or ''),
+            'exam_room': str(payload.get('exam_room', '-') or '-'),
+            'full_name': str(payload.get('full_name', '-') or '-'),
+            'birth_date': str(payload.get('birth_date', '-') or '-'),
+            'content': str(self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else payload.get('content', '') or ''),
+            'status': str(self.scan_list.item(r, 6).toolTip() if self.scan_list.item(r, 6) and self.scan_list.item(r, 6).toolTip() else self.scan_list.item(r, 6).text() if self.scan_list.item(r, 6) else payload.get('status', 'OK') or 'OK'),
+            'answer_string': str(getattr(row_result, 'answer_string', '') or ''),
+            'mcq_answers': dict(getattr(row_result, 'mcq_answers', {}) or {}),
+            'true_false_answers': dict(getattr(row_result, 'true_false_answers', {}) or {}),
+            'numeric_answers': dict(getattr(row_result, 'numeric_answers', {}) or {}),
+            'recognition_errors': list(getattr(row_result, 'recognition_errors', []) or []),
+            'recognized_template_path': str(getattr(row_result, 'recognized_template_path', '') or ''),
+            'recognized_alignment_profile': str(getattr(row_result, 'recognized_alignment_profile', '') or ''),
+            'recognized_fill_threshold': float(getattr(row_result, 'recognized_fill_threshold', 0.45) or 0.45),
+            'recognized_empty_threshold': float(getattr(row_result, 'recognized_empty_threshold', 0.20) or 0.20),
+            'recognized_certainty_margin': float(getattr(row_result, 'recognized_certainty_margin', 0.08) or 0.08),
+            'issues': [
+                {'code': str(getattr(i, 'code', '') or ''), 'message': str(getattr(i, 'message', '') or '')}
+                for i in (getattr(row_result, 'issues', []) or [])
+            ],
+            'manual_content_override': str(payload.get('manual_content_override', '') or ''),
+            'blank_map': dict(blank_map),
+            'serialized_result': serialized,
+        }
+        rows.append(row_dict)
+        try:
+            hydrated = self._patched_rehydrate_cached_batch_row(row_dict, subject_key)
+            cached_scan_results.append(hydrated if hydrated is not None else self._deserialize_omr_result(serialized))
+        except Exception:
+            try:
+                cached_scan_results.append(self._deserialize_omr_result(serialized))
+            except Exception:
+                cached_scan_results.append(self._lightweight_result_copy(row_result))
+
+    preview_rows: list[dict] = []
+    if hasattr(self, 'scan_result_preview'):
+        for r in range(self.scan_result_preview.rowCount()):
+            preview_rows.append({
+                'label': self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else '',
+                'value': self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else '',
+            })
+
+    selected_row = self.scan_list.currentRow() if hasattr(self, 'scan_list') else -1
+    selected_image_path = ''
+    if 0 <= selected_row < self.scan_list.rowCount():
+        item = self.scan_list.item(selected_row, 0)
+        selected_image_path = str(item.data(Qt.UserRole) if item else '')
+    self.batch_working_state_by_subject[key] = {
+        'runtime_key': key,
+        'scan_results': list(cached_scan_results),
+        'rows': rows,
+        'preview': preview_rows,
+        'selected_row': int(selected_row),
+        'selected_image_path': selected_image_path,
+        'preview_rotation_by_index': dict(getattr(self, 'preview_rotation_by_index', {}) or {}),
+        'preview_markers_by_index': dict(getattr(self, 'preview_markers_by_index', {}) or {}),
+        'dirty': bool(hasattr(self, 'btn_save_batch_subject') and self.btn_save_batch_subject.isEnabled()),
+    }
+
+
+def _patched_restore_cached_working_batch_state_v4(self, subject_key: str) -> bool:
+    key = self._batch_runtime_key(subject_key)
+    cached = self.batch_working_state_by_subject.get(key)
+    if not isinstance(cached, dict):
+        return False
+    if str(cached.get('runtime_key', '') or '') not in {'', key}:
+        return False
+
+    if hasattr(self, 'scan_list'):
+        self.scan_list.setRowCount(0)
+    if hasattr(self, 'scan_result_preview'):
+        self.scan_result_preview.setRowCount(0)
+    self.scan_blank_questions.clear()
+    self.scan_blank_summary.clear()
+
+    rows_fallback = cached.get('rows', []) if isinstance(cached.get('rows', []), list) else []
+    restored_rows: list[OMRResult] = []
+    applied_payloads: list[dict] = []
+    subject_key_for_restore = str(self._current_batch_subject_key() or subject_key or '').strip()
+
+    for row in rows_fallback:
+        if not isinstance(row, dict):
+            continue
+        restored = self._patched_rehydrate_cached_batch_row(row, subject_key_for_restore)
+        if restored is None:
+            continue
+        restored_rows.append(restored)
+        payload = dict(row)
+        payload.setdefault('image_path', str(getattr(restored, 'image_path', '') or ''))
+        payload.setdefault('student_id', str(getattr(restored, 'student_id', '') or '-'))
+        payload.setdefault('exam_room', str(getattr(restored, 'exam_room', '') or '-'))
+        payload.setdefault('exam_code', str(getattr(restored, 'exam_code', '') or ''))
+        payload.setdefault('full_name', str(getattr(restored, 'full_name', '') or '-'))
+        payload.setdefault('birth_date', str(getattr(restored, 'birth_date', '') or '-'))
+        payload.setdefault('recognized_short', str(getattr(restored, 'cached_recognized_short', '') or self._short_recognition_text_for_result(restored) or ''))
+        payload.setdefault('manual_content_override', str(getattr(restored, 'manual_content_override', '') or ''))
+        payload.setdefault('serialized_result', self._serialize_omr_result(restored))
+        blank_map = dict(payload.get('blank_map', {}) or getattr(restored, 'cached_blank_summary', {}) or {})
+        if not blank_map:
+            try:
+                blank_map = self._compute_blank_questions(self._lightweight_result_copy(restored))
+            except Exception:
+                blank_map = {'MCQ': [], 'TF': [], 'NUMERIC': []}
+        payload['blank_map'] = dict(blank_map)
+        setattr(restored, 'cached_blank_summary', dict(blank_map))
+        content_text = str(payload.get('content', '') or '')
+        if not content_text:
+            try:
+                fresh = self._build_scan_row_payload_from_result(restored, row_idx=None)
+            except Exception:
+                fresh = {}
+            content_text = str(fresh.get('content', '') or '')
+            payload['status'] = str(payload.get('status', '') or fresh.get('status', 'OK') or 'OK')
+            payload['recognized_short'] = str(payload.get('recognized_short', '') or fresh.get('recognized_short', '') or '')
+        payload['content'] = content_text
+        setattr(restored, 'cached_content', content_text)
+        setattr(restored, 'cached_status', str(payload.get('status', '') or getattr(restored, 'cached_status', '') or 'OK'))
+        setattr(restored, 'cached_recognized_short', str(payload.get('recognized_short', '') or getattr(restored, 'cached_recognized_short', '') or ''))
+        applied_payloads.append(payload)
+
+    if not restored_rows:
+        for res in list(cached.get('scan_results', []) or []):
+            try:
+                candidate = self._lightweight_result_copy(res)
+            except Exception:
+                candidate = res
+            if candidate is None:
+                continue
+            restored_rows.append(candidate)
+            try:
+                payload = self._build_scan_row_payload_from_result(candidate, row_idx=None)
+            except Exception:
+                payload = {'serialized_result': self._serialize_omr_result(candidate)}
+            payload.setdefault('content', str(getattr(candidate, 'cached_content', '') or ''))
+            payload.setdefault('status', str(getattr(candidate, 'cached_status', '') or 'OK'))
+            payload.setdefault('recognized_short', str(getattr(candidate, 'cached_recognized_short', '') or ''))
+            payload.setdefault('blank_map', dict(getattr(candidate, 'cached_blank_summary', {}) or {}))
+            applied_payloads.append(payload)
+
+    self.scan_results = list(restored_rows)
+    self.scan_results_by_subject[key] = list(self.scan_results)
+    current_subject = str(self._current_batch_subject_key() or '').strip()
+    if current_subject:
+        self.scan_results_by_subject[self._batch_result_subject_key(current_subject)] = list(self.scan_results)
+
+    if hasattr(self, 'scan_list'):
+        self.scan_list.setRowCount(len(applied_payloads))
+        for r, payload in enumerate(applied_payloads):
+            blank_map = dict(payload.get('blank_map', {}) or {'MCQ': [], 'TF': [], 'NUMERIC': []})
+            self.scan_blank_summary[r] = dict(blank_map)
+            self.scan_blank_questions[r] = list(blank_map.get('MCQ', []))
+            forced_status = str(payload.get('forced_status', '') or '')
+            image_key = self._result_identity_key(str(payload.get('image_path', '') or ''))
+            if forced_status and image_key:
+                self.scan_forced_status_by_index[image_key] = forced_status
+            self._apply_scan_row_payload_to_grid(r, payload)
+
+    for row in (cached.get('preview', []) if isinstance(cached.get('preview', []), list) else []):
+        if not isinstance(row, dict):
+            continue
+        r = self.scan_result_preview.rowCount()
+        self.scan_result_preview.insertRow(r)
+        self.scan_result_preview.setItem(r, 0, QTableWidgetItem(str(row.get('label', ''))))
+        self.scan_result_preview.setItem(r, 1, QTableWidgetItem(str(row.get('value', ''))))
+
+    self.preview_rotation_by_index = dict(cached.get('preview_rotation_by_index', {}) or {})
+    self.preview_markers_by_index = dict(cached.get('preview_markers_by_index', {}) or {})
+    selected_image_path = str(cached.get('selected_image_path', '') or '')
+    selected_row = int(cached.get('selected_row', 0) or 0)
+    picked_row = -1
+    if selected_image_path and hasattr(self, 'scan_list'):
+        for r in range(self.scan_list.rowCount()):
+            item = self.scan_list.item(r, 0)
+            if str(item.data(Qt.UserRole) if item else '') == selected_image_path:
+                picked_row = r
+                break
+    if picked_row < 0:
+        picked_row = selected_row if 0 <= selected_row < self.scan_list.rowCount() else (0 if self.scan_list.rowCount() > 0 else -1)
+    if picked_row >= 0 and hasattr(self, 'scan_list'):
+        self.scan_list.selectRow(picked_row)
+        self.scan_list.setCurrentCell(picked_row, 0)
+        self._on_scan_selected()
+    else:
+        self._clear_batch_preview_panels()
+
+    if hasattr(self, 'btn_save_batch_subject'):
+        cached_dirty = bool(cached.get('dirty', False))
+        self.btn_save_batch_subject.setEnabled(cached_dirty and self.scan_list.rowCount() > 0)
+    return self.scan_list.rowCount() > 0
+
+
+MainWindow._expected_questions_by_section = _patched_expected_questions_by_section_v2
+MainWindow._cache_working_batch_state = _patched_cache_working_batch_state_v4
+MainWindow._restore_cached_working_batch_state = _patched_restore_cached_working_batch_state_v4
 
 
 def run() -> None:
