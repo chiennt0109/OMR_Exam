@@ -13135,6 +13135,8 @@ def _patched_compute_blank_questions(self, result) -> dict[str, list[int]]:
                     continue
                 if q_actual in actual_to_display and str(value or "").strip():
                     answered_display.add(int(actual_to_display[q_actual]))
+                elif q_actual in set(display_questions) and str(value or "").strip():
+                    answered_display.add(int(q_actual))
             blanks[sec] = [int(q_display) for q_display in display_questions if int(q_display) not in answered_display]
             continue
 
@@ -13143,6 +13145,8 @@ def _patched_compute_blank_questions(self, result) -> dict[str, list[int]]:
             for display_q in display_questions:
                 actual_q = int(display_to_actual.get(int(display_q), int(display_q)))
                 flags = tf_payload.get(actual_q, {})
+                if not flags and int(display_q) in tf_payload:
+                    flags = tf_payload.get(int(display_q), {})
                 flags = flags if isinstance(flags, dict) else {}
                 if not all(key in flags for key in ["a", "b", "c", "d"]):
                     tf_blank_questions.append(int(display_q))
@@ -13153,6 +13157,8 @@ def _patched_compute_blank_questions(self, result) -> dict[str, list[int]]:
         for display_q in display_questions:
             actual_q = int(display_to_actual.get(int(display_q), int(display_q)))
             value = str((numeric_payload or {}).get(actual_q, "") or "").strip()
+            if not value:
+                value = str((numeric_payload or {}).get(int(display_q), "") or "").strip()
             if not value:
                 numeric_blank_questions.append(int(display_q))
         blanks[sec] = numeric_blank_questions
@@ -13225,6 +13231,8 @@ def _patched_build_blank_only_content_text(self, result, blank_map: dict[str, li
         for display_q in tf_blanks:
             actual_q = int(display_to_actual.get("TF", {}).get(int(display_q), int(display_q)))
             flags = dict(tf_payload.get(actual_q, {}) or {})
+            if not flags:
+                flags = dict(tf_payload.get(int(display_q), {}) or {})
             missing_count = sum(1 for key in ["a", "b", "c", "d"] if key not in flags)
             if missing_count > 0:
                 tf_details.append(f"{missing_count} ý/câu {display_q}")
