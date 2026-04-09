@@ -11357,7 +11357,23 @@ class MainWindow(QMainWindow):
 
         preview_result = self._scoped_result_copy(result)
         section_counts = self._subject_section_question_counts(self._current_batch_subject_key())
-        expected_actual = self._expected_questions_by_section(preview_result)
+        default_by_config = {
+            sec: list(range(1, max(0, int(section_counts.get(sec, 0) or 0)) + 1))
+            for sec in ["MCQ", "TF", "NUMERIC"]
+        }
+        answer_key = self._subject_answer_key_for_result(preview_result, self._current_batch_subject_key())
+        if answer_key is not None:
+            expected_actual = {
+                "MCQ": sorted(set(int(q) for q in (answer_key.answers or {}).keys())) or list(default_by_config["MCQ"]),
+                "TF": sorted(set(int(q) for q in (answer_key.true_false_answers or {}).keys())) or list(default_by_config["TF"]),
+                "NUMERIC": sorted(set(int(q) for q in (answer_key.numeric_answers or {}).keys())) or list(default_by_config["NUMERIC"]),
+            }
+        else:
+            expected_actual = {
+                "MCQ": list(default_by_config["MCQ"]),
+                "TF": list(default_by_config["TF"]),
+                "NUMERIC": list(default_by_config["NUMERIC"]),
+            }
         expected_display: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
         actual_to_display: dict[str, dict[int, int]] = {"MCQ": {}, "TF": {}, "NUMERIC": {}}
         for sec in ["MCQ", "TF", "NUMERIC"]:
