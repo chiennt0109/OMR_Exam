@@ -13272,26 +13272,47 @@ def _patched_build_recognition_content_text(self, result, blank_map: dict[str, l
 
 
 def _patched_build_blank_only_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
-    subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-    exam_code_text = str(getattr(result, "exam_code", "") or "").strip()
-    answer_key = self._subject_answer_key_for_result(result, subject_key) if subject_key else None
-    if not exam_code_text or "?" in exam_code_text or answer_key is None:
-        return ""
-
-    section_titles = {"MCQ": "MCQ", "TF": "TF", "NUMERIC": "NUM"}
-    parts = []
+    blank_map = blank_map if isinstance(blank_map, dict) else {}
+    section_counts = self._subject_section_question_counts(self._current_batch_subject_key())
+    expected_actual = self._expected_questions_by_section(result) or {}
+    display_to_actual: dict[str, dict[int, int]] = {"MCQ": {}, "TF": {}, "NUMERIC": {}}
     for sec in ["MCQ", "TF", "NUMERIC"]:
-        vals = []
-        for item in list((blank_map or {}).get(sec, []) or []):
-            try:
-                num = int(item)
-            except Exception:
-                continue
-            if num > 0:
-                vals.append(num)
-        vals = sorted(set(vals))
-        if vals:
-            parts.append(f"{section_titles.get(sec, sec)}: {','.join(str(v) for v in vals)}")
+        limit = max(0, int(section_counts.get(sec, 0) or 0))
+        actual_questions = sorted(set(int(q) for q in (expected_actual.get(sec, []) or [])))[:limit]
+        if limit > 0 and not actual_questions:
+            display_questions = list(range(1, limit + 1))
+            actual_questions = list(display_questions)
+        else:
+            contiguous = actual_questions == list(range(1, len(actual_questions) + 1))
+            display_questions = list(actual_questions) if contiguous else list(range(1, len(actual_questions) + 1))
+        display_to_actual[sec] = {
+            int(display_q): int(actual_q)
+            for display_q, actual_q in zip(display_questions, actual_questions)
+        }
+
+    mcq_blanks = sorted(set(int(x) for x in list(blank_map.get("MCQ", []) or []) if str(x).strip().lstrip("-").isdigit() and int(x) > 0))
+    tf_blanks = sorted(set(int(x) for x in list(blank_map.get("TF", []) or []) if str(x).strip().lstrip("-").isdigit() and int(x) > 0))
+    num_blanks = sorted(set(int(x) for x in list(blank_map.get("NUMERIC", []) or []) if str(x).strip().lstrip("-").isdigit() and int(x) > 0))
+
+    parts: list[str] = []
+    if mcq_blanks:
+        parts.append(f"MCQ trống: {','.join(str(v) for v in mcq_blanks)}")
+
+    if tf_blanks:
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        tf_details: list[str] = []
+        for display_q in tf_blanks:
+            actual_q = int(display_to_actual.get("TF", {}).get(int(display_q), int(display_q)))
+            flags = dict(tf_payload.get(actual_q, {}) or {})
+            missing_count = sum(1 for key in ["a", "b", "c", "d"] if key not in flags)
+            if missing_count > 0:
+                tf_details.append(f"{missing_count} ý/câu {display_q}")
+        if tf_details:
+            parts.append(f"TF trống: {', '.join(tf_details)}")
+
+    if num_blanks:
+        parts.append(f"NUMERIC trống: {','.join(str(v) for v in num_blanks)}")
+
     return " | ".join(parts)
 
 
