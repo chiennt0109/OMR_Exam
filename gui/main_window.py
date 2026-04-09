@@ -11295,10 +11295,29 @@ class MainWindow(QMainWindow):
 
         preview_result = self._lightweight_result_copy(result)
         section_counts = self._subject_section_question_counts(self._current_batch_subject_key())
+        expected_by_section = self._expected_questions_by_section(preview_result)
         blank_map = self.scan_blank_summary.get(index) or self._compute_blank_questions(self._scoped_result_copy(result))
-        mcq_text = self._compact_value(self._format_mcq_answers(preview_result.mcq_answers or {}), 220)
-        tf_text = self._compact_value(self._format_tf_answers(preview_result.true_false_answers or {}), 220)
-        num_text = self._compact_value(self._format_numeric_answers(preview_result.numeric_answers or {}), 220)
+        mcq_text = self._compact_value(
+            self._format_mcq_answers_with_expected(
+                preview_result.mcq_answers or {},
+                list(expected_by_section.get("MCQ", []) or []),
+            ),
+            220,
+        )
+        tf_text = self._compact_value(
+            self._format_tf_answers_with_expected(
+                preview_result.true_false_answers or {},
+                list(expected_by_section.get("TF", []) or []),
+            ),
+            220,
+        )
+        num_text = self._compact_value(
+            self._format_numeric_answers_with_expected(
+                preview_result.numeric_answers or {},
+                list(expected_by_section.get("NUMERIC", []) or []),
+            ),
+            220,
+        )
         rows = [
             ("File ảnh", img_path.name),
             ("STUDENT ID", result.student_id or "-"),
