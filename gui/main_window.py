@@ -4,10 +4,13 @@ import copy
 import csv
 import json
 import re
+import sys
 from datetime import date, datetime
 from pathlib import Path
 import time
 import uuid
+
+sys.dont_write_bytecode = True
 
 from PySide6.QtCore import Qt, QEvent, QPointF, QTimer
 from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPixmap, QTransform, QPainter, QPen
@@ -11355,7 +11358,7 @@ class MainWindow(QMainWindow):
             self.scan_image_preview.set_overlay_markers(self._recognition_overlay_positions_for_result(result))
             self.scan_image_preview.set_markers(self._marker_positions_for_result(result))
 
-        preview_result = self._scoped_result_copy(result)
+        preview_result = self._lightweight_result_copy(result)
         section_counts = self._subject_section_question_counts(self._current_batch_subject_key())
         default_by_config = {
             sec: list(range(1, max(0, int(section_counts.get(sec, 0) or 0)) + 1))
