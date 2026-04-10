@@ -508,7 +508,6 @@ def open_recheck_dialog(self) -> None:
     form.addRow("SBD (có tìm kiếm)", inp_sid)
     form.addRow("Mã đề", inp_exam)
     form.addRow("Điểm hiện tại", lbl_score)
-    form.addRow("Nội dung phúc tra", lbl_recheck_info)
     middle_l.addLayout(form)
     answer_tbl = QTableWidget(0, 4)
     answer_tbl.setHorizontalHeaderLabels(["Phần", "Câu", "Đáp án", "Bài làm"])
@@ -547,10 +546,10 @@ def open_recheck_dialog(self) -> None:
     right.addWidget(history_panel)
     split.addWidget(right)
     split.setStretchFactor(0, 1)
-    split.setStretchFactor(1, 2)
-    split.setStretchFactor(2, 1)
-    split.setSizes([420, 760, 520])
-    right.setStretchFactor(0, 2)
+    split.setStretchFactor(1, 1)
+    split.setStretchFactor(2, 2)
+    split.setSizes([440, 440, 880])
+    right.setStretchFactor(0, 3)
     right.setStretchFactor(1, 1)
     editor_refs: dict[str, object] = {"row_map": []}
 
@@ -567,6 +566,14 @@ def open_recheck_dialog(self) -> None:
                 answers={int(k): str(v) for k, v in ((raw.get("mcq_answers", {}) or {}).items() if isinstance(raw.get("mcq_answers", {}), dict) else [])},
                 true_false_answers={int(k): dict(v or {}) for k, v in ((raw.get("true_false_answers", {}) or {}).items() if isinstance(raw.get("true_false_answers", {}), dict) else [])},
                 numeric_answers={int(k): str(v) for k, v in ((raw.get("numeric_answers", {}) or {}).items() if isinstance(raw.get("numeric_answers", {}), dict) else [])},
+                full_credit_questions={
+                    str(sec): [int(x) for x in vals if str(x).strip().lstrip("-").isdigit()]
+                    for sec, vals in ((raw.get("full_credit_questions", {}) or {}).items() if isinstance(raw.get("full_credit_questions", {}), dict) else [])
+                },
+                invalid_answer_rows={
+                    str(sec): {int(q): str(v) for q, v in (bucket or {}).items() if str(q).strip().lstrip("-").isdigit()}
+                    for sec, bucket in ((raw.get("invalid_answer_rows", {}) or {}).items() if isinstance(raw.get("invalid_answer_rows", {}), dict) else [])
+                },
             )
         return None
 
@@ -589,9 +596,23 @@ def open_recheck_dialog(self) -> None:
                     break
         configured_counts = self._subject_section_question_counts(subject_key)
         if key_obj:
-            mcq_all = sorted(int(q) for q in (key_obj.answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
-            tf_all = sorted(int(q) for q in (key_obj.true_false_answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
-            num_all = sorted(int(q) for q in (key_obj.numeric_answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
+            invalid_rows = dict(getattr(key_obj, "invalid_answer_rows", {}) or {})
+            full_credit = dict(getattr(key_obj, "full_credit_questions", {}) or {})
+            mcq_all = sorted(
+                set(int(q) for q in (key_obj.answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
+                | set(int(q) for q in (invalid_rows.get("MCQ", {}) or {}).keys() if str(q).strip().lstrip("-").isdigit())
+                | set(int(q) for q in (full_credit.get("MCQ", []) or []) if str(q).strip().lstrip("-").isdigit())
+            )
+            tf_all = sorted(
+                set(int(q) for q in (key_obj.true_false_answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
+                | set(int(q) for q in (invalid_rows.get("TF", {}) or {}).keys() if str(q).strip().lstrip("-").isdigit())
+                | set(int(q) for q in (full_credit.get("TF", []) or []) if str(q).strip().lstrip("-").isdigit())
+            )
+            num_all = sorted(
+                set(int(q) for q in (key_obj.numeric_answers or {}).keys() if str(q).strip().lstrip("-").isdigit())
+                | set(int(q) for q in (invalid_rows.get("NUMERIC", {}) or {}).keys() if str(q).strip().lstrip("-").isdigit())
+                | set(int(q) for q in (full_credit.get("NUMERIC", []) or []) if str(q).strip().lstrip("-").isdigit())
+            )
             mcq_cnt = max(0, int(configured_counts.get("MCQ", 0) or 0))
             tf_cnt = max(0, int(configured_counts.get("TF", 0) or 0))
             num_cnt = max(0, int(configured_counts.get("NUMERIC", 0) or 0))
@@ -612,12 +633,14 @@ def open_recheck_dialog(self) -> None:
         row_map: list[tuple[str, int]] = []
         expected = _expected_questions(exam_code_text, res_obj)
         key_obj = _answer_key_for_exam(exam_code_text)
+        invalid_rows = dict(getattr(key_obj, "invalid_answer_rows", {}) or {}) if key_obj else {}
+        full_credit = dict(getattr(key_obj, "full_credit_questions", {}) or {}) if key_obj else {}
 
-        def _add_row(section: str, q_no: int, correct: str, student: str) -> None:
+        def _add_row(section: str, q_display: int, q_no: int, correct: str, student: str) -> None:
             r = answer_tbl.rowCount()
             answer_tbl.insertRow(r)
             sec_item = QTableWidgetItem(section)
-            q_item = QTableWidgetItem(str(q_no))
+            q_item = QTableWidgetItem(str(q_display))
             q_item.setData(Qt.UserRole, int(q_no))
             answer_tbl.setItem(r, 0, sec_item)
             answer_tbl.setItem(r, 1, q_item)
@@ -628,18 +651,26 @@ def open_recheck_dialog(self) -> None:
             answer_tbl.setItem(r, 3, student_item)
             row_map.append((section, int(q_no)))
 
-        for q_no in expected.get("MCQ", []):
-            correct = str((getattr(key_obj, "answers", {}) or {}).get(int(q_no), "") or "").strip().upper()
+        for q_display, q_no in enumerate(expected.get("MCQ", []), start=1):
+            correct = str((getattr(key_obj, "answers", {}) or {}).get(int(q_no), (invalid_rows.get("MCQ", {}) or {}).get(int(q_no), "")) or "").strip().upper()
+            if not correct and int(q_no) in {int(x) for x in (full_credit.get("MCQ", []) or []) if str(x).strip().lstrip("-").isdigit()}:
+                correct = "G"
             student = str((getattr(res_obj, "mcq_answers", {}) or {}).get(int(q_no), "") or "").strip().upper()
-            _add_row("MCQ", int(q_no), correct, student)
-        for q_no in expected.get("TF", []):
+            _add_row("MCQ", q_display, int(q_no), correct, student)
+        for q_display, q_no in enumerate(expected.get("TF", []), start=1):
             correct = self.scoring_engine._tf_to_canonical_string((getattr(key_obj, "true_false_answers", {}) or {}).get(int(q_no), {}) if key_obj else {})
+            if not correct:
+                correct = str((invalid_rows.get("TF", {}) or {}).get(int(q_no), "") or "").strip().upper()
+            if not correct and int(q_no) in {int(x) for x in (full_credit.get("TF", []) or []) if str(x).strip().lstrip("-").isdigit()}:
+                correct = "G"
             student = self.scoring_engine._tf_to_canonical_string((getattr(res_obj, "true_false_answers", {}) or {}).get(int(q_no), {}))
-            _add_row("TF", int(q_no), correct, student)
-        for q_no in expected.get("NUMERIC", []):
-            correct = str((getattr(key_obj, "numeric_answers", {}) or {}).get(int(q_no), "") or "").strip()
+            _add_row("TF", q_display, int(q_no), correct, student)
+        for q_display, q_no in enumerate(expected.get("NUMERIC", []), start=1):
+            correct = str((getattr(key_obj, "numeric_answers", {}) or {}).get(int(q_no), (invalid_rows.get("NUMERIC", {}) or {}).get(int(q_no), "")) or "").strip()
+            if not correct and int(q_no) in {int(x) for x in (full_credit.get("NUMERIC", []) or []) if str(x).strip().lstrip("-").isdigit()}:
+                correct = "G"
             student = str((getattr(res_obj, "numeric_answers", {}) or {}).get(int(q_no), "") or "").strip()
-            _add_row("NUMERIC", int(q_no), correct, student)
+            _add_row("NUMERIC", q_display, int(q_no), correct, student)
         editor_refs["row_map"] = row_map
 
     def _on_answer_table_changed(item: QTableWidgetItem) -> None:
