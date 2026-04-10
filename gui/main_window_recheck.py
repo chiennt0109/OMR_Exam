@@ -458,6 +458,14 @@ def open_recheck_dialog(self) -> None:
 
     left = QWidget()
     left_l = QVBoxLayout(left)
+    student_pool_tbl = QTableWidget(0, 4)
+    student_pool_tbl.setHorizontalHeaderLabels(["SBD", "Họ tên", "Lớp", "Phòng thi"])
+    student_pool_tbl.verticalHeader().setVisible(False)
+    student_pool_tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
+    student_pool_tbl.setSelectionMode(QAbstractItemView.ExtendedSelection)
+    student_pool_tbl.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+    student_pool_tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+
     tbl = QTableWidget(0, 7)
     tbl.setHorizontalHeaderLabels(["STT", "SBD", "Họ tên", "Lớp", "Phòng thi", "Mã đề", "Điểm"])
     tbl.verticalHeader().setVisible(False)
@@ -895,6 +903,8 @@ def open_recheck_dialog(self) -> None:
     btn_save.clicked.connect(_save_current)
     btn_build_list.clicked.connect(_open_list_builder_again)
     btn_add_list.clicked.connect(_add_sid_list)
+    btn_pick.clicked.connect(_pick_from_pool)
+    btn_unpick.clicked.connect(_remove_selected_recheck_row)
     btn_export.clicked.connect(_export_recheck_excel)
     if tbl.rowCount() > 0:
         tbl.setCurrentCell(0, 0)
