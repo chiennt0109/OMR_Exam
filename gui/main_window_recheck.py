@@ -461,6 +461,7 @@ def open_recheck_dialog(self) -> None:
     dlg = QDialog(self)
     dlg.setWindowTitle(f"Phúc tra - {subject_key}")
     dlg.resize(1760, 940)
+    dlg.setWindowState(dlg.windowState() | Qt.WindowMaximized)
     root = QVBoxLayout(dlg)
     split = QSplitter(Qt.Horizontal)
     root.addWidget(split)
@@ -549,8 +550,9 @@ def open_recheck_dialog(self) -> None:
     split.setStretchFactor(1, 1)
     split.setStretchFactor(2, 2)
     split.setSizes([440, 440, 880])
-    right.setStretchFactor(0, 3)
+    right.setStretchFactor(0, 7)
     right.setStretchFactor(1, 1)
+    right.setSizes([875, 125])
     editor_refs: dict[str, object] = {"row_map": []}
 
     def _answer_key_for_exam(exam_code_text: str):
@@ -636,6 +638,17 @@ def open_recheck_dialog(self) -> None:
         invalid_rows = dict(getattr(key_obj, "invalid_answer_rows", {}) or {}) if key_obj else {}
         full_credit = dict(getattr(key_obj, "full_credit_questions", {}) or {}) if key_obj else {}
 
+        def _value_by_actual_or_display(answer_map: dict, q_actual: int, q_display: int) -> object:
+            if q_actual in answer_map:
+                return answer_map.get(q_actual)
+            if q_display in answer_map:
+                return answer_map.get(q_display)
+            if str(q_actual) in answer_map:
+                return answer_map.get(str(q_actual))
+            if str(q_display) in answer_map:
+                return answer_map.get(str(q_display))
+            return ""
+
         def _add_row(section: str, q_display: int, q_no: int, correct: str, student: str) -> None:
             r = answer_tbl.rowCount()
             answer_tbl.insertRow(r)
@@ -655,7 +668,7 @@ def open_recheck_dialog(self) -> None:
             correct = str((getattr(key_obj, "answers", {}) or {}).get(int(q_no), (invalid_rows.get("MCQ", {}) or {}).get(int(q_no), "")) or "").strip().upper()
             if not correct and int(q_no) in {int(x) for x in (full_credit.get("MCQ", []) or []) if str(x).strip().lstrip("-").isdigit()}:
                 correct = "G"
-            student = str((getattr(res_obj, "mcq_answers", {}) or {}).get(int(q_no), "") or "").strip().upper()
+            student = str(_value_by_actual_or_display(getattr(res_obj, "mcq_answers", {}) or {}, int(q_no), q_display) or "").strip().upper()
             _add_row("MCQ", q_display, int(q_no), correct, student)
         for q_display, q_no in enumerate(expected.get("TF", []), start=1):
             correct = self.scoring_engine._tf_to_canonical_string((getattr(key_obj, "true_false_answers", {}) or {}).get(int(q_no), {}) if key_obj else {})
@@ -663,13 +676,13 @@ def open_recheck_dialog(self) -> None:
                 correct = str((invalid_rows.get("TF", {}) or {}).get(int(q_no), "") or "").strip().upper()
             if not correct and int(q_no) in {int(x) for x in (full_credit.get("TF", []) or []) if str(x).strip().lstrip("-").isdigit()}:
                 correct = "G"
-            student = self.scoring_engine._tf_to_canonical_string((getattr(res_obj, "true_false_answers", {}) or {}).get(int(q_no), {}))
+            student = self.scoring_engine._tf_to_canonical_string(_value_by_actual_or_display(getattr(res_obj, "true_false_answers", {}) or {}, int(q_no), q_display))
             _add_row("TF", q_display, int(q_no), correct, student)
         for q_display, q_no in enumerate(expected.get("NUMERIC", []), start=1):
             correct = str((getattr(key_obj, "numeric_answers", {}) or {}).get(int(q_no), (invalid_rows.get("NUMERIC", {}) or {}).get(int(q_no), "")) or "").strip()
             if not correct and int(q_no) in {int(x) for x in (full_credit.get("NUMERIC", []) or []) if str(x).strip().lstrip("-").isdigit()}:
                 correct = "G"
-            student = str((getattr(res_obj, "numeric_answers", {}) or {}).get(int(q_no), "") or "").strip()
+            student = str(_value_by_actual_or_display(getattr(res_obj, "numeric_answers", {}) or {}, int(q_no), q_display) or "").strip()
             _add_row("NUMERIC", q_display, int(q_no), correct, student)
         editor_refs["row_map"] = row_map
 
