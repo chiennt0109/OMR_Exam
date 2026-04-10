@@ -8294,15 +8294,14 @@ class MainWindow(QMainWindow):
             parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
         if numeric_payload:
             parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
-        if parts:
-            return " | ".join(parts)
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
-        return " | ".join(blank_parts) if blank_parts else ""
+        merged = parts + blank_parts
+        return " | ".join(merged) if merged else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
         code_text = str(getattr(result, "exam_code", "") or "").strip()
@@ -8421,15 +8420,14 @@ class MainWindow(QMainWindow):
             parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
         if numeric_payload:
             parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
-        if parts:
-            return " | ".join(parts)
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
-        return " | ".join(blank_parts) if blank_parts else ""
+        merged = parts + blank_parts
+        return " | ".join(merged) if merged else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
         code_text = str(getattr(result, "exam_code", "") or "").strip()
@@ -8548,15 +8546,14 @@ class MainWindow(QMainWindow):
             parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
         if numeric_payload:
             parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
-        if parts:
-            return " | ".join(parts)
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
-        return " | ".join(blank_parts) if blank_parts else ""
+        merged = parts + blank_parts
+        return " | ".join(merged) if merged else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
         code_text = str(getattr(result, "exam_code", "") or "").strip()
@@ -8675,15 +8672,14 @@ class MainWindow(QMainWindow):
             parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
         if numeric_payload:
             parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
-        if parts:
-            return " | ".join(parts)
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
-        return " | ".join(blank_parts) if blank_parts else ""
+        merged = parts + blank_parts
+        return " | ".join(merged) if merged else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
         code_text = str(getattr(result, "exam_code", "") or "").strip()
@@ -8802,15 +8798,14 @@ class MainWindow(QMainWindow):
             parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
         if numeric_payload:
             parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
-        if parts:
-            return " | ".join(parts)
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
-        return " | ".join(blank_parts) if blank_parts else ""
+        merged = parts + blank_parts
+        return " | ".join(merged) if merged else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
         code_text = str(getattr(result, "exam_code", "") or "").strip()
@@ -8929,15 +8924,14 @@ class MainWindow(QMainWindow):
             parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
         if numeric_payload:
             parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
-        if parts:
-            return " | ".join(parts)
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
-        return " | ".join(blank_parts) if blank_parts else ""
+        merged = parts + blank_parts
+        return " | ".join(merged) if merged else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
         code_text = str(getattr(result, "exam_code", "") or "").strip()
@@ -9056,15 +9050,14 @@ class MainWindow(QMainWindow):
             parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
         if numeric_payload:
             parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
-        if parts:
-            return " | ".join(parts)
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
-        return " | ".join(blank_parts) if blank_parts else ""
+        merged = parts + blank_parts
+        return " | ".join(merged) if merged else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
         code_text = str(getattr(result, "exam_code", "") or "").strip()
@@ -9183,15 +9176,14 @@ class MainWindow(QMainWindow):
             parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
         if numeric_payload:
             parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
-        if parts:
-            return " | ".join(parts)
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
-        return " | ".join(blank_parts) if blank_parts else ""
+        merged = parts + blank_parts
+        return " | ".join(merged) if merged else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
         code_text = str(getattr(result, "exam_code", "") or "").strip()
@@ -9310,15 +9302,14 @@ class MainWindow(QMainWindow):
             parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
         if numeric_payload:
             parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
-        if parts:
-            return " | ".join(parts)
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
-        return " | ".join(blank_parts) if blank_parts else ""
+        merged = parts + blank_parts
+        return " | ".join(merged) if merged else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
         code_text = str(getattr(result, "exam_code", "") or "").strip()
@@ -9437,15 +9428,14 @@ class MainWindow(QMainWindow):
             parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
         if numeric_payload:
             parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
-        if parts:
-            return " | ".join(parts)
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
-        return " | ".join(blank_parts) if blank_parts else ""
+        merged = parts + blank_parts
+        return " | ".join(merged) if merged else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
         code_text = str(getattr(result, "exam_code", "") or "").strip()
@@ -9564,15 +9554,14 @@ class MainWindow(QMainWindow):
             parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
         if numeric_payload:
             parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
-        if parts:
-            return " | ".join(parts)
 
         blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             vals = list((blank_map or {}).get(sec, []) or [])
             if vals:
                 blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
-        return " | ".join(blank_parts) if blank_parts else ""
+        merged = parts + blank_parts
+        return " | ".join(merged) if merged else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
         code_text = str(getattr(result, "exam_code", "") or "").strip()
