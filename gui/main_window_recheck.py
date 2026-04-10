@@ -649,6 +649,26 @@ def open_recheck_dialog(self) -> None:
                 return answer_map.get(str(q_display))
             return ""
 
+        def _tf_compact(value: object) -> str:
+            if isinstance(value, dict):
+                out = []
+                for key_flag in ["a", "b", "c", "d"]:
+                    if key_flag in value:
+                        out.append("Đ" if bool(value.get(key_flag)) else "S")
+                if out:
+                    return "".join(out)
+            text = str(value or "").strip().upper()
+            if not text:
+                return ""
+            if ":" in text or "," in text:
+                out = []
+                for token in [x.strip() for x in text.split(",") if x.strip()]:
+                    _, _, val = token.partition(":")
+                    marker = str(val or token).strip().upper()
+                    out.append("Đ" if marker in {"T", "TRUE", "1", "Đ", "D", "ĐÚNG", "DUNG"} else "S")
+                return "".join(out)
+            return "".join("Đ" if ch in {"T", "Đ", "D", "1"} else "S" for ch in text if ch in {"T", "F", "Đ", "D", "S", "1", "0"})
+
         def _add_row(section: str, q_display: int, q_no: int, correct: str, student: str) -> None:
             r = answer_tbl.rowCount()
             answer_tbl.insertRow(r)
@@ -671,12 +691,12 @@ def open_recheck_dialog(self) -> None:
             student = str(_value_by_actual_or_display(getattr(res_obj, "mcq_answers", {}) or {}, int(q_no), q_display) or "").strip().upper()
             _add_row("MCQ", q_display, int(q_no), correct, student)
         for q_display, q_no in enumerate(expected.get("TF", []), start=1):
-            correct = self.scoring_engine._tf_to_canonical_string((getattr(key_obj, "true_false_answers", {}) or {}).get(int(q_no), {}) if key_obj else {})
+            correct = _tf_compact((getattr(key_obj, "true_false_answers", {}) or {}).get(int(q_no), {}) if key_obj else {})
             if not correct:
                 correct = str((invalid_rows.get("TF", {}) or {}).get(int(q_no), "") or "").strip().upper()
             if not correct and int(q_no) in {int(x) for x in (full_credit.get("TF", []) or []) if str(x).strip().lstrip("-").isdigit()}:
                 correct = "G"
-            student = self.scoring_engine._tf_to_canonical_string(_value_by_actual_or_display(getattr(res_obj, "true_false_answers", {}) or {}, int(q_no), q_display))
+            student = _tf_compact(_value_by_actual_or_display(getattr(res_obj, "true_false_answers", {}) or {}, int(q_no), q_display))
             _add_row("TF", q_display, int(q_no), correct, student)
         for q_display, q_no in enumerate(expected.get("NUMERIC", []), start=1):
             correct = str((getattr(key_obj, "numeric_answers", {}) or {}).get(int(q_no), (invalid_rows.get("NUMERIC", {}) or {}).get(int(q_no), "")) or "").strip()
