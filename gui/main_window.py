@@ -4286,6 +4286,9 @@ class MainWindow(QMainWindow):
             "manual_content_override": str(getattr(result, "manual_content_override", "") or ""),
             "cached_forced_status": str(getattr(result, "cached_forced_status", "") or ""),
             "manually_edited": bool(getattr(result, "manually_edited", False)),
+            "edit_history": [str(x) for x in (getattr(result, "edit_history", []) or []) if str(x or "").strip()],
+            "last_adjustment": str(getattr(result, "last_adjustment", "") or ""),
+            "manual_adjustments": [str(x) for x in (getattr(result, "manual_adjustments", []) or []) if str(x or "").strip()],
             "cached_blank_summary": dict(getattr(result, "cached_blank_summary", {}) or {}),
             "recognized_template_path": str(getattr(result, "recognized_template_path", "") or ""),
             "recognized_alignment_profile": str(getattr(result, "recognized_alignment_profile", "") or ""),
@@ -4320,6 +4323,13 @@ class MainWindow(QMainWindow):
         setattr(result, "manual_content_override", str(payload.get("manual_content_override", "") or ""))
         setattr(result, "cached_forced_status", str(payload.get("cached_forced_status", "") or ""))
         setattr(result, "manually_edited", bool(payload.get("manually_edited", False)))
+        setattr(result, "edit_history", [str(x) for x in (payload.get("edit_history", []) or []) if str(x or "").strip()])
+        setattr(result, "last_adjustment", str(payload.get("last_adjustment", "") or ""))
+        setattr(result, "manual_adjustments", [str(x) for x in (payload.get("manual_adjustments", []) or []) if str(x or "").strip()])
+        if (not bool(getattr(result, "manually_edited", False))) and bool(getattr(result, "edit_history", [])):
+            setattr(result, "manually_edited", True)
+            if not str(getattr(result, "cached_forced_status", "") or "").strip():
+                setattr(result, "cached_forced_status", "Đã sửa")
         setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
         setattr(result, "recognized_template_path", str(payload.get("recognized_template_path", "") or ""))
         setattr(result, "recognized_alignment_profile", str(payload.get("recognized_alignment_profile", "") or ""))
@@ -6069,6 +6079,7 @@ class MainWindow(QMainWindow):
                 "cached_recognized_short",
                 "recognized_template_path",
                 "recognized_alignment_profile",
+                "last_adjustment",
             ]:
                 current_value = str(getattr(result, attr_name, "") or "").strip()
                 payload_value = str(payload.get(attr_name, "") or "").strip()
@@ -6079,6 +6090,14 @@ class MainWindow(QMainWindow):
             payload_errors = [str(x) for x in (payload.get("recognition_errors", []) or []) if str(x or "").strip()]
             if payload_errors and not current_errors:
                 setattr(result, "recognition_errors", payload_errors)
+            current_edit_history = [str(x) for x in (getattr(result, "edit_history", []) or []) if str(x or "").strip()]
+            payload_edit_history = [str(x) for x in (payload.get("edit_history", []) or []) if str(x or "").strip()]
+            if payload_edit_history and not current_edit_history:
+                setattr(result, "edit_history", payload_edit_history)
+            current_manual_adjustments = [str(x) for x in (getattr(result, "manual_adjustments", []) or []) if str(x or "").strip()]
+            payload_manual_adjustments = [str(x) for x in (payload.get("manual_adjustments", []) or []) if str(x or "").strip()]
+            if payload_manual_adjustments and not current_manual_adjustments:
+                setattr(result, "manual_adjustments", payload_manual_adjustments)
 
             for attr_name, default_value in [
                 ("recognized_fill_threshold", 0.45),
@@ -10001,6 +10020,24 @@ class MainWindow(QMainWindow):
         )
 
         self.scan_results = [item["result"] for item in row_views]
+        self.scan_edit_history = {}
+        self.scan_last_adjustment = {}
+        self.scan_manual_adjustments = {}
+        for res in self.scan_results:
+            image_key = self._result_identity_key(getattr(res, "image_path", ""))
+            if not image_key:
+                continue
+            history = [str(x) for x in (getattr(res, "edit_history", []) or []) if str(x or "").strip()]
+            if history:
+                self.scan_edit_history[image_key] = list(history)
+                self.scan_last_adjustment[image_key] = str(getattr(res, "last_adjustment", "") or history[-1])
+                setattr(res, "manually_edited", True)
+                if not str(getattr(res, "cached_forced_status", "") or "").strip():
+                    setattr(res, "cached_forced_status", "Đã sửa")
+                self.scan_forced_status_by_index[image_key] = "Đã sửa"
+            manual_items = [str(x) for x in (getattr(res, "manual_adjustments", []) or []) if str(x or "").strip()]
+            if manual_items:
+                self.scan_manual_adjustments[image_key] = list(sorted(set(manual_items)))
         subject_key = self._current_batch_subject_key()
         if subject_key:
             self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(self.scan_results)
@@ -10109,7 +10146,8 @@ class MainWindow(QMainWindow):
             subject_scope=subject_scope,
             available_exam_codes=available_exam_codes,
         )
-        manual_override_status = "Đã sửa" if bool(getattr(result, "manually_edited", False)) else ""
+        has_edit_history = bool([str(x) for x in (getattr(result, "edit_history", []) or []) if str(x or "").strip()])
+        manual_override_status = "Đã sửa" if (bool(getattr(result, "manually_edited", False)) or has_edit_history) else ""
         effective_forced_status = str(forced_status or manual_override_status or "").strip()
         status_text = effective_forced_status or (", ".join(status_parts) if status_parts else "OK")
         manual_content_override = str(getattr(result, "manual_content_override", "") or "").strip()
@@ -10678,6 +10716,15 @@ class MainWindow(QMainWindow):
                     pass
             self._close_wait_progress(wait_dlg)
         new_result.image_path = image_path
+        setattr(new_result, "manually_edited", bool(getattr(old_result, "manually_edited", False)))
+        setattr(new_result, "cached_forced_status", str(getattr(old_result, "cached_forced_status", "") or ""))
+        image_key = self._result_identity_key(image_path)
+        prior_history = [str(x) for x in (getattr(old_result, "edit_history", []) or []) if str(x or "").strip()]
+        if image_key:
+            prior_history = [str(x) for x in (self.scan_edit_history.get(image_key, []) or []) if str(x or "").strip()] or prior_history
+        setattr(new_result, "edit_history", list(prior_history))
+        setattr(new_result, "last_adjustment", str(getattr(old_result, "last_adjustment", "") or ""))
+        setattr(new_result, "manual_adjustments", [str(x) for x in (getattr(old_result, "manual_adjustments", []) or []) if str(x or "").strip()])
 
         sid = (new_result.student_id or "").strip()
         profile = self._student_profile_by_id(sid)
@@ -10704,6 +10751,18 @@ class MainWindow(QMainWindow):
         self._rebuild_error_list()
         self._update_scan_preview(idx)
         self._sync_correction_detail_panel(new_result, rebuild_editor=False)
+        if prior_history:
+            old_sid = str(getattr(old_result, "student_id", "") or "").strip() or "-"
+            old_code = str(getattr(old_result, "exam_code", "") or "").strip() or "-"
+            new_sid = str(getattr(new_result, "student_id", "") or "").strip() or "-"
+            new_code = str(getattr(new_result, "exam_code", "") or "").strip() or "-"
+            self._record_adjustment(
+                idx,
+                [f"Nhận dạng lại ảnh chọn: STUDENT ID {old_sid} -> {new_sid}; Mã đề {old_code} -> {new_code}"],
+                "rerecognize_selected",
+            )
+            self._persist_single_scan_result_to_db(new_result, note="rerecognize_selected_with_history")
+            self._refresh_all_statuses()
         self._persist_single_scan_result_to_db(new_result, note="rerecognize_selected_scan")
         self.btn_save_batch_subject.setEnabled(False)
 
@@ -11288,9 +11347,18 @@ class MainWindow(QMainWindow):
             image_key = self._result_identity_key(getattr(self.scan_results[idx], "image_path", ""))
         if not image_key:
             return
-        self.scan_edit_history.setdefault(image_key, []).append(message)
+        history = self.scan_edit_history.setdefault(image_key, [])
+        history.append(message)
         self.scan_last_adjustment[image_key] = message
         self.scan_manual_adjustments[image_key] = sorted(set(self.scan_manual_adjustments.get(image_key, []) + details))
+        target_result = self._result_by_image_path(image_key)
+        if target_result is not None:
+            setattr(target_result, "edit_history", list(history))
+            setattr(target_result, "last_adjustment", message)
+            setattr(target_result, "manual_adjustments", list(self.scan_manual_adjustments.get(image_key, [])))
+            setattr(target_result, "manually_edited", True)
+            setattr(target_result, "cached_forced_status", "Đã sửa")
+        self.scan_forced_status_by_index[image_key] = "Đã sửa"
         self.database.log_change("scan_results", image_key, source, "", message, source)
 
     @staticmethod
@@ -11393,7 +11461,13 @@ class MainWindow(QMainWindow):
         if col != 6:
             return
         image_key = self._row_image_key(row)
-        history = self.scan_edit_history.get(image_key, [])
+        history = list(self.scan_edit_history.get(image_key, []) or [])
+        if (not history) and image_key:
+            result = self._result_by_image_path(image_key)
+            history = [str(x) for x in (getattr(result, "edit_history", []) or []) if str(x or "").strip()] if result is not None else []
+            if history:
+                self.scan_edit_history[image_key] = list(history)
+                self.scan_last_adjustment[image_key] = str(getattr(result, "last_adjustment", "") or history[-1])
         if not history:
             QMessageBox.information(self, "Lịch sử sửa", "Chưa có lịch sử điều chỉnh trong Status cho bài thi này.")
             return
@@ -11445,7 +11519,8 @@ class MainWindow(QMainWindow):
         if row_result is None and idx < len(self.scan_results):
             row_result = self.scan_results[idx]
         if not forced_status and row_result is not None:
-            if bool(getattr(row_result, "manually_edited", False)):
+            row_history = [str(x) for x in (getattr(row_result, "edit_history", []) or []) if str(x or "").strip()]
+            if bool(getattr(row_result, "manually_edited", False)) or bool(row_history):
                 forced_status = "Đã sửa"
                 row_image = self._result_identity_key(getattr(row_result, "image_path", "")) or image_key
                 if row_image:
