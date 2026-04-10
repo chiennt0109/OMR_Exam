@@ -5702,14 +5702,15 @@ class MainWindow(QMainWindow):
                 status_item = self.scan_list.item(r, 6)
                 status_txt = str(status_item.text() if status_item else "").strip()
                 low = status_txt.lower()
+                if "đã sửa" in low:
+                    edited_count += 1
+                    continue
                 if status_txt and status_txt != "OK":
                     error_count += 1
                 if "trùng sbd" in low or "duplicate" in low:
                     duplicate_count += 1
                 if "mã đề" in low and ("sai" in low or "không" in low or "?" in status_txt):
                     wrong_code_count += 1
-                if "đã sửa" in low:
-                    edited_count += 1
         bar_text = f"Trạng thái file: {file_status} | Lọc: {visible_rows}/{total_rows}"
         if error_count > 0:
             bar_text += (
@@ -6096,16 +6097,6 @@ class MainWindow(QMainWindow):
             payload_manual_adjustments = [str(x) for x in (payload.get("manual_adjustments", []) or []) if str(x or "").strip()]
             if payload_manual_adjustments and not current_manual_adjustments:
                 setattr(result, "manual_adjustments", payload_manual_adjustments)
-            forced_status_value = str(payload.get("cached_forced_status", payload.get("forced_status", "")) or "").strip()
-            current_forced_status = str(getattr(result, "cached_forced_status", "") or "").strip()
-            if forced_status_value and not current_forced_status:
-                setattr(result, "cached_forced_status", forced_status_value)
-            if bool(payload.get("manually_edited", False)) or bool(payload_edit_history) or forced_status_value == "Đã sửa":
-                setattr(result, "manually_edited", True)
-                if not str(getattr(result, "cached_forced_status", "") or "").strip():
-                    setattr(result, "cached_forced_status", "Đã sửa")
-                if not str(getattr(result, "cached_status", "") or "").strip():
-                    setattr(result, "cached_status", "Đã sửa")
 
             for attr_name, default_value in [
                 ("recognized_fill_threshold", 0.45),
