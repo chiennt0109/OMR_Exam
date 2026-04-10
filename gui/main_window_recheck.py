@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
-    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -461,7 +460,7 @@ def open_recheck_dialog(self) -> None:
 
     dlg = QDialog(self)
     dlg.setWindowTitle(f"Phúc tra - {subject_key}")
-    dlg.resize(1460, 900)
+    dlg.resize(1760, 940)
     root = QVBoxLayout(dlg)
     split = QSplitter(Qt.Horizontal)
     root.addWidget(split)
@@ -494,8 +493,8 @@ def open_recheck_dialog(self) -> None:
     left_l.addLayout(left_actions)
     split.addWidget(left)
 
-    right = QWidget()
-    right_l = QVBoxLayout(right)
+    middle = QWidget()
+    middle_l = QVBoxLayout(middle)
     form = QFormLayout()
     inp_sid = QComboBox(); inp_sid.setEditable(True); inp_sid.addItems(sid_options)
     sid_completer = QCompleter(sid_options, inp_sid)
@@ -510,42 +509,50 @@ def open_recheck_dialog(self) -> None:
     form.addRow("Mã đề", inp_exam)
     form.addRow("Điểm hiện tại", lbl_score)
     form.addRow("Nội dung phúc tra", lbl_recheck_info)
-    right_l.addLayout(form)
+    middle_l.addLayout(form)
+    answer_tbl = QTableWidget(0, 4)
+    answer_tbl.setHorizontalHeaderLabels(["Phần", "Câu", "Đáp án", "Bài làm"])
+    answer_tbl.verticalHeader().setVisible(False)
+    answer_tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
+    answer_tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+    answer_tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+    answer_tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+    answer_tbl.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+    middle_l.addWidget(QLabel("Đáp án đúng/sai theo từng câu"))
+    middle_l.addWidget(answer_tbl, 1)
+    action_row = QHBoxLayout()
+    btn_save = QPushButton("Lưu phúc tra + tính lại")
+    action_row.addStretch(1)
+    action_row.addWidget(btn_save)
+    middle_l.addLayout(action_row)
+    split.addWidget(middle)
 
-    mcq_editor_wrap = QWidget()
-    mcq_editor_grid = QGridLayout(mcq_editor_wrap)
-    mcq_editor_grid.setContentsMargins(0, 0, 0, 0)
-    tf_editor_wrap = QWidget()
-    tf_editor_grid = QGridLayout(tf_editor_wrap)
-    tf_editor_grid.setContentsMargins(0, 0, 0, 0)
-    num_editor_wrap = QWidget()
-    num_editor_grid = QGridLayout(num_editor_wrap)
-    num_editor_grid.setContentsMargins(0, 0, 0, 0)
-    right_l.addWidget(QLabel("MCQ theo câu (mỗi câu 1 ô)"))
-    right_l.addWidget(mcq_editor_wrap)
-    right_l.addWidget(QLabel("TF theo câu (mỗi câu 1 ô, nhập 4 ký tự Đ/S)"))
-    right_l.addWidget(tf_editor_wrap)
-    right_l.addWidget(QLabel("NUMERIC theo câu (mỗi câu 1 ô)"))
-    right_l.addWidget(num_editor_wrap)
+    right = QSplitter(Qt.Vertical)
+    image_panel = QWidget()
+    image_l = QVBoxLayout(image_panel)
+    image_l.addWidget(QLabel("Ảnh bài thi"))
     img_scroll = QScrollArea()
     img_scroll.setWidgetResizable(True)
     img_lbl = QLabel("-")
     img_lbl.setAlignment(Qt.AlignCenter)
     img_scroll.setWidget(img_lbl)
-    right_l.addWidget(img_scroll, 4)
+    image_l.addWidget(img_scroll, 1)
+    right.addWidget(image_panel)
+    history_panel = QWidget()
+    history_l = QVBoxLayout(history_panel)
+    history_l.addWidget(QLabel("Lịch sử sửa bài"))
     history_txt = QTextEdit()
     history_txt.setReadOnly(True)
-    right_l.addWidget(history_txt, 3)
-    action_row = QHBoxLayout()
-    btn_save = QPushButton("Lưu phúc tra + tính lại")
-    action_row.addStretch(1)
-    action_row.addWidget(btn_save)
-    right_l.addLayout(action_row)
+    history_l.addWidget(history_txt, 1)
+    right.addWidget(history_panel)
     split.addWidget(right)
     split.setStretchFactor(0, 1)
-    split.setStretchFactor(1, 1)
-    split.setSizes([730, 730])
-    editor_refs: dict[str, dict[int, QLineEdit]] = {"mcq": {}, "tf": {}, "num": {}}
+    split.setStretchFactor(1, 2)
+    split.setStretchFactor(2, 1)
+    split.setSizes([420, 760, 520])
+    right.setStretchFactor(0, 2)
+    right.setStretchFactor(1, 1)
+    editor_refs: dict[str, object] = {"row_map": []}
 
     def _answer_key_for_exam(exam_code_text: str):
         code = str(exam_code_text or "").strip()
@@ -600,25 +607,55 @@ def open_recheck_dialog(self) -> None:
             return {"MCQ": mcq_qs, "TF": tf_qs, "NUMERIC": num_qs}
         return {"MCQ": [], "TF": [], "NUMERIC": []}
 
-    def _build_editors(container_grid: QGridLayout, question_numbers: list[int], values: dict[int, str], max_len: int = 1) -> dict[int, QLineEdit]:
-        while container_grid.count():
-            item = container_grid.takeAt(0)
-            if item and item.widget():
-                item.widget().deleteLater()
-        edits: dict[int, QLineEdit] = {}
-        if not question_numbers:
-            container_grid.addWidget(QLabel("(Không có câu theo đáp án)"), 0, 0)
-            return edits
-        for idx, q_no in enumerate(question_numbers):
-            row = idx // 8
-            col = (idx % 8) * 2
-            container_grid.addWidget(QLabel(f"C{q_no}"), row, col)
-            e = QLineEdit(str(values.get(int(q_no), "") or ""))
-            e.setMaxLength(max_len)
-            e.setMaximumWidth(72)
-            container_grid.addWidget(e, row, col + 1)
-            edits[int(q_no)] = e
-        return edits
+    def _build_answer_table(res_obj: OMRResult, exam_code_text: str) -> None:
+        answer_tbl.setRowCount(0)
+        row_map: list[tuple[str, int]] = []
+        expected = _expected_questions(exam_code_text, res_obj)
+        key_obj = _answer_key_for_exam(exam_code_text)
+
+        def _add_row(section: str, q_no: int, correct: str, student: str) -> None:
+            r = answer_tbl.rowCount()
+            answer_tbl.insertRow(r)
+            sec_item = QTableWidgetItem(section)
+            q_item = QTableWidgetItem(str(q_no))
+            q_item.setData(Qt.UserRole, int(q_no))
+            answer_tbl.setItem(r, 0, sec_item)
+            answer_tbl.setItem(r, 1, q_item)
+            answer_tbl.setItem(r, 2, QTableWidgetItem(correct))
+            student_item = QTableWidgetItem(student)
+            if str(correct or "").strip().upper() != str(student or "").strip().upper():
+                student_item.setBackground(QColor(255, 225, 225))
+            answer_tbl.setItem(r, 3, student_item)
+            row_map.append((section, int(q_no)))
+
+        for q_no in expected.get("MCQ", []):
+            correct = str((getattr(key_obj, "answers", {}) or {}).get(int(q_no), "") or "").strip().upper()
+            student = str((getattr(res_obj, "mcq_answers", {}) or {}).get(int(q_no), "") or "").strip().upper()
+            _add_row("MCQ", int(q_no), correct, student)
+        for q_no in expected.get("TF", []):
+            correct = self.scoring_engine._tf_to_canonical_string((getattr(key_obj, "true_false_answers", {}) or {}).get(int(q_no), {}) if key_obj else {})
+            student = self.scoring_engine._tf_to_canonical_string((getattr(res_obj, "true_false_answers", {}) or {}).get(int(q_no), {}))
+            _add_row("TF", int(q_no), correct, student)
+        for q_no in expected.get("NUMERIC", []):
+            correct = str((getattr(key_obj, "numeric_answers", {}) or {}).get(int(q_no), "") or "").strip()
+            student = str((getattr(res_obj, "numeric_answers", {}) or {}).get(int(q_no), "") or "").strip()
+            _add_row("NUMERIC", int(q_no), correct, student)
+        editor_refs["row_map"] = row_map
+
+    def _on_answer_table_changed(item: QTableWidgetItem) -> None:
+        if item is None or item.column() != 3:
+            return
+        row_idx = item.row()
+        correct_txt = str(answer_tbl.item(row_idx, 2).text() if answer_tbl.item(row_idx, 2) else "").strip().upper()
+        student_txt = str(item.text() or "").strip().upper()
+        if student_txt != str(item.text() or ""):
+            answer_tbl.blockSignals(True)
+            item.setText(student_txt)
+            answer_tbl.blockSignals(False)
+        if correct_txt != student_txt:
+            item.setBackground(QColor(255, 225, 225))
+        else:
+            item.setBackground(QColor(255, 255, 255, 0))
 
     def _subject_room_for_sid(sid: str) -> str:
         cfg = self._subject_config_by_subject_key(subject_key) or {}
@@ -704,9 +741,7 @@ def open_recheck_dialog(self) -> None:
             sid_text = str(recheck_entries[r].get("requested_sid", "") or "").strip()
             inp_sid.setEditText(sid_text)
             inp_exam.setEditText("")
-            editor_refs["mcq"] = _build_editors(mcq_editor_grid, [], {}, max_len=1)
-            editor_refs["tf"] = _build_editors(tf_editor_grid, [], {}, max_len=4)
-            editor_refs["num"] = _build_editors(num_editor_grid, [], {}, max_len=8)
+            answer_tbl.setRowCount(0)
             lbl_score.setText("Không tìm thấy bài thi")
             lbl_recheck_info.setText(f"SBD: {sid_text or '-'} | Mã đề: - | Điểm: -\nNội dung: Không tìm thấy bài thi")
             _refresh_history_for_sid(sid_text)
@@ -717,16 +752,7 @@ def open_recheck_dialog(self) -> None:
         sid = str(getattr(res, "student_id", "") or "").strip()
         inp_sid.setEditText(sid_to_display.get(sid, sid))
         inp_exam.setEditText(str(getattr(res, "exam_code", "") or ""))
-        expected = _expected_questions(str(getattr(res, "exam_code", "") or ""), res)
-        mcq_map = {int(k): str(v or "").strip().upper()[:1] for k, v in ((getattr(res, "mcq_answers", {}) or {}).items() if isinstance(getattr(res, "mcq_answers", {}), dict) else [])}
-        tf_map = {
-            int(k): self.scoring_engine._tf_to_canonical_string(v)
-            for k, v in ((getattr(res, "true_false_answers", {}) or {}).items() if isinstance(getattr(res, "true_false_answers", {}), dict) else [])
-        }
-        num_map = {int(k): str(v or "").strip() for k, v in ((getattr(res, "numeric_answers", {}) or {}).items() if isinstance(getattr(res, "numeric_answers", {}), dict) else [])}
-        editor_refs["mcq"] = _build_editors(mcq_editor_grid, expected.get("MCQ", []), mcq_map, max_len=1)
-        editor_refs["tf"] = _build_editors(tf_editor_grid, expected.get("TF", []), tf_map, max_len=4)
-        editor_refs["num"] = _build_editors(num_editor_grid, expected.get("NUMERIC", []), num_map, max_len=8)
+        _build_answer_table(res, str(getattr(res, "exam_code", "") or ""))
         score_here = _score_display_for_sid(sid, res)
         lbl_score.setText(str(score_here))
         detail_content = _recheck_content_for_sid(sid, res)
@@ -772,10 +798,24 @@ def open_recheck_dialog(self) -> None:
         old_score = _current_score_for_result(res)
         new_sid = _selected_sid_value().strip()
         new_exam = str(inp_exam.currentText() or "").strip()
-        new_mcq = {int(q): str(edit.text() if edit else "").strip().upper()[:1] for q, edit in (editor_refs.get("mcq", {}) or {}).items()}
-        tf_raw = {int(q): str(edit.text() if edit else "").strip().upper()[:4] for q, edit in (editor_refs.get("tf", {}) or {}).items()}
-        new_tf = _parse_tf_display(", ".join(f"{q}:{v}" for q, v in tf_raw.items() if v))
-        new_numeric = {int(q): str(edit.text() if edit else "").strip() for q, edit in (editor_refs.get("num", {}) or {}).items()}
+        new_mcq: dict[int, str] = {}
+        new_tf: dict[int, dict[str, bool]] = {}
+        new_numeric: dict[int, str] = {}
+        for rr in range(answer_tbl.rowCount()):
+            sec = str(answer_tbl.item(rr, 0).text() if answer_tbl.item(rr, 0) else "").strip().upper()
+            q_item = answer_tbl.item(rr, 1)
+            q_no = int(q_item.data(Qt.UserRole) if q_item and q_item.data(Qt.UserRole) is not None else 0)
+            student_txt = str(answer_tbl.item(rr, 3).text() if answer_tbl.item(rr, 3) else "").strip()
+            if q_no <= 0:
+                continue
+            if sec == "MCQ":
+                new_mcq[q_no] = student_txt.upper()[:1]
+            elif sec == "TF":
+                parsed = _parse_tf_display(f"{q_no}:{student_txt.upper()[:4]}")
+                if q_no in parsed:
+                    new_tf[q_no] = parsed[q_no]
+            elif sec == "NUMERIC":
+                new_numeric[q_no] = student_txt
         if new_sid:
             res.student_id = new_sid
         res.exam_code = new_exam
@@ -910,6 +950,7 @@ def open_recheck_dialog(self) -> None:
         QMessageBox.information(dlg, "Phúc tra", f"Đã xuất Excel:\n{path}")
 
     tbl.itemSelectionChanged.connect(_on_pick)
+    answer_tbl.itemChanged.connect(_on_answer_table_changed)
     btn_save.clicked.connect(_save_current)
     btn_build_list.clicked.connect(_open_list_builder_again)
     btn_add_list.clicked.connect(_add_sid_list)
