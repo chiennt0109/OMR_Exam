@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QCompleter,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QGridLayout,
@@ -72,24 +73,18 @@ def open_recheck_dialog(self) -> None:
     if not cached_sid_list:
         cached_sid_list = [str(x).strip() for x in (recheck_sid_lists.get(subject_key, []) or []) if str(x).strip()]
     requested_sids = list(cached_sid_list)
-    if self.session:
-        cfg = dict(self.session.config or {})
-        sid_cache = cfg.get("recheck_sid_lists", {}) if isinstance(cfg.get("recheck_sid_lists", {}), dict) else {}
-        sid_cache[str(subject_key)] = list(requested_sids)
-        cfg["recheck_sid_lists"] = sid_cache
-        self.session.config = cfg
-        self.session_dirty = True
-        self._persist_session_quietly()
-    self.database.set_app_state(sid_cache_key, list(requested_sids))
-    self.database.set_app_state(flag_key, True)
+    def _persist_recheck_sid_list(current_sids: list[str]) -> None:
+        if self.session:
+            cfg = dict(self.session.config or {})
+            sid_cache = cfg.get("recheck_sid_lists", {}) if isinstance(cfg.get("recheck_sid_lists", {}), dict) else {}
+            sid_cache[str(subject_key)] = list(current_sids)
+            cfg["recheck_sid_lists"] = sid_cache
+            self.session.config = cfg
+            self.session_dirty = True
+            self._persist_session_quietly()
+        self.database.set_app_state(sid_cache_key, list(current_sids))
+        self.database.set_app_state(flag_key, True)
 
-    result_rows = self.database.fetch_scan_results_for_subject(self._batch_result_subject_key(subject_key)) or []
-    scans = [self._deserialize_omr_result(x) for x in result_rows]
-    scan_by_sid_norm: dict[str, OMRResult] = {}
-    for scan_item in scans:
-        norm_sid = self._normalized_student_id_for_match(str(getattr(scan_item, "student_id", "") or ""))
-        if norm_sid and norm_sid not in scan_by_sid_norm:
-            scan_by_sid_norm[norm_sid] = scan_item
     def _normalize_sid_list(raw_sids: list[str]) -> list[str]:
         out: list[str] = []
         seen: set[str] = set()
@@ -102,6 +97,170 @@ def open_recheck_dialog(self) -> None:
             seen.add(sid_norm)
         return out
 
+    def _subject_room_for_sid_quick(sid: str) -> str:
+        cfg = self._subject_config_by_subject_key(subject_key) or {}
+        return self._subject_room_for_student_id(sid, cfg)
+
+    def _open_recheck_list_builder(initial_sids: list[str]) -> list[str] | None:
+        builder = QDialog(self)
+        builder.setWindowTitle(f"Lập danh sách phúc tra - {subject_key}")
+        builder.resize(1080, 680)
+        lay = QVBoxLayout(builder)
+        lay.addWidget(QLabel("Bước 1/2: Chọn thí sinh cần phúc tra cho môn đã chọn"))
+        split_pick = QSplitter(Qt.Horizontal)
+        lay.addWidget(split_pick, 1)
+
+        src_tbl = QTableWidget(0, 4)
+        src_tbl.setHorizontalHeaderLabels(["SBD", "Họ tên", "Lớp", "Phòng thi"])
+        src_tbl.verticalHeader().setVisible(False)
+        src_tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
+        src_tbl.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        src_tbl.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        src_tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+
+        chosen_tbl = QTableWidget(0, 4)
+        chosen_tbl.setHorizontalHeaderLabels(["SBD", "Họ tên", "Lớp", "Phòng thi"])
+        chosen_tbl.verticalHeader().setVisible(False)
+        chosen_tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
+        chosen_tbl.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        chosen_tbl.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        chosen_tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+
+        left_wrap = QWidget(); left_l = QVBoxLayout(left_wrap)
+        left_l.addWidget(QLabel("Danh sách theo phòng thi của môn"))
+        left_l.addWidget(src_tbl)
+        split_pick.addWidget(left_wrap)
+
+        action_wrap = QWidget(); action_l = QVBoxLayout(action_wrap)
+        btn_add = QPushButton("Chọn >>")
+        btn_remove = QPushButton("<< Bỏ chọn")
+        btn_import = QPushButton("Import từ Excel")
+        action_l.addStretch(1)
+        action_l.addWidget(btn_add)
+        action_l.addWidget(btn_remove)
+        action_l.addSpacing(18)
+        action_l.addWidget(btn_import)
+        action_l.addStretch(1)
+        split_pick.addWidget(action_wrap)
+
+        right_wrap = QWidget(); right_l = QVBoxLayout(right_wrap)
+        right_l.addWidget(QLabel("Danh sách phúc tra đã chọn"))
+        right_l.addWidget(chosen_tbl)
+        split_pick.addWidget(right_wrap)
+        split_pick.setStretchFactor(0, 1)
+        split_pick.setStretchFactor(1, 0)
+        split_pick.setStretchFactor(2, 1)
+        split_pick.setSizes([420, 140, 420])
+
+        available_students: list[dict[str, str]] = []
+        for st in (self.session.students or []) if self.session else []:
+            sid_val = str(getattr(st, "student_id", "") or "").strip()
+            if not sid_val:
+                continue
+            room = _subject_room_for_sid_quick(sid_val)
+            if not room or room == "-":
+                continue
+            available_students.append({"sid": sid_val, "name": str(getattr(st, "name", "") or "-"), "class_name": str(getattr(st, "class_name", "") or "-"), "room": room})
+        if not available_students:
+            for st in (self.session.students or []) if self.session else []:
+                sid_val = str(getattr(st, "student_id", "") or "").strip()
+                if sid_val:
+                    available_students.append({"sid": sid_val, "name": str(getattr(st, "name", "") or "-"), "class_name": str(getattr(st, "class_name", "") or "-"), "room": _subject_room_for_sid_quick(sid_val) or "-"})
+        available_students.sort(key=lambda x: (str(x.get("room", "")), str(x.get("sid", ""))))
+        profile_by_sid = {str(x.get("sid", "")): dict(x) for x in available_students}
+
+        for row_obj in available_students:
+            r = src_tbl.rowCount()
+            src_tbl.insertRow(r)
+            src_tbl.setItem(r, 0, QTableWidgetItem(str(row_obj.get("sid", "") or "-")))
+            src_tbl.setItem(r, 1, QTableWidgetItem(str(row_obj.get("name", "") or "-")))
+            src_tbl.setItem(r, 2, QTableWidgetItem(str(row_obj.get("class_name", "") or "-")))
+            src_tbl.setItem(r, 3, QTableWidgetItem(str(row_obj.get("room", "") or "-")))
+
+        chosen_sids = _normalize_sid_list(initial_sids)
+
+        def _render_chosen() -> None:
+            chosen_tbl.setRowCount(0)
+            for sid in chosen_sids:
+                prof = profile_by_sid.get(sid, {})
+                if not prof:
+                    st_prof = self._student_profile_by_id(sid)
+                    prof = {"sid": sid, "name": str(st_prof.get("name", "") or "-"), "class_name": str(st_prof.get("class_name", "") or "-"), "room": _subject_room_for_sid_quick(sid) or "-"}
+                r = chosen_tbl.rowCount()
+                chosen_tbl.insertRow(r)
+                chosen_tbl.setItem(r, 0, QTableWidgetItem(str(prof.get("sid", sid) or "-")))
+                chosen_tbl.setItem(r, 1, QTableWidgetItem(str(prof.get("name", "") or "-")))
+                chosen_tbl.setItem(r, 2, QTableWidgetItem(str(prof.get("class_name", "") or "-")))
+                chosen_tbl.setItem(r, 3, QTableWidgetItem(str(prof.get("room", "") or "-")))
+
+        def _add_from_source() -> None:
+            rows = sorted({item.row() for item in src_tbl.selectedItems()})
+            for row_idx in rows:
+                sid_item = src_tbl.item(row_idx, 0)
+                sid_text = str(sid_item.text() if sid_item else "").strip()
+                if sid_text:
+                    chosen_sids.append(sid_text)
+            chosen_sids[:] = _normalize_sid_list(chosen_sids)
+            _render_chosen()
+
+        def _remove_from_chosen() -> None:
+            rows = sorted({item.row() for item in chosen_tbl.selectedItems()}, reverse=True)
+            for row_idx in rows:
+                sid_item = chosen_tbl.item(row_idx, 0)
+                sid_text = str(sid_item.text() if sid_item else "").strip()
+                sid_norm = self._normalized_student_id_for_match(sid_text)
+                chosen_sids[:] = [x for x in chosen_sids if self._normalized_student_id_for_match(x) != sid_norm]
+            _render_chosen()
+
+        def _import_excel_list() -> None:
+            imported = _load_sid_list_from_file()
+            if not imported:
+                return
+            decision = QMessageBox.question(
+                builder,
+                "Import danh sách",
+                "Bạn muốn mở rộng danh sách hiện tại?\nYes = Mở rộng, No = Ghi đè, Cancel = Huỷ.",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                QMessageBox.Yes,
+            )
+            if decision == QMessageBox.Cancel:
+                return
+            chosen_sids[:] = _normalize_sid_list((chosen_sids + imported) if decision == QMessageBox.Yes else imported)
+            _render_chosen()
+
+        btn_add.clicked.connect(_add_from_source)
+        btn_remove.clicked.connect(_remove_from_chosen)
+        btn_import.clicked.connect(_import_excel_list)
+        _render_chosen()
+
+        footer = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        lay.addWidget(footer)
+
+        def _accept_builder() -> None:
+            if not chosen_sids:
+                QMessageBox.warning(builder, "Phúc tra", "Bạn chưa chọn thí sinh nào để lập danh sách phúc tra.")
+                return
+            builder.accept()
+
+        footer.accepted.connect(_accept_builder)
+        footer.rejected.connect(builder.reject)
+        if builder.exec() != QDialog.Accepted:
+            return None
+        return list(chosen_sids)
+
+    built_sids = _open_recheck_list_builder(requested_sids)
+    if built_sids is None:
+        return
+    requested_sids = _normalize_sid_list(built_sids)
+    _persist_recheck_sid_list(requested_sids)
+
+    result_rows = self.database.fetch_scan_results_for_subject(self._batch_result_subject_key(subject_key)) or []
+    scans = [self._deserialize_omr_result(x) for x in result_rows]
+    scan_by_sid_norm: dict[str, OMRResult] = {}
+    for scan_item in scans:
+        norm_sid = self._normalized_student_id_for_match(str(getattr(scan_item, "student_id", "") or ""))
+        if norm_sid and norm_sid not in scan_by_sid_norm:
+            scan_by_sid_norm[norm_sid] = scan_item
     requested_sids = _normalize_sid_list(requested_sids)
 
     recheck_entries: list[dict[str, object]] = []
