@@ -2308,9 +2308,7 @@ class MainWindow(QMainWindow):
         payload = self.database.fetch_exam_session(session_id)
         if not payload:
             QMessageBox.warning(self, "Sửa kỳ thi", "Không tìm thấy kỳ thi trong kho lưu trữ hệ thống.")
-            return False
-        if not self._confirm("Xem kỳ thi", "Bạn có chắc muốn xem kỳ thi này?"):
-            return
+            return False        
         try:
             session = ExamSession.from_dict(payload)
             cfg = session.config or {}
@@ -11399,10 +11397,20 @@ class MainWindow(QMainWindow):
     def _mark_result_manually_edited(self, result: OMRResult, row_idx: int | None = None) -> None:
         setattr(result, "manually_edited", True)
         setattr(result, "cached_forced_status", "Đã sửa")
+        setattr(result, "cached_status", "Đã sửa")
         image_key = self._result_identity_key(getattr(result, "image_path", ""))
         resolved_row = row_idx if row_idx is not None and row_idx >= 0 else self._row_index_by_image_path(image_key)
         if image_key:
             self.scan_forced_status_by_index[image_key] = "Đã sửa"
+        if resolved_row is not None and resolved_row >= 0 and hasattr(self, "scan_list") and resolved_row < self.scan_list.rowCount():
+            status_item = self.scan_list.item(resolved_row, 6)
+            if status_item is None:
+                status_item = QTableWidgetItem("Đã sửa")
+                self.scan_list.setItem(resolved_row, 6, status_item)
+            else:
+                status_item.setText("Đã sửa")
+            status_item.setToolTip("Đã sửa")
+            status_item.setForeground(Qt.red)
 
     def _persist_scan_results_to_db(self, subject_key: str) -> None:
         scoped_key = self._batch_result_subject_key(subject_key)
@@ -11438,13 +11446,190 @@ class MainWindow(QMainWindow):
         if result is None:
             return
 
+    def _update_working_batch_state_single_row(self, subject_key: str, result: OMRResult, row_payload: dict, row_idx: int) -> None:
+        key = self._batch_runtime_key(subject_key)
+        if not key:
+            return
+        cached = self.batch_working_state_by_subject.get(key)
+        if not isinstance(cached, dict):
+            return
+
+        image_key = self._result_identity_key(str(getattr(result, "image_path", "") or ""))
+        serialized = dict(row_payload.get("serialized_result", {}) or self._serialize_omr_result(result))
+        cached_result = self._lightweight_result_copy(result)
+
+        scan_results_cache = cached.get("scan_results")
+        if isinstance(scan_results_cache, list):
+            replaced = False
+            if image_key:
+                for i, raw in enumerate(list(scan_results_cache)):
+                    if isinstance(raw, OMRResult) and self._result_identity_key(str(getattr(raw, "image_path", "") or "")) == image_key:
+                        scan_results_cache[i] = cached_result
+                        replaced = True
+                        break
+            if not replaced and 0 <= row_idx < len(scan_results_cache):
+                scan_results_cache[row_idx] = cached_result
+
+        row_cache = cached.get("rows")
+        if isinstance(row_cache, list):
+            cached_row = {
+                "student_id": str(row_payload.get("student_id", "-") or "-"),
+                "image_path": str(row_payload.get("image_path", "") or ""),
+                "exam_code": str(row_payload.get("exam_code", "") or ""),
+                "recognized_short": str(row_payload.get("recognized_short", "") or ""),
+                "exam_room": str(row_payload.get("exam_room", "-") or "-"),
+                "full_name": str(row_payload.get("full_name", "-") or "-"),
+                "birth_date": str(row_payload.get("birth_date", "-") or "-"),
+                "content": str(row_payload.get("content", "-") or "-"),
+                "status": str(row_payload.get("status", "-") or "-"),
+                "answer_string": str(getattr(result, "answer_string", "") or ""),
+                "mcq_answers": dict(getattr(result, "mcq_answers", {}) or {}),
+                "true_false_answers": dict(getattr(result, "true_false_answers", {}) or {}),
+                "numeric_answers": dict(getattr(result, "numeric_answers", {}) or {}),
+                "recognition_errors": list(getattr(result, "recognition_errors", []) or []),
+                "recognized_template_path": str(getattr(result, "recognized_template_path", "") or ""),
+                "recognized_alignment_profile": str(getattr(result, "recognized_alignment_profile", "") or ""),
+                "recognized_fill_threshold": float(getattr(result, "recognized_fill_threshold", 0.45) or 0.45),
+                "recognized_empty_threshold": float(getattr(result, "recognized_empty_threshold", 0.20) or 0.20),
+                "recognized_certainty_margin": float(getattr(result, "recognized_certainty_margin", 0.08) or 0.08),
+                "issues": [
+                    {"code": str(getattr(i, "code", "") or ""), "message": str(getattr(i, "message", "") or "")}
+                    for i in (getattr(result, "issues", []) or [])
+                ],
+                "manual_content_override": str(row_payload.get("manual_content_override", "") or ""),
+                "serialized_result": serialized,
+            }
+            replaced = False
+            if image_key:
+                for i, raw in enumerate(list(row_cache)):
+                    if isinstance(raw, dict) and self._result_identity_key(str((raw or {}).get("image_path", "") or "")) == image_key:
+                        row_cache[i] = cached_row
+                        replaced = True
+                        break
+            if not replaced and 0 <= row_idx < len(row_cache):
+                row_cache[row_idx] = cached_row
+
+        cached["dirty"] = bool(hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled())
+        self.batch_working_state_by_subject[key] = cached
+
     def _persist_single_scan_result_to_db(self, result: OMRResult, note: str = "") -> None:
-        subject_key = self._current_batch_subject_key()
+        subject_key = str(self._current_batch_subject_key() or "").strip()
+        image_path = str(getattr(result, "image_path", "") or "").strip()
+        if not subject_key or not image_path:
+            return
         result.answer_string = self._normalize_non_api_answer_string(result, subject_key)
-        row_idx = self._row_index_by_image_path(str(getattr(result, "image_path", "") or ""))
-        self._build_scan_row_payload_from_result(result, row_idx=row_idx if row_idx >= 0 else None)
+        row_idx = self._row_index_by_image_path(image_path)
+        row_payload = self._build_scan_row_payload_from_result(result, row_idx=row_idx if row_idx >= 0 else None)
         self._debug_scan_result_state("persist_single_before_db", result)
-        self.database.update_scan_result_payload(self._batch_result_subject_key(subject_key), str(getattr(result, "image_path", "") or ""), self._serialize_omr_result(result), note=note)
+        self.database.update_scan_result_payload(
+            self._batch_result_subject_key(subject_key),
+            image_path,
+            self._serialize_omr_result(result),
+            note=note,
+        )
+        self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(self.scan_results or [])
+        self._update_working_batch_state_single_row(subject_key, result, row_payload, row_idx)
+
+    def _sync_subject_batch_snapshot_after_inline_edit(self, subject_key: str = "") -> None:
+        subject = str(subject_key or self._current_batch_subject_key() or "").strip()
+        if not subject or not self.current_session_id or not hasattr(self, "scan_list"):
+            return
+        if subject != str(self._current_batch_subject_key() or "").strip():
+            return
+        row_count = self.scan_list.rowCount()
+        if row_count <= 0:
+            return
+        subject_cfg = self._selected_batch_subject_config()
+        if not isinstance(subject_cfg, dict) or not subject_cfg:
+            return
+        try:
+            selected_instance = self._ensure_subject_instance_key(subject_cfg)
+            subject_cfgs, _source = self._resolve_current_session_subject_configs_for_update()
+            if not subject_cfgs:
+                return
+            for idx_cfg, item in enumerate(subject_cfgs):
+                if isinstance(item, dict):
+                    self._ensure_subject_instance_key(item, idx_cfg)
+            matched_idx = self._find_subject_config_index_for_batch_save(subject_cfg, subject_cfgs)
+            if matched_idx < 0:
+                return
+
+            current_results = self._current_scan_results_snapshot()
+            self.scan_results = list(current_results)
+            self.scan_results_by_subject[self._batch_result_subject_key(subject)] = list(current_results)
+            saved_results = [self._serialize_omr_result(x) for x in current_results]
+            batch_rows_payload: list[dict] = []
+            for r in range(self.scan_list.rowCount()):
+                row_result = current_results[r] if r < len(current_results) else self._build_result_from_saved_table_row(r)
+                row_payload = self._build_scan_row_payload_from_result(row_result, row_idx=r) if row_result is not None else {}
+                serialized = self._serialize_omr_result(row_result) if row_result is not None else {}
+                batch_rows_payload.append(
+                    {
+                        "student_id": str(row_payload.get("student_id", "-") or "-"),
+                        "exam_room": str(row_payload.get("exam_room", "-") or "-"),
+                        "full_name": str(row_payload.get("full_name", "-") or "-"),
+                        "birth_date": str(row_payload.get("birth_date", "-") or "-"),
+                        "content": str(row_payload.get("content", "-") or "-"),
+                        "status": str(row_payload.get("status", "-") or "-"),
+                        "exam_code": str(row_payload.get("exam_code", "") or ""),
+                        "recognized_short": str(row_payload.get("recognized_short", "") or ""),
+                        "image_path": str(row_payload.get("image_path", "") or ""),
+                        "forced_status": str(row_payload.get("forced_status", "") or ""),
+                        "answer_string": str(getattr(row_result, "answer_string", "") or "") if row_result is not None else "",
+                        "mcq_answers": dict(getattr(row_result, "mcq_answers", {}) or {}) if row_result is not None else {},
+                        "true_false_answers": dict(getattr(row_result, "true_false_answers", {}) or {}) if row_result is not None else {},
+                        "numeric_answers": dict(getattr(row_result, "numeric_answers", {}) or {}) if row_result is not None else {},
+                        "recognition_errors": list(getattr(row_result, "recognition_errors", []) or []) if row_result is not None else [],
+                        "recognized_template_path": str(getattr(row_result, "recognized_template_path", "") or "") if row_result is not None else "",
+                        "recognized_alignment_profile": str(getattr(row_result, "recognized_alignment_profile", "") or "") if row_result is not None else "",
+                        "recognized_fill_threshold": float(getattr(row_result, "recognized_fill_threshold", 0.45) or 0.45) if row_result is not None else 0.45,
+                        "recognized_empty_threshold": float(getattr(row_result, "recognized_empty_threshold", 0.20) or 0.20) if row_result is not None else 0.20,
+                        "recognized_certainty_margin": float(getattr(row_result, "recognized_certainty_margin", 0.08) or 0.08) if row_result is not None else 0.08,
+                        "issues": [
+                            {"code": str(getattr(i, "code", "") or ""), "message": str(getattr(i, "message", "") or "")}
+                            for i in (getattr(row_result, "issues", []) or [])
+                        ] if row_result is not None else [],
+                        "serialized_result": serialized,
+                    }
+                )
+            batch_preview_payload = [
+                {
+                    "label": self.scan_result_preview.item(r, 0).text() if self.scan_result_preview.item(r, 0) else "",
+                    "value": self.scan_result_preview.item(r, 1).text() if self.scan_result_preview.item(r, 1) else "",
+                }
+                for r in range(self.scan_result_preview.rowCount())
+            ] if hasattr(self, "scan_result_preview") else []
+
+            target = subject_cfgs[matched_idx]
+            target["subject_instance_key"] = selected_instance
+            if not str(target.get("subject_uid", "") or "").strip():
+                target["subject_uid"] = str(subject_cfg.get("subject_uid", "") or str(uuid.uuid4()))
+            target["batch_saved"] = True
+            target["batch_saved_at"] = datetime.now().isoformat(timespec="seconds")
+            target["batch_result_count"] = row_count
+            target["batch_saved_rows"] = batch_rows_payload
+            target["batch_saved_preview"] = batch_preview_payload
+            target["batch_saved_results"] = saved_results
+
+            if self.session and isinstance(self.session.config, dict):
+                runtime_cfgs = self.session.config.get("subject_configs", [])
+                if isinstance(runtime_cfgs, list) and 0 <= matched_idx < len(runtime_cfgs) and isinstance(runtime_cfgs[matched_idx], dict):
+                    runtime_cfgs[matched_idx].update(target)
+                self.session.config["subject_configs"] = subject_cfgs
+
+            self._persist_current_session_subject_configs(subject_cfgs)
+            if isinstance(self.batch_editor_return_payload, dict):
+                self.batch_editor_return_payload["subject_configs"] = subject_cfgs
+            self.batch_working_state_by_subject[self._batch_runtime_key(subject)] = {
+                "runtime_key": self._batch_runtime_key(subject),
+                "scan_results": list(current_results),
+                "rows": batch_rows_payload,
+                "preview": batch_preview_payload,
+                "saved_at": target["batch_saved_at"],
+                "dirty": bool(hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled()),
+            }
+        except Exception:
+            pass
 
     def _refresh_all_statuses(self) -> None:
         duplicate_count_map: dict[str, int] = {}
@@ -11884,8 +12069,9 @@ class MainWindow(QMainWindow):
             old_img = str(old_item.data(Qt.UserRole) if old_item else "")
             old_exam_code = str(old_item.data(Qt.UserRole + 1) if old_item else "").strip()
             old_recognized_short = str(old_item.data(Qt.UserRole + 2) if old_item else "")
+            new_sid_text = inp_sid.text().strip()
             new_exam_code = str(inp_code.currentData() or inp_code.currentText() or "").strip() or old_exam_code
-            sid_item = QTableWidgetItem(inp_sid.text().strip() or "-")
+            sid_item = QTableWidgetItem(new_sid_text or "-")
             sid_item.setData(Qt.UserRole, old_img)
             sid_item.setData(Qt.UserRole + 1, new_exam_code)
             sid_item.setData(Qt.UserRole + 2, old_recognized_short)
@@ -11893,17 +12079,30 @@ class MainWindow(QMainWindow):
             self.scan_list.setItem(idx, 2, QTableWidgetItem(new_exam_code or "-"))
             manual_content_text = txt_content.toPlainText().strip()
             self.scan_list.setItem(idx, 5, QTableWidgetItem(manual_content_text or "-"))
+            changes: list[str] = []
+            if new_sid_text != old_sid:
+                changes.append(f"student_id: '{old_sid}' -> '{new_sid_text}'")
+            if new_exam_code != old_exam_code:
+                changes.append(f"exam_code: '{old_exam_code}' -> '{new_exam_code}'")
+            old_content_text = str(content or "").strip()
+            if manual_content_text != old_content_text:
+                changes.append(f"manual_content: '{old_content_text}' -> '{manual_content_text}'")
             rebuilt = self._build_result_from_saved_table_row(idx)
             if rebuilt is not None:
                 setattr(rebuilt, "manual_content_override", manual_content_text)
-                self._mark_result_manually_edited(rebuilt, idx)
+                if changes:
+                    self._mark_result_manually_edited(rebuilt, idx)
                 self._refresh_student_profile_for_result(rebuilt, idx)
                 self._set_scan_result_at_row(idx, rebuilt)
                 subject_key_now = self._current_batch_subject_key()
                 if subject_key_now:
                     self.scan_results_by_subject[self._batch_result_subject_key(subject_key_now)] = list(self.scan_results)
                 self._update_scan_row_from_result(idx, rebuilt)
-                self._persist_single_scan_result_to_db(rebuilt, note="saved_row_edit")
+                if changes:
+                    self._record_adjustment(idx, changes, "saved_row_edit")
+                    self._persist_single_scan_result_to_db(rebuilt, note="saved_row_edit")
+                else:
+                    self._refresh_row_status(idx)
             else:
                 self._refresh_row_status(idx)
             for r in range(self.scan_result_preview.rowCount()):
@@ -12750,10 +12949,10 @@ class MainWindow(QMainWindow):
                         scoped_saved = self._scoped_result_copy(saved_result)
                         self.scan_blank_summary[saved_idx] = self._compute_blank_questions(scoped_saved)
                         self._update_scan_row_from_result(saved_idx, saved_result)
-                        self._persist_single_scan_result_to_db(saved_result, note="dialog_close_sync")
                 subject_key_now = self._current_batch_subject_key()
                 if subject_key_now:
                     self.scan_results_by_subject[self._batch_result_subject_key(subject_key_now)] = list(self.scan_results)
+                    self._cache_working_batch_state(subject_key_now)
                 self._refresh_all_statuses()
                 self._update_batch_scan_bottom_status_text()
                 current_idx = dialog_state["index"]
