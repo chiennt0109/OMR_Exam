@@ -5702,14 +5702,16 @@ class MainWindow(QMainWindow):
                 status_item = self.scan_list.item(r, 6)
                 status_txt = str(status_item.text() if status_item else "").strip()
                 low = status_txt.lower()
+                is_edited = "đã sửa" in low
+                if is_edited:
+                    edited_count += 1
+                    continue
                 if status_txt and status_txt != "OK":
                     error_count += 1
                 if "trùng sbd" in low or "duplicate" in low:
                     duplicate_count += 1
                 if "mã đề" in low and ("sai" in low or "không" in low or "?" in status_txt):
                     wrong_code_count += 1
-                if "đã sửa" in low:
-                    edited_count += 1
         bar_text = f"Trạng thái file: {file_status} | Lọc: {visible_rows}/{total_rows}"
         if error_count > 0:
             bar_text += (
@@ -9819,14 +9821,15 @@ class MainWindow(QMainWindow):
         for i in range(self.scan_list.rowCount()):
             status_text = str(self.scan_list.item(i, 6).text() if self.scan_list.item(i, 6) else "").strip().lower()
             status_ok = True
+            is_edited = "đã sửa" in status_text
             if self.batch_status_filter_mode == "error":
-                status_ok = bool(status_text and status_text != "ok")
+                status_ok = bool(status_text and status_text != "ok" and not is_edited)
             elif self.batch_status_filter_mode == "duplicate":
-                status_ok = "trùng sbd" in status_text or "duplicate" in status_text
+                status_ok = ("trùng sbd" in status_text or "duplicate" in status_text) and not is_edited
             elif self.batch_status_filter_mode == "wrong_code":
-                status_ok = ("mã đề" in status_text) and ("sai" in status_text or "không" in status_text or "?" in status_text)
+                status_ok = (("mã đề" in status_text) and ("sai" in status_text or "không" in status_text or "?" in status_text)) and not is_edited
             elif self.batch_status_filter_mode == "edited":
-                status_ok = "đã sửa" in status_text
+                status_ok = is_edited
             if not value:
                 self.scan_list.setRowHidden(i, not status_ok)
                 continue

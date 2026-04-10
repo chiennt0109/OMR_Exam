@@ -112,6 +112,14 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('self._refresh_all_statuses()', source)
         self.assertIn('self.correction_save_timer.start(150)', source)
 
+    def test_edited_status_is_excluded_from_error_duplicate_wrong_code_groups(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('is_edited = "đã sửa" in low', source)
+        self.assertIn('if is_edited:\n                    edited_count += 1\n                    continue', source)
+        self.assertIn('status_ok = bool(status_text and status_text != "ok" and not is_edited)', source)
+        self.assertIn('status_ok = ("trùng sbd" in status_text or "duplicate" in status_text) and not is_edited', source)
+        self.assertIn('status_ok = (("mã đề" in status_text) and ("sai" in status_text or "không" in status_text or "?" in status_text)) and not is_edited', source)
+
     def test_room_scope_status_uses_normalized_student_id_matching(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
         self.assertIn('sid_norm = self._normalized_student_id_for_match(sid)', source)
