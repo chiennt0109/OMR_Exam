@@ -11358,7 +11358,11 @@ class MainWindow(QMainWindow):
             setattr(target_result, "manual_adjustments", list(self.scan_manual_adjustments.get(image_key, [])))
             setattr(target_result, "manually_edited", True)
             setattr(target_result, "cached_forced_status", "Đã sửa")
+            setattr(target_result, "cached_status", "Đã sửa")
         self.scan_forced_status_by_index[image_key] = "Đã sửa"
+        current_subject = str(self._current_batch_subject_key() or "").strip()
+        if current_subject:
+            self.scan_results_by_subject[self._batch_result_subject_key(current_subject)] = list(self.scan_results or [])
         self.database.log_change("scan_results", image_key, source, "", message, source)
 
     @staticmethod
@@ -11400,12 +11404,18 @@ class MainWindow(QMainWindow):
             self.scan_forced_status_by_index[image_key] = "Đã sửa"
 
     def _persist_scan_results_to_db(self, subject_key: str) -> None:
-        source_rows = list(self.scan_results_by_subject.get(self._batch_result_subject_key(subject_key), self.scan_results) or [])
+        scoped_key = self._batch_result_subject_key(subject_key)
+        active_subject = str(self._current_batch_subject_key() or "").strip()
+        if active_subject and self._batch_result_subject_key(active_subject) == scoped_key and self.scan_results:
+            source_rows = list(self.scan_results)
+            self.scan_results_by_subject[scoped_key] = list(self.scan_results)
+        else:
+            source_rows = list(self.scan_results_by_subject.get(scoped_key, self.scan_results) or [])
         for result in source_rows:
             result.answer_string = self._normalize_non_api_answer_string(result, subject_key)
         rows = [self._serialize_omr_result(x) for x in source_rows]
-        self.database.replace_scan_results_for_subject(self._batch_result_subject_key(subject_key), rows)
-        self.database.log_change("scan_results", self._batch_result_subject_key(subject_key), "replace_subject_rows", "", f"{len(rows)} rows", "batch_save")
+        self.database.replace_scan_results_for_subject(scoped_key, rows)
+        self.database.log_change("scan_results", scoped_key, "replace_subject_rows", "", f"{len(rows)} rows", "batch_save")
         self._refresh_scan_results_from_db(subject_key)
 
     def _normalize_non_api_answer_string(self, result: OMRResult, subject_key: str = "") -> str:
