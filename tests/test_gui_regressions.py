@@ -312,6 +312,35 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('self.progress.setFormat(f"%p% ({timing_text})")', source)
         self.assertIn('omr_batch_timing_manual.log', source)
 
+    def test_edit_dialog_answer_grid_supports_text_entry_navigation_like_scoring(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('def _answer_grid_key_release(event) -> None:', source)
+        self.assertIn('answer_grid.keyReleaseEvent = _answer_grid_key_release  # type: ignore[method-assign]', source)
+        self.assertIn('if answer_grid.currentColumn() != 2:', source)
+        self.assertIn('if section_text == "MCQ":', source)
+        self.assertIn('elif section_text in {"TF", "NUMERIC"}:', source)
+        self.assertIn('answer_grid.itemChanged.connect(_normalize_answer_grid_cell_text)', source)
+
+
+    def test_batch_scan_uses_progress_screen_with_total_current_and_eta(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('def _open_batch_progress_screen(self, total_items: int, title: str = "Đang nhận dạng Batch Scan") -> QDialog:', source)
+        self.assertIn('lbl_total = QLabel(f"Tổng số bài cần nhận dạng: {max(0, int(total_items or 0))}")', source)
+        self.assertIn('lbl_current = QLabel("Đang nhận dạng bài thứ: 0/0")', source)
+        self.assertIn('lbl_eta = QLabel("Thời gian còn lại ước tính: -")', source)
+        self.assertIn('def _update_batch_progress_screen(self, dlg: QDialog | None, current: int, total: int, image_path: str, started_at: float) -> None:', source)
+        self.assertIn("lbl_current.setText(f\"Đang nhận dạng bài thứ: {min(current_safe, total_safe)}/{total_safe} - {Path(str(image_path or '')).name or '-'}\")", source)
+        self.assertIn('lbl_eta.setText(f"Thời gian còn lại ước tính: {self._format_eta_text(eta_sec)}")', source)
+        self.assertIn('batch_progress_dialog = self._open_batch_progress_screen(len(file_paths), title="Batch Scan - Đang nhận dạng")', source)
+        self.assertIn('batch_progress_dialog = self._open_batch_progress_screen(len(file_paths), title="Batch Scan API - Đang nhận dạng")', source)
+
+
+    def test_cached_batch_state_rehydrates_status_from_canonical_payload_instead_of_grid_tooltip(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn("'status': str(payload.get('status', 'OK') or 'OK')", source)
+        self.assertIn("'forced_status': str(payload.get('forced_status', '') or '')", source)
+        self.assertIn('canonical_payload = self._build_scan_row_payload_from_result(', source)
+        self.assertIn('forced_status=forced_status,', source)
 
 if __name__ == '__main__':
     unittest.main()
