@@ -312,6 +312,14 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('self.progress.setFormat(f"%p% ({timing_text})")', source)
         self.assertIn('omr_batch_timing_manual.log', source)
 
+    def test_edit_dialog_answer_grid_supports_text_entry_navigation_like_scoring(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('def _answer_grid_key_release(event) -> None:', source)
+        self.assertIn('answer_grid.keyReleaseEvent = _answer_grid_key_release  # type: ignore[method-assign]', source)
+        self.assertIn('if answer_grid.currentColumn() != 2:', source)
+        self.assertIn('if section_text == "MCQ":', source)
+        self.assertIn('elif section_text in {"TF", "NUMERIC"}:', source)
+        self.assertIn('answer_grid.itemChanged.connect(_normalize_answer_grid_cell_text)', source)
 
 if __name__ == '__main__':
     unittest.main()

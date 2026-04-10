@@ -12327,6 +12327,48 @@ class MainWindow(QMainWindow):
         answer_grid.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         answer_grid.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         answer_grid.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        _orig_answer_grid_key_release = answer_grid.keyReleaseEvent
+
+        def _answer_grid_key_release(event) -> None:
+            _orig_answer_grid_key_release(event)
+            if answer_grid.currentColumn() != 2:
+                return
+            sec_item = answer_grid.item(answer_grid.currentRow(), 0)
+            section_text = str(sec_item.text() if sec_item else "").strip().upper()
+            cur_item = answer_grid.currentItem()
+            if cur_item is not None:
+                txt = str(cur_item.text() or "")
+                up_txt = txt.upper()
+                if txt != up_txt:
+                    answer_grid.blockSignals(True)
+                    cur_item.setText(up_txt)
+                    answer_grid.blockSignals(False)
+            key_code = int(getattr(event, "key", lambda: 0)() or 0)
+            move_next = False
+            if section_text == "MCQ":
+                move_next = (65 <= key_code <= 90) or (48 <= key_code <= 57)
+            elif section_text in {"TF", "NUMERIC"}:
+                move_next = key_code in {Qt.Key_Return, Qt.Key_Enter, Qt.Key_Tab}
+            if move_next:
+                row_local = answer_grid.currentRow()
+                if 0 <= row_local < answer_grid.rowCount() - 1:
+                    answer_grid.setCurrentCell(row_local + 1, 2)
+                elif row_local == answer_grid.rowCount() - 1:
+                    answer_grid.setCurrentCell(row_local, 2)
+
+        answer_grid.keyReleaseEvent = _answer_grid_key_release  # type: ignore[method-assign]
+
+        def _normalize_answer_grid_cell_text(item: QTableWidgetItem) -> None:
+            if item is None or item.column() != 2:
+                return
+            txt = str(item.text() or "")
+            up_txt = txt.upper()
+            if txt != up_txt:
+                answer_grid.blockSignals(True)
+                item.setText(up_txt)
+                answer_grid.blockSignals(False)
+
+        answer_grid.itemChanged.connect(_normalize_answer_grid_cell_text)
         left_lay.addWidget(answer_grid, 1)
         left_lay.addWidget(mcq_label)
         left_lay.addWidget(mcq_host)
