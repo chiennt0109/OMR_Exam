@@ -2308,9 +2308,7 @@ class MainWindow(QMainWindow):
         payload = self.database.fetch_exam_session(session_id)
         if not payload:
             QMessageBox.warning(self, "Sửa kỳ thi", "Không tìm thấy kỳ thi trong kho lưu trữ hệ thống.")
-            return False
-        if not self._confirm("Xem kỳ thi", "Bạn có chắc muốn xem kỳ thi này?"):
-            return
+            return False        
         try:
             session = ExamSession.from_dict(payload)
             cfg = session.config or {}
