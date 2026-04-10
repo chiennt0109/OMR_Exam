@@ -2139,6 +2139,80 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    @staticmethod
+    def _format_eta_text(seconds: float) -> str:
+        sec = max(0, int(round(float(seconds or 0.0))))
+        if sec <= 0:
+            return "~0s"
+        m, s = divmod(sec, 60)
+        h, m = divmod(m, 60)
+        if h > 0:
+            return f"~{h}h {m:02d}m {s:02d}s"
+        if m > 0:
+            return f"~{m}m {s:02d}s"
+        return f"~{s}s"
+
+    def _open_batch_progress_screen(self, total_items: int, title: str = "Đang nhận dạng Batch Scan") -> QDialog:
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        dlg.setModal(True)
+        lay = QVBoxLayout(dlg)
+        lbl_title = QLabel("Đang nhận dạng bài thi...")
+        lbl_total = QLabel(f"Tổng số bài cần nhận dạng: {max(0, int(total_items or 0))}")
+        lbl_current = QLabel("Đang nhận dạng bài thứ: 0/0")
+        lbl_eta = QLabel("Thời gian còn lại ước tính: -")
+        prog = QProgressBar(dlg)
+        prog.setMinimum(0)
+        prog.setMaximum(max(1, int(total_items or 0)))
+        prog.setValue(0)
+        prog.setFormat("%v/%m bài")
+        lay.addWidget(lbl_title)
+        lay.addWidget(lbl_total)
+        lay.addWidget(lbl_current)
+        lay.addWidget(lbl_eta)
+        lay.addWidget(prog)
+        setattr(dlg, "_batch_lbl_total", lbl_total)
+        setattr(dlg, "_batch_lbl_current", lbl_current)
+        setattr(dlg, "_batch_lbl_eta", lbl_eta)
+        setattr(dlg, "_batch_progress", prog)
+        dlg.resize(520, 180)
+        dlg.show()
+        QApplication.processEvents()
+        return dlg
+
+    def _update_batch_progress_screen(self, dlg: QDialog | None, current: int, total: int, image_path: str, started_at: float) -> None:
+        if dlg is None:
+            return
+        current_safe = max(0, int(current or 0))
+        total_safe = max(1, int(total or 1))
+        lbl_total = getattr(dlg, "_batch_lbl_total", None)
+        lbl_current = getattr(dlg, "_batch_lbl_current", None)
+        lbl_eta = getattr(dlg, "_batch_lbl_eta", None)
+        prog = getattr(dlg, "_batch_progress", None)
+        if isinstance(lbl_total, QLabel):
+            lbl_total.setText(f"Tổng số bài cần nhận dạng: {total_safe}")
+        if isinstance(lbl_current, QLabel):
+            lbl_current.setText(f"Đang nhận dạng bài thứ: {min(current_safe, total_safe)}/{total_safe} - {Path(str(image_path or '')).name or '-'}")
+        elapsed = max(0.0, float(time.perf_counter() - float(started_at or 0.0)))
+        remain_items = max(0, total_safe - current_safe)
+        eta_sec = (elapsed / current_safe) * remain_items if current_safe > 0 else 0.0
+        if isinstance(lbl_eta, QLabel):
+            lbl_eta.setText(f"Thời gian còn lại ước tính: {self._format_eta_text(eta_sec)}")
+        if isinstance(prog, QProgressBar):
+            prog.setMaximum(total_safe)
+            prog.setValue(min(current_safe, total_safe))
+        QApplication.processEvents()
+
+    @staticmethod
+    def _close_batch_progress_screen(dlg: QDialog | None) -> None:
+        if dlg is None:
+            return
+        try:
+            dlg.close()
+            dlg.deleteLater()
+        except Exception:
+            pass
+
     def _set_scan_action_widget(self, row: int) -> None:
         if row < 0 or row >= self.scan_list.rowCount():
             return
@@ -3538,6 +3612,7 @@ class MainWindow(QMainWindow):
         self.scan_list.cellDoubleClicked.connect(self._handle_scan_list_double_click)
         self.scan_list.cellClicked.connect(self._on_scan_cell_clicked)
         self.progress = QProgressBar()
+        self.progress.setVisible(False)
 
         self.scan_image_preview = PreviewImageWidget(); self.scan_image_preview.setText("Chọn bài thi ở danh sách bên trái")
         self.scan_image_scroll = QScrollArea()
@@ -6830,13 +6905,12 @@ class MainWindow(QMainWindow):
 
         self._apply_template_recognition_settings(self.template, sync_mode_selector=False)
         batch_started = time.perf_counter()
+        batch_progress_dialog = self._open_batch_progress_screen(len(file_paths), title="Batch Scan - Đang nhận dạng")
 
         def on_progress(current: int, total: int, image_path: str):
             if self._batch_cancel_requested:
                 raise RuntimeError("BATCH_CANCELLED")
-            self.progress.setMaximum(total)
-            self.progress.setValue(current)
-            QApplication.processEvents()
+            self._update_batch_progress_screen(batch_progress_dialog, current, total, image_path, batch_started)
 
         self._batch_scan_running = True
         try:
@@ -6907,6 +6981,7 @@ class MainWindow(QMainWindow):
         finally:
             self._batch_scan_running = False
             self._batch_cancel_requested = False
+            self._close_batch_progress_screen(batch_progress_dialog)
 
         self.scan_results_by_subject[subject_db_key] = list(self.scan_results)
         self.database.replace_scan_results_for_subject(
@@ -7595,18 +7670,22 @@ class MainWindow(QMainWindow):
         self.scan_last_adjustment.clear()
         self.preview_rotation_by_index.clear()
 
+        batch_started = time.perf_counter()
+        batch_progress_dialog = self._open_batch_progress_screen(len(file_paths), title="Batch Scan API - Đang nhận dạng")
+
         def on_progress(current: int, total: int, image_path: str):
-            self.progress.setMaximum(total)
-            self.progress.setValue(current)
-            QApplication.processEvents()
+            self._update_batch_progress_screen(batch_progress_dialog, current, total, image_path, batch_started)
 
         self.scan_results = []
         total = len(file_paths)
-        for offset, image_path in enumerate(file_paths):
-            on_progress(offset + 1, total, str(image_path))
-            self.scan_results.append(
-                self._recognize_single_image(str(image_path), allow_retry=False, context_tag="batch_scan_api")
-            )
+        try:
+            for offset, image_path in enumerate(file_paths):
+                on_progress(offset + 1, total, str(image_path))
+                self.scan_results.append(
+                    self._recognize_single_image(str(image_path), allow_retry=False, context_tag="batch_scan_api")
+                )
+        finally:
+            self._close_batch_progress_screen(batch_progress_dialog)
         subject_key_for_results = self._subject_key_from_cfg(subject_cfg) if subject_cfg else self._resolve_preferred_scoring_subject()
         self.scan_list.setRowCount(0)
         duplicate_ids: dict[str, int] = {}

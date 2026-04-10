@@ -321,5 +321,18 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('elif section_text in {"TF", "NUMERIC"}:', source)
         self.assertIn('answer_grid.itemChanged.connect(_normalize_answer_grid_cell_text)', source)
 
+
+    def test_batch_scan_uses_progress_screen_with_total_current_and_eta(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('def _open_batch_progress_screen(self, total_items: int, title: str = "Đang nhận dạng Batch Scan") -> QDialog:', source)
+        self.assertIn('lbl_total = QLabel(f"Tổng số bài cần nhận dạng: {max(0, int(total_items or 0))}")', source)
+        self.assertIn('lbl_current = QLabel("Đang nhận dạng bài thứ: 0/0")', source)
+        self.assertIn('lbl_eta = QLabel("Thời gian còn lại ước tính: -")', source)
+        self.assertIn('def _update_batch_progress_screen(self, dlg: QDialog | None, current: int, total: int, image_path: str, started_at: float) -> None:', source)
+        self.assertIn("lbl_current.setText(f\"Đang nhận dạng bài thứ: {min(current_safe, total_safe)}/{total_safe} - {Path(str(image_path or '')).name or '-'}\")", source)
+        self.assertIn('lbl_eta.setText(f"Thời gian còn lại ước tính: {self._format_eta_text(eta_sec)}")', source)
+        self.assertIn('batch_progress_dialog = self._open_batch_progress_screen(len(file_paths), title="Batch Scan - Đang nhận dạng")', source)
+        self.assertIn('batch_progress_dialog = self._open_batch_progress_screen(len(file_paths), title="Batch Scan API - Đang nhận dạng")', source)
+
 if __name__ == '__main__':
     unittest.main()
