@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
     QCompleter,
     QDialog,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QScrollArea,
     QSplitter,
@@ -311,7 +313,18 @@ def open_recheck_dialog(self) -> None:
     requested_sids = _normalize_sid_list(built_sids)
     _persist_recheck_sid_list(requested_sids)
 
+    loading = QProgressDialog("Đang khởi tạo màn hình phúc tra...", "", 0, 4, self)
+    loading.setWindowTitle("Vui lòng chờ")
+    loading.setCancelButton(None)
+    loading.setWindowModality(Qt.ApplicationModal)
+    loading.setMinimumDuration(0)
+    loading.setValue(1)
+    loading.show()
+    QApplication.processEvents()
+
     result_rows = self.database.fetch_scan_results_for_subject(self._batch_result_subject_key(subject_key)) or []
+    loading.setValue(2)
+    QApplication.processEvents()
     scans = [self._deserialize_omr_result(x) for x in result_rows]
     scan_by_sid_norm: dict[str, OMRResult] = {}
     for scan_item in scans:
@@ -337,6 +350,8 @@ def open_recheck_dialog(self) -> None:
             )
 
     _rebuild_recheck_entries()
+    loading.setValue(3)
+    QApplication.processEvents()
 
     exam_codes = sorted(
         {
@@ -894,6 +909,8 @@ def open_recheck_dialog(self) -> None:
     if tbl.rowCount() > 0:
         tbl.setCurrentCell(0, 0)
         _on_pick()
+    loading.setValue(4)
+    loading.close()
     dlg.exec()
     return
 
