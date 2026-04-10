@@ -4326,6 +4326,10 @@ class MainWindow(QMainWindow):
         setattr(result, "edit_history", [str(x) for x in (payload.get("edit_history", []) or []) if str(x or "").strip()])
         setattr(result, "last_adjustment", str(payload.get("last_adjustment", "") or ""))
         setattr(result, "manual_adjustments", [str(x) for x in (payload.get("manual_adjustments", []) or []) if str(x or "").strip()])
+        if (not bool(getattr(result, "manually_edited", False))) and bool(getattr(result, "edit_history", [])):
+            setattr(result, "manually_edited", True)
+            if not str(getattr(result, "cached_forced_status", "") or "").strip():
+                setattr(result, "cached_forced_status", "Đã sửa")
         setattr(result, "cached_blank_summary", dict(payload.get("cached_blank_summary", {}) or {}))
         setattr(result, "recognized_template_path", str(payload.get("recognized_template_path", "") or ""))
         setattr(result, "recognized_alignment_profile", str(payload.get("recognized_alignment_profile", "") or ""))
@@ -10027,6 +10031,10 @@ class MainWindow(QMainWindow):
             if history:
                 self.scan_edit_history[image_key] = list(history)
                 self.scan_last_adjustment[image_key] = str(getattr(res, "last_adjustment", "") or history[-1])
+                setattr(res, "manually_edited", True)
+                if not str(getattr(res, "cached_forced_status", "") or "").strip():
+                    setattr(res, "cached_forced_status", "Đã sửa")
+                self.scan_forced_status_by_index[image_key] = "Đã sửa"
             manual_items = [str(x) for x in (getattr(res, "manual_adjustments", []) or []) if str(x or "").strip()]
             if manual_items:
                 self.scan_manual_adjustments[image_key] = list(sorted(set(manual_items)))
@@ -10138,7 +10146,8 @@ class MainWindow(QMainWindow):
             subject_scope=subject_scope,
             available_exam_codes=available_exam_codes,
         )
-        manual_override_status = "Đã sửa" if bool(getattr(result, "manually_edited", False)) else ""
+        has_edit_history = bool([str(x) for x in (getattr(result, "edit_history", []) or []) if str(x or "").strip()])
+        manual_override_status = "Đã sửa" if (bool(getattr(result, "manually_edited", False)) or has_edit_history) else ""
         effective_forced_status = str(forced_status or manual_override_status or "").strip()
         status_text = effective_forced_status or (", ".join(status_parts) if status_parts else "OK")
         manual_content_override = str(getattr(result, "manual_content_override", "") or "").strip()
@@ -11347,6 +11356,9 @@ class MainWindow(QMainWindow):
             setattr(target_result, "edit_history", list(history))
             setattr(target_result, "last_adjustment", message)
             setattr(target_result, "manual_adjustments", list(self.scan_manual_adjustments.get(image_key, [])))
+            setattr(target_result, "manually_edited", True)
+            setattr(target_result, "cached_forced_status", "Đã sửa")
+        self.scan_forced_status_by_index[image_key] = "Đã sửa"
         self.database.log_change("scan_results", image_key, source, "", message, source)
 
     @staticmethod
@@ -11507,7 +11519,8 @@ class MainWindow(QMainWindow):
         if row_result is None and idx < len(self.scan_results):
             row_result = self.scan_results[idx]
         if not forced_status and row_result is not None:
-            if bool(getattr(row_result, "manually_edited", False)):
+            row_history = [str(x) for x in (getattr(row_result, "edit_history", []) or []) if str(x or "").strip()]
+            if bool(getattr(row_result, "manually_edited", False)) or bool(row_history):
                 forced_status = "Đã sửa"
                 row_image = self._result_identity_key(getattr(row_result, "image_path", "")) or image_key
                 if row_image:
