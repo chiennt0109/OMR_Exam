@@ -105,13 +105,14 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
     left_lay = QVBoxLayout(left)
     right_lay = QVBoxLayout(right)
 
-    grid = QTableWidget(0, 4, left)
-    grid.setHorizontalHeaderLabels(["Phần", "Câu", "Đáp án", "Bài làm"])
+    grid = QTableWidget(0, 5, left)
+    grid.setHorizontalHeaderLabels(["Phần", "Câu", "Đáp án", "Bài làm", "Điểm"])
     grid.verticalHeader().setVisible(False)
     grid.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
     grid.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
     grid.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
     grid.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+    grid.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
     left_lay.addWidget(grid, 1)
     _orig_key_release = grid.keyReleaseEvent
 
@@ -153,6 +154,19 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
             grid.blockSignals(True)
             item.setText(up_txt)
             grid.blockSignals(False)
+        row_idx = item.row()
+        sec = str(grid.item(row_idx, 0).text() if grid.item(row_idx, 0) else "").strip().upper()
+        q_item = grid.item(row_idx, 1)
+        q_no = int(q_item.data(Qt.UserRole) if q_item and q_item.data(Qt.UserRole) is not None else 0)
+        answer_text = str(grid.item(row_idx, 2).text() if grid.item(row_idx, 2) else "").strip()
+        student_text = str(grid.item(row_idx, 3).text() if grid.item(row_idx, 3) else "").strip()
+        if not _is_answer_match_for_row(sec, answer_text, student_text):
+            item.setBackground(QColor(255, 225, 225))
+        else:
+            item.setBackground(QColor(255, 255, 255, 0))
+        points_item = grid.item(row_idx, 4)
+        if q_no > 0 and sec in {"MCQ", "TF", "NUMERIC"} and points_item is not None:
+            points_item.setText(f"{_points_for_row(sec, q_no, answer_text, student_text):g}")
 
     grid.itemChanged.connect(_normalize_grid_cell_text)
 
@@ -198,6 +212,55 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
             return answer_map.get(str(q_display))
         return ""
 
+    def _points_for_row(section: str, q_actual: int, answer: str, student: str) -> float:
+        subject_cfg_local = self._subject_config_by_subject_key(subject_key) or {}
+        answer_text = str(answer or "").strip().upper()
+        student_text = str(student or "").strip().upper()
+        if answer_text == "G":
+            return float(self.scoring_engine._question_score(section, q_actual, key, subject_cfg_local))
+        if section == "MCQ":
+            if student_text and student_text == answer_text:
+                return float(self.scoring_engine._question_score(section, q_actual, key, subject_cfg_local))
+            return 0.0
+        if section == "NUMERIC":
+            answer_norm = self.scoring_engine._normalize_numeric_text(answer_text)
+            student_norm = self.scoring_engine._normalize_numeric_text(student_text)
+            if answer_norm and student_norm and answer_norm == student_norm:
+                return float(self.scoring_engine._question_score(section, q_actual, key, subject_cfg_local))
+            return 0.0
+        if section == "TF":
+            mode = self.scoring_engine._score_mode(subject_cfg_local)
+            width = max(1, min(len(answer_text), 4))
+            matched = 0
+            for expected, actual in zip(answer_text[:width], student_text[:width]):
+                if expected == actual or expected == "G":
+                    matched += 1
+            if mode == "Điểm theo phần":
+                sec_scores = (subject_cfg_local.get("section_scores", {}) or {}) if isinstance(subject_cfg_local, dict) else {}
+                tf_rule_cfg = ((sec_scores.get("TF") or {}).get("rule_per_question") or {})
+                tf_full_points = self.scoring_engine._to_float(((sec_scores.get("TF") or {}).get("total_points")), 0.0)
+            else:
+                tf_rule_cfg = ((subject_cfg_local.get("question_scores", {}) or {}).get("TF", {}) if isinstance(subject_cfg_local, dict) else {}) or {}
+                tf_full_points = self.scoring_engine._question_score(section, q_actual, key, subject_cfg_local)
+            tf_rule_points = {
+                0: 0.0,
+                1: max(0.0, self.scoring_engine._to_float(tf_rule_cfg.get("1"), 0.1)),
+                2: max(0.0, self.scoring_engine._to_float(tf_rule_cfg.get("2"), 0.25)),
+                3: max(0.0, self.scoring_engine._to_float(tf_rule_cfg.get("3"), 0.5)),
+                4: max(0.0, self.scoring_engine._to_float(tf_rule_cfg.get("4"), tf_full_points)),
+            }
+            return float(tf_rule_points.get(matched, 0.0))
+        return 0.0
+
+    def _is_answer_match_for_row(section: str, answer: str, student: str) -> bool:
+        answer_text = str(answer or "").strip().upper()
+        student_text = str(student or "").strip().upper()
+        if section == "NUMERIC":
+            answer_norm = self.scoring_engine._normalize_numeric_text(answer_text)
+            student_norm = self.scoring_engine._normalize_numeric_text(student_text)
+            return bool(answer_norm and student_norm and answer_norm == student_norm)
+        return bool(answer_text and student_text and answer_text == student_text)
+
     def _append_row(section: str, q_display: int, q_actual: int, answer: str, student: str) -> None:
         r = grid.rowCount()
         grid.insertRow(r)
@@ -210,9 +273,12 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
             answer_item.setBackground(QColor(255, 244, 179))
         grid.setItem(r, 2, answer_item)
         edit_item = QTableWidgetItem(str(student))
-        if str(answer).strip().upper() != str(student).strip().upper():
+        if not _is_answer_match_for_row(section, answer, student):
             edit_item.setBackground(QColor(255, 225, 225))
         grid.setItem(r, 3, edit_item)
+        points_item = QTableWidgetItem(f"{_points_for_row(section, q_actual, answer, student):g}")
+        points_item.setFlags(points_item.flags() & ~Qt.ItemIsEditable)
+        grid.setItem(r, 4, points_item)
 
     section_limits = self._subject_section_question_counts(subject_key)
     invalid_rows = dict(getattr(key, "invalid_answer_rows", {}) or {})
