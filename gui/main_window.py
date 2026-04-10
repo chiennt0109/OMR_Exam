@@ -12803,7 +12803,9 @@ class MainWindow(QMainWindow):
             subject_scans = list(self.scan_results)
             self.scan_results_by_subject[self._batch_result_subject_key(subject)] = list(subject_scans)
         if not subject_scans:
-            QMessageBox.warning(self, "Missing data", "Môn này chưa có dữ liệu Batch Scan để tính điểm.")
+            silent_missing_notes = {"auto_refresh_subject_change", "auto_refresh_open_scoring"}
+            if str(note or "").strip() not in silent_missing_notes:
+                QMessageBox.warning(self, "Missing data", "Môn này chưa có dữ liệu Batch Scan để tính điểm.")
             return []
 
         self._ensure_answer_keys_for_subject(subject)
