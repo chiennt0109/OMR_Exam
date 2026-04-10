@@ -160,6 +160,10 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
         q_no = int(q_item.data(Qt.UserRole) if q_item and q_item.data(Qt.UserRole) is not None else 0)
         answer_text = str(grid.item(row_idx, 2).text() if grid.item(row_idx, 2) else "").strip()
         student_text = str(grid.item(row_idx, 3).text() if grid.item(row_idx, 3) else "").strip()
+        if not _is_answer_match_for_row(sec, answer_text, student_text):
+            item.setBackground(QColor(255, 225, 225))
+        else:
+            item.setBackground(QColor(255, 255, 255, 0))
         points_item = grid.item(row_idx, 4)
         if q_no > 0 and sec in {"MCQ", "TF", "NUMERIC"} and points_item is not None:
             points_item.setText(f"{_points_for_row(sec, q_no, answer_text, student_text):g}")
@@ -248,6 +252,15 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
             return float(tf_rule_points.get(matched, 0.0))
         return 0.0
 
+    def _is_answer_match_for_row(section: str, answer: str, student: str) -> bool:
+        answer_text = str(answer or "").strip().upper()
+        student_text = str(student or "").strip().upper()
+        if section == "NUMERIC":
+            answer_norm = self.scoring_engine._normalize_numeric_text(answer_text)
+            student_norm = self.scoring_engine._normalize_numeric_text(student_text)
+            return bool(answer_norm and student_norm and answer_norm == student_norm)
+        return bool(answer_text and student_text and answer_text == student_text)
+
     def _append_row(section: str, q_display: int, q_actual: int, answer: str, student: str) -> None:
         r = grid.rowCount()
         grid.insertRow(r)
@@ -260,7 +273,7 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
             answer_item.setBackground(QColor(255, 244, 179))
         grid.setItem(r, 2, answer_item)
         edit_item = QTableWidgetItem(str(student))
-        if str(answer).strip().upper() != str(student).strip().upper():
+        if not _is_answer_match_for_row(section, answer, student):
             edit_item.setBackground(QColor(255, 225, 225))
         grid.setItem(r, 3, edit_item)
         points_item = QTableWidgetItem(f"{_points_for_row(section, q_actual, answer, student):g}")
