@@ -36,6 +36,16 @@ from models.answer_key import SubjectKey
 
 
 def open_recheck_dialog(self) -> None:
+    # Compatibility shim for older patched variants that may still attempt
+    # to wire btn_pick/btn_unpick callbacks at the end of this function.
+    # Keeping these placeholders prevents NameError in mixed deployments.
+    btn_pick = QPushButton()
+    btn_unpick = QPushButton()
+    def _pick_from_pool() -> None:
+        return
+    def _remove_selected_recheck_row() -> None:
+        return
+
     subject_cfgs = [cfg for cfg in self._effective_subject_configs_for_batch() if isinstance(cfg, dict)]
     subject_keys = [self._subject_key_from_cfg(cfg) for cfg in subject_cfgs if self._subject_key_from_cfg(cfg)]
     if not subject_keys:
