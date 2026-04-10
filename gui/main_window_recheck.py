@@ -159,6 +159,13 @@ def open_recheck_dialog(self) -> None:
         split_pick.setStretchFactor(2, 1)
         split_pick.setSizes([420, 140, 420])
 
+        subject_cfg_local = self._subject_config_by_subject_key(subject_key) or {}
+        has_room_mapping = False
+        if isinstance(subject_cfg_local, dict):
+            room_map_by_room = subject_cfg_local.get("exam_room_sbd_mapping_by_room", {})
+            room_map_legacy = str(subject_cfg_local.get("exam_room_sbd_mapping", "") or "").strip()
+            has_room_mapping = bool(room_map_by_room) or bool(room_map_legacy)
+
         available_students: list[dict[str, str]] = []
         for st in (self.session.students or []) if self.session else []:
             sid_val = str(getattr(st, "student_id", "") or "").strip()
@@ -176,7 +183,7 @@ def open_recheck_dialog(self) -> None:
                     "room": room,
                 }
             )
-        if not available_students:
+        if not available_students and not has_room_mapping:
             for st in (self.session.students or []) if self.session else []:
                 sid_val = str(getattr(st, "student_id", "") or "").strip()
                 if sid_val:
