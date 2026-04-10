@@ -2722,8 +2722,8 @@ class MainWindow(QMainWindow):
         style = self.style()
         # Session actions
         self.ribbon_new_exam_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileIcon), "Tạo mới", self.action_create_session)
-        self.ribbon_view_exam_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Xem", self._edit_selected_registry_session)
-        self.ribbon_delete_exam_action = toolbar.addAction(style.standardIcon(QStyle.SP_TrashIcon), "Xoá", self._delete_selected_registry_session)
+        self.ribbon_view_exam_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Danh sách", self._edit_selected_registry_session)
+        # self.ribbon_delete_exam_action = toolbar.addAction(style.standardIcon(QStyle.SP_TrashIcon), "Xoá", self._delete_selected_registry_session)
         toolbar.addSeparator()
         # Workflow actions
         self.ribbon_batch_scan_action = toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Nhận dạng", self.action_run_batch_scan)
@@ -4716,6 +4716,20 @@ class MainWindow(QMainWindow):
                 pass
         return True
 
+    def _persist_runtime_session_state_quietly(self) -> bool:
+        if not self.session or not self.current_session_id:
+            return False
+        try:
+            cfg = dict(self.session.config or {})
+            cfg["scoring_phases"] = list(self.scoring_phases)
+            cfg["scoring_results"] = dict(self.scoring_results_by_subject)
+            self.session.config = cfg
+            self.database.save_exam_session(self.current_session_id, self.session.exam_name, self.session.to_dict())
+            self.current_session_path = self._session_path_from_id(self.current_session_id)
+            return True
+        except Exception:
+            return False
+
     def _save_batch_for_selected_subject(self) -> bool:
         subject_cfg = self._selected_batch_subject_config()
         if not subject_cfg:
@@ -5712,8 +5726,9 @@ class MainWindow(QMainWindow):
                     duplicate_count += 1
                 if "mã đề" in low and ("sai" in low or "không" in low or "?" in status_txt):
                     wrong_code_count += 1
+        issue_total = error_count + edited_count
         bar_text = f"Trạng thái file: {file_status} | Lọc: {visible_rows}/{total_rows}"
-        if error_count > 0:
+        if issue_total > 0:
             bar_text += (
                 " | "
                 f"<a href='all'><b>Tất cả</b></a> | "
@@ -9820,14 +9835,14 @@ class MainWindow(QMainWindow):
         col = self._scan_filter_column_from_combo_index(self.filter_column.currentIndex())
         for i in range(self.scan_list.rowCount()):
             status_text = str(self.scan_list.item(i, 6).text() if self.scan_list.item(i, 6) else "").strip().lower()
-            status_ok = True
             is_edited = "đã sửa" in status_text
+            status_ok = True
             if self.batch_status_filter_mode == "error":
-                status_ok = bool(status_text and status_text != "ok" and not is_edited)
+                status_ok = (not is_edited) and bool(status_text and status_text != "ok")
             elif self.batch_status_filter_mode == "duplicate":
-                status_ok = ("trùng sbd" in status_text or "duplicate" in status_text) and not is_edited
+                status_ok = (not is_edited) and ("trùng sbd" in status_text or "duplicate" in status_text)
             elif self.batch_status_filter_mode == "wrong_code":
-                status_ok = (("mã đề" in status_text) and ("sai" in status_text or "không" in status_text or "?" in status_text)) and not is_edited
+                status_ok = (not is_edited) and (("mã đề" in status_text) and ("sai" in status_text or "không" in status_text or "?" in status_text))
             elif self.batch_status_filter_mode == "edited":
                 status_ok = is_edited
             if not value:
@@ -9933,7 +9948,6 @@ class MainWindow(QMainWindow):
             self._update_scan_preview(row_idx)
         else:
             self._update_scan_preview_from_saved_row(row_idx)
-        self.btn_save_batch_subject.setEnabled(True)
 
 
     def _rebuild_error_list(self) -> None:
@@ -11347,6 +11361,7 @@ class MainWindow(QMainWindow):
             )
         except Exception:
             pass
+        self._persist_runtime_session_state_quietly()
         return changed
 
     def _record_adjustment(self, idx: int, details: list[str], source: str) -> None:
@@ -11532,15 +11547,144 @@ class MainWindow(QMainWindow):
         result.answer_string = self._normalize_non_api_answer_string(result, subject_key)
         row_idx = self._row_index_by_image_path(image_path)
         row_payload = self._build_scan_row_payload_from_result(result, row_idx=row_idx if row_idx >= 0 else None)
+        serialized = self._serialize_omr_result(result)
         self._debug_scan_result_state("persist_single_before_db", result)
-        self.database.update_scan_result_payload(
-            self._batch_result_subject_key(subject_key),
-            image_path,
-            self._serialize_omr_result(result),
-            note=note,
-        )
-        self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(self.scan_results or [])
+
+        subject_db_key = self._batch_result_subject_key(subject_key)
+        updated = False
+        try:
+            self.database.update_scan_result_payload(
+                subject_db_key,
+                image_path,
+                serialized,
+                note=note,
+            )
+            db_rows = list(self.database.fetch_scan_results_for_subject(subject_db_key) or [])
+            for payload in db_rows:
+                if not isinstance(payload, dict):
+                    continue
+                if str(payload.get("image_path", "") or "").strip() != image_path:
+                    continue
+                payload_history = [str(x) for x in (payload.get("edit_history", []) or []) if str(x or "").strip()]
+                payload_forced = str(payload.get("cached_forced_status", payload.get("forced_status", "")) or "").strip()
+                if bool(payload.get("manually_edited", False)) or bool(payload_history) or payload_forced == "Đã sửa":
+                    updated = True
+                    break
+        except Exception:
+            updated = False
+
+        if not updated:
+            try:
+                db_rows = list(self.database.fetch_scan_results_for_subject(subject_db_key) or [])
+            except Exception:
+                db_rows = []
+            replaced = False
+            for i, payload in enumerate(list(db_rows)):
+                if isinstance(payload, dict) and str(payload.get("image_path", "") or "").strip() == image_path:
+                    db_rows[i] = dict(serialized)
+                    replaced = True
+                    break
+            if not replaced:
+                db_rows.append(dict(serialized))
+            try:
+                self.database.replace_scan_results_for_subject(subject_db_key, db_rows)
+                try:
+                    self.database.log_change("scan_results", image_path, "persist_single_fallback", "", note or "inline_edit", note or "inline_edit")
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        self.scan_results_by_subject[subject_db_key] = list(self.scan_results or [])
         self._update_working_batch_state_single_row(subject_key, result, row_payload, row_idx)
+        self._update_single_subject_saved_snapshot(subject_key, result, row_payload, row_idx)
+        self._persist_runtime_session_state_quietly()
+
+    def _update_single_subject_saved_snapshot(self, subject_key: str, result: OMRResult, row_payload: dict, row_idx: int) -> None:
+        subject = str(subject_key or "").strip()
+        if not subject:
+            return
+        cfg = self._subject_config_by_subject_key(subject)
+        if not isinstance(cfg, dict):
+            return
+
+        serialized = dict(row_payload.get("serialized_result", {}) or self._serialize_omr_result(result))
+        image_path = str(getattr(result, "image_path", "") or row_payload.get("image_path", "") or "").strip()
+        if not image_path:
+            return
+
+        saved_results = list(cfg.get("batch_saved_results", []) if isinstance(cfg.get("batch_saved_results", []), list) else [])
+        replaced = False
+        for i, raw in enumerate(list(saved_results)):
+            if isinstance(raw, dict) and str(raw.get("image_path", "") or "").strip() == image_path:
+                saved_results[i] = dict(serialized)
+                replaced = True
+                break
+        if not replaced and row_idx >= 0:
+            while len(saved_results) < row_idx:
+                saved_results.append({})
+            if len(saved_results) == row_idx:
+                saved_results.append(dict(serialized))
+            else:
+                saved_results[row_idx] = dict(serialized)
+        elif not replaced:
+            saved_results.append(dict(serialized))
+        cfg["batch_saved_results"] = saved_results
+
+        compact_row = {
+            "student_id": str(row_payload.get("student_id", "-") or "-"),
+            "exam_room": str(row_payload.get("exam_room", "-") or "-"),
+            "full_name": str(row_payload.get("full_name", "-") or "-"),
+            "birth_date": str(row_payload.get("birth_date", "-") or "-"),
+            "content": str(row_payload.get("content", "-") or "-"),
+            "status": str(row_payload.get("status", "-") or "-"),
+            "exam_code": str(row_payload.get("exam_code", "") or ""),
+            "recognized_short": str(row_payload.get("recognized_short", "") or ""),
+            "image_path": image_path,
+            "forced_status": str(row_payload.get("forced_status", "") or ""),
+            "manual_content_override": str(row_payload.get("manual_content_override", "") or ""),
+            "edit_history": [str(x) for x in (getattr(result, "edit_history", []) or []) if str(x or "").strip()],
+            "manual_adjustments": [str(x) for x in (getattr(result, "manual_adjustments", []) or []) if str(x or "").strip()],
+            "last_adjustment": str(getattr(result, "last_adjustment", "") or ""),
+            "manually_edited": bool(getattr(result, "manually_edited", False)),
+            "serialized_result": dict(serialized),
+        }
+        saved_rows = list(cfg.get("batch_saved_rows", []) if isinstance(cfg.get("batch_saved_rows", []), list) else [])
+        replaced = False
+        for i, raw in enumerate(list(saved_rows)):
+            if isinstance(raw, dict) and str(raw.get("image_path", "") or "").strip() == image_path:
+                saved_rows[i] = dict(compact_row)
+                replaced = True
+                break
+        if not replaced and row_idx >= 0:
+            while len(saved_rows) < row_idx:
+                saved_rows.append({})
+            if len(saved_rows) == row_idx:
+                saved_rows.append(dict(compact_row))
+            else:
+                saved_rows[row_idx] = dict(compact_row)
+        elif not replaced:
+            saved_rows.append(dict(compact_row))
+        cfg["batch_saved_rows"] = saved_rows
+
+        cfg["batch_saved"] = True
+        cfg["batch_saved_at"] = str(cfg.get("batch_saved_at", "") or datetime.now().isoformat(timespec="seconds"))
+        cfg["batch_result_count"] = max(int(cfg.get("batch_result_count", 0) or 0), len(saved_results), row_idx + 1)
+
+        if self.session and isinstance(self.session.config, dict):
+            subject_cfgs = self.session.config.get("subject_configs", [])
+            if isinstance(subject_cfgs, list):
+                for i, item in enumerate(subject_cfgs):
+                    if item is cfg:
+                        subject_cfgs[i] = cfg
+                        break
+        if isinstance(self.batch_editor_return_payload, dict):
+            subject_cfgs = self.batch_editor_return_payload.get("subject_configs", [])
+            if isinstance(subject_cfgs, list):
+                for i, item in enumerate(subject_cfgs):
+                    if isinstance(item, dict) and self._subject_key_from_cfg(item) == subject:
+                        subject_cfgs[i].update(cfg)
+                        break
 
     def _sync_subject_batch_snapshot_after_inline_edit(self, subject_key: str = "") -> None:
         subject = str(subject_key or self._current_batch_subject_key() or "").strip()
@@ -12124,7 +12268,7 @@ class MainWindow(QMainWindow):
                     break
             if self.scan_list.currentRow() == idx:
                 self._update_scan_preview_from_saved_row(idx)
-            self.btn_save_batch_subject.setEnabled(True)
+            self.btn_save_batch_subject.setEnabled(False)
             invalidated = self._invalidate_scoring_for_student_ids(
                 [old_sid, inp_sid.text().strip()],
                 reason="saved_row_edit",
