@@ -334,5 +334,13 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('batch_progress_dialog = self._open_batch_progress_screen(len(file_paths), title="Batch Scan - Đang nhận dạng")', source)
         self.assertIn('batch_progress_dialog = self._open_batch_progress_screen(len(file_paths), title="Batch Scan API - Đang nhận dạng")', source)
 
+
+    def test_cached_batch_state_rehydrates_status_from_canonical_payload_instead_of_grid_tooltip(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn("'status': str(payload.get('status', 'OK') or 'OK')", source)
+        self.assertIn("'forced_status': str(payload.get('forced_status', '') or '')", source)
+        self.assertIn('canonical_payload = self._build_scan_row_payload_from_result(', source)
+        self.assertIn('forced_status=forced_status,', source)
+
 if __name__ == '__main__':
     unittest.main()

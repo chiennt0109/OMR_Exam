@@ -14567,7 +14567,8 @@ def _patched_cache_working_batch_state_v4(self, subject_key: str) -> None:
             'full_name': str(payload.get('full_name', '-') or '-'),
             'birth_date': str(payload.get('birth_date', '-') or '-'),
             'content': str(self.scan_list.item(r, 5).text() if self.scan_list.item(r, 5) else payload.get('content', '') or ''),
-            'status': str(self.scan_list.item(r, 6).toolTip() if self.scan_list.item(r, 6) and self.scan_list.item(r, 6).toolTip() else self.scan_list.item(r, 6).text() if self.scan_list.item(r, 6) else payload.get('status', 'OK') or 'OK'),
+            'status': str(payload.get('status', 'OK') or 'OK'),
+            'forced_status': str(payload.get('forced_status', '') or ''),
             'answer_string': str(getattr(row_result, 'answer_string', '') or ''),
             'mcq_answers': dict(getattr(row_result, 'mcq_answers', {}) or {}),
             'true_false_answers': dict(getattr(row_result, 'true_false_answers', {}) or {}),
@@ -14680,7 +14681,14 @@ def _patched_restore_cached_working_batch_state_v4(self, subject_key: str) -> bo
         setattr(restored, 'cached_content', content_text)
         setattr(restored, 'cached_status', str(payload.get('status', '') or getattr(restored, 'cached_status', '') or 'OK'))
         setattr(restored, 'cached_recognized_short', str(payload.get('recognized_short', '') or getattr(restored, 'cached_recognized_short', '') or ''))
-        applied_payloads.append(payload)
+        forced_status = str(payload.get('forced_status', '') or getattr(restored, 'cached_forced_status', '') or '')
+        canonical_payload = self._build_scan_row_payload_from_result(
+            restored,
+            row_idx=None,
+            forced_status=forced_status,
+        )
+        canonical_payload['serialized_result'] = payload.get('serialized_result', canonical_payload.get('serialized_result', {}))
+        applied_payloads.append(canonical_payload)
 
     if not restored_rows:
         for res in list(cached.get('scan_results', []) or []):
@@ -14697,9 +14705,16 @@ def _patched_restore_cached_working_batch_state_v4(self, subject_key: str) -> bo
                 payload = {'serialized_result': self._serialize_omr_result(candidate)}
             payload.setdefault('content', str(getattr(candidate, 'cached_content', '') or ''))
             payload.setdefault('status', str(getattr(candidate, 'cached_status', '') or 'OK'))
+            payload.setdefault('forced_status', str(getattr(candidate, 'cached_forced_status', '') or ''))
             payload.setdefault('recognized_short', str(getattr(candidate, 'cached_recognized_short', '') or ''))
             payload.setdefault('blank_map', dict(getattr(candidate, 'cached_blank_summary', {}) or {}))
-            applied_payloads.append(payload)
+            canonical_payload = self._build_scan_row_payload_from_result(
+                candidate,
+                row_idx=None,
+                forced_status=str(payload.get('forced_status', '') or ''),
+            )
+            canonical_payload['serialized_result'] = payload.get('serialized_result', canonical_payload.get('serialized_result', {}))
+            applied_payloads.append(canonical_payload)
 
     self.scan_results = list(restored_rows)
     self.scan_results_by_subject[key] = list(self.scan_results)
