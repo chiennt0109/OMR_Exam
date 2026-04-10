@@ -12896,6 +12896,14 @@ class MainWindow(QMainWindow):
         missing = 0
         failed_scans: list[dict[str, str]] = []
         smart_scored_scans: list[dict[str, str]] = []
+        edited_student_ids: set[str] = set()
+        for scan_row in (subject_scans or []):
+            sid_key = str(getattr(scan_row, "student_id", "") or "").strip()
+            if not sid_key:
+                continue
+            has_history = bool([str(x) for x in (getattr(scan_row, "edit_history", []) or []) if str(x or "").strip()])
+            if bool(getattr(scan_row, "manually_edited", False)) or has_history:
+                edited_student_ids.add(sid_key)
         for scan in subject_scans:
             sid = (scan.student_id or "").strip()
             profile = self._student_profile_by_id(sid)
@@ -13047,7 +13055,9 @@ class MainWindow(QMainWindow):
             class_name = str(getattr(r, "class_name", "") or existing_payload.get("class_name", "") or "-") if isinstance(existing_payload, dict) else str(getattr(r, "class_name", "") or "-")
             birth_date = str(getattr(r, "birth_date", "") or existing_payload.get("birth_date", "") or "-") if isinstance(existing_payload, dict) else str(getattr(r, "birth_date", "") or "-")
             status_text = str(getattr(r, "scoring_note", "") or "OK")
-            if isinstance(existing_payload, dict) and existing_payload.get("status") == "Đã sửa":
+            if sid_key in edited_student_ids:
+                status_text = "Đã sửa"
+            elif isinstance(existing_payload, dict) and existing_payload.get("status") == "Đã sửa":
                 status_text = "Đã sửa"
             self.score_preview_table.insertRow(i)
             self.score_preview_table.setItem(i, 0, QTableWidgetItem(r.student_id or "-"))
@@ -13110,7 +13120,7 @@ class MainWindow(QMainWindow):
                 old_payload = (prev_subject_scores.get(sid_key, {}) or {})
                 row_class_name = str(getattr(r, "class_name", "") or old_payload.get("class_name", "") or "-")
                 row_birth_date = str(getattr(r, "birth_date", "") or old_payload.get("birth_date", "") or "-")
-                row_status = "Đã sửa" if old_payload.get("status") == "Đã sửa" else str(getattr(r, "scoring_note", "") or "OK")
+                row_status = "Đã sửa" if (sid_key in edited_student_ids or old_payload.get("status") == "Đã sửa") else str(getattr(r, "scoring_note", "") or "OK")
                 subject_scores[sid_key] = {
                     "student_id": r.student_id,
                     "name": r.name,
