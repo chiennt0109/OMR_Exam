@@ -906,6 +906,16 @@ def open_recheck_dialog(self) -> None:
     btn_pick.clicked.connect(_pick_from_pool)
     btn_unpick.clicked.connect(_remove_selected_recheck_row)
     btn_export.clicked.connect(_export_recheck_excel)
+    # Backward-safe optional hooks: in case older patched layouts still define these controls,
+    # connect only when both widget and handler exist to avoid NameError at runtime.
+    optional_pick_btn = locals().get("btn_pick")
+    optional_pick_handler = locals().get("_pick_from_pool")
+    if isinstance(optional_pick_btn, QPushButton) and callable(optional_pick_handler):
+        optional_pick_btn.clicked.connect(optional_pick_handler)
+    optional_unpick_btn = locals().get("btn_unpick")
+    optional_unpick_handler = locals().get("_remove_selected_recheck_row")
+    if isinstance(optional_unpick_btn, QPushButton) and callable(optional_unpick_handler):
+        optional_unpick_btn.clicked.connect(optional_unpick_handler)
     if tbl.rowCount() > 0:
         tbl.setCurrentCell(0, 0)
         _on_pick()
