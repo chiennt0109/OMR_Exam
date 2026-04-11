@@ -3231,6 +3231,26 @@ class MainWindow(QMainWindow):
             can_save_as = (index == 0) and bool(str(sid or "").strip())
             self.act_save_as_subject.setVisible(True)
             self.act_save_as_subject.setEnabled(can_save_as)
+        self._refresh_ribbon_action_states()
+
+    def _refresh_ribbon_action_states(self) -> None:
+        has_session = bool(str(getattr(self, "current_session_id", "") or "").strip())
+        has_subject_cfg = bool(self._effective_subject_configs_for_batch())
+        has_batch_rows = bool(hasattr(self, "scan_list") and self.scan_list.rowCount() > 0)
+        has_subject_selection = bool(hasattr(self, "batch_subject_combo") and self.batch_subject_combo.currentIndex() > 0)
+        has_exam_selection = bool(hasattr(self, "exam_list_table") and self.exam_list_table.currentRow() >= 0)
+        if getattr(self, "ribbon_new_exam_action", None) is not None:
+            self.ribbon_new_exam_action.setEnabled(True)
+        if getattr(self, "ribbon_view_exam_action", None) is not None:
+            self.ribbon_view_exam_action.setEnabled(has_exam_selection)
+        if getattr(self, "ribbon_batch_scan_action", None) is not None:
+            self.ribbon_batch_scan_action.setEnabled(has_session and has_subject_cfg)
+        if getattr(self, "ribbon_scoring_action", None) is not None:
+            self.ribbon_scoring_action.setEnabled(has_session and has_subject_selection and has_batch_rows)
+        if getattr(self, "ribbon_recheck_action", None) is not None:
+            self.ribbon_recheck_action.setEnabled(has_session and has_batch_rows)
+        if getattr(self, "ribbon_export_action", None) is not None:
+            self.ribbon_export_action.setEnabled(has_session and has_batch_rows)
 
     def _route_to_stack_index(self, route_name: str) -> int:
         mapping = {
@@ -3353,6 +3373,11 @@ class MainWindow(QMainWindow):
 
     def action_run_batch_scan(self) -> None:
         self._start_batch_scan_from_ui()
+        if hasattr(self, "batch_subject_combo") and self.batch_subject_combo.currentIndex() > 0:
+            has_unsaved = bool(hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled())
+            if not has_unsaved:
+                self._on_batch_subject_changed(self.batch_subject_combo.currentIndex(), force_reload=True)
+        self._refresh_ribbon_action_states()
 
     def action_execute_batch_scan(self) -> None:
         if self.stack.currentIndex() != 1:
@@ -3377,7 +3402,12 @@ class MainWindow(QMainWindow):
         if self.stack.currentIndex() != 1 or bool(hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled()):
             if not self._confirm_before_switching_work("màn hình Tính điểm"):
                 return
+        if self.stack.currentIndex() == 1 and hasattr(self, "batch_subject_combo") and self.batch_subject_combo.currentIndex() > 0:
+            has_unsaved = bool(hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled())
+            if not has_unsaved:
+                self._on_batch_subject_changed(self.batch_subject_combo.currentIndex(), force_reload=True)
         self._open_scoring_view()
+        self._refresh_ribbon_action_states()
 
     def action_export_results(self) -> None:
         if self._confirm("Export Results", "Bạn có chắc muốn export kết quả?"):
@@ -10220,6 +10250,7 @@ class MainWindow(QMainWindow):
         self.scan_list.setCurrentCell(target_row, 0)
         self.scan_list.selectRow(target_row)
         self._on_scan_selected()
+        self._refresh_ribbon_action_states()
 
     def _build_scan_row_payload_from_result(
         self,
@@ -11956,29 +11987,39 @@ class MainWindow(QMainWindow):
                 row_image = self._result_identity_key(getattr(row_result, "image_path", "")) or image_key
                 if row_image:
                     self.scan_forced_status_by_index[row_image] = forced_status
-        cached_status = str(getattr(row_result, "cached_status", "") or "").strip() if row_result is not None else ""
-        if forced_status:
-            status = forced_status
-        elif cached_status:
-            status = cached_status
-        else:
-            status = (
-                self._status_text_for_row(
-                    idx,
-                    duplicate_count_map=duplicate_count_map,
-                    subject_scope=subject_scope,
-                    available_exam_codes=available_exam_codes,
-                ) if row_result is not None else self._status_text_for_saved_table_row(idx)
+        if row_result is not None:
+            sid_text = str(getattr(row_result, "student_id", "") or "").strip()
+            duplicate_count = 0
+            if duplicate_count_map is not None and not self._student_id_has_recognition_error(sid_text):
+                duplicate_count = int(duplicate_count_map.get(sid_text, 0) or 0)
+            payload = self._build_scan_row_payload_from_result(
+                row_result,
+                row_idx=idx,
+                duplicate_count=duplicate_count,
+                subject_scope=subject_scope,
+                available_exam_codes=available_exam_codes,
+                forced_status=forced_status,
             )
-            if row_result is not None:
-                setattr(row_result, "cached_status", str(status or "OK"))
-        full_status = str(status or "OK")
+            sid_item = self.scan_list.item(idx, 0)
+            if sid_item is not None:
+                sid_item.setData(Qt.UserRole + 1, str(payload.get("exam_code", "") or ""))
+                sid_item.setData(Qt.UserRole + 2, str(payload.get("recognized_short", "") or ""))
+                sid_item.setData(Qt.UserRole + 10, dict(payload.get("serialized_result", {}) or {}))
+                sid_item.setData(Qt.UserRole + 11, str(payload.get("manual_content_override", "") or ""))
+                sid_item.setData(Qt.UserRole + 12, dict(payload or {}))
+            content_text = str(payload.get("content", "") or "")
+            content_item = QTableWidgetItem(content_text)
+            content_item.setToolTip(content_text)
+            self.scan_list.setItem(idx, 5, content_item)
+            full_status = str(payload.get("status", "") or "OK")
+        else:
+            full_status = str(self._status_text_for_saved_table_row(idx) or "OK")
         display_status = self._compact_status_text(full_status, max_len=150)
-        item = QTableWidgetItem(display_status)
-        item.setToolTip(full_status)
+        status_item = QTableWidgetItem(display_status)
+        status_item.setToolTip(full_status)
         if full_status != "OK":
-            item.setForeground(Qt.red)
-        self.scan_list.setItem(idx, 6, item)
+            status_item.setForeground(Qt.red)
+        self.scan_list.setItem(idx, 6, status_item)
 
     def _update_scan_preview(self, index: int) -> None:
         if index < 0 or index >= len(self.scan_results):
