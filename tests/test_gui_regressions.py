@@ -347,6 +347,11 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn("canonical_payload['content'] = str(payload.get('content', '') or canonical_payload.get('content', '') or '')", source)
         self.assertIn("canonical_payload['recognized_short'] = str(payload.get('recognized_short', '') or canonical_payload.get('recognized_short', '') or '')", source)
 
+    def test_status_ignores_fallback_accepted_recognition_messages(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('blocking_rec_error_codes = [code for code in rec_error_codes if "FALLBACK ACCEPTED" not in code]', source)
+        self.assertIn('if blocking_rec_error_codes or issue_codes:', source)
+
     def test_cached_batch_state_rehydrates_status_from_canonical_payload_instead_of_grid_tooltip(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
         self.assertIn("'status': str(payload.get('status', 'OK') or 'OK')", source)
