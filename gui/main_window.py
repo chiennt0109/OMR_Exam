@@ -5943,11 +5943,7 @@ class MainWindow(QMainWindow):
                 cfg = self._merge_saved_batch_snapshot(cfg)
                 next_runtime_key = self._batch_runtime_key(cfg)
             if previous_runtime_key and previous_runtime_key != next_runtime_key:
-                has_rows = bool(hasattr(self, "scan_list") and self.scan_list.rowCount() > 0)
-                is_dirty = bool(hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled())
-                has_cached_state = isinstance(self.batch_working_state_by_subject.get(previous_runtime_key), dict)
-                if has_rows and (is_dirty or not has_cached_state):
-                    self._cache_working_batch_state(previous_runtime_key)
+                self._cache_working_batch_state(previous_runtime_key)
             if cfg:
                 self.active_batch_subject_key = next_runtime_key
             else:
@@ -11250,11 +11246,10 @@ class MainWindow(QMainWindow):
             rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
             issue_codes = [str(getattr(issue, "code", "") or "").strip().upper() for issue in (getattr(result, "issues", []) or [])]
             rec_error_codes = [str(err or "").strip().upper() for err in rec_errors if str(err or "").strip()]
-            blocking_rec_error_codes = [code for code in rec_error_codes if "FALLBACK ACCEPTED" not in code]
-            if blocking_rec_error_codes or issue_codes:
-                if any(code in {"ANCHOR_MISSING", "ANCHOR_FAIL", "SCANNER_LOCK_FAIL"} for code in issue_codes) or any("ANCHOR" in code or "SCANNER_LOCK_FAIL" in code for code in blocking_rec_error_codes):
+            if rec_errors or issue_codes:
+                if any(code in {"ANCHOR_MISSING", "ANCHOR_FAIL", "SCANNER_LOCK_FAIL"} for code in issue_codes) or any("ANCHOR" in code or "SCANNER_LOCK_FAIL" in code for code in rec_error_codes):
                     status_parts.append("Lỗi nhận dạng anchor")
-                elif any(code in {"POOR_IDENTIFIER_ZONE", "STUDENT_ID_FAST_FAIL", "EXAM_CODE_FAST_FAIL"} for code in issue_codes) or any(code in {"POOR_IDENTIFIER_ZONE", "STUDENT_ID_FAST_FAIL", "EXAM_CODE_FAST_FAIL"} or "HEADER" in code for code in blocking_rec_error_codes):
+                elif any(code in {"POOR_IDENTIFIER_ZONE", "STUDENT_ID_FAST_FAIL", "EXAM_CODE_FAST_FAIL"} for code in issue_codes) or any(code in {"POOR_IDENTIFIER_ZONE", "STUDENT_ID_FAST_FAIL", "EXAM_CODE_FAST_FAIL"} or "HEADER" in code for code in rec_error_codes):
                     status_parts.append("Lỗi nhận dạng vùng header")
                 else:
                     status_parts.append("Lỗi nhận dạng")
