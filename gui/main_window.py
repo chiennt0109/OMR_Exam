@@ -2656,6 +2656,7 @@ class MainWindow(QMainWindow):
 
     def _open_session_path(self, path: Path) -> None:
         try:
+            self._release_batch_runtime_state()
             payload = self.database.fetch_exam_session(path.stem)
             if not payload:
                 raise FileNotFoundError(f"Không tìm thấy session '{path.stem}' trong SQLite.")
@@ -2726,6 +2727,7 @@ class MainWindow(QMainWindow):
                 "subject_configs": cfg.get("subject_configs", []),
             }
             self._open_embedded_exam_editor(path.stem, self.session, editor_payload)
+            self._refresh_ribbon_action_states()
             QMessageBox.information(self, "Open session", "Đã mở kỳ thi thành công.")
         except Exception as exc:
             QMessageBox.warning(self, "Open session", f"Không thể mở kỳ thi:\n{exc}")
@@ -3046,6 +3048,9 @@ class MainWindow(QMainWindow):
         self.scan_last_adjustment = {}
         self.batch_editor_return_payload = None
         self.batch_editor_return_session_id = None
+        self.active_batch_subject_key = None
+        self._batch_loaded_runtime_key = ""
+        self._current_batch_data_source = "empty"
 
     def _release_preview_resources(self) -> None:
         if hasattr(self, "scan_image_preview"):
@@ -5943,16 +5948,6 @@ class MainWindow(QMainWindow):
                 self.active_batch_subject_key = next_runtime_key
             else:
                 self.active_batch_subject_key = None
-            current_rows = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
-            if (
-                not force_reload
-                and next_runtime_key
-                and previous_runtime_key == next_runtime_key
-                and self._batch_loaded_runtime_key == next_runtime_key
-                and current_rows > 0
-            ):
-                self._update_batch_scan_scope_summary()
-                return
             self._load_batch_subject_state(cfg, source_hint="subject_changed", force_reload=force_reload)
         finally:
             self._switching_batch_subject = False
@@ -5961,12 +5956,6 @@ class MainWindow(QMainWindow):
         cfg = dict(subject_cfg or {}) if isinstance(subject_cfg, dict) else {}
         if cfg:
             cfg = self._merge_saved_batch_snapshot(cfg)
-        if cfg and not force_reload:
-            pre_subject_key = self._subject_key_from_cfg(cfg)
-            pre_runtime_key = self._batch_runtime_key(pre_subject_key)
-            if pre_runtime_key and pre_runtime_key == self._batch_loaded_runtime_key and hasattr(self, "scan_list") and self.scan_list.rowCount() > 0:
-                self._update_batch_scan_scope_summary()
-                return True
         self._reset_batch_subject_ui_state()
         wait_dlg = self._open_wait_progress("Đang tải dữ liệu môn, vui lòng chờ...", "Batch Scan")
         if not cfg:
@@ -6016,7 +6005,9 @@ class MainWindow(QMainWindow):
             self._apply_template_recognition_settings(tpl_for_view)
             self.template = tpl_for_view
 
-        if self._restore_cached_working_batch_state(runtime_key):
+        runtime_cached = self.batch_working_state_by_subject.get(runtime_key, {}) if isinstance(self.batch_working_state_by_subject.get(runtime_key, {}), dict) else {}
+        use_working_cache = bool(runtime_cached.get("dirty", False))
+        if use_working_cache and self._restore_cached_working_batch_state(runtime_key):
             self._current_batch_data_source = "working_cache"
             self._batch_loaded_runtime_key = runtime_key
             self._finalize_batch_scan_display(refresh_statuses=True)
