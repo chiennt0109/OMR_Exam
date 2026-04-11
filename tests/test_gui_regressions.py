@@ -335,12 +335,11 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('batch_progress_dialog = self._open_batch_progress_screen(len(file_paths), title="Batch Scan API - Đang nhận dạng")', source)
 
 
-    def test_patched_payload_builder_does_not_blank_content_when_exam_code_or_key_missing(self) -> None:
+    def test_patched_payload_builder_always_uses_blank_only_content_for_consistency(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
         self.assertIn('def _patched_build_scan_row_payload_from_result', source)
-        self.assertNotIn('payload["content"] = ""', source)
-        self.assertNotIn('if not exam_code_text or "?" in exam_code_text or answer_key is None:', source)
-        self.assertIn('if not manual_content and not content_text:', source)
+        self.assertIn('content_text = manual_content if manual_content else self._patched_build_blank_only_content_text(result, blank_map)', source)
+        self.assertIn('payload["content"] = content_text', source)
 
     def test_restore_cached_working_state_prefers_saved_status_and_content_when_switching_exam(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
