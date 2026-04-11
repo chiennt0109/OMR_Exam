@@ -204,6 +204,13 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('self.scan_list.selectRow(target_row)', source)
         self.assertIn('self._on_scan_selected()', source)
 
+    def test_batch_subject_switch_only_caches_previous_working_state_when_needed(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('has_rows = bool(hasattr(self, "scan_list") and self.scan_list.rowCount() > 0)', source)
+        self.assertIn('is_dirty = bool(hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled())', source)
+        self.assertIn('has_cached_state = isinstance(self.batch_working_state_by_subject.get(previous_runtime_key), dict)', source)
+        self.assertIn('if has_rows and (is_dirty or not has_cached_state):', source)
+
     def test_batch_subject_change_preloads_template_answer_keys_and_finalizes_grid(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
         self.assertIn("if tpl_for_view:\n            self.template = tpl_for_view", source)
@@ -334,6 +341,23 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('batch_progress_dialog = self._open_batch_progress_screen(len(file_paths), title="Batch Scan - Đang nhận dạng")', source)
         self.assertIn('batch_progress_dialog = self._open_batch_progress_screen(len(file_paths), title="Batch Scan API - Đang nhận dạng")', source)
 
+
+    def test_patched_payload_builder_always_uses_blank_only_content_for_consistency(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('def _patched_build_scan_row_payload_from_result', source)
+        self.assertIn('content_text = manual_content if manual_content else self._patched_build_blank_only_content_text(result, blank_map)', source)
+        self.assertIn('payload["content"] = content_text', source)
+
+    def test_restore_cached_working_state_prefers_saved_status_and_content_when_switching_exam(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn("canonical_payload['status'] = str(payload.get('status', '') or canonical_payload.get('status', 'OK') or 'OK')", source)
+        self.assertIn("canonical_payload['content'] = str(payload.get('content', '') or canonical_payload.get('content', '') or '')", source)
+        self.assertIn("canonical_payload['recognized_short'] = str(payload.get('recognized_short', '') or canonical_payload.get('recognized_short', '') or '')", source)
+
+    def test_status_ignores_fallback_accepted_recognition_messages(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('blocking_rec_error_codes = [code for code in rec_error_codes if "FALLBACK ACCEPTED" not in code]', source)
+        self.assertIn('if blocking_rec_error_codes or issue_codes:', source)
 
     def test_cached_batch_state_rehydrates_status_from_canonical_payload_instead_of_grid_tooltip(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
