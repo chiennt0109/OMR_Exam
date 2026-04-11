@@ -11956,29 +11956,39 @@ class MainWindow(QMainWindow):
                 row_image = self._result_identity_key(getattr(row_result, "image_path", "")) or image_key
                 if row_image:
                     self.scan_forced_status_by_index[row_image] = forced_status
-        cached_status = str(getattr(row_result, "cached_status", "") or "").strip() if row_result is not None else ""
-        if forced_status:
-            status = forced_status
-        elif cached_status:
-            status = cached_status
-        else:
-            status = (
-                self._status_text_for_row(
-                    idx,
-                    duplicate_count_map=duplicate_count_map,
-                    subject_scope=subject_scope,
-                    available_exam_codes=available_exam_codes,
-                ) if row_result is not None else self._status_text_for_saved_table_row(idx)
+        if row_result is not None:
+            sid_text = str(getattr(row_result, "student_id", "") or "").strip()
+            duplicate_count = 0
+            if duplicate_count_map is not None and not self._student_id_has_recognition_error(sid_text):
+                duplicate_count = int(duplicate_count_map.get(sid_text, 0) or 0)
+            payload = self._build_scan_row_payload_from_result(
+                row_result,
+                row_idx=idx,
+                duplicate_count=duplicate_count,
+                subject_scope=subject_scope,
+                available_exam_codes=available_exam_codes,
+                forced_status=forced_status,
             )
-            if row_result is not None:
-                setattr(row_result, "cached_status", str(status or "OK"))
-        full_status = str(status or "OK")
+            sid_item = self.scan_list.item(idx, 0)
+            if sid_item is not None:
+                sid_item.setData(Qt.UserRole + 1, str(payload.get("exam_code", "") or ""))
+                sid_item.setData(Qt.UserRole + 2, str(payload.get("recognized_short", "") or ""))
+                sid_item.setData(Qt.UserRole + 10, dict(payload.get("serialized_result", {}) or {}))
+                sid_item.setData(Qt.UserRole + 11, str(payload.get("manual_content_override", "") or ""))
+                sid_item.setData(Qt.UserRole + 12, dict(payload or {}))
+            content_text = str(payload.get("content", "") or "")
+            content_item = QTableWidgetItem(content_text)
+            content_item.setToolTip(content_text)
+            self.scan_list.setItem(idx, 5, content_item)
+            full_status = str(payload.get("status", "") or "OK")
+        else:
+            full_status = str(self._status_text_for_saved_table_row(idx) or "OK")
         display_status = self._compact_status_text(full_status, max_len=150)
-        item = QTableWidgetItem(display_status)
-        item.setToolTip(full_status)
+        status_item = QTableWidgetItem(display_status)
+        status_item.setToolTip(full_status)
         if full_status != "OK":
-            item.setForeground(Qt.red)
-        self.scan_list.setItem(idx, 6, item)
+            status_item.setForeground(Qt.red)
+        self.scan_list.setItem(idx, 6, status_item)
 
     def _update_scan_preview(self, index: int) -> None:
         if index < 0 or index >= len(self.scan_results):
