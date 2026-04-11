@@ -5943,7 +5943,11 @@ class MainWindow(QMainWindow):
                 cfg = self._merge_saved_batch_snapshot(cfg)
                 next_runtime_key = self._batch_runtime_key(cfg)
             if previous_runtime_key and previous_runtime_key != next_runtime_key:
-                self._cache_working_batch_state(previous_runtime_key)
+                has_rows = bool(hasattr(self, "scan_list") and self.scan_list.rowCount() > 0)
+                is_dirty = bool(hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled())
+                has_cached_state = isinstance(self.batch_working_state_by_subject.get(previous_runtime_key), dict)
+                if has_rows and (is_dirty or not has_cached_state):
+                    self._cache_working_batch_state(previous_runtime_key)
             if cfg:
                 self.active_batch_subject_key = next_runtime_key
             else:

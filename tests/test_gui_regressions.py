@@ -204,6 +204,13 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('self.scan_list.selectRow(target_row)', source)
         self.assertIn('self._on_scan_selected()', source)
 
+    def test_batch_subject_switch_only_caches_previous_working_state_when_needed(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('has_rows = bool(hasattr(self, "scan_list") and self.scan_list.rowCount() > 0)', source)
+        self.assertIn('is_dirty = bool(hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled())', source)
+        self.assertIn('has_cached_state = isinstance(self.batch_working_state_by_subject.get(previous_runtime_key), dict)', source)
+        self.assertIn('if has_rows and (is_dirty or not has_cached_state):', source)
+
     def test_batch_subject_change_preloads_template_answer_keys_and_finalizes_grid(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
         self.assertIn("if tpl_for_view:\n            self.template = tpl_for_view", source)
