@@ -14063,20 +14063,16 @@ def _patched_build_scan_row_payload_from_result(self, result, row_idx=None, dupl
         forced_status=forced_status,
     )
 
-    subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-    exam_code_text = str(getattr(result, "exam_code", "") or "").strip()
-    answer_key = self._subject_answer_key_for_result(result, subject_key) if subject_key else None
-    if not exam_code_text or "?" in exam_code_text or answer_key is None:
-        payload["content"] = ""
-        setattr(result, "cached_content", "")
-        return payload
-
     blank_map = self._compute_blank_questions(self._lightweight_result_copy(result))
     payload["blank_map"] = dict(blank_map)
     setattr(result, "cached_blank_summary", dict(blank_map))
-    content_text = self._patched_build_blank_only_content_text(result, blank_map)
-    payload["content"] = content_text
-    setattr(result, "cached_content", content_text)
+
+    manual_content = str(payload.get("manual_content_override", "") or "").strip()
+    content_text = str(payload.get("content", "") or "").strip()
+    if not manual_content and not content_text:
+        content_text = self._build_recognition_content_text(result, blank_map)
+        payload["content"] = content_text
+        setattr(result, "cached_content", content_text)
     return payload
 
 
@@ -14720,6 +14716,9 @@ def _patched_restore_cached_working_batch_state_v4(self, subject_key: str) -> bo
             forced_status=forced_status,
         )
         canonical_payload['serialized_result'] = payload.get('serialized_result', canonical_payload.get('serialized_result', {}))
+        canonical_payload['status'] = str(payload.get('status', '') or canonical_payload.get('status', 'OK') or 'OK')
+        canonical_payload['content'] = str(payload.get('content', '') or canonical_payload.get('content', '') or '')
+        canonical_payload['recognized_short'] = str(payload.get('recognized_short', '') or canonical_payload.get('recognized_short', '') or '')
         applied_payloads.append(canonical_payload)
 
     if not restored_rows:
