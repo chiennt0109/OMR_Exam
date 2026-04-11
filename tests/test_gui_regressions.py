@@ -335,6 +335,23 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('batch_progress_dialog = self._open_batch_progress_screen(len(file_paths), title="Batch Scan API - Đang nhận dạng")', source)
 
 
+    def test_patched_payload_builder_always_uses_blank_only_content_for_consistency(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('def _patched_build_scan_row_payload_from_result', source)
+        self.assertIn('content_text = manual_content if manual_content else self._patched_build_blank_only_content_text(result, blank_map)', source)
+        self.assertIn('payload["content"] = content_text', source)
+
+    def test_restore_cached_working_state_prefers_saved_status_and_content_when_switching_exam(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn("canonical_payload['status'] = str(payload.get('status', '') or canonical_payload.get('status', 'OK') or 'OK')", source)
+        self.assertIn("canonical_payload['content'] = str(payload.get('content', '') or canonical_payload.get('content', '') or '')", source)
+        self.assertIn("canonical_payload['recognized_short'] = str(payload.get('recognized_short', '') or canonical_payload.get('recognized_short', '') or '')", source)
+
+    def test_status_ignores_fallback_accepted_recognition_messages(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('blocking_rec_error_codes = [code for code in rec_error_codes if "FALLBACK ACCEPTED" not in code]', source)
+        self.assertIn('if blocking_rec_error_codes or issue_codes:', source)
+
     def test_cached_batch_state_rehydrates_status_from_canonical_payload_instead_of_grid_tooltip(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
         self.assertIn("'status': str(payload.get('status', 'OK') or 'OK')", source)

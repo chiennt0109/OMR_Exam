@@ -11246,10 +11246,11 @@ class MainWindow(QMainWindow):
             rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
             issue_codes = [str(getattr(issue, "code", "") or "").strip().upper() for issue in (getattr(result, "issues", []) or [])]
             rec_error_codes = [str(err or "").strip().upper() for err in rec_errors if str(err or "").strip()]
-            if rec_errors or issue_codes:
-                if any(code in {"ANCHOR_MISSING", "ANCHOR_FAIL", "SCANNER_LOCK_FAIL"} for code in issue_codes) or any("ANCHOR" in code or "SCANNER_LOCK_FAIL" in code for code in rec_error_codes):
+            blocking_rec_error_codes = [code for code in rec_error_codes if "FALLBACK ACCEPTED" not in code]
+            if blocking_rec_error_codes or issue_codes:
+                if any(code in {"ANCHOR_MISSING", "ANCHOR_FAIL", "SCANNER_LOCK_FAIL"} for code in issue_codes) or any("ANCHOR" in code or "SCANNER_LOCK_FAIL" in code for code in blocking_rec_error_codes):
                     status_parts.append("Lỗi nhận dạng anchor")
-                elif any(code in {"POOR_IDENTIFIER_ZONE", "STUDENT_ID_FAST_FAIL", "EXAM_CODE_FAST_FAIL"} for code in issue_codes) or any(code in {"POOR_IDENTIFIER_ZONE", "STUDENT_ID_FAST_FAIL", "EXAM_CODE_FAST_FAIL"} or "HEADER" in code for code in rec_error_codes):
+                elif any(code in {"POOR_IDENTIFIER_ZONE", "STUDENT_ID_FAST_FAIL", "EXAM_CODE_FAST_FAIL"} for code in issue_codes) or any(code in {"POOR_IDENTIFIER_ZONE", "STUDENT_ID_FAST_FAIL", "EXAM_CODE_FAST_FAIL"} or "HEADER" in code for code in blocking_rec_error_codes):
                     status_parts.append("Lỗi nhận dạng vùng header")
                 else:
                     status_parts.append("Lỗi nhận dạng")
@@ -14063,18 +14064,12 @@ def _patched_build_scan_row_payload_from_result(self, result, row_idx=None, dupl
         forced_status=forced_status,
     )
 
-    subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-    exam_code_text = str(getattr(result, "exam_code", "") or "").strip()
-    answer_key = self._subject_answer_key_for_result(result, subject_key) if subject_key else None
-    if not exam_code_text or "?" in exam_code_text or answer_key is None:
-        payload["content"] = ""
-        setattr(result, "cached_content", "")
-        return payload
-
     blank_map = self._compute_blank_questions(self._lightweight_result_copy(result))
     payload["blank_map"] = dict(blank_map)
     setattr(result, "cached_blank_summary", dict(blank_map))
-    content_text = self._patched_build_blank_only_content_text(result, blank_map)
+
+    manual_content = str(payload.get("manual_content_override", "") or "").strip()
+    content_text = manual_content if manual_content else self._patched_build_blank_only_content_text(result, blank_map)
     payload["content"] = content_text
     setattr(result, "cached_content", content_text)
     return payload
@@ -14720,6 +14715,9 @@ def _patched_restore_cached_working_batch_state_v4(self, subject_key: str) -> bo
             forced_status=forced_status,
         )
         canonical_payload['serialized_result'] = payload.get('serialized_result', canonical_payload.get('serialized_result', {}))
+        canonical_payload['status'] = str(payload.get('status', '') or canonical_payload.get('status', 'OK') or 'OK')
+        canonical_payload['content'] = str(payload.get('content', '') or canonical_payload.get('content', '') or '')
+        canonical_payload['recognized_short'] = str(payload.get('recognized_short', '') or canonical_payload.get('recognized_short', '') or '')
         applied_payloads.append(canonical_payload)
 
     if not restored_rows:
