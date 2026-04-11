@@ -335,6 +335,19 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('batch_progress_dialog = self._open_batch_progress_screen(len(file_paths), title="Batch Scan API - Đang nhận dạng")', source)
 
 
+    def test_patched_payload_builder_does_not_blank_content_when_exam_code_or_key_missing(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn('def _patched_build_scan_row_payload_from_result', source)
+        self.assertNotIn('payload["content"] = ""', source)
+        self.assertNotIn('if not exam_code_text or "?" in exam_code_text or answer_key is None:', source)
+        self.assertIn('if not manual_content and not content_text:', source)
+
+    def test_restore_cached_working_state_prefers_saved_status_and_content_when_switching_exam(self) -> None:
+        source = Path('gui/main_window.py').read_text(encoding='utf-8')
+        self.assertIn("canonical_payload['status'] = str(payload.get('status', '') or canonical_payload.get('status', 'OK') or 'OK')", source)
+        self.assertIn("canonical_payload['content'] = str(payload.get('content', '') or canonical_payload.get('content', '') or '')", source)
+        self.assertIn("canonical_payload['recognized_short'] = str(payload.get('recognized_short', '') or canonical_payload.get('recognized_short', '') or '')", source)
+
     def test_cached_batch_state_rehydrates_status_from_canonical_payload_instead_of_grid_tooltip(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
         self.assertIn("'status': str(payload.get('status', 'OK') or 'OK')", source)
