@@ -13962,6 +13962,12 @@ class MainWindow(QMainWindow):
             "Ghi chú",
         ]
         student_meta = self._student_meta_by_sid()
+        room_by_sid: dict[str, str] = {}
+        for scan_item in self._scan_rows_for_subject(subject):
+            sid_scan = str(getattr(scan_item, "student_id", "") or "").strip()
+            room_scan = str(getattr(scan_item, "exam_room", "") or "").strip()
+            if sid_scan and room_scan and sid_scan not in room_by_sid:
+                room_by_sid[sid_scan] = room_scan
         normalized: list[dict[str, object]] = []
         for row in rows:
             sid = str(row.get("student_id", "") or "").strip()
@@ -13972,7 +13978,7 @@ class MainWindow(QMainWindow):
             normalized.append({
                 "_has_error": has_error,
                 "SBD": sid,
-                "Phòng thi": str(row.get("exam_room", "") or meta.get("exam_room", "")),
+                "Phòng thi": str(row.get("exam_room", "") or room_by_sid.get(sid, "") or meta.get("exam_room", "")),
                 "Họ tên": str(row.get("name", "") or meta.get("name", "")),
                 "Ngày sinh": str(row.get("birth_date", "") or meta.get("birth_date", "")),
                 "Lớp": str(row.get("class_name", "") or meta.get("class_name", "")),
@@ -13994,6 +14000,7 @@ class MainWindow(QMainWindow):
                 writer.writerows(normalized)
         else:
             from openpyxl import Workbook
+            from openpyxl.styles import Alignment
             from openpyxl.styles import Border, Font, Side
 
             wb = Workbook()
@@ -14008,6 +14015,9 @@ class MainWindow(QMainWindow):
                 for cell in row_cells:
                     cell.font = base_font
                     cell.border = Border(left=border_side, right=border_side, top=border_side, bottom=border_side)
+            for cell in ws[1]:
+                cell.font = Font(name="Times New Roman", size=12, bold=True)
+                cell.alignment = Alignment(horizontal="center", vertical="center")
             for col in ws.columns:
                 max_len = 0
                 col_letter = col[0].column_letter
