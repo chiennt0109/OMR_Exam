@@ -13946,38 +13946,74 @@ class MainWindow(QMainWindow):
         if not path:
             return
         out = Path(path)
-        headers = ["student_id", "name", "class_name", "exam_room", "exam_code", "correct", "wrong", "blank", "score", "status", "note"]
+        headers = [
+            "STT",
+            "SBD",
+            "Phòng thi",
+            "Họ tên",
+            "Ngày sinh",
+            "Lớp",
+            "Mã đề",
+            "Đúng",
+            "Sai",
+            "Bỏ trống",
+            "Điểm",
+            "Trạng thái",
+            "Ghi chú",
+        ]
         student_meta = self._student_meta_by_sid()
-        normalized = []
+        normalized: list[dict[str, object]] = []
         for row in rows:
             sid = str(row.get("student_id", "") or "").strip()
             meta = student_meta.get(sid, {})
+            status_text = str(row.get("status", "") or "").strip()
+            status_fold = status_text.casefold()
+            has_error = bool(status_fold) and status_fold not in {"ok", "đã sửa"}
             normalized.append({
-                "student_id": sid,
-                "name": str(row.get("name", "") or meta.get("name", "")),
-                "class_name": str(row.get("class_name", "") or meta.get("class_name", "")),
-                "exam_room": str(row.get("exam_room", "") or meta.get("exam_room", "")),
-                "exam_code": str(row.get("exam_code", "") or ""),
-                "correct": row.get("correct", 0),
-                "wrong": row.get("wrong", 0),
-                "blank": row.get("blank", 0),
-                "score": row.get("score", 0),
-                "status": str(row.get("status", "") or ""),
-                "note": str(row.get("note", "") or ""),
+                "_has_error": has_error,
+                "SBD": sid,
+                "Phòng thi": str(row.get("exam_room", "") or meta.get("exam_room", "")),
+                "Họ tên": str(row.get("name", "") or meta.get("name", "")),
+                "Ngày sinh": str(row.get("birth_date", "") or meta.get("birth_date", "")),
+                "Lớp": str(row.get("class_name", "") or meta.get("class_name", "")),
+                "Mã đề": str(row.get("exam_code", "") or ""),
+                "Đúng": row.get("correct", 0),
+                "Sai": row.get("wrong", 0),
+                "Bỏ trống": row.get("blank", 0),
+                "Điểm": row.get("score", 0),
+                "Trạng thái": status_text,
+                "Ghi chú": str(row.get("note", "") or ""),
             })
+        normalized.sort(key=lambda x: (0 if bool(x.get("_has_error")) else 1, str(x.get("SBD", ""))))
+        for idx, row in enumerate(normalized, start=1):
+            row["STT"] = idx
         if out.suffix.lower() == ".csv":
             with out.open("w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.DictWriter(f, fieldnames=headers)
+                writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
                 writer.writeheader()
                 writer.writerows(normalized)
         else:
             from openpyxl import Workbook
+            from openpyxl.styles import Border, Font, Side
+
             wb = Workbook()
             ws = wb.active
             ws.title = "scores"
             ws.append(headers)
             for row in normalized:
-                ws.append([row.get(k, "") for k in headers])
+                ws.append([row.get(key, "") for key in headers])
+            border_side = Side(style="thin", color="000000")
+            base_font = Font(name="Times New Roman", size=12)
+            for row_cells in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+                for cell in row_cells:
+                    cell.font = base_font
+                    cell.border = Border(left=border_side, right=border_side, top=border_side, bottom=border_side)
+            for col in ws.columns:
+                max_len = 0
+                col_letter = col[0].column_letter
+                for cell in col:
+                    max_len = max(max_len, len(str(cell.value or "")))
+                ws.column_dimensions[col_letter].width = min(60, max(10, max_len + 2))
             wb.save(out)
         QMessageBox.information(self, "Xuất điểm 1 môn", f"Đã xuất dữ liệu:\n{out}")
 
