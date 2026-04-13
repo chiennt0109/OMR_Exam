@@ -2784,6 +2784,10 @@ class MainWindow(QMainWindow):
         self.act_export_subject_scores.triggered.connect(self.action_export_subject_scores)
         self.act_export_subject_score_matrix = self.export_menu.addAction("Xuất điểm các môn...")
         self.act_export_subject_score_matrix.triggered.connect(self.action_export_subject_score_matrix)
+        self.act_export_class_subject_scores = self.export_menu.addAction("Xuất điểm lớp...")
+        self.act_export_class_subject_scores.triggered.connect(self.action_export_class_subject_scores)
+        self.act_export_all_classes_subject_scores = self.export_menu.addAction("Xuất điểm các lớp...")
+        self.act_export_all_classes_subject_scores.triggered.connect(self.action_export_all_classes_subject_scores)
         self.act_export_all_scores = self.export_menu.addAction("Xuất điểm chi tiết các môn...")
         self.act_export_all_scores.triggered.connect(self.action_export_all_subject_scores)
         self.export_menu.addSeparator()
@@ -3290,6 +3294,8 @@ class MainWindow(QMainWindow):
         for attr_name in [
             "act_export_subject_scores",
             "act_export_subject_score_matrix",
+            "act_export_class_subject_scores",
+            "act_export_all_classes_subject_scores",
             "act_export_all_scores",
             "act_export_subject_api",
             "act_export_range_report",
@@ -3558,6 +3564,12 @@ class MainWindow(QMainWindow):
 
     def action_export_subject_score_matrix(self) -> None:
         self._export_subject_score_matrix()
+
+    def action_export_class_subject_scores(self) -> None:
+        self._export_class_subject_scores()
+
+    def action_export_all_classes_subject_scores(self) -> None:
+        self._export_all_classes_subject_scores()
 
     def action_export_all_subject_scores(self) -> None:
         self._export_all_subject_scores()
@@ -14054,10 +14066,23 @@ class MainWindow(QMainWindow):
         wb = Workbook()
         ws = wb.active
         ws.title = "scores"
+        base_headers, score_headers, sorted_rows = self._build_subject_score_matrix_rows(subjects)
+        self._write_subject_score_matrix_sheet(ws, base_headers, score_headers, sorted_rows)
+        wb.save(path)
+        QMessageBox.information(self, "Xuất điểm các môn", f"Đã xuất dữ liệu:\n{path}")
+
+    def _short_subject_label_for_export(self, subject_key: str, fallback_label: str) -> str:
+        cfg = self._subject_config_by_subject_key(subject_key) or {}
+        raw = str(cfg.get("name", "") or fallback_label or subject_key).strip()
+        if not raw:
+            raw = str(subject_key or "").strip()
+        compact = re.sub(r"\s*[-–]\s*kỳ thi\b.*$", "", raw, flags=re.IGNORECASE).strip()
+        compact = re.sub(r"\s*[-–]\s*khối\b.*$", "", compact, flags=re.IGNORECASE).strip()
+        return compact or raw
+
+    def _build_subject_score_matrix_rows(self, subjects: list[tuple[str, str]]) -> tuple[list[str], list[str], list[dict[str, object]]]:
         base_headers = ["STT", "SBD", "Họ tên", "Ngày sinh", "Lớp"]
         score_headers = [self._short_subject_label_for_export(key, label) for label, key in subjects]
-        ws.append(base_headers + score_headers)
-
         student_rows: dict[str, dict[str, object]] = {}
         for idx, (label, key) in enumerate(subjects):
             score_header = score_headers[idx]
@@ -14078,22 +14103,125 @@ class MainWindow(QMainWindow):
                 if not rec.get("Lớp") and row.get("Lớp"):
                     rec["Lớp"] = row.get("Lớp", "")
                 rec[score_header] = row.get("Điểm", 0)
-
         sorted_rows = sorted(student_rows.values(), key=lambda x: str(x.get("SBD", "")))
-        for idx, row in enumerate(sorted_rows, start=1):
+        return base_headers, score_headers, sorted_rows
+
+    def _write_subject_score_matrix_sheet(
+        self,
+        ws,
+        base_headers: list[str],
+        score_headers: list[str],
+        rows: list[dict[str, object]],
+    ) -> None:
+        from openpyxl.styles import Alignment
+        from openpyxl.styles import Border, Font, Side
+        from openpyxl.utils import get_column_letter
+
+        ws.append(base_headers + score_headers)
+        for idx, row in enumerate(rows, start=1):
             row["STT"] = idx
             ws.append([row.get(col, "") for col in base_headers] + [row.get(col, "") for col in score_headers])
-        wb.save(path)
-        QMessageBox.information(self, "Xuất điểm các môn", f"Đã xuất dữ liệu:\n{path}")
 
-    def _short_subject_label_for_export(self, subject_key: str, fallback_label: str) -> str:
-        cfg = self._subject_config_by_subject_key(subject_key) or {}
-        raw = str(cfg.get("name", "") or fallback_label or subject_key).strip()
-        if not raw:
-            raw = str(subject_key or "").strip()
-        compact = re.sub(r"\s*[-–]\s*kỳ thi\b.*$", "", raw, flags=re.IGNORECASE).strip()
-        compact = re.sub(r"\s*[-–]\s*khối\b.*$", "", compact, flags=re.IGNORECASE).strip()
-        return compact or raw
+        border_side = Side(style="thin", color="000000")
+        base_font = Font(name="Times New Roman", size=12)
+        for row_cells in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+            for cell in row_cells:
+                cell.font = base_font
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.border = Border(left=border_side, right=border_side, top=border_side, bottom=border_side)
+        for cell in ws[1]:
+            cell.font = Font(name="Times New Roman", size=12, bold=True)
+
+        score_col_width = 136 / 7
+        score_col_indexes = set(range(len(base_headers) + 1, len(base_headers) + len(score_headers) + 1))
+        for col_idx in range(1, ws.max_column + 1):
+            col_letter = get_column_letter(col_idx)
+            if col_idx in score_col_indexes:
+                ws.column_dimensions[col_letter].width = score_col_width
+                continue
+            max_len = 0
+            for cell in ws[col_letter]:
+                max_len = max(max_len, len(str(cell.value or "")))
+            ws.column_dimensions[col_letter].width = min(60, max(10, max_len + 2))
+
+    def _class_options_for_export(self) -> list[str]:
+        class_names: list[str] = []
+        seen: set[str] = set()
+        if self.session:
+            for st in (self.session.students or []):
+                class_name = str(getattr(st, "class_name", "") or "").strip()
+                if class_name and class_name not in seen:
+                    seen.add(class_name)
+                    class_names.append(class_name)
+        if class_names:
+            return sorted(class_names)
+        subjects = self._iter_export_subjects()
+        _base_headers, _score_headers, rows = self._build_subject_score_matrix_rows(subjects)
+        for row in rows:
+            class_name = str(row.get("Lớp", "") or "").strip()
+            if class_name and class_name not in seen:
+                seen.add(class_name)
+                class_names.append(class_name)
+        return sorted(class_names)
+
+    def _export_class_subject_scores(self) -> None:
+        subjects = self._iter_export_subjects()
+        if not subjects:
+            QMessageBox.information(self, "Xuất điểm lớp", "Chưa có môn nào để xuất.")
+            return
+        class_options = self._class_options_for_export()
+        if not class_options:
+            QMessageBox.information(self, "Xuất điểm lớp", "Chưa có dữ liệu lớp để xuất.")
+            return
+        picked_class, ok = QInputDialog.getItem(self, "Xuất điểm lớp", "Chọn lớp cần xuất:", class_options, 0, False)
+        if not ok:
+            return
+        class_name = str(picked_class or "").strip()
+        if not class_name:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Xuất điểm lớp",
+            f"{self._safe_sheet_name(class_name, fallback='class_scores')}.xlsx",
+            "Excel (*.xlsx)",
+        )
+        if not path:
+            return
+        from openpyxl import Workbook
+
+        base_headers, score_headers, rows = self._build_subject_score_matrix_rows(subjects)
+        filtered_rows = [row for row in rows if str(row.get("Lớp", "") or "").strip() == class_name]
+        wb = Workbook()
+        ws = wb.active
+        ws.title = self._safe_sheet_name(class_name, fallback="class_scores")
+        self._write_subject_score_matrix_sheet(ws, base_headers, score_headers, filtered_rows)
+        wb.save(path)
+        QMessageBox.information(self, "Xuất điểm lớp", f"Đã xuất dữ liệu:\n{path}")
+
+    def _export_all_classes_subject_scores(self) -> None:
+        subjects = self._iter_export_subjects()
+        if not subjects:
+            QMessageBox.information(self, "Xuất điểm các lớp", "Chưa có môn nào để xuất.")
+            return
+        class_options = self._class_options_for_export()
+        if not class_options:
+            QMessageBox.information(self, "Xuất điểm các lớp", "Chưa có dữ liệu lớp để xuất.")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Xuất điểm các lớp", "all_class_subject_scores.xlsx", "Excel (*.xlsx)")
+        if not path:
+            return
+        from openpyxl import Workbook
+
+        base_headers, score_headers, rows = self._build_subject_score_matrix_rows(subjects)
+        wb = Workbook()
+        if wb.active:
+            wb.remove(wb.active)
+        for class_name in class_options:
+            ws = wb.create_sheet(self._safe_sheet_name(class_name, fallback="class_scores"))
+            filtered_rows = [row for row in rows if str(row.get("Lớp", "") or "").strip() == class_name]
+            self._write_subject_score_matrix_sheet(ws, base_headers, score_headers, filtered_rows)
+        wb.save(path)
+        QMessageBox.information(self, "Xuất điểm các lớp", f"Đã xuất dữ liệu:\n{path}")
 
     def _export_all_subject_scores(self) -> None:
         subjects = self._iter_export_subjects()
