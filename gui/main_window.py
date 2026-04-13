@@ -14094,22 +14094,22 @@ class MainWindow(QMainWindow):
                 sid_display_by_normalized[sid_norm] = sid_origin
 
         def _answer_string_for_api(result, answer_key_obj) -> str:
-            built = self._answer_string_from_maps(
-                getattr(result, "mcq_answers", {}) or {},
-                getattr(result, "true_false_answers", {}) or {},
-                getattr(result, "numeric_answers", {}) or {},
-                answer_key_obj,
-                use_semicolon=True,
-            )
-            if built:
-                return str(built)
             raw_answer = str(getattr(result, "answer_string", "") or "").strip()
             if not raw_answer:
-                return ""
-            if ";" in raw_answer:
-                return raw_answer
+                built = self._answer_string_from_maps(
+                    getattr(result, "mcq_answers", {}) or {},
+                    getattr(result, "true_false_answers", {}) or {},
+                    getattr(result, "numeric_answers", {}) or {},
+                    answer_key_obj,
+                    use_semicolon=True,
+                )
+                return str(built or "")
+
+            normalized_answer = raw_answer.replace(",", ";")
+            if ";" in normalized_answer:
+                return normalized_answer
             if answer_key_obj is None:
-                return raw_answer
+                return normalized_answer
             invalid_rows = getattr(answer_key_obj, "invalid_answer_rows", {}) or {}
 
             def _question_numbers(valid_map, invalid_map, fallback_map=None) -> list[int]:
@@ -14127,7 +14127,7 @@ class MainWindow(QMainWindow):
                 return sorted(nums)
 
             parts: list[str] = []
-            compact = raw_answer.replace(";", "")
+            compact = normalized_answer.replace(";", "")
             cursor = 0
             mcq_qs = _question_numbers(getattr(answer_key_obj, "answers", {}) or {}, invalid_rows.get("MCQ", {}) or {})
             for _ in mcq_qs:
@@ -14153,7 +14153,7 @@ class MainWindow(QMainWindow):
                 if len(token) < width:
                     token = token + ("_" * (width - len(token)))
                 parts.append(token)
-            return ";".join(parts) if parts else raw_answer
+            return ";".join(parts) if parts else normalized_answer
 
         with Path(path).open("w", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(f, fieldnames=headers)
