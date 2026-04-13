@@ -3070,6 +3070,8 @@ class MainWindow(QMainWindow):
         self.active_batch_subject_key = None
         self._batch_loaded_runtime_key = ""
         self._current_batch_data_source = "empty"
+        self.batch_status_filter_mode = "all"
+        self.scoring_status_filter_mode = "all"
 
     def _release_preview_resources(self) -> None:
         if hasattr(self, "scan_image_preview"):
@@ -6688,6 +6690,7 @@ class MainWindow(QMainWindow):
         self.scan_forced_status_by_index.clear()
         self.preview_rotation_by_index.clear()
         self.preview_markers_by_index.clear()
+        self.batch_status_filter_mode = "all"
         if hasattr(self, "scan_list"):
             self.scan_list.clearSelection()
             self.scan_list.setRowCount(0)
@@ -9930,38 +9933,35 @@ class MainWindow(QMainWindow):
             template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
 
         expected_by_section = {sec: list(vals) for sec, vals in template_expected.items()}
-        subject_key_name = self.active_batch_subject_key
-        if not subject_key_name and self.session and self.session.subjects:
-            subject_key_name = self.session.subjects[0]
-        if self.answer_keys and subject_key_name:
-            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
-            if key:
-                full_credit = getattr(key, "full_credit_questions", {}) or {}
-                invalid_rows = getattr(key, "invalid_answer_rows", {}) or {}
+        subject_key_name = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+        key = self._subject_answer_key_for_result(result, subject_key_name)
+        if key is not None:
+            full_credit = getattr(key, "full_credit_questions", {}) or {}
+            invalid_rows = getattr(key, "invalid_answer_rows", {}) or {}
 
-                def _extra_for_section(sec: str) -> set[int]:
-                    extra: set[int] = set()
-                    for q in list((full_credit.get(sec, []) or [])):
-                        try:
-                            extra.add(int(q))
-                        except Exception:
-                            continue
-                    for q in dict((invalid_rows.get(sec, {}) or {})).keys():
-                        try:
-                            extra.add(int(q))
-                        except Exception:
-                            continue
-                    return extra
+            def _extra_for_section(sec: str) -> set[int]:
+                extra: set[int] = set()
+                for q in list((full_credit.get(sec, []) or [])):
+                    try:
+                        extra.add(int(q))
+                    except Exception:
+                        continue
+                for q in dict((invalid_rows.get(sec, {}) or {})).keys():
+                    try:
+                        extra.add(int(q))
+                    except Exception:
+                        continue
+                return extra
 
-                key_sections = {
-                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys()) | _extra_for_section("MCQ")),
-                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys()) | _extra_for_section("TF")),
-                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys()) | _extra_for_section("NUMERIC")),
-                }
-                for sec in ["MCQ", "TF", "NUMERIC"]:
-                    if key_sections[sec]:
-                        # Display scope must preserve answer-key numbering and special rows.
-                        expected_by_section[sec] = key_sections[sec]
+            key_sections = {
+                "MCQ": sorted(set(int(q) for q in (getattr(key, "answers", {}) or {}).keys()) | _extra_for_section("MCQ")),
+                "TF": sorted(set(int(q) for q in (getattr(key, "true_false_answers", {}) or {}).keys()) | _extra_for_section("TF")),
+                "NUMERIC": sorted(set(int(q) for q in (getattr(key, "numeric_answers", {}) or {}).keys()) | _extra_for_section("NUMERIC")),
+            }
+            for sec in ["MCQ", "TF", "NUMERIC"]:
+                if key_sections[sec]:
+                    # Prefer answer-key scope over template scope to keep the answer string consistent.
+                    expected_by_section[sec] = key_sections[sec]
 
         if not any(expected_by_section.get(sec, []) for sec in ["MCQ", "TF", "NUMERIC"]):
             return {sec: list(vals) for sec, vals in template_expected.items()}
@@ -13972,14 +13972,13 @@ class MainWindow(QMainWindow):
         for row in rows:
             sid = str(row.get("student_id", "") or "").strip()
             meta = student_meta.get(sid, {})
-            mapped_room = str(self._subject_room_for_student_id(sid, cfg) or "").strip()
             status_text = str(row.get("status", "") or "").strip()
             status_fold = status_text.casefold()
             has_error = bool(status_fold) and status_fold not in {"ok", "đã sửa"}
             normalized.append({
                 "_has_error": has_error,
                 "SBD": sid,
-                "Phòng thi": str(row.get("exam_room", "") or mapped_room or room_by_sid.get(sid, "") or meta.get("exam_room", "")),
+                "Phòng thi": str(row.get("exam_room", "") or room_by_sid.get(sid, "") or meta.get("exam_room", "")),
                 "Họ tên": str(row.get("name", "") or meta.get("name", "")),
                 "Ngày sinh": str(row.get("birth_date", "") or meta.get("birth_date", "")),
                 "Lớp": str(row.get("class_name", "") or meta.get("class_name", "")),
@@ -14093,98 +14092,95 @@ class MainWindow(QMainWindow):
             if sid_origin and sid_norm and sid_norm not in sid_display_by_normalized:
                 sid_display_by_normalized[sid_norm] = sid_origin
 
-        def _answer_string_for_api(result, answer_key_obj) -> str:
-            raw_answer = ""
-            for cand in [
-                str(getattr(result, "manual_content_override", "") or "").strip(),
-                str(getattr(result, "cached_content", "") or "").strip(),
-                str(getattr(result, "answer_string", "") or "").strip(),
-            ]:
-                if cand:
-                    raw_answer = cand
-                    break
+        def _sorted_question_numbers(payload: object) -> list[int]:
+            out: list[int] = []
+            if isinstance(payload, dict):
+                for key in payload.keys():
+                    key_text = str(key or "").strip()
+                    if key_text.lstrip("-").isdigit():
+                        out.append(int(key_text))
+            return sorted(set(out))
 
-            if not raw_answer:
-                built = self._answer_string_from_maps(
-                    getattr(result, "mcq_answers", {}) or {},
-                    getattr(result, "true_false_answers", {}) or {},
-                    getattr(result, "numeric_answers", {}) or {},
-                    answer_key_obj,
-                    use_semicolon=True,
-                )
-                return str(built or "")
+        def _ordered_question_numbers(valid_map: object, invalid_map: object, fallback_map: object) -> list[int]:
+            primary_nums: set[int] = set()
+            for src in [valid_map or {}, invalid_map or {}]:
+                if not isinstance(src, dict):
+                    continue
+                for key in src.keys():
+                    key_text = str(key or "").strip()
+                    if key_text.lstrip("-").isdigit():
+                        primary_nums.add(int(key_text))
+            if primary_nums:
+                return sorted(primary_nums)
+            return _sorted_question_numbers(fallback_map)
 
-            normalized_answer = raw_answer.replace(",", ";")
-            if ";" in normalized_answer:
-                return normalized_answer
-            if answer_key_obj is None:
-                return normalized_answer
-            invalid_rows = getattr(answer_key_obj, "invalid_answer_rows", {}) or {}
+        def _answer_string_for_api(result) -> str:
+            manual_text = str(getattr(result, "manual_content_override", "") or "").strip()
+            if manual_text:
+                return manual_text.replace(",", ";")
 
-            def _question_numbers(valid_map, invalid_map, fallback_map=None) -> list[int]:
-                primary_nums = set()
-                for src in [valid_map or {}, invalid_map or {}]:
-                    for key in src.keys():
-                        if str(key).strip().lstrip("-").isdigit():
-                            primary_nums.add(int(key))
-                if primary_nums:
-                    return sorted(primary_nums)
-                nums = set()
-                for key in (fallback_map or {}).keys():
-                    if str(key).strip().lstrip("-").isdigit():
-                        nums.add(int(key))
-                return sorted(nums)
+            answer_key = self._subject_answer_key_for_result(result, subject)
+            mcq_map = dict(getattr(result, "mcq_answers", {}) or {})
+            tf_map = dict(getattr(result, "true_false_answers", {}) or {})
+            numeric_map = dict(getattr(result, "numeric_answers", {}) or {})
+
+            invalid_rows = getattr(answer_key, "invalid_answer_rows", {}) or {} if answer_key is not None else {}
+            mcq_qs = _ordered_question_numbers(
+                getattr(answer_key, "answers", {}) or {} if answer_key is not None else {},
+                (invalid_rows.get("MCQ", {}) or {}),
+                mcq_map,
+            )
+            tf_qs = _ordered_question_numbers(
+                getattr(answer_key, "true_false_answers", {}) or {} if answer_key is not None else {},
+                (invalid_rows.get("TF", {}) or {}),
+                tf_map,
+            )
+            numeric_qs = _ordered_question_numbers(
+                getattr(answer_key, "numeric_answers", {}) or {} if answer_key is not None else {},
+                (invalid_rows.get("NUMERIC", {}) or {}),
+                numeric_map,
+            )
 
             parts: list[str] = []
-            compact = normalized_answer.replace(";", "")
-            cursor = 0
-            mcq_qs = _question_numbers(getattr(answer_key_obj, "answers", {}) or {}, invalid_rows.get("MCQ", {}) or {})
-            for _ in mcq_qs:
-                if cursor >= len(compact):
-                    parts.append("_")
-                    continue
-                parts.append(compact[cursor:cursor + 1] or "_")
-                cursor += 1
-            tf_qs = _question_numbers(getattr(answer_key_obj, "true_false_answers", {}) or {}, invalid_rows.get("TF", {}) or {})
-            for _ in tf_qs:
-                token = compact[cursor:cursor + 4]
-                cursor += 4
-                if len(token) < 4:
-                    token = token + ("_" * (4 - len(token)))
-                parts.append(token)
-            num_qs = _question_numbers(getattr(answer_key_obj, "numeric_answers", {}) or {}, invalid_rows.get("NUMERIC", {}) or {})
-            for q_no in num_qs:
-                raw_key = str((getattr(answer_key_obj, "numeric_answers", {}) or {}).get(q_no, ((invalid_rows.get("NUMERIC", {}) or {}).get(q_no, ""))) or "")
-                normalized_key = str(raw_key).strip().replace(" ", "").lstrip("+").replace(".", ",")
-                width = len(normalized_key) if normalized_key else max(1, len(raw_key.strip()))
-                token = compact[cursor:cursor + width]
-                cursor += width
-                if len(token) < width:
-                    token = token + ("_" * (width - len(token)))
-                parts.append(token)
-            return ";".join(parts) if parts else normalized_answer
+            for q_no in mcq_qs:
+                value = str(mcq_map.get(q_no, "") or "").strip().upper()[:1]
+                parts.append(value or "_")
+            for q_no in tf_qs:
+                flags = dict(tf_map.get(q_no, {}) or {})
+                token = "".join(
+                    "Đ" if key in flags and bool(flags.get(key)) else ("S" if key in flags else "_")
+                    for key in ["a", "b", "c", "d"]
+                )
+                parts.append(token or "____")
+            for q_no in numeric_qs:
+                value = str(numeric_map.get(q_no, "") or "").strip().replace(" ", "").lstrip("+").replace(".", ",")
+                parts.append(value or "_")
+            if parts:
+                return ";".join(parts)
+
+            fallback = str(getattr(result, "answer_string", "") or "").strip()
+            return fallback.replace(",", ";") if fallback else ""
 
         with Path(path).open("w", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(f, fieldnames=headers)
             writer.writeheader()
             for idx, result in enumerate(rows, start=1):
                 sid_raw = str(getattr(result, "student_id", "") or "").strip()
-                sid = sid_display_by_normalized.get(self._normalized_student_id_for_match(sid_raw), sid_raw)
-                sid_export = f'="{sid}"' if sid.isdigit() else sid
-                meta = student_meta.get(sid, {})
-                answer_key = self._subject_answer_key_for_result(result, subject)
-                answer_text = _answer_string_for_api(result, answer_key)
-                room_mapped = str(self._subject_room_for_student_id(sid_raw, cfg) or "").strip()
-                room_profile = str((self._student_profile_by_id(sid_raw) or {}).get("exam_room", "") or "").strip()
+                sid_display = sid_display_by_normalized.get(self._normalized_student_id_for_match(sid_raw), sid_raw)
+                meta = student_meta.get(sid_display, student_meta.get(sid_raw, {}))
+                sid_export = f'="{sid_display}"' if sid_display and sid_display.isdigit() else sid_display
+                exam_room_text = str(self._subject_room_for_student_id(sid_display or sid_raw, cfg) or "").strip()
+                if not exam_room_text:
+                    exam_room_text = str(getattr(result, "exam_room", "") or meta.get("exam_room", ""))
                 writer.writerow({
                     "STT": idx,
                     "student_id": sid_export,
                     "name": str(getattr(result, "full_name", "") or meta.get("name", "")),
                     "class_name": str(getattr(result, "class_name", "") or meta.get("class_name", "")),
-                    "exam_room": str(getattr(result, "exam_room", "") or room_mapped or room_profile or meta.get("exam_room", "")),
+                    "exam_room": exam_room_text,
                     "subject_key": subject,
                     "exam_code": str(getattr(result, "exam_code", "") or ""),
-                    "answer_string": answer_text,
+                    "answer_string": _answer_string_for_api(result),
                 })
         QMessageBox.information(self, "Xuất API bài làm", f"Đã xuất API bài làm:\n{path}")
 
