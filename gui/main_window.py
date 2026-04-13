@@ -2527,7 +2527,6 @@ class MainWindow(QMainWindow):
         if not self.embedded_exam_dialog or not self.embedded_exam_session or not self.embedded_exam_session_id:
             return False
 
-        preserve_editor = True
         current_payload = self.embedded_exam_dialog.payload()
         if self._payload_changed(current_payload, self.embedded_exam_original_payload):
             msg = QMessageBox(self)
@@ -2538,16 +2537,12 @@ class MainWindow(QMainWindow):
             ch = msg.exec()
             if ch == QMessageBox.Cancel:
                 return False
-            if ch == QMessageBox.Save:
-                if not self._save_embedded_exam_editor():
-                    return False
-            else:
-                preserve_editor = False
+            if ch == QMessageBox.Save and not self._save_embedded_exam_editor():
+                return False
 
         session_id = self.embedded_exam_session_id
         base_session = self.embedded_exam_session
-        if not preserve_editor:
-            self._close_embedded_exam_editor()
+        self._close_embedded_exam_editor()
         if not session_id or not base_session:
             return False
         self._open_batch_scan_from_exam_editor(session_id, base_session, batch_payload)
@@ -2662,7 +2657,6 @@ class MainWindow(QMainWindow):
     def _open_session_path(self, path: Path) -> None:
         try:
             self._release_batch_runtime_state()
-            self._reset_batch_filter_state(apply_now=False)
             payload = self.database.fetch_exam_session(path.stem)
             if not payload:
                 raise FileNotFoundError(f"Không tìm thấy session '{path.stem}' trong SQLite.")
@@ -3025,7 +3019,6 @@ class MainWindow(QMainWindow):
             if not self._confirm("Dữ liệu chưa lưu", "Kỳ thi hiện tại có thay đổi chưa lưu. Vẫn đóng?"):
                 return
         self._release_batch_runtime_state()
-        self._reset_batch_filter_state(apply_now=False)
         self._release_preview_resources()
         self._release_template_cache()
         self._release_editor_resources()
@@ -3537,10 +3530,14 @@ class MainWindow(QMainWindow):
             self.apply_manual_correction()
 
     def action_calculate_scores(self) -> None:
-        # From Batch Scan -> Scoring: do not prompt save or reload again when there are no real edits.
+        # From Batch Scan -> Scoring: do not prompt save when no real batch edits.
         if self.stack.currentIndex() != 1 or bool(hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled()):
             if not self._confirm_before_switching_work("màn hình Tính điểm"):
                 return
+        if self.stack.currentIndex() == 1 and hasattr(self, "batch_subject_combo") and self.batch_subject_combo.currentIndex() > 0:
+            has_unsaved = bool(hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled())
+            if not has_unsaved:
+                self._on_batch_subject_changed(self.batch_subject_combo.currentIndex(), force_reload=True)
         self._open_scoring_view()
         self._refresh_ribbon_action_states()
 
@@ -3964,34 +3961,19 @@ class MainWindow(QMainWindow):
         return w
 
     def _close_batch_scan_view(self) -> None:
+        route_ctx = dict(self._current_route_context or {})
         subject_key = self._current_batch_subject_key()
-        row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
-        has_unsaved = self._has_batch_unsaved_changes()
-
-        if has_unsaved:
+        if subject_key and hasattr(self, "scan_list") and self.scan_list.rowCount() > 0:
+            self._sync_current_batch_subject_snapshot(persist_to_db=False)
+        if self._has_batch_unsaved_changes():
             choice = self._prompt_save_changes_word_style(
                 "Batch Scan chưa lưu",
                 "Bạn có thay đổi chưa lưu cho môn hiện tại. Bạn muốn lưu trước khi đóng không?",
             )
             if choice == "cancel":
                 return
-            if choice == "save":
-                if not self._save_batch_for_selected_subject(reload_after_save=False, refresh_registry=False):
-                    return
-            else:
-                if subject_key and row_count > 0:
-                    runtime_key = self._batch_runtime_key(subject_key)
-                    self.batch_working_state_by_subject.pop(runtime_key, None)
-        elif subject_key and row_count > 0:
-            runtime_key = self._batch_runtime_key(subject_key)
-            cached = self.batch_working_state_by_subject.get(runtime_key)
-            need_cache = not isinstance(cached, dict) or not bool(cached.get("rows"))
-            if need_cache:
-                self._cache_working_batch_state(subject_key)
-                cached = self.batch_working_state_by_subject.get(runtime_key, {})
-                if isinstance(cached, dict):
-                    cached["dirty"] = False
-
+            if choice == "save" and not self._save_batch_for_selected_subject():
+                return
         wait_dlg = self._open_wait_progress("Đang đóng Batch Scan và đồng bộ dữ liệu...")
         try:
             QApplication.processEvents()
@@ -4460,14 +4442,9 @@ class MainWindow(QMainWindow):
 
     def _handle_scoring_subject_changed(self, _index: int) -> None:
         subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
-        if not subject_key:
-            return
-        self._apply_subject_section_visibility(subject_key)
-        self._load_cached_scoring_results_for_subject(subject_key)
-        self._refresh_dashboard_summary_from_db(subject_key)
-        self._refresh_scoring_state_label(subject_key)
-        if self._subject_scoring_needs_recompute(subject_key):
-            self._schedule_scoring_refresh(subject_key, "Tính lại toàn bộ", "auto_refresh_subject_change")
+        if subject_key:
+            self._apply_subject_section_visibility(subject_key)
+            self.calculate_scores(subject_key=subject_key, mode="Tính lại toàn bộ", note="auto_refresh_subject_change")
 
     def _sync_current_batch_subject_snapshot(self, persist_to_db: bool = True) -> tuple[str, list[OMRResult]]:
         subject_cfg = self._selected_batch_subject_config()
@@ -4523,6 +4500,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, "scoring_panel"):
             self.scoring_panel.setVisible(True)
         self._current_route_name = "workspace_scoring"
+        selected_subject = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
+        if selected_subject:
+            self.calculate_scores(subject_key=selected_subject, mode="Tính lại toàn bộ", note="auto_refresh_open_scoring")
 
     def _back_to_batch_scan(self) -> None:
         # workspace sub-route
@@ -4891,86 +4871,24 @@ class MainWindow(QMainWindow):
                 break
         self.scoring_subject_combo.blockSignals(False)
 
-    def _subject_has_cached_scoring_results(self, subject_key: str) -> bool:
-        subject = str(subject_key or "").strip()
-        if not subject:
-            return False
-        cached = self.scoring_results_by_subject.get(subject)
-        if isinstance(cached, dict) and bool(cached):
-            return True
-        try:
-            if self.database.fetch_scores_for_subject(subject):
-                return True
-        except Exception:
-            pass
-        if self.session and isinstance(self.session.config, dict):
-            cfg_rows = (self.session.config.get("scoring_results", {}) or {}).get(subject, {})
-            if isinstance(cfg_rows, dict) and bool(cfg_rows):
-                return True
-        return False
-
-    def _subject_scoring_needs_recompute(self, subject_key: str) -> bool:
-        subject = str(subject_key or "").strip()
-        if not subject:
-            return False
-        cached_rows = self._load_scoring_results_for_subject_from_storage(subject) or {}
-        cached_count = len(cached_rows)
-        if cached_count <= 0:
-            return True
-        for payload in cached_rows.values():
-            if not isinstance(payload, dict):
-                continue
-            status_text = str(payload.get("status", "") or "").strip()
-            if status_text in {"Chưa chấm", "Cần chấm lại"}:
-                return True
-        subject_scans = list(self.scan_results_by_subject.get(self._batch_result_subject_key(subject), []) or [])
-        if not subject_scans:
-            try:
-                subject_scans = list(self._refresh_scan_results_from_db(subject) or [])
-            except Exception:
-                subject_scans = []
-        if not subject_scans:
-            try:
-                subject_scans = list(self._cached_subject_scans_from_config(subject) or [])
-            except Exception:
-                subject_scans = []
-        if subject_scans and cached_count < len(subject_scans):
-            return True
-        return False
-
-    def _schedule_scoring_refresh(self, subject_key: str, mode: str = "Tính lại toàn bộ", note: str = "") -> None:
-        subject = str(subject_key or "").strip()
-        if not subject:
-            return
-        QTimer.singleShot(0, lambda s=subject, m=str(mode or "Tính lại toàn bộ"), n=str(note or ""): self.calculate_scores(subject_key=s, mode=m, note=n))
-
-
     def _open_scoring_view(self) -> None:
-        wait_dlg = self._open_wait_progress("Đang mở màn hình Tính điểm...", "Đang chuẩn bị")
-        selected_subject = ""
-        try:
-            if not self.session:
-                QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
-                return
-            # Only sync the current batch snapshot when there are unsaved edits.
-            if self._has_batch_unsaved_changes():
-                self._sync_current_batch_subject_snapshot(persist_to_db=False)
-            if not self._eligible_scoring_subject_keys():
-                QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
-                return
-            selected_subject = self._resolve_preferred_scoring_subject()
-            self._navigate_to("workspace_scoring", context={"session_id": self.current_session_id}, push_current=True, require_confirm=False, reason="open_scoring")
-            self._populate_scoring_subjects(selected_subject)
-            self._refresh_scoring_phase_table()
-            selected_subject = str(self.scoring_subject_combo.currentData() or selected_subject or "").strip() if hasattr(self, "scoring_subject_combo") else str(selected_subject or "").strip()
-            self._load_cached_scoring_results_for_subject(selected_subject)
-            self._refresh_dashboard_summary_from_db(selected_subject)
-            self._refresh_scoring_state_label(selected_subject)
-            self._show_scoring_panel()
-        finally:
-            self._close_wait_progress(wait_dlg)
-        if selected_subject and self._subject_scoring_needs_recompute(selected_subject):
-            self._schedule_scoring_refresh(selected_subject, "Tính lại toàn bộ", "auto_refresh_open_scoring")
+        if not self.session:
+            QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
+            return
+        # Do not overwrite DB-canonical scan payloads (may include scoring-review edits)
+        # when merely opening scoring view from batch screen.
+        self._sync_current_batch_subject_snapshot(persist_to_db=False)
+        if not self._eligible_scoring_subject_keys():
+            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
+            return
+        self._navigate_to("workspace_scoring", context={"session_id": self.current_session_id}, push_current=True, require_confirm=False, reason="open_scoring")
+        selected_subject = self._resolve_preferred_scoring_subject()
+        self._populate_scoring_subjects(selected_subject)
+        self._refresh_scoring_phase_table()
+        self._load_cached_scoring_results_for_subject(selected_subject)
+        self._refresh_dashboard_summary_from_db(selected_subject)
+        self._refresh_scoring_state_label(selected_subject)
+        self._show_scoring_panel()
 
     def _refresh_scoring_phase_table(self) -> None:
         if not hasattr(self, "scoring_phase_table"):
@@ -5090,65 +5008,7 @@ class MainWindow(QMainWindow):
         except Exception:
             return False
 
-    def _clear_subject_saved_batch_snapshot_for_full_rescan(self, subject_key: str) -> None:
-        subject = str(subject_key or "").strip()
-        if not subject:
-            return
-        cfg = self._subject_config_by_subject_key(subject)
-        if not isinstance(cfg, dict):
-            return
-
-        for field, value in [
-            ("batch_saved", False),
-            ("batch_saved_at", ""),
-            ("batch_result_count", 0),
-            ("batch_saved_rows", []),
-            ("batch_saved_preview", []),
-            ("batch_saved_results", []),
-        ]:
-            cfg[field] = value
-
-        runtime_key = self._batch_runtime_key(subject)
-        if runtime_key:
-            self.batch_working_state_by_subject.pop(runtime_key, None)
-
-        scoped_subject = self._batch_result_subject_key(subject)
-        if scoped_subject:
-            self.scan_results_by_subject.pop(scoped_subject, None)
-
-        if isinstance(self.batch_editor_return_payload, dict):
-            subject_cfgs = self.batch_editor_return_payload.get("subject_configs", [])
-            if isinstance(subject_cfgs, list):
-                for item in subject_cfgs:
-                    if isinstance(item, dict) and self._subject_key_from_cfg(item) == subject:
-                        item.update({
-                            "batch_saved": False,
-                            "batch_saved_at": "",
-                            "batch_result_count": 0,
-                            "batch_saved_rows": [],
-                            "batch_saved_preview": [],
-                            "batch_saved_results": [],
-                        })
-                        break
-
-        subject_cfgs = self._subject_configs_in_session()
-        if isinstance(subject_cfgs, list) and subject_cfgs:
-            self._persist_current_session_subject_configs(subject_cfgs)
-
-        session_path = self._batch_context_session_path()
-        if session_path:
-            sidecar = session_path.with_suffix('.batch_cache.json')
-            if sidecar.exists():
-                try:
-                    raw = json.loads(sidecar.read_text(encoding='utf-8'))
-                    if isinstance(raw, dict):
-                        raw.pop(self._batch_cache_subject_key(cfg, include_session=True), None)
-                        raw.pop(self._batch_cache_subject_key(cfg, include_session=False), None)
-                        sidecar.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding='utf-8')
-                except Exception:
-                    pass
-
-    def _save_batch_for_selected_subject(self, reload_after_save: bool = True, refresh_registry: bool = True) -> bool:
+    def _save_batch_for_selected_subject(self) -> bool:
         subject_cfg = self._selected_batch_subject_config()
         if not subject_cfg:
             QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
@@ -5259,27 +5119,11 @@ class MainWindow(QMainWindow):
                 "saved_at": timestamp,
                 "dirty": False,
             }
-            if refresh_registry:
-                self._upsert_session_registry(self.current_session_id, self.session.exam_name if self.session else None)
-                self._refresh_exam_list()
+            self._upsert_session_registry(self.current_session_id, self.session.exam_name if self.session else None)
+            self._refresh_exam_list()
             self._update_batch_scan_scope_summary()
             self.btn_save_batch_subject.setEnabled(False)
-            if reload_after_save:
-                self._load_batch_subject_state(target, source_hint="after_save")
-            else:
-                runtime_key = self._batch_runtime_key(subject_key)
-                self._batch_loaded_runtime_key = runtime_key
-                self._current_batch_data_source = "database"
-                cached_state = self.batch_working_state_by_subject.get(runtime_key, {}) if isinstance(self.batch_working_state_by_subject.get(runtime_key, {}), dict) else {}
-                self.batch_working_state_by_subject[runtime_key] = {
-                    **cached_state,
-                    "runtime_key": runtime_key,
-                    "scan_results": list(current_results),
-                    "rows": batch_rows_payload,
-                    "preview": batch_preview_payload,
-                    "saved_at": timestamp,
-                    "dirty": False,
-                }
+            reload_ok = self._load_batch_subject_state(target, source_hint="after_save")
             QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
             return True
         except Exception as exc:
@@ -6136,54 +5980,6 @@ class MainWindow(QMainWindow):
                 f"Nguồn: {self._current_batch_data_source}"
             )
 
-    def _batch_scan_row_payload(self, row_idx: int) -> dict:
-        if not hasattr(self, "scan_list") or row_idx < 0 or row_idx >= self.scan_list.rowCount():
-            return {}
-        sid_item = self.scan_list.item(row_idx, 0)
-        payload = sid_item.data(Qt.UserRole + 12) if sid_item else None
-        return dict(payload) if isinstance(payload, dict) else {}
-
-    def _batch_scan_row_full_status_text(self, row_idx: int) -> str:
-        payload = self._batch_scan_row_payload(row_idx)
-        payload_status = str(payload.get("status", "") or "").strip()
-        if payload_status:
-            return payload_status
-        status_item = self.scan_list.item(row_idx, 6) if hasattr(self, "scan_list") else None
-        tooltip = str(status_item.toolTip() if status_item else "").strip()
-        if tooltip:
-            return tooltip
-        return str(status_item.text() if status_item else "").strip()
-
-    def _batch_scan_row_content_text(self, row_idx: int) -> str:
-        payload = self._batch_scan_row_payload(row_idx)
-        payload_content = str(payload.get("content", "") or "")
-        if payload_content:
-            return payload_content
-        content_item = self.scan_list.item(row_idx, 5) if hasattr(self, "scan_list") else None
-        tooltip = str(content_item.toolTip() if content_item else "")
-        if tooltip:
-            return tooltip
-        return str(content_item.text() if content_item else "")
-
-    def _reset_batch_filter_state(self, *, apply_now: bool = False) -> None:
-        self.batch_status_filter_mode = "all"
-        if hasattr(self, "filter_column"):
-            self.filter_column.blockSignals(True)
-            try:
-                self.filter_column.setCurrentIndex(0)
-            finally:
-                self.filter_column.blockSignals(False)
-        if hasattr(self, "search_value"):
-            self.search_value.blockSignals(True)
-            try:
-                self.search_value.clear()
-            finally:
-                self.search_value.blockSignals(False)
-        if apply_now:
-            self._apply_scan_filter()
-        else:
-            self._update_batch_scan_bottom_status_text()
-
     def _update_batch_scan_bottom_status_text(self) -> None:
         if not hasattr(self, "batch_scan_status_bottom"):
             return
@@ -6195,7 +5991,8 @@ class MainWindow(QMainWindow):
         error_count = duplicate_count = wrong_code_count = edited_count = 0
         if hasattr(self, "scan_list"):
             for r in range(total_rows):
-                status_txt = self._batch_scan_row_full_status_text(r)
+                status_item = self.scan_list.item(r, 6)
+                status_txt = str(status_item.text() if status_item else "").strip()
                 low = status_txt.lower()
                 is_edited = "đã sửa" in low
                 if is_edited:
@@ -6313,15 +6110,8 @@ class MainWindow(QMainWindow):
             if cfg:
                 cfg = self._merge_saved_batch_snapshot(cfg)
                 next_runtime_key = self._batch_runtime_key(cfg)
-            subject_context_changed = previous_runtime_key != next_runtime_key
-            if previous_runtime_key and subject_context_changed:
-                has_rows = bool(hasattr(self, "scan_list") and self.scan_list.rowCount() > 0)
-                is_dirty = bool(hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled())
-                has_cached_state = isinstance(self.batch_working_state_by_subject.get(previous_runtime_key), dict)
-                if has_rows and (is_dirty or not has_cached_state):
-                    self._cache_working_batch_state(previous_runtime_key)
-            if subject_context_changed:
-                self._reset_batch_filter_state(apply_now=False)
+            if previous_runtime_key and previous_runtime_key != next_runtime_key:
+                self._cache_working_batch_state(previous_runtime_key)
             if cfg:
                 self.active_batch_subject_key = next_runtime_key
             else:
@@ -7139,7 +6929,6 @@ class MainWindow(QMainWindow):
         file_scope_mode = str(self.batch_file_scope_combo.currentData() or "new_only") if hasattr(self, "batch_file_scope_combo") else "new_only"
         subject_key_for_reset = self._subject_key_from_cfg(subject_cfg) if isinstance(subject_cfg, dict) else ""
         if file_scope_mode == "all" and subject_key_for_reset:
-            self._clear_subject_saved_batch_snapshot_for_full_rescan(subject_key_for_reset)
             has_scoring = bool(self.scoring_results_by_subject.get(subject_key_for_reset, {}))
             try:
                 has_scoring = has_scoring or bool(self.database.fetch_scores_for_subject(subject_key_for_reset))
@@ -10313,8 +10102,7 @@ class MainWindow(QMainWindow):
         value = _normalize(self.search_value.text())
         col = self._scan_filter_column_from_combo_index(self.filter_column.currentIndex())
         for i in range(self.scan_list.rowCount()):
-            full_status_text = self._batch_scan_row_full_status_text(i)
-            status_text = full_status_text.strip().lower()
+            status_text = str(self.scan_list.item(i, 6).text() if self.scan_list.item(i, 6) else "").strip().lower()
             is_edited = "đã sửa" in status_text
             status_ok = True
             if self.batch_status_filter_mode == "error":
@@ -10322,7 +10110,7 @@ class MainWindow(QMainWindow):
             elif self.batch_status_filter_mode == "duplicate":
                 status_ok = (not is_edited) and ("trùng sbd" in status_text or "duplicate" in status_text)
             elif self.batch_status_filter_mode == "wrong_code":
-                status_ok = (not is_edited) and (("mã đề" in status_text) and ("sai" in status_text or "không" in status_text or "?" in full_status_text))
+                status_ok = (not is_edited) and (("mã đề" in status_text) and ("sai" in status_text or "không" in status_text or "?" in status_text))
             elif self.batch_status_filter_mode == "edited":
                 status_ok = is_edited
             if not value:
@@ -10331,18 +10119,9 @@ class MainWindow(QMainWindow):
             if col is None:
                 searchable = []
                 for j in range(0, 7):
-                    if j == 5:
-                        searchable.append(_normalize(self._batch_scan_row_content_text(i)))
-                    elif j == 6:
-                        searchable.append(_normalize(full_status_text))
-                    else:
-                        item = self.scan_list.item(i, j)
-                        searchable.append(_normalize(item.text() if item else ""))
+                    item = self.scan_list.item(i, j)
+                    searchable.append(_normalize(item.text() if item else ""))
                 cell = " | ".join(searchable)
-            elif col == 5:
-                cell = _normalize(self._batch_scan_row_content_text(i))
-            elif col == 6:
-                cell = _normalize(full_status_text)
             else:
                 item = self.scan_list.item(i, col)
                 cell = _normalize(item.text() if item else "")
@@ -11635,11 +11414,10 @@ class MainWindow(QMainWindow):
             rec_errors = list(getattr(result, "recognition_errors", [])) or list(getattr(result, "errors", []))
             issue_codes = [str(getattr(issue, "code", "") or "").strip().upper() for issue in (getattr(result, "issues", []) or [])]
             rec_error_codes = [str(err or "").strip().upper() for err in rec_errors if str(err or "").strip()]
-            blocking_rec_error_codes = [code for code in rec_error_codes if "FALLBACK ACCEPTED" not in code]
-            if blocking_rec_error_codes or issue_codes:
-                if any(code in {"ANCHOR_MISSING", "ANCHOR_FAIL", "SCANNER_LOCK_FAIL"} for code in issue_codes) or any("ANCHOR" in code or "SCANNER_LOCK_FAIL" in code for code in blocking_rec_error_codes):
+            if rec_errors or issue_codes:
+                if any(code in {"ANCHOR_MISSING", "ANCHOR_FAIL", "SCANNER_LOCK_FAIL"} for code in issue_codes) or any("ANCHOR" in code or "SCANNER_LOCK_FAIL" in code for code in rec_error_codes):
                     status_parts.append("Lỗi nhận dạng anchor")
-                elif any(code in {"POOR_IDENTIFIER_ZONE", "STUDENT_ID_FAST_FAIL", "EXAM_CODE_FAST_FAIL"} for code in issue_codes) or any(code in {"POOR_IDENTIFIER_ZONE", "STUDENT_ID_FAST_FAIL", "EXAM_CODE_FAST_FAIL"} or "HEADER" in code for code in blocking_rec_error_codes):
+                elif any(code in {"POOR_IDENTIFIER_ZONE", "STUDENT_ID_FAST_FAIL", "EXAM_CODE_FAST_FAIL"} for code in issue_codes) or any(code in {"POOR_IDENTIFIER_ZONE", "STUDENT_ID_FAST_FAIL", "EXAM_CODE_FAST_FAIL"} or "HEADER" in code for code in rec_error_codes):
                     status_parts.append("Lỗi nhận dạng vùng header")
                 else:
                     status_parts.append("Lỗi nhận dạng")
@@ -13806,9 +13584,6 @@ class MainWindow(QMainWindow):
         failed_scans: list[dict[str, str]] = []
         smart_scored_scans: list[dict[str, str]] = []
         edited_student_ids: set[str] = set()
-        scoring_progress = self._open_batch_progress_screen(max(1, len(subject_scans or [])), title="Đang tính điểm")
-        scoring_started_at = time.perf_counter()
-
         for scan_row in (subject_scans or []):
             sid_key = str(getattr(scan_row, "student_id", "") or "").strip()
             if not sid_key:
@@ -13816,10 +13591,7 @@ class MainWindow(QMainWindow):
             has_history = bool([str(x) for x in (getattr(scan_row, "edit_history", []) or []) if str(x or "").strip()])
             if bool(getattr(scan_row, "manually_edited", False)) or has_history:
                 edited_student_ids.add(sid_key)
-        for scan_idx, scan in enumerate(subject_scans, start=1):
-            if scoring_progress is not None and (scan_idx == 1 or scan_idx == len(subject_scans) or (scan_idx % 10) == 0):
-                self._update_batch_progress_screen(scoring_progress, scan_idx, max(1, len(subject_scans or [])), str(getattr(scan, "image_path", "") or getattr(scan, "student_id", "") or ""), scoring_started_at)
-
+        for scan in subject_scans:
             sid = (scan.student_id or "").strip()
             profile = self._student_profile_by_id(sid)
             if profile.get("name") and not str(getattr(scan, "full_name", "") or "").strip():
@@ -14086,7 +13858,6 @@ class MainWindow(QMainWindow):
         scored_sid_set = {str(getattr(x, "student_id", "") or "").strip() for x in rows if str(getattr(x, "student_id", "") or "").strip()}
         pending_count += len(scanned_sid_set - scored_sid_set)
         self._update_scoring_status_bar(success_count, error_count, edited_count, pending_count)
-        self._close_batch_progress_screen(scoring_progress)
         return rows
 
     def action_open_recheck(self) -> None:
