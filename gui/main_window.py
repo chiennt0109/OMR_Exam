@@ -13972,13 +13972,14 @@ class MainWindow(QMainWindow):
         for row in rows:
             sid = str(row.get("student_id", "") or "").strip()
             meta = student_meta.get(sid, {})
+            mapped_room = str(self._subject_room_for_student_id(sid, cfg) or "").strip()
             status_text = str(row.get("status", "") or "").strip()
             status_fold = status_text.casefold()
             has_error = bool(status_fold) and status_fold not in {"ok", "đã sửa"}
             normalized.append({
                 "_has_error": has_error,
                 "SBD": sid,
-                "Phòng thi": str(row.get("exam_room", "") or room_by_sid.get(sid, "") or meta.get("exam_room", "")),
+                "Phòng thi": str(row.get("exam_room", "") or mapped_room or room_by_sid.get(sid, "") or meta.get("exam_room", "")),
                 "Họ tên": str(row.get("name", "") or meta.get("name", "")),
                 "Ngày sinh": str(row.get("birth_date", "") or meta.get("birth_date", "")),
                 "Lớp": str(row.get("class_name", "") or meta.get("class_name", "")),
@@ -14083,25 +14084,88 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(self, "Xuất API bài làm", f"{suggested}_api.csv", "CSV (*.csv)")
         if not path:
             return
-        headers = ["student_id", "name", "class_name", "exam_room", "subject_key", "exam_code", "answer_string"]
+        headers = ["STT", "student_id", "name", "class_name", "exam_room", "subject_key", "exam_code", "answer_string"]
         student_meta = self._student_meta_by_sid()
+        sid_display_by_normalized: dict[str, str] = {}
+        for st in (self.session.students if self.session else []):
+            sid_origin = str(getattr(st, "student_id", "") or "").strip()
+            sid_norm = self._normalized_student_id_for_match(sid_origin)
+            if sid_origin and sid_norm and sid_norm not in sid_display_by_normalized:
+                sid_display_by_normalized[sid_norm] = sid_origin
+
+        def _answer_string_for_api(result, answer_key_obj) -> str:
+            built = self._answer_string_from_maps(
+                getattr(result, "mcq_answers", {}) or {},
+                getattr(result, "true_false_answers", {}) or {},
+                getattr(result, "numeric_answers", {}) or {},
+                answer_key_obj,
+                use_semicolon=True,
+            )
+            if built:
+                return str(built)
+            raw_answer = str(getattr(result, "answer_string", "") or "").strip()
+            if not raw_answer:
+                return ""
+            if ";" in raw_answer:
+                return raw_answer
+            if answer_key_obj is None:
+                return raw_answer
+            invalid_rows = getattr(answer_key_obj, "invalid_answer_rows", {}) or {}
+
+            def _question_numbers(valid_map, invalid_map, fallback_map=None) -> list[int]:
+                primary_nums = set()
+                for src in [valid_map or {}, invalid_map or {}]:
+                    for key in src.keys():
+                        if str(key).strip().lstrip("-").isdigit():
+                            primary_nums.add(int(key))
+                if primary_nums:
+                    return sorted(primary_nums)
+                nums = set()
+                for key in (fallback_map or {}).keys():
+                    if str(key).strip().lstrip("-").isdigit():
+                        nums.add(int(key))
+                return sorted(nums)
+
+            parts: list[str] = []
+            compact = raw_answer.replace(";", "")
+            cursor = 0
+            mcq_qs = _question_numbers(getattr(answer_key_obj, "answers", {}) or {}, invalid_rows.get("MCQ", {}) or {})
+            for _ in mcq_qs:
+                if cursor >= len(compact):
+                    parts.append("_")
+                    continue
+                parts.append(compact[cursor:cursor + 1] or "_")
+                cursor += 1
+            tf_qs = _question_numbers(getattr(answer_key_obj, "true_false_answers", {}) or {}, invalid_rows.get("TF", {}) or {})
+            for _ in tf_qs:
+                token = compact[cursor:cursor + 4]
+                cursor += 4
+                if len(token) < 4:
+                    token = token + ("_" * (4 - len(token)))
+                parts.append(token)
+            num_qs = _question_numbers(getattr(answer_key_obj, "numeric_answers", {}) or {}, invalid_rows.get("NUMERIC", {}) or {})
+            for q_no in num_qs:
+                raw_key = str((getattr(answer_key_obj, "numeric_answers", {}) or {}).get(q_no, ((invalid_rows.get("NUMERIC", {}) or {}).get(q_no, ""))) or "")
+                normalized_key = str(raw_key).strip().replace(" ", "").lstrip("+").replace(".", ",")
+                width = len(normalized_key) if normalized_key else max(1, len(raw_key.strip()))
+                token = compact[cursor:cursor + width]
+                cursor += width
+                if len(token) < width:
+                    token = token + ("_" * (width - len(token)))
+                parts.append(token)
+            return ";".join(parts) if parts else raw_answer
+
         with Path(path).open("w", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(f, fieldnames=headers)
             writer.writeheader()
-            for result in rows:
-                sid = str(getattr(result, "student_id", "") or "").strip()
+            for idx, result in enumerate(rows, start=1):
+                sid_raw = str(getattr(result, "student_id", "") or "").strip()
+                sid = sid_display_by_normalized.get(self._normalized_student_id_for_match(sid_raw), sid_raw)
                 meta = student_meta.get(sid, {})
                 answer_key = self._subject_answer_key_for_result(result, subject)
-                answer_text = self._answer_string_from_maps(
-                    getattr(result, "mcq_answers", {}) or {},
-                    getattr(result, "true_false_answers", {}) or {},
-                    getattr(result, "numeric_answers", {}) or {},
-                    answer_key,
-                    use_semicolon=True,
-                )
-                if not answer_text:
-                    answer_text = str(getattr(result, "answer_string", "") or "").replace(",", ";")
+                answer_text = _answer_string_for_api(result, answer_key)
                 writer.writerow({
+                    "STT": idx,
                     "student_id": sid,
                     "name": str(getattr(result, "full_name", "") or meta.get("name", "")),
                     "class_name": str(getattr(result, "class_name", "") or meta.get("class_name", "")),
