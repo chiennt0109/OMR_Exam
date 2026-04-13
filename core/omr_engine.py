@@ -10,7 +10,6 @@ from typing import Callable, Iterable
 
 import cv2
 import numpy as np
-from PIL import Image
 
 try:
     from models.template import Template, Zone, ZoneType
@@ -133,6 +132,8 @@ class ZonePlan:
     cols: int
     radius: int
     options: list[str]
+    spatial_order_idx: np.ndarray = field(default_factory=lambda: np.empty((0,), dtype=np.int32))
+    ordered_centers_px: np.ndarray = field(default_factory=lambda: np.empty((0, 2), dtype=np.float32))
 
 
 @dataclass
@@ -227,11 +228,10 @@ class OMRProcessor:
 
     @staticmethod
     def _use_shape_based_dpi_normalization(template: Template) -> bool:
-        md = getattr(template, "metadata", {}) or {}
-        raw = md.get("use_shape_based_dpi_normalization", True)
-        if isinstance(raw, bool):
-            return raw
-        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+        # Kept only for backward compatibility with existing callers / metadata.
+        # Production path now avoids pre-normalizing DPI because the image is resized
+        # exactly once to the template size after loading.
+        return False
 
     @staticmethod
     def _zone_priority(zone: Zone) -> tuple[int, str]:
@@ -370,6 +370,33 @@ class OMRProcessor:
         return np.asarray(pts, dtype=np.float32) if pts else np.empty((0, 2), dtype=np.float32)
 
     @staticmethod
+    def _compute_spatial_order_index(centers: np.ndarray, rows: int, cols: int) -> np.ndarray:
+        need = max(0, int(rows) * int(cols))
+        if need <= 0:
+            return np.empty((0,), dtype=np.int32)
+        if centers.size == 0:
+            return np.zeros((need,), dtype=np.int32)
+        pts = np.asarray(centers, dtype=np.float32)
+        if pts.shape[0] < need:
+            pad = np.repeat(pts[-1:, :], need - pts.shape[0], axis=0)
+            pts = np.vstack([pts, pad])
+        pts = pts[:need]
+        order_x = np.argsort(pts[:, 0], kind="mergesort")
+        col_groups = np.array_split(order_x, cols)
+        matrix_idx = np.zeros((rows, cols), dtype=np.int32)
+        for c in range(cols):
+            grp = np.asarray(col_groups[c], dtype=np.int32)
+            if grp.size == 0:
+                fill = int(col_groups[c - 1][-1]) if c > 0 and len(col_groups[c - 1]) else 0
+                matrix_idx[:, c] = fill
+                continue
+            grp = grp[np.argsort(pts[grp, 1], kind="mergesort")]
+            if grp.size < rows:
+                grp = np.concatenate([grp, np.full((rows - grp.size,), int(grp[-1]), dtype=np.int32)])
+            matrix_idx[:, c] = grp[:rows]
+        return matrix_idx.reshape(-1).astype(np.int32)
+
+    @staticmethod
     def _estimate_radius(zone: Zone, centers: np.ndarray, rows: int, cols: int) -> int:
         md = getattr(zone, "metadata", {}) or {}
         if "bubble_radius" in md:
@@ -430,6 +457,8 @@ class OMRProcessor:
             bounds = self._zone_bounds_px(z, template)
             radius = self._estimate_radius(z, centers, rows, cols)
             options = list(getattr(getattr(z, "grid", None), "options", []) or [])
+            spatial_order_idx = self._compute_spatial_order_index(centers, rows, cols)
+            ordered_centers = centers[spatial_order_idx] if centers.size and spatial_order_idx.size else centers
             zone_plans[str(getattr(z, "id", "") or "")] = ZonePlan(
                 zone=z,
                 bounds_px=bounds,
@@ -438,6 +467,8 @@ class OMRProcessor:
                 cols=cols,
                 radius=radius,
                 options=options,
+                spatial_order_idx=spatial_order_idx,
+                ordered_centers_px=ordered_centers.astype(np.float32) if ordered_centers.size else np.empty((0, 2), dtype=np.float32),
             )
         return TemplateRuntimePlan(
             key=key,
@@ -464,36 +495,19 @@ class OMRProcessor:
     # Image preprocess / registration
     # ------------------------------------------------------------------
     def _load_image_normalized_to_200_dpi(self, path: str, template: Template | None = None) -> tuple[np.ndarray | None, str]:
-        if template is not None and self._should_force_grayscale_load(template):
+        # Production path for this project: input sheets are already standardized to
+        # A4 at either 150 DPI or 200 DPI. To avoid double-normalization cost and
+        # geometric drift, load once and resize exactly once later to template size.
+        force_gray = True if template is None else self._should_force_grayscale_load(template)
+        if force_gray:
             gray = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
             if gray is None:
                 return None, ""
-            img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-            if self._use_shape_based_dpi_normalization(template):
-                h, w = img.shape[:2]
-                if max(h, w) < 2100:
-                    scale = 4.0 / 3.0
-                    img = cv2.resize(img, (max(1, int(round(w * scale))), max(1, int(round(h * scale)))), interpolation=cv2.INTER_LINEAR)
-                    return img, "Shape-based normalization: assumed ~150 DPI, scaled to ~200 DPI."
-            return img, ""
-        dpi = 0
-        try:
-            with Image.open(path) as im_meta:
-                dpi_info = im_meta.info.get("dpi")
-                if isinstance(dpi_info, tuple) and dpi_info and dpi_info[0]:
-                    dpi = int(round(float(dpi_info[0])))
-        except Exception:
-            dpi = 0
-        img = cv2.imread(path)
+            return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), "A4 input assumed: 150/200 DPI; deferred direct resize to template."
+        img = cv2.imread(path, cv2.IMREAD_COLOR)
         if img is None:
             return None, ""
-        if dpi == 200:
-            return img, ""
-        if dpi <= 0:
-            return img, "Image DPI metadata missing; expected 200 DPI."
-        scale = 200.0 / float(max(dpi, 1))
-        img = cv2.resize(img, (max(1, int(round(img.shape[1] * scale))), max(1, int(round(img.shape[0] * scale)))), interpolation=cv2.INTER_LINEAR)
-        return img, f"Input DPI={dpi}. Normalized to 200 DPI scale."
+        return img, "A4 input assumed: 150/200 DPI; deferred direct resize to template."
 
     @staticmethod
     def _preprocess_fast(image: np.ndarray) -> dict[str, np.ndarray]:
@@ -552,12 +566,7 @@ class OMRProcessor:
 
     @staticmethod
     def _scores_to_spatial_matrix(points: np.ndarray, scores: np.ndarray, rows: int, cols: int) -> tuple[np.ndarray, np.ndarray]:
-        """Reorder sampled points into a stable row/column matrix using geometry.
-
-        Template bubble_positions are not always stored in left-to-right column order.
-        For locked-form sheets, rebuilding the matrix from actual x/y locations is
-        more stable and fixes reversed identifier columns.
-        """
+        """Fallback reorder without cached plan index."""
         points = np.asarray(points, dtype=np.float32)
         scores = np.asarray(scores, dtype=np.float32).reshape(-1)
         need = max(0, int(rows) * int(cols))
@@ -570,7 +579,6 @@ class OMRProcessor:
             scores = np.pad(scores, (0, need - scores.shape[0]), constant_values=0.0)
         points = points[:need]
         scores = scores[:need]
-        # Group by x into columns, then sort each column by y.
         order_x = np.argsort(points[:, 0], kind="mergesort")
         px = points[order_x]
         ps = scores[order_x]
@@ -596,6 +604,28 @@ class OMRProcessor:
             mat[:, c] = gs[:rows]
             mat_pts[:, c, :] = gpts[:rows]
         return mat, mat_pts
+
+    @staticmethod
+    def _reorder_sampled_matrix(points: np.ndarray, scores: np.ndarray, rows: int, cols: int, order_idx: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+        need = max(0, int(rows) * int(cols))
+        if need <= 0:
+            return np.empty((0, 0), dtype=np.float32), np.empty((0, 0, 2), dtype=np.float32)
+        pts = np.asarray(points, dtype=np.float32)
+        sc = np.asarray(scores, dtype=np.float32).reshape(-1)
+        if pts.shape[0] < need:
+            pad_pts = np.zeros((need - pts.shape[0], 2), dtype=np.float32)
+            pts = np.vstack([pts, pad_pts]) if pts.size else pad_pts
+        if sc.shape[0] < need:
+            sc = np.pad(sc, (0, need - sc.shape[0]), constant_values=0.0)
+        pts = pts[:need]
+        sc = sc[:need]
+        idx = np.asarray(order_idx if order_idx is not None else [], dtype=np.int32).reshape(-1)
+        if idx.size >= need and pts.shape[0] > 0:
+            safe_idx = np.clip(idx[:need], 0, pts.shape[0] - 1)
+            ordered_points = pts[safe_idx]
+            ordered_scores = sc[safe_idx]
+            return ordered_scores.reshape(rows, cols), ordered_points.reshape(rows, cols, 2)
+        return OMRProcessor._scores_to_spatial_matrix(pts, sc, rows, cols)
 
     def _sample_with_local_recenter(self, integral: np.ndarray, centers: np.ndarray, radius: int, shape: tuple[int, int], *, kind: str) -> tuple[np.ndarray, np.ndarray]:
         if centers.size == 0:
@@ -790,6 +820,47 @@ class OMRProcessor:
         t = (15.0 + 20.0 * self._fill_level) if threshold is None else float(threshold)
         return [bool(v >= t) for v in np.asarray(scores, dtype=np.float32).tolist()]
 
+    def _zone_weak_decision_count(self, mat: np.ndarray, zone: Zone, zone_type_name: str) -> tuple[int, int]:
+        rows, cols = mat.shape if mat.ndim == 2 else (0, 0)
+        if rows <= 0 or cols <= 0:
+            return 0, 0
+        blank_thr = self._blank_state_threshold(zone, zone_type_name)
+        score_floor = self._zone_score_floor(zone, zone_type_name)
+        delta_floor = self._zone_delta_floor(zone, zone_type_name)
+        ratio_floor = self._zone_ratio_floor(zone, zone_type_name)
+        weak = 0
+        total = 0
+        if zone_type_name in {"NUMERIC_BLOCK", "STUDENT_ID_BLOCK", "EXAM_CODE_BLOCK"}:
+            vectors = [mat[:, c] for c in range(cols)]
+        else:
+            vectors = [mat[r, :] for r in range(rows)]
+        for vec in vectors:
+            arr = np.asarray(vec, dtype=np.float32).reshape(-1)
+            if arr.size == 0:
+                continue
+            total += 1
+            order = np.argsort(arr)[::-1]
+            top = float(arr[int(order[0])])
+            second = float(arr[int(order[1])]) if arr.size > 1 else 0.0
+            if top <= blank_thr:
+                continue
+            ratio = float(top / max(second, 1e-6)) if second > 0.0 else 9999.0
+            if top < score_floor or (top - second) < delta_floor or ratio < ratio_floor:
+                weak += 1
+        return weak, total
+
+    def _zone_result_needs_fallback(self, mat: np.ndarray, zone: Zone, zone_type_name: str) -> tuple[bool, int, int]:
+        weak, total = self._zone_weak_decision_count(mat, zone, zone_type_name)
+        if total <= 0:
+            return False, weak, total
+        if zone_type_name == "NUMERIC_BLOCK":
+            return weak > 0, weak, total
+        return weak > max(1, int(round(total * 0.12))), weak, total
+
+    def _identifier_result_needs_fallback(self, mat: np.ndarray, zone: Zone, value: str, expected_cols: int) -> tuple[bool, int, int]:
+        weak, total = self._zone_weak_decision_count(mat, zone, self._zone_type_name(zone))
+        value_ok = bool(value and value != "-" and len(value) == expected_cols)
+        return (not value_ok) or weak > 0, weak, total
 
     def _mcq_row_edge_boost(self, row_idx: int, q_count: int) -> float:
         if q_count <= 0:
@@ -989,7 +1060,7 @@ class OMRProcessor:
             result.numeric_answers[qno] = value
         result.confidence_scores[f"numeric:{zone.id}"] = float(np.mean(confs) / 255.0) if confs else 0.0
 
-    def _decode_column_digits(self, mat: np.ndarray, zone: Zone, result: OMRResult) -> tuple[str, list[float]]:
+    def _decode_column_digits(self, mat: np.ndarray, zone: Zone, result: OMRResult, *, record_errors: bool = True) -> tuple[str, list[float]]:
         rows, cols = mat.shape
         digit_map = list((getattr(zone, "metadata", {}) or {}).get("digit_map", list(range(rows))) or list(range(rows)))
         digits: list[str] = []
@@ -1000,7 +1071,8 @@ class OMRProcessor:
             idx, conf, reason = self._pick_best_index(col, thr, max(2.0, self.certainty_margin * 180.0))
             if idx is None:
                 digits.append("?")
-                result.recognition_errors.append(f"{self._zone_type_name(zone)} column {c+1}: {reason}")
+                if record_errors:
+                    result.recognition_errors.append(f"{self._zone_type_name(zone)} column {c+1}: {reason}")
             else:
                 digits.append(str(digit_map[idx] if idx < len(digit_map) else idx))
                 confs.append(float(conf))
@@ -1039,9 +1111,8 @@ class OMRProcessor:
         }
         return out, debug
 
-    def _decode_identifier_zone(self, dark_integral: np.ndarray, shape: tuple[int, int], zplan: ZonePlan, plan: TemplateRuntimePlan, transformed_centers: np.ndarray, detected_digit_anchors: np.ndarray, result: OMRResult, context: RecognitionContext) -> dict[str, object]:
+    def _decode_identifier_zone_deep(self, dark_integral: np.ndarray, shape: tuple[int, int], zplan: ZonePlan, plan: TemplateRuntimePlan, transformed_centers: np.ndarray, detected_digit_anchors: np.ndarray, result: OMRResult, context: RecognitionContext, *, store_bubble_states: bool = True) -> tuple[dict[str, object], np.ndarray, np.ndarray, list[float], str]:
         centers, debug = self._align_identifier_by_digit_anchors(transformed_centers, zplan.zone, plan, detected_digit_anchors)
-        # per-column small x shift search
         rows, cols = zplan.rows, zplan.cols
         if centers.shape[0] != rows * cols:
             centers = transformed_centers
@@ -1053,7 +1124,7 @@ class OMRProcessor:
             for dx in (-3, -2, -1, 0, 1, 2, 3):
                 probe = base.copy()
                 probe[:, 0] += float(dx)
-                scores, best_pts = self._sample_with_local_recenter(dark_integral, probe, zplan.radius, shape, kind="header")
+                scores, _ = self._sample_with_local_recenter(dark_integral, probe, zplan.radius, shape, kind="header")
                 score = float(np.mean(np.sort(scores)[-max(2, len(scores)//2):])) if scores.size else -1e18
                 if score > best_score:
                     best_score = score
@@ -1061,8 +1132,8 @@ class OMRProcessor:
             centers[:, c, 0] += best_dx
         flat = centers.reshape(-1, 2)
         scores, best_pts = self._sample_with_local_recenter(dark_integral, flat, zplan.radius, shape, kind="header")
-        mat, mat_pts = self._scores_to_spatial_matrix(best_pts, scores, rows, cols)
-        value, confs = self._decode_column_digits(mat, zplan.zone, result)
+        mat, mat_pts = self._reorder_sampled_matrix(best_pts, scores, rows, cols, zplan.spatial_order_idx)
+        value, confs = self._decode_column_digits(mat, zplan.zone, result, record_errors=True)
         zone_key = "student_id" if self._zone_type_name(zplan.zone) == "STUDENT_ID_BLOCK" else "exam_code"
         if zone_key == "student_id":
             result.student_id = value
@@ -1071,23 +1142,90 @@ class OMRProcessor:
         mean_conf = float(np.mean(confs) / 255.0) if confs else 0.0
         result.confidence_scores[zone_key] = mean_conf
         result.confidence_scores[f"{zone_key}:{zplan.zone.id}"] = mean_conf
-        zone_debug = dict(context.digit_zone_debug.get(str(zplan.zone.id), {}))
-        zone_debug.update(debug)
-        zone_debug.update({
-            "bubble_centers": [(float(x), float(y)) for x, y in mat_pts.reshape(-1, 2).tolist()],
-            "recognized_points": [(float(x), float(y)) for x, y in mat_pts.reshape(-1, 2).tolist()],
-            "scores": mat.tolist(),
-        })
-        context.digit_zone_debug[str(zplan.zone.id)] = zone_debug
-        result.digit_zone_debug = dict(context.digit_zone_debug)
+        if store_bubble_states:
+            zone_debug = dict(context.digit_zone_debug.get(str(zplan.zone.id), {}))
+            zone_debug.update(debug)
+            zone_debug.update({
+                "bubble_centers": [(float(x), float(y)) for x, y in mat_pts.reshape(-1, 2).tolist()],
+                "recognized_points": [(float(x), float(y)) for x, y in mat_pts.reshape(-1, 2).tolist()],
+                "scores": mat.tolist(),
+            })
+            context.digit_zone_debug[str(zplan.zone.id)] = zone_debug
+            result.digit_zone_debug = dict(context.digit_zone_debug)
+            ztype = self._zone_type_name(zplan.zone)
+            filled_thr = self._filled_state_threshold(zplan.zone, ztype)
+            context.bubble_states_by_zone[str(zplan.zone.id)] = self._bubble_states_from_scores(scores, threshold=filled_thr)
+            result.bubble_states_by_zone = dict(context.bubble_states_by_zone)
+        return debug, mat, mat_pts, confs, value
+
+    def _decode_identifier_zone(self, dark_integral: np.ndarray, shape: tuple[int, int], zplan: ZonePlan, plan: TemplateRuntimePlan, transformed_centers: np.ndarray, detected_digit_anchors: np.ndarray, result: OMRResult, context: RecognitionContext, *, store_bubble_states: bool = True) -> dict[str, object]:
+        centers, debug = self._align_identifier_by_digit_anchors(transformed_centers, zplan.zone, plan, detected_digit_anchors)
+        rows, cols = zplan.rows, zplan.cols
+        if centers.shape[0] != rows * cols:
+            centers = transformed_centers
+        centers = centers.reshape(rows, cols, 2).astype(np.float32)
+        for c in range(cols):
+            base = centers[:, c, :].copy()
+            best_dx = 0.0
+            best_score = -1e18
+            for dx in (-3, -2, -1, 0, 1, 2, 3):
+                probe = base.copy()
+                probe[:, 0] += float(dx)
+                scores = self._sample_ring_score(dark_integral, probe, zplan.radius, shape)
+                score = float(np.mean(np.sort(scores)[-max(2, len(scores)//2):])) if scores.size else -1e18
+                if score > best_score:
+                    best_score = score
+                    best_dx = float(dx)
+            centers[:, c, 0] += best_dx
+        flat = centers.reshape(-1, 2)
+        scores = self._sample_ring_score(dark_integral, flat, zplan.radius, shape)
+        mat, mat_pts = self._reorder_sampled_matrix(flat, scores, rows, cols, zplan.spatial_order_idx)
+        fast_value, fast_confs = self._decode_column_digits(mat, zplan.zone, result, record_errors=False)
+        need_fallback, weak_count, total_checks = self._identifier_result_needs_fallback(mat, zplan.zone, fast_value, cols)
+        fallback_used = False
+        if need_fallback:
+            fallback_used = True
+            debug, mat, mat_pts, fast_confs, fast_value = self._decode_identifier_zone_deep(
+                dark_integral,
+                shape,
+                zplan,
+                plan,
+                transformed_centers,
+                detected_digit_anchors,
+                result,
+                context,
+                store_bubble_states=store_bubble_states,
+            )
+        else:
+            zone_key = "student_id" if self._zone_type_name(zplan.zone) == "STUDENT_ID_BLOCK" else "exam_code"
+            if zone_key == "student_id":
+                result.student_id = fast_value
+            else:
+                result.exam_code = fast_value
+            mean_conf = float(np.mean(fast_confs) / 255.0) if fast_confs else 0.0
+            result.confidence_scores[zone_key] = mean_conf
+            result.confidence_scores[f"{zone_key}:{zplan.zone.id}"] = mean_conf
+            if store_bubble_states:
+                zone_debug = dict(context.digit_zone_debug.get(str(zplan.zone.id), {}))
+                zone_debug.update(debug)
+                zone_debug.update({
+                    "bubble_centers": [(float(x), float(y)) for x, y in mat_pts.reshape(-1, 2).tolist()],
+                    "recognized_points": [(float(x), float(y)) for x, y in mat_pts.reshape(-1, 2).tolist()],
+                    "scores": mat.tolist(),
+                })
+                context.digit_zone_debug[str(zplan.zone.id)] = zone_debug
+                result.digit_zone_debug = dict(context.digit_zone_debug)
+                ztype = self._zone_type_name(zplan.zone)
+                filled_thr = self._filled_state_threshold(zplan.zone, ztype)
+                context.bubble_states_by_zone[str(zplan.zone.id)] = self._bubble_states_from_scores(scores, threshold=filled_thr)
+                result.bubble_states_by_zone = dict(context.bubble_states_by_zone)
         ztype = self._zone_type_name(zplan.zone)
         filled_thr = self._filled_state_threshold(zplan.zone, ztype)
         blank_thr = self._blank_state_threshold(zplan.zone, ztype)
-        context.bubble_states_by_zone[str(zplan.zone.id)] = self._bubble_states_from_scores(scores, threshold=filled_thr)
-        result.bubble_states_by_zone = dict(context.bubble_states_by_zone)
-        bubble_count = int(scores.size)
-        recognized = int(np.sum(scores >= filled_thr))
-        blank = int(np.sum(scores <= blank_thr))
+        final_scores = mat.reshape(-1)
+        bubble_count = int(final_scores.size)
+        recognized = int(np.sum(final_scores >= filled_thr))
+        blank = int(np.sum(final_scores <= blank_thr))
         uncertain = int(max(0, bubble_count - recognized - blank))
         return {
             "zone_id": str(zplan.zone.id),
@@ -1096,21 +1234,29 @@ class OMRProcessor:
             "recognized_count": recognized,
             "blank_count": blank,
             "uncertain_count": uncertain,
+            "fast_path_used": True,
+            "fallback_used": bool(fallback_used),
+            "weak_count": int(weak_count),
+            "decision_count": int(total_checks),
         }
 
-    def _decode_regular_zone(self, dark_integral: np.ndarray, shape: tuple[int, int], zplan: ZonePlan, transformed_centers: np.ndarray, result: OMRResult, context: RecognitionContext) -> dict[str, object]:
+    def _decode_regular_zone(self, dark_integral: np.ndarray, shape: tuple[int, int], zplan: ZonePlan, transformed_centers: np.ndarray, result: OMRResult, context: RecognitionContext, *, store_bubble_states: bool = True) -> dict[str, object]:
         ztype = self._zone_type_name(zplan.zone)
         dx, dy, _ = self._estimate_zone_shift(dark_integral, transformed_centers, zplan.radius, shape, ztype)
         shifted = transformed_centers.astype(np.float32).copy()
         shifted[:, 0] += dx
         shifted[:, 1] += dy
-        kind = "numeric" if ztype == "NUMERIC_BLOCK" else "zone"
-        scores, best_pts = self._sample_with_local_recenter(dark_integral, shifted, zplan.radius, shape, kind=kind)
         rows, cols = zplan.rows, zplan.cols
         need = rows * cols
-        if scores.size < need:
-            scores = np.pad(scores, (0, need - scores.size), constant_values=0.0)
-        mat, mat_pts = self._scores_to_spatial_matrix(best_pts[:need], scores[:need], rows, cols)
+        scores = self._sample_ring_score(dark_integral, shifted, zplan.radius, shape)
+        mat, mat_pts = self._reorder_sampled_matrix(shifted, scores, rows, cols, zplan.spatial_order_idx)
+        need_fallback, weak_count, total_checks = self._zone_result_needs_fallback(mat, zplan.zone, ztype)
+        fallback_used = False
+        if need_fallback:
+            fallback_used = True
+            kind = "numeric" if ztype == "NUMERIC_BLOCK" else "zone"
+            scores, best_pts = self._sample_with_local_recenter(dark_integral, shifted, zplan.radius, shape, kind=kind)
+            mat, mat_pts = self._reorder_sampled_matrix(best_pts, scores, rows, cols, zplan.spatial_order_idx)
         if ztype == "MCQ_BLOCK":
             self._decode_mcq_zone(mat, zplan.zone, result)
         elif ztype == "TRUE_FALSE_BLOCK":
@@ -1119,10 +1265,12 @@ class OMRProcessor:
             self._decode_numeric_zone(mat, zplan.zone, result)
         filled_thr = self._filled_state_threshold(zplan.zone, ztype)
         blank_thr = self._blank_state_threshold(zplan.zone, ztype)
-        context.bubble_states_by_zone[str(zplan.zone.id)] = self._bubble_states_from_scores(scores[:need], threshold=filled_thr)
+        if store_bubble_states:
+            context.bubble_states_by_zone[str(zplan.zone.id)] = self._bubble_states_from_scores(mat.reshape(-1), threshold=filled_thr)
         bubble_count = int(need)
-        recognized = int(np.sum(scores[:need] >= filled_thr))
-        blank = int(np.sum(scores[:need] <= blank_thr))
+        flat_scores = mat.reshape(-1)
+        recognized = int(np.sum(flat_scores >= filled_thr))
+        blank = int(np.sum(flat_scores <= blank_thr))
         uncertain = int(max(0, bubble_count - recognized - blank))
         return {
             "zone_id": str(zplan.zone.id),
@@ -1132,7 +1280,11 @@ class OMRProcessor:
             "blank_count": blank,
             "uncertain_count": uncertain,
             "zone_shift": {"dx": float(dx), "dy": float(dy)},
-            "sampled_points": [(float(x), float(y)) for x, y in mat_pts.reshape(-1, 2).tolist()],
+            "sampled_points": [(float(x), float(y)) for x, y in mat_pts.reshape(-1, 2).tolist()] if store_bubble_states else [],
+            "fast_path_used": True,
+            "fallback_used": bool(fallback_used),
+            "weak_count": int(weak_count),
+            "decision_count": int(total_checks),
         }
 
     # ------------------------------------------------------------------
@@ -1192,6 +1344,13 @@ class OMRProcessor:
         started = time.perf_counter()
         image_path = str(image) if isinstance(image, (str, Path)) else "<in-memory>"
         result = OMRResult(image_path=image_path)
+        result.aligned_image = None
+        result.aligned_binary = None
+        result.alignment_debug = {}
+        result.detected_anchors = []
+        result.detected_digit_anchors = []
+        result.bubble_states_by_zone = {}
+        result.digit_zone_debug = {}
         context = context or RecognitionContext()
         context.reset()
         timeout_raw = self._md(template).get("recognition_timeout_sec", None)
@@ -1199,7 +1358,10 @@ class OMRProcessor:
         self._processing_deadline_monotonic = time.monotonic() + max(1.0, timeout_sec) if timeout_sec > 0.0 else None
 
         try:
-            # load
+            need_artifacts = bool(self.debug_mode or context.collect_diagnostics or context.debug_deep or context.force_identifier_recognition or (not context.fast_production_test))
+            need_quality = bool(need_artifacts)
+            need_identifier = bool(self._identifier_recognition_enabled(template) or context.force_identifier_recognition)
+
             t0 = time.perf_counter()
             if isinstance(image, np.ndarray):
                 src = image.copy()
@@ -1214,7 +1376,6 @@ class OMRProcessor:
                 return result
             original_shape = tuple(int(v) for v in src.shape)
 
-            # normalize size
             t1 = time.perf_counter()
             plan = self._get_template_runtime_plan(template)
             if src.shape[1] != plan.target_width or src.shape[0] != plan.target_height:
@@ -1227,44 +1388,88 @@ class OMRProcessor:
             binary = prep["binary"]
             dark = prep["dark"]
 
-            # registration
             t2 = time.perf_counter()
             affine_matrix, detected_anchors, reg_debug = self._estimate_affine(binary, plan)
             registration_patch_time_sec = float(time.perf_counter() - t2)
             transform_fit_time_sec = 0.0
-            aligned_image = src if np.allclose(affine_matrix, np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float32)) else cv2.warpAffine(src, affine_matrix, (plan.target_width, plan.target_height), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-            aligned_binary = binary if np.allclose(affine_matrix, np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float32)) else cv2.warpAffine(binary, affine_matrix, (plan.target_width, plan.target_height), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT)
-            aligned_dark = dark if np.allclose(affine_matrix, np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float32)) else cv2.warpAffine(dark, affine_matrix, (plan.target_width, plan.target_height), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-            aligned_gray = gray if np.allclose(affine_matrix, np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float32)) else cv2.warpAffine(gray, affine_matrix, (plan.target_width, plan.target_height), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+            identity_affine = np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float32)
+            affine_is_identity = bool(np.allclose(affine_matrix, identity_affine))
+            if affine_is_identity:
+                aligned_dark = dark
+                aligned_binary = binary if (need_identifier or need_artifacts) else None
+                aligned_gray = gray if need_quality else None
+                aligned_image = src if need_artifacts else None
+            else:
+                aligned_dark = cv2.warpAffine(dark, affine_matrix, (plan.target_width, plan.target_height), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+                aligned_binary = cv2.warpAffine(binary, affine_matrix, (plan.target_width, plan.target_height), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT) if (need_identifier or need_artifacts) else None
+                aligned_gray = cv2.warpAffine(gray, affine_matrix, (plan.target_width, plan.target_height), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE) if need_quality else None
+                aligned_image = cv2.warpAffine(src, affine_matrix, (plan.target_width, plan.target_height), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE) if need_artifacts else None
             alignment_time_sec = float(registration_patch_time_sec + transform_fit_time_sec)
 
-            digit_anchor_arr, digit_anchor_list = self._detect_digit_anchor_ruler(aligned_binary, plan, np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float32))
+            digit_anchor_arr = np.empty((0, 2), dtype=np.float32)
+            digit_anchor_list: list[tuple[float, float]] = []
+            if need_identifier and aligned_binary is not None:
+                digit_anchor_arr, digit_anchor_list = self._detect_digit_anchor_ruler(aligned_binary, plan, identity_affine)
             integral_dark = self._build_integral(aligned_dark)
 
-            quality_gate = self._estimate_image_quality(aligned_gray, aligned_binary, reg_debug)
+            if need_quality and aligned_gray is not None and aligned_binary is not None:
+                quality_gate = self._estimate_image_quality(aligned_gray, aligned_binary, reg_debug)
+            else:
+                quality_gate = {
+                    "quality_score": 0.0,
+                    "poor_scan": False,
+                    "poor_identifier_zone": False,
+                    "reason": "skipped_production_fast",
+                    "blur_var": 0.0,
+                    "header_density": 0.0,
+                    "usable_ratio": 1.0,
+                    "match_count": int(reg_debug.get("patch_valid_count", 0) or 0),
+                    "mean_error": float(reg_debug.get("mean_error", 0.0) or 0.0),
+                    "align_score": float(max(0.0, 1.0 - float(reg_debug.get("mean_error", 0.0) or 0.0) / 10.0)),
+                }
 
-            # decode zones
             roi_decode_started = time.perf_counter()
             zone_metrics: list[dict[str, object]] = []
             header_decode_time_sec = 0.0
             mcq_decode_time_sec = 0.0
             tf_decode_time_sec = 0.0
             numeric_decode_time_sec = 0.0
+            fast_zone_decode_time_sec = 0.0
+            fallback_zone_decode_time_sec = 0.0
             for zone in plan.sorted_zones:
                 zplan = plan.zone_plans.get(str(getattr(zone, "id", "") or ""))
                 if zplan is None:
                     continue
                 zt = self._zone_type_name(zone)
-                context.semantic_grids[str(zone.id)] = getattr(zone, "grid", None)
-                transformed = self._transform_points(zplan.centers_px, np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float32))
+                if need_artifacts:
+                    context.semantic_grids[str(zone.id)] = getattr(zone, "grid", None)
+                transformed = zplan.centers_px.astype(np.float32, copy=True)
                 z_started = time.perf_counter()
                 if zt in {"STUDENT_ID_BLOCK", "EXAM_CODE_BLOCK"}:
-                    if not self._identifier_recognition_enabled(template) and not context.force_identifier_recognition:
+                    if not need_identifier:
                         continue
-                    metric = self._decode_identifier_zone(integral_dark, aligned_dark.shape[:2], zplan, plan, transformed, digit_anchor_arr, result, context)
+                    metric = self._decode_identifier_zone(
+                        integral_dark,
+                        aligned_dark.shape[:2],
+                        zplan,
+                        plan,
+                        transformed,
+                        digit_anchor_arr,
+                        result,
+                        context,
+                        store_bubble_states=need_artifacts,
+                    )
                     header_decode_time_sec += float(time.perf_counter() - z_started)
                 else:
-                    metric = self._decode_regular_zone(integral_dark, aligned_dark.shape[:2], zplan, transformed, result, context)
+                    metric = self._decode_regular_zone(
+                        integral_dark,
+                        aligned_dark.shape[:2],
+                        zplan,
+                        transformed,
+                        result,
+                        context,
+                        store_bubble_states=need_artifacts,
+                    )
                     elapsed = float(time.perf_counter() - z_started)
                     if zt == "MCQ_BLOCK":
                         mcq_decode_time_sec += elapsed
@@ -1272,22 +1477,28 @@ class OMRProcessor:
                         tf_decode_time_sec += elapsed
                     elif zt == "NUMERIC_BLOCK":
                         numeric_decode_time_sec += elapsed
+                if bool(metric.get("fallback_used", False)):
+                    fallback_zone_decode_time_sec += float(time.perf_counter() - z_started)
+                else:
+                    fast_zone_decode_time_sec += float(time.perf_counter() - z_started)
                 zone_metrics.append(metric)
             roi_decode_time_sec = float(time.perf_counter() - roi_decode_started)
 
             diagnostics_time_sec = 0.0
-            if context.collect_diagnostics:
+            if need_artifacts:
                 t_diag = time.perf_counter()
                 context.detected_anchors = list(detected_anchors)
                 context.detected_digit_anchors = list(digit_anchor_list)
                 diagnostics_time_sec = float(time.perf_counter() - t_diag)
-            result.detected_anchors = list(detected_anchors) if context.collect_diagnostics else []
-            result.detected_digit_anchors = list(digit_anchor_list) if context.collect_diagnostics else []
+            result.detected_anchors = list(detected_anchors) if need_artifacts else []
+            result.detected_digit_anchors = list(digit_anchor_list) if need_artifacts else []
 
-            result.aligned_image = aligned_image
-            result.aligned_binary = aligned_binary
-            result.bubble_states_by_zone = dict(context.bubble_states_by_zone)
-            result.digit_zone_debug = dict(context.digit_zone_debug)
+            if need_artifacts:
+                result.aligned_image = aligned_image
+                result.aligned_binary = aligned_binary
+                result.bubble_states_by_zone = dict(context.bubble_states_by_zone)
+                result.digit_zone_debug = dict(context.digit_zone_debug)
+
             context.recognized_answers = {
                 "student_id": result.student_id,
                 "exam_code": result.exam_code,
@@ -1319,6 +1530,9 @@ class OMRProcessor:
                 "mcq_time_sec": float(mcq_decode_time_sec),
                 "tf_time_sec": float(tf_decode_time_sec),
                 "numeric_time_sec": float(numeric_decode_time_sec),
+                "fast_zone_decode_time_sec": float(fast_zone_decode_time_sec),
+                "fallback_zone_decode_time_sec": float(fallback_zone_decode_time_sec),
+                "artifact_time_sec": float(diagnostics_time_sec),
                 "diagnostics_time_sec": float(diagnostics_time_sec),
                 "poor_image_fast_fail": bool(quality_gate.get("poor_scan", False)),
                 "total_time_sec": float(result.processing_time_sec),
@@ -1330,17 +1544,17 @@ class OMRProcessor:
                 "alignment_mode": "scanner_locked",
                 "recognition_mode": "scanner_locked",
                 "band_locking": "hybrid_scanner_locked",
-                "path_used": "scanner_locked_fast",
+                "path_used": "scanner_locked_fast_selective_fallback",
                 "registration_ok": bool(reg_debug.get("registration_ok", False)),
-                "fallback_used": False,
-                "fallback_reason": "",
+                "fallback_used": bool(any(bool(m.get("fallback_used", False)) for m in zone_metrics)),
+                "fallback_reason": "selective_zone_retry" if any(bool(m.get("fallback_used", False)) for m in zone_metrics) else "",
                 "quality_gate": dict(quality_gate),
                 "quality_score": float(quality_gate.get("quality_score", 0.0) or 0.0),
                 "poor_image": bool(quality_gate.get("poor_scan", False)),
                 "poor_identifier_zone": bool(quality_gate.get("poor_identifier_zone", False)),
                 "quality_reason": str(quality_gate.get("reason", "") or ""),
                 "fast_production_mode": bool(context.fast_production_test and not context.debug_deep),
-                "diagnostics_collected": bool(context.collect_diagnostics),
+                "diagnostics_collected": bool(need_artifacts),
                 "original_shape": original_shape,
                 "final_shape": final_shape,
                 "dpi_message": dpi_message,
@@ -1374,7 +1588,7 @@ class OMRProcessor:
         ctx.force_identifier_recognition = True
         ctx.fast_production_test = bool(fast_production_test)
         ctx.debug_deep = bool(debug_deep)
-        ctx.collect_diagnostics = not (fast_production_test and not debug_deep)
+        ctx.collect_diagnostics = True
         return self.recognize_sheet(image, template, ctx)
 
     def extract_bubble_states(self, binary_image: np.ndarray, template: Template) -> dict[str, list[bool]]:
