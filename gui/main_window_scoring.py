@@ -385,15 +385,8 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
     initial_snapshot = _current_dialog_snapshot()
     buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
     lay.addWidget(buttons)
-    def _accept_with_confirm() -> None:
-        if QMessageBox.question(
-            dlg,
-            "Xác nhận lưu",
-            "Việc lưu sẽ cập nhật dữ liệu bài làm và điểm. Bạn có chắc muốn lưu?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        ) == QMessageBox.Yes:
-            dlg.accept()
+    def _accept_without_confirm() -> None:
+        dlg.accept()
     def _reject_with_confirm() -> None:
         if _current_dialog_snapshot() != initial_snapshot:
             choice = QMessageBox.question(
@@ -406,7 +399,7 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
             if choice != QMessageBox.Yes:
                 return
         dlg.reject()
-    buttons.accepted.connect(_accept_with_confirm)
+    buttons.accepted.connect(_accept_without_confirm)
     buttons.rejected.connect(_reject_with_confirm)
     if dlg.exec() != QDialog.Accepted:
         return
