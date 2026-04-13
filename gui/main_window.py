@@ -14144,6 +14144,31 @@ class MainWindow(QMainWindow):
                 max_len = max(max_len, len(str(cell.value or "")))
             ws.column_dimensions[col_letter].width = min(60, max(10, max_len + 2))
 
+    @staticmethod
+    def _row_has_any_subject_score(row: dict[str, object], score_headers: list[str]) -> bool:
+        for header in score_headers:
+            if header not in row:
+                continue
+            value = row.get(header, None)
+            if value is None:
+                continue
+            if isinstance(value, str) and not value.strip():
+                continue
+            return True
+        return False
+
+    def _trim_matrix_rows_and_subjects(
+        self,
+        rows: list[dict[str, object]],
+        score_headers: list[str],
+    ) -> tuple[list[dict[str, object]], list[str]]:
+        filtered_rows = [row for row in rows if self._row_has_any_subject_score(row, score_headers)]
+        kept_subject_headers: list[str] = []
+        for header in score_headers:
+            if any(header in row and row.get(header, None) not in ("", None) for row in filtered_rows):
+                kept_subject_headers.append(header)
+        return filtered_rows, kept_subject_headers
+
     def _class_options_for_export(self) -> list[str]:
         class_names: list[str] = []
         seen: set[str] = set()
@@ -14191,6 +14216,10 @@ class MainWindow(QMainWindow):
 
         base_headers, score_headers, rows = self._build_subject_score_matrix_rows(subjects)
         filtered_rows = [row for row in rows if str(row.get("Lớp", "") or "").strip() == class_name]
+        filtered_rows, score_headers = self._trim_matrix_rows_and_subjects(filtered_rows, score_headers)
+        if not filtered_rows:
+            QMessageBox.information(self, "Xuất điểm lớp", "Lớp đã chọn chưa có học sinh có điểm để xuất.")
+            return
         wb = Workbook()
         ws = wb.active
         ws.title = self._safe_sheet_name(class_name, fallback="class_scores")
@@ -14216,10 +14245,19 @@ class MainWindow(QMainWindow):
         wb = Workbook()
         if wb.active:
             wb.remove(wb.active)
+        exported_count = 0
         for class_name in class_options:
             ws = wb.create_sheet(self._safe_sheet_name(class_name, fallback="class_scores"))
             filtered_rows = [row for row in rows if str(row.get("Lớp", "") or "").strip() == class_name]
-            self._write_subject_score_matrix_sheet(ws, base_headers, score_headers, filtered_rows)
+            filtered_rows, class_score_headers = self._trim_matrix_rows_and_subjects(filtered_rows, score_headers)
+            if not filtered_rows:
+                wb.remove(ws)
+                continue
+            exported_count += 1
+            self._write_subject_score_matrix_sheet(ws, base_headers, class_score_headers, filtered_rows)
+        if exported_count <= 0:
+            QMessageBox.information(self, "Xuất điểm các lớp", "Chưa có học sinh nào có điểm để xuất.")
+            return
         wb.save(path)
         QMessageBox.information(self, "Xuất điểm các lớp", f"Đã xuất dữ liệu:\n{path}")
 
