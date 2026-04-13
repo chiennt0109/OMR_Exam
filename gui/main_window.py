@@ -14054,44 +14054,30 @@ class MainWindow(QMainWindow):
         wb = Workbook()
         ws = wb.active
         ws.title = "scores"
-        base_headers = ["STT", "SBD", "Phòng thi", "Họ tên", "Ngày sinh", "Lớp", "Mã đề", "Đúng", "Sai", "Bỏ trống", "Trạng thái", "Ghi chú"]
-        score_headers = [label for label, _key in subjects]
+        base_headers = ["STT", "SBD", "Họ tên", "Ngày sinh", "Lớp"]
+        score_headers = [self._short_subject_label_for_export(key, label) for label, key in subjects]
         ws.append(base_headers + score_headers)
 
         student_rows: dict[str, dict[str, object]] = {}
-        for label, key in subjects:
+        for idx, (label, key) in enumerate(subjects):
+            score_header = score_headers[idx]
             for row in self._build_subject_score_export_rows(key):
                 sid = str(row.get("SBD", "") or "").strip()
                 if not sid:
                     continue
                 rec = student_rows.setdefault(sid, {
                     "SBD": sid,
-                    "Phòng thi": row.get("Phòng thi", ""),
                     "Họ tên": row.get("Họ tên", ""),
                     "Ngày sinh": row.get("Ngày sinh", ""),
                     "Lớp": row.get("Lớp", ""),
-                    "Mã đề": row.get("Mã đề", ""),
-                    "Đúng": row.get("Đúng", 0),
-                    "Sai": row.get("Sai", 0),
-                    "Bỏ trống": row.get("Bỏ trống", 0),
-                    "Trạng thái": row.get("Trạng thái", ""),
-                    "Ghi chú": row.get("Ghi chú", ""),
                 })
-                if not rec.get("Phòng thi") and row.get("Phòng thi"):
-                    rec["Phòng thi"] = row.get("Phòng thi", "")
                 if not rec.get("Họ tên") and row.get("Họ tên"):
                     rec["Họ tên"] = row.get("Họ tên", "")
                 if not rec.get("Ngày sinh") and row.get("Ngày sinh"):
                     rec["Ngày sinh"] = row.get("Ngày sinh", "")
                 if not rec.get("Lớp") and row.get("Lớp"):
                     rec["Lớp"] = row.get("Lớp", "")
-                if not rec.get("Mã đề") and row.get("Mã đề"):
-                    rec["Mã đề"] = row.get("Mã đề", "")
-                if row.get("Trạng thái"):
-                    rec["Trạng thái"] = row.get("Trạng thái", "")
-                if row.get("Ghi chú"):
-                    rec["Ghi chú"] = row.get("Ghi chú", "")
-                rec[label] = row.get("Điểm", 0)
+                rec[score_header] = row.get("Điểm", 0)
 
         sorted_rows = sorted(student_rows.values(), key=lambda x: str(x.get("SBD", "")))
         for idx, row in enumerate(sorted_rows, start=1):
@@ -14099,6 +14085,15 @@ class MainWindow(QMainWindow):
             ws.append([row.get(col, "") for col in base_headers] + [row.get(col, "") for col in score_headers])
         wb.save(path)
         QMessageBox.information(self, "Xuất điểm các môn", f"Đã xuất dữ liệu:\n{path}")
+
+    def _short_subject_label_for_export(self, subject_key: str, fallback_label: str) -> str:
+        cfg = self._subject_config_by_subject_key(subject_key) or {}
+        raw = str(cfg.get("name", "") or fallback_label or subject_key).strip()
+        if not raw:
+            raw = str(subject_key or "").strip()
+        compact = re.sub(r"\s*[-–]\s*kỳ thi\b.*$", "", raw, flags=re.IGNORECASE).strip()
+        compact = re.sub(r"\s*[-–]\s*khối\b.*$", "", compact, flags=re.IGNORECASE).strip()
+        return compact or raw
 
     def _export_all_subject_scores(self) -> None:
         subjects = self._iter_export_subjects()
