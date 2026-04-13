@@ -2785,6 +2785,22 @@ class MainWindow(QMainWindow):
         scoring_menu.addAction("Calculate & Preview Scores", self.action_calculate_scores)
         scoring_menu.addAction("Export Results", self.action_export_results)
 
+        self.export_menu = self.menuBar().addMenu("Export")
+        self.act_export_subject_scores = self.export_menu.addAction("Xuất điểm 1 môn...")
+        self.act_export_subject_scores.triggered.connect(self.action_export_subject_scores)
+        self.act_export_all_scores = self.export_menu.addAction("Xuất điểm tất cả môn...")
+        self.act_export_all_scores.triggered.connect(self.action_export_all_subject_scores)
+        self.export_menu.addSeparator()
+        self.act_export_subject_api = self.export_menu.addAction("Xuất API bài làm theo môn (;)")
+        self.act_export_subject_api.triggered.connect(self.action_export_subject_api_payload)
+        self.export_menu.addSeparator()
+        self.act_export_range_report = self.export_menu.addAction("Báo cáo thống kê khoảng điểm...")
+        self.act_export_range_report.triggered.connect(self.action_export_score_range_report)
+        self.act_export_class_report = self.export_menu.addAction("Báo cáo thống kê theo lớp...")
+        self.act_export_class_report.triggered.connect(self.action_export_class_report)
+        self.act_export_management_report = self.export_menu.addAction("Báo cáo tổng hợp quản lý...")
+        self.act_export_management_report.triggered.connect(self.action_export_management_report)
+
         self.template_module_menu = self.menuBar().addMenu("Template Editor")
         self.template_module_menu.addAction("Tạo mới", self._create_new_template)
         self.template_module_menu.addAction("Sửa", self._edit_selected_template)
@@ -2811,7 +2827,10 @@ class MainWindow(QMainWindow):
         self.ribbon_batch_scan_action = toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Nhận dạng", self.action_run_batch_scan)
         self.ribbon_scoring_action = toolbar.addAction(style.standardIcon(QStyle.SP_CommandLink), "Tính điểm", self.action_calculate_scores)
         self.ribbon_recheck_action = toolbar.addAction(style.standardIcon(QStyle.SP_BrowserReload), "Phúc tra", self.action_open_recheck)
-        self.ribbon_export_action = toolbar.addAction(style.standardIcon(QStyle.SP_DriveNetIcon), "Xuất KQ", self.action_export_results)
+        self.ribbon_export_action = QAction(style.standardIcon(QStyle.SP_DriveNetIcon), "Export", self)
+        self.ribbon_export_action.triggered.connect(self.action_export_all_subject_scores)
+        self.ribbon_export_action.setMenu(self.export_menu)
+        toolbar.addAction(self.ribbon_export_action)
         toolbar.addSeparator()
         self.ribbon_add_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogNewFolder), "Add Subject", self._subject_management_add)
         self.ribbon_edit_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Edit", self._subject_management_edit)
@@ -3261,8 +3280,116 @@ class MainWindow(QMainWindow):
             self.ribbon_scoring_action.setEnabled(has_session and has_subject_selection and has_batch_rows)
         if getattr(self, "ribbon_recheck_action", None) is not None:
             self.ribbon_recheck_action.setEnabled(has_session and has_batch_rows)
+        has_export_data = self._has_exportable_data()
         if getattr(self, "ribbon_export_action", None) is not None:
-            self.ribbon_export_action.setEnabled(has_session and has_batch_rows)
+            self.ribbon_export_action.setEnabled(has_session and has_export_data)
+        self._refresh_export_action_states(has_session=has_session, has_export_data=has_export_data)
+
+    def _refresh_export_action_states(self, *, has_session: bool | None = None, has_export_data: bool | None = None) -> None:
+        if has_session is None:
+            has_session = bool(str(getattr(self, "current_session_id", "") or "").strip())
+        if has_export_data is None:
+            has_export_data = self._has_exportable_data()
+        for attr_name in [
+            "act_export_subject_scores",
+            "act_export_all_scores",
+            "act_export_subject_api",
+            "act_export_range_report",
+            "act_export_class_report",
+            "act_export_management_report",
+        ]:
+            action = getattr(self, attr_name, None)
+            if action is not None:
+                action.setEnabled(bool(has_session and has_export_data))
+
+    def _iter_export_subjects(self) -> list[tuple[str, str]]:
+        pairs: list[tuple[str, str]] = []
+        for cfg in self._subject_configs_for_scoring():
+            key = str(self._subject_key_from_cfg(cfg) or "").strip()
+            if not key:
+                continue
+            label = self._display_subject_label(cfg)
+            pairs.append((label, key))
+        if not pairs:
+            for key in sorted(str(k) for k in (self.scoring_results_by_subject or {}).keys() if str(k).strip()):
+                pairs.append((key, key))
+        return pairs
+
+    def _has_exportable_data(self) -> bool:
+        for _label, key in self._iter_export_subjects():
+            if self._load_scoring_results_for_subject_from_storage(key):
+                return True
+            if self._refresh_scan_results_from_db(key):
+                return True
+        return False
+
+    def _pick_subject_for_export(self, title: str, prompt: str) -> str:
+        subjects = self._iter_export_subjects()
+        if not subjects:
+            return ""
+        if len(subjects) == 1:
+            return str(subjects[0][1])
+        labels = [x[0] for x in subjects]
+        choice, ok = QInputDialog.getItem(self, title, prompt, labels, 0, False)
+        if not ok:
+            return ""
+        picked = str(choice or "").strip()
+        for label, key in subjects:
+            if label == picked:
+                return key
+        return ""
+
+    @staticmethod
+    def _safe_sheet_name(sheet_name: str, fallback: str = "Sheet") -> str:
+        cleaned = re.sub(r"[\\/*?:\\[\\]]+", "_", str(sheet_name or "").strip())
+        cleaned = cleaned[:31].strip()
+        return cleaned or fallback
+
+    @staticmethod
+    def _parse_score_ranges(range_text: str) -> list[tuple[float, float]]:
+        ranges: list[tuple[float, float]] = []
+        for chunk in str(range_text or "").split(","):
+            text = chunk.strip()
+            if not text:
+                continue
+            if "-" not in text:
+                raise ValueError(f"Khoảng không hợp lệ: '{text}'. Định dạng đúng: min-max.")
+            left, right = text.split("-", 1)
+            start = float(left.strip().replace(",", "."))
+            end = float(right.strip().replace(",", "."))
+            if end < start:
+                start, end = end, start
+            ranges.append((start, end))
+        if not ranges:
+            raise ValueError("Không có khoảng điểm hợp lệ.")
+        return ranges
+
+    def _score_rows_for_subject(self, subject_key: str) -> list[dict]:
+        payload = self._load_scoring_results_for_subject_from_storage(subject_key)
+        rows = [dict(v) for v in payload.values() if isinstance(v, dict)]
+        rows.sort(key=lambda x: str(x.get("student_id", "") or ""))
+        return rows
+
+    def _scan_rows_for_subject(self, subject_key: str) -> list[OMRResult]:
+        rows = list(self.scan_results_by_subject.get(self._batch_result_subject_key(subject_key), []) or [])
+        if rows:
+            return rows
+        return self._refresh_scan_results_from_db(subject_key) or []
+
+    def _student_meta_by_sid(self) -> dict[str, dict[str, str]]:
+        lookup: dict[str, dict[str, str]] = {}
+        for st in (self.session.students if self.session else []):
+            sid = str(getattr(st, "student_id", "") or "").strip()
+            if not sid:
+                continue
+            extra = getattr(st, "extra", {}) or {}
+            lookup[sid] = {
+                "name": str(getattr(st, "name", "") or "").strip(),
+                "class_name": str((extra or {}).get("class_name", "") or "").strip(),
+                "exam_room": str((extra or {}).get("exam_room", "") or "").strip(),
+                "birth_date": str((extra or {}).get("birth_date", "") or "").strip(),
+            }
+        return lookup
 
     def _route_to_stack_index(self, route_name: str) -> int:
         mapping = {
@@ -3420,6 +3547,47 @@ class MainWindow(QMainWindow):
     def action_export_results(self) -> None:
         if self._confirm("Export Results", "Bạn có chắc muốn export kết quả?"):
             self.export_results()
+
+    def action_export_subject_scores(self) -> None:
+        subject_key = self._pick_subject_for_export("Xuất điểm 1 môn", "Chọn môn cần xuất điểm:")
+        if not subject_key:
+            return
+        self._export_subject_scores(subject_key)
+
+    def action_export_all_subject_scores(self) -> None:
+        self._export_all_subject_scores()
+
+    def action_export_subject_api_payload(self) -> None:
+        subject_key = self._pick_subject_for_export("Xuất API bài làm", "Chọn môn cần xuất API bài làm:")
+        if not subject_key:
+            return
+        self._export_subject_api_payload(subject_key)
+
+    def action_export_score_range_report(self) -> None:
+        if not self._has_exportable_data():
+            QMessageBox.information(self, "Báo cáo khoảng điểm", "Chưa có dữ liệu để xuất.")
+            return
+        default_ranges = "0-2,2-4,4-6,6-8,8-10"
+        range_text, ok = QInputDialog.getText(
+            self,
+            "Báo cáo khoảng điểm",
+            "Nhập các khoảng điểm (ngăn cách bằng dấu phẩy, ví dụ 0-2,2-4,4-6,6-8,8-10):",
+            text=default_ranges,
+        )
+        if not ok:
+            return
+        try:
+            ranges = self._parse_score_ranges(range_text)
+        except Exception as exc:
+            QMessageBox.warning(self, "Báo cáo khoảng điểm", str(exc))
+            return
+        self._export_score_range_report(ranges)
+
+    def action_export_class_report(self) -> None:
+        self._export_class_report()
+
+    def action_export_management_report(self) -> None:
+        self._export_management_report()
 
     def import_answer_key_file(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
@@ -13987,6 +14155,370 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Export", "Exported CSV, JSON, XML, XLSX, scores_by_student.xlsx.")
         except Exception as exc:
             QMessageBox.warning(self, "Export", f"Đã export CSV/JSON/XML/XLSX nhưng không tạo được scores_by_student.xlsx:\n{exc}")
+
+    def _export_subject_scores(self, subject_key: str) -> None:
+        subject = str(subject_key or "").strip()
+        if not subject:
+            return
+        rows = self._score_rows_for_subject(subject)
+        if not rows:
+            QMessageBox.information(self, "Xuất điểm 1 môn", "Môn này chưa có dữ liệu điểm.")
+            return
+        cfg = self._subject_config_by_subject_key(subject) or {}
+        suggested = self._safe_sheet_name(str(cfg.get("name", "") or "subject_scores"), fallback="subject_scores")
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Xuất điểm 1 môn",
+            f"{suggested}.xlsx",
+            "Excel (*.xlsx);;CSV (*.csv)",
+        )
+        if not path:
+            return
+        out = Path(path)
+        headers = [
+            "STT",
+            "SBD",
+            "Phòng thi",
+            "Họ tên",
+            "Ngày sinh",
+            "Lớp",
+            "Mã đề",
+            "Đúng",
+            "Sai",
+            "Bỏ trống",
+            "Điểm",
+            "Trạng thái",
+            "Ghi chú",
+        ]
+        student_meta = self._student_meta_by_sid()
+        room_by_sid: dict[str, str] = {}
+        for scan_item in self._scan_rows_for_subject(subject):
+            sid_scan = str(getattr(scan_item, "student_id", "") or "").strip()
+            room_scan = str(getattr(scan_item, "exam_room", "") or "").strip()
+            if sid_scan and room_scan and sid_scan not in room_by_sid:
+                room_by_sid[sid_scan] = room_scan
+        normalized: list[dict[str, object]] = []
+        for row in rows:
+            sid = str(row.get("student_id", "") or "").strip()
+            meta = student_meta.get(sid, {})
+            mapped_room = str(self._subject_room_for_student_id(sid, cfg) or "").strip()
+            status_text = str(row.get("status", "") or "").strip()
+            status_fold = status_text.casefold()
+            has_error = bool(status_fold) and status_fold not in {"ok", "đã sửa"}
+            normalized.append({
+                "_has_error": has_error,
+                "SBD": sid,
+                "Phòng thi": str(row.get("exam_room", "") or mapped_room or room_by_sid.get(sid, "") or meta.get("exam_room", "")),
+                "Họ tên": str(row.get("name", "") or meta.get("name", "")),
+                "Ngày sinh": str(row.get("birth_date", "") or meta.get("birth_date", "")),
+                "Lớp": str(row.get("class_name", "") or meta.get("class_name", "")),
+                "Mã đề": str(row.get("exam_code", "") or ""),
+                "Đúng": row.get("correct", 0),
+                "Sai": row.get("wrong", 0),
+                "Bỏ trống": row.get("blank", 0),
+                "Điểm": row.get("score", 0),
+                "Trạng thái": status_text,
+                "Ghi chú": str(row.get("note", "") or ""),
+            })
+        normalized.sort(key=lambda x: (0 if bool(x.get("_has_error")) else 1, str(x.get("SBD", ""))))
+        for idx, row in enumerate(normalized, start=1):
+            row["STT"] = idx
+        if out.suffix.lower() == ".csv":
+            with out.open("w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(normalized)
+        else:
+            from openpyxl import Workbook
+            from openpyxl.styles import Alignment
+            from openpyxl.styles import Border, Font, Side
+
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "scores"
+            ws.append(headers)
+            for row in normalized:
+                ws.append([row.get(key, "") for key in headers])
+            border_side = Side(style="thin", color="000000")
+            base_font = Font(name="Times New Roman", size=12)
+            for row_cells in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+                for cell in row_cells:
+                    cell.font = base_font
+                    cell.border = Border(left=border_side, right=border_side, top=border_side, bottom=border_side)
+            for cell in ws[1]:
+                cell.font = Font(name="Times New Roman", size=12, bold=True)
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+            for col in ws.columns:
+                max_len = 0
+                col_letter = col[0].column_letter
+                for cell in col:
+                    max_len = max(max_len, len(str(cell.value or "")))
+                ws.column_dimensions[col_letter].width = min(60, max(10, max_len + 2))
+            wb.save(out)
+        QMessageBox.information(self, "Xuất điểm 1 môn", f"Đã xuất dữ liệu:\n{out}")
+
+    def _export_all_subject_scores(self) -> None:
+        subjects = self._iter_export_subjects()
+        if not subjects:
+            QMessageBox.information(self, "Xuất điểm tất cả môn", "Chưa có môn nào để xuất.")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Xuất điểm tất cả môn", "all_subject_scores.xlsx", "Excel (*.xlsx)")
+        if not path:
+            return
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws_summary = wb.active
+        ws_summary.title = "summary"
+        ws_summary.append(["subject_key", "subject_label", "student_count", "avg_score", "min_score", "max_score"])
+        for idx, (label, key) in enumerate(subjects):
+            rows = self._score_rows_for_subject(key)
+            sheet_name = self._safe_sheet_name(label, fallback=f"subject_{idx + 1}")
+            ws = wb.create_sheet(sheet_name)
+            headers = ["student_id", "name", "exam_code", "correct", "wrong", "blank", "score", "status", "note"]
+            ws.append(headers)
+            scores: list[float] = []
+            for row in rows:
+                ws.append([
+                    str(row.get("student_id", "") or ""),
+                    str(row.get("name", "") or ""),
+                    str(row.get("exam_code", "") or ""),
+                    row.get("correct", 0),
+                    row.get("wrong", 0),
+                    row.get("blank", 0),
+                    row.get("score", 0),
+                    str(row.get("status", "") or ""),
+                    str(row.get("note", "") or ""),
+                ])
+                try:
+                    scores.append(float(row.get("score", 0) or 0))
+                except Exception:
+                    pass
+            if scores:
+                ws_summary.append([key, label, len(scores), round(sum(scores) / len(scores), 4), min(scores), max(scores)])
+            else:
+                ws_summary.append([key, label, 0, 0, 0, 0])
+        wb.save(path)
+        QMessageBox.information(self, "Xuất điểm tất cả môn", f"Đã xuất dữ liệu:\n{path}")
+
+    def _export_subject_api_payload(self, subject_key: str) -> None:
+        subject = str(subject_key or "").strip()
+        if not subject:
+            return
+        rows = self._scan_rows_for_subject(subject)
+        if not rows:
+            QMessageBox.information(self, "Xuất API bài làm", "Môn này chưa có dữ liệu bài làm.")
+            return
+        cfg = self._subject_config_by_subject_key(subject) or {}
+        suggested = self._safe_sheet_name(str(cfg.get("name", "") or "subject_api"), fallback="subject_api")
+        path, _ = QFileDialog.getSaveFileName(self, "Xuất API bài làm", f"{suggested}_api.csv", "CSV (*.csv)")
+        if not path:
+            return
+        headers = ["STT", "student_id", "name", "class_name", "exam_room", "subject_key", "exam_code", "answer_string"]
+        student_meta = self._student_meta_by_sid()
+        sid_display_by_normalized: dict[str, str] = {}
+        for st in (self.session.students if self.session else []):
+            sid_origin = str(getattr(st, "student_id", "") or "").strip()
+            sid_norm = self._normalized_student_id_for_match(sid_origin)
+            if sid_origin and sid_norm and sid_norm not in sid_display_by_normalized:
+                sid_display_by_normalized[sid_norm] = sid_origin
+
+        def _answer_string_for_api(result, answer_key_obj) -> str:
+            raw_answer = str(getattr(result, "answer_string", "") or "").strip()
+            if not raw_answer:
+                built = self._answer_string_from_maps(
+                    getattr(result, "mcq_answers", {}) or {},
+                    getattr(result, "true_false_answers", {}) or {},
+                    getattr(result, "numeric_answers", {}) or {},
+                    answer_key_obj,
+                    use_semicolon=True,
+                )
+                return str(built or "")
+
+            normalized_answer = raw_answer.replace(",", ";")
+            if ";" in normalized_answer:
+                return normalized_answer
+            if answer_key_obj is None:
+                return normalized_answer
+            invalid_rows = getattr(answer_key_obj, "invalid_answer_rows", {}) or {}
+
+            def _question_numbers(valid_map, invalid_map, fallback_map=None) -> list[int]:
+                primary_nums = set()
+                for src in [valid_map or {}, invalid_map or {}]:
+                    for key in src.keys():
+                        if str(key).strip().lstrip("-").isdigit():
+                            primary_nums.add(int(key))
+                if primary_nums:
+                    return sorted(primary_nums)
+                nums = set()
+                for key in (fallback_map or {}).keys():
+                    if str(key).strip().lstrip("-").isdigit():
+                        nums.add(int(key))
+                return sorted(nums)
+
+            parts: list[str] = []
+            compact = normalized_answer.replace(";", "")
+            cursor = 0
+            mcq_qs = _question_numbers(getattr(answer_key_obj, "answers", {}) or {}, invalid_rows.get("MCQ", {}) or {})
+            for _ in mcq_qs:
+                if cursor >= len(compact):
+                    parts.append("_")
+                    continue
+                parts.append(compact[cursor:cursor + 1] or "_")
+                cursor += 1
+            tf_qs = _question_numbers(getattr(answer_key_obj, "true_false_answers", {}) or {}, invalid_rows.get("TF", {}) or {})
+            for _ in tf_qs:
+                token = compact[cursor:cursor + 4]
+                cursor += 4
+                if len(token) < 4:
+                    token = token + ("_" * (4 - len(token)))
+                parts.append(token)
+            num_qs = _question_numbers(getattr(answer_key_obj, "numeric_answers", {}) or {}, invalid_rows.get("NUMERIC", {}) or {})
+            for q_no in num_qs:
+                raw_key = str((getattr(answer_key_obj, "numeric_answers", {}) or {}).get(q_no, ((invalid_rows.get("NUMERIC", {}) or {}).get(q_no, ""))) or "")
+                normalized_key = str(raw_key).strip().replace(" ", "").lstrip("+").replace(".", ",")
+                width = len(normalized_key) if normalized_key else max(1, len(raw_key.strip()))
+                token = compact[cursor:cursor + width]
+                cursor += width
+                if len(token) < width:
+                    token = token + ("_" * (width - len(token)))
+                parts.append(token)
+            return ";".join(parts) if parts else normalized_answer
+
+        with Path(path).open("w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=headers)
+            writer.writeheader()
+            for idx, result in enumerate(rows, start=1):
+                sid_raw = str(getattr(result, "student_id", "") or "").strip()
+                sid = sid_display_by_normalized.get(self._normalized_student_id_for_match(sid_raw), sid_raw)
+                meta = student_meta.get(sid, {})
+                answer_key = self._subject_answer_key_for_result(result, subject)
+                answer_text = _answer_string_for_api(result, answer_key)
+                writer.writerow({
+                    "STT": idx,
+                    "student_id": sid,
+                    "name": str(getattr(result, "full_name", "") or meta.get("name", "")),
+                    "class_name": str(getattr(result, "class_name", "") or meta.get("class_name", "")),
+                    "exam_room": str(getattr(result, "exam_room", "") or meta.get("exam_room", "")),
+                    "subject_key": subject,
+                    "exam_code": str(getattr(result, "exam_code", "") or ""),
+                    "answer_string": answer_text,
+                })
+        QMessageBox.information(self, "Xuất API bài làm", f"Đã xuất API bài làm:\n{path}")
+
+    def _export_score_range_report(self, ranges: list[tuple[float, float]]) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "Báo cáo thống kê khoảng điểm", "score_range_report.xlsx", "Excel (*.xlsx)")
+        if not path:
+            return
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "score_ranges"
+        ws.append(["subject_key", "subject_label", "range", "count", "ratio_percent"])
+        subjects = self._iter_export_subjects()
+        for label, key in subjects:
+            rows = self._score_rows_for_subject(key)
+            values = []
+            for row in rows:
+                try:
+                    values.append(float(row.get("score", 0) or 0))
+                except Exception:
+                    continue
+            total = len(values)
+            if total <= 0:
+                for start, end in ranges:
+                    ws.append([key, label, f"{start:g}-{end:g}", 0, 0.0])
+                continue
+            for idx, (start, end) in enumerate(ranges):
+                if idx == len(ranges) - 1:
+                    cnt = sum(1 for x in values if start <= x <= end)
+                else:
+                    cnt = sum(1 for x in values if start <= x < end)
+                ratio = round((cnt * 100.0 / total), 2)
+                ws.append([key, label, f"{start:g}-{end:g}", cnt, ratio])
+        wb.save(path)
+        QMessageBox.information(self, "Báo cáo thống kê khoảng điểm", f"Đã xuất báo cáo:\n{path}")
+
+    def _export_class_report(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "Báo cáo thống kê theo lớp", "class_score_report.xlsx", "Excel (*.xlsx)")
+        if not path:
+            return
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "class_stats"
+        ws.append(["subject_key", "subject_label", "class_name", "student_count", "avg_score", "min_score", "max_score", "pass_rate_percent"])
+        subjects = self._iter_export_subjects()
+        student_meta = self._student_meta_by_sid()
+        for label, key in subjects:
+            rows = self._score_rows_for_subject(key)
+            grouped: dict[str, list[float]] = {}
+            for row in rows:
+                sid = str(row.get("student_id", "") or "").strip()
+                class_name = str(row.get("class_name", "") or "").strip() or str((student_meta.get(sid, {}) or {}).get("class_name", "") or "").strip() or "Chưa phân lớp"
+                try:
+                    score_value = float(row.get("score", 0) or 0)
+                except Exception:
+                    continue
+                grouped.setdefault(class_name, []).append(score_value)
+            for class_name, values in sorted(grouped.items(), key=lambda x: x[0]):
+                count = len(values)
+                if count <= 0:
+                    continue
+                avg_score = round(sum(values) / count, 4)
+                pass_rate = round((sum(1 for x in values if x >= 5.0) * 100.0 / count), 2)
+                ws.append([key, label, class_name, count, avg_score, min(values), max(values), pass_rate])
+        wb.save(path)
+        QMessageBox.information(self, "Báo cáo thống kê theo lớp", f"Đã xuất báo cáo:\n{path}")
+
+    def _export_management_report(self) -> None:
+        default_ranges = [(0.0, 2.0), (2.0, 4.0), (4.0, 6.0), (6.0, 8.0), (8.0, 10.0)]
+        path, _ = QFileDialog.getSaveFileName(self, "Báo cáo tổng hợp quản lý", "management_report.xlsx", "Excel (*.xlsx)")
+        if not path:
+            return
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws_overview = wb.active
+        ws_overview.title = "overview"
+        ws_overview.append(["subject_key", "subject_label", "student_count", "avg_score", "std_like", "pass_rate_percent"])
+        ws_ranges = wb.create_sheet("score_ranges")
+        ws_ranges.append(["subject_key", "subject_label", "range", "count", "ratio_percent"])
+        ws_classes = wb.create_sheet("class_stats")
+        ws_classes.append(["subject_key", "subject_label", "class_name", "student_count", "avg_score"])
+        subjects = self._iter_export_subjects()
+        student_meta = self._student_meta_by_sid()
+        for label, key in subjects:
+            rows = self._score_rows_for_subject(key)
+            scores: list[float] = []
+            class_bucket: dict[str, list[float]] = {}
+            for row in rows:
+                try:
+                    val = float(row.get("score", 0) or 0)
+                except Exception:
+                    continue
+                scores.append(val)
+                sid = str(row.get("student_id", "") or "").strip()
+                class_name = str(row.get("class_name", "") or "").strip() or str((student_meta.get(sid, {}) or {}).get("class_name", "") or "").strip() or "Chưa phân lớp"
+                class_bucket.setdefault(class_name, []).append(val)
+            count = len(scores)
+            if count <= 0:
+                ws_overview.append([key, label, 0, 0.0, 0.0, 0.0])
+                for start, end in default_ranges:
+                    ws_ranges.append([key, label, f"{start:g}-{end:g}", 0, 0.0])
+                continue
+            avg_score = sum(scores) / count
+            variance = sum((x - avg_score) ** 2 for x in scores) / count
+            pass_rate = (sum(1 for x in scores if x >= 5.0) * 100.0 / count)
+            ws_overview.append([key, label, count, round(avg_score, 4), round(variance ** 0.5, 4), round(pass_rate, 2)])
+            for idx, (start, end) in enumerate(default_ranges):
+                if idx == len(default_ranges) - 1:
+                    c = sum(1 for x in scores if start <= x <= end)
+                else:
+                    c = sum(1 for x in scores if start <= x < end)
+                ws_ranges.append([key, label, f"{start:g}-{end:g}", c, round(c * 100.0 / count, 2)])
+            for class_name, vals in sorted(class_bucket.items(), key=lambda x: x[0]):
+                ws_classes.append([key, label, class_name, len(vals), round(sum(vals) / len(vals), 4)])
+        wb.save(path)
+        QMessageBox.information(self, "Báo cáo tổng hợp quản lý", f"Đã xuất báo cáo:\n{path}")
 
     def _refresh_session_info(self) -> None:
         if not self.session:
