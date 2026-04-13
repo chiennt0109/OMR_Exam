@@ -14094,7 +14094,25 @@ class MainWindow(QMainWindow):
                 sid_display_by_normalized[sid_norm] = sid_origin
 
         def _answer_string_for_api(result, answer_key_obj) -> str:
-            raw_answer = str(getattr(result, "answer_string", "") or "").strip()
+            raw_candidates = [
+                str(getattr(result, "manual_content_override", "") or "").strip(),
+                str(getattr(result, "cached_content", "") or "").strip(),
+                str(getattr(result, "answer_string", "") or "").strip(),
+            ]
+
+            def _signal_score(text: str) -> int:
+                return sum(1 for ch in text if ch not in {";", ",", "|", "_", " ", "\t", "\n", "\r"})
+
+            raw_answer = ""
+            best_score = -1
+            for cand in raw_candidates:
+                if not cand:
+                    continue
+                cand_score = _signal_score(cand)
+                if cand_score > best_score:
+                    raw_answer = cand
+                    best_score = cand_score
+
             if not raw_answer:
                 built = self._answer_string_from_maps(
                     getattr(result, "mcq_answers", {}) or {},
@@ -14164,12 +14182,14 @@ class MainWindow(QMainWindow):
                 meta = student_meta.get(sid, {})
                 answer_key = self._subject_answer_key_for_result(result, subject)
                 answer_text = _answer_string_for_api(result, answer_key)
+                room_mapped = str(self._subject_room_for_student_id(sid_raw, cfg) or "").strip()
+                room_profile = str((self._student_profile_by_id(sid_raw) or {}).get("exam_room", "") or "").strip()
                 writer.writerow({
                     "STT": idx,
                     "student_id": sid,
                     "name": str(getattr(result, "full_name", "") or meta.get("name", "")),
                     "class_name": str(getattr(result, "class_name", "") or meta.get("class_name", "")),
-                    "exam_room": str(getattr(result, "exam_room", "") or meta.get("exam_room", "")),
+                    "exam_room": str(getattr(result, "exam_room", "") or room_mapped or room_profile or meta.get("exam_room", "")),
                     "subject_key": subject,
                     "exam_code": str(getattr(result, "exam_code", "") or ""),
                     "answer_string": answer_text,
