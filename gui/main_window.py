@@ -59,6 +59,7 @@ from core.omr_engine import OMRProcessor, OMRResult, RecognitionContext
 from core.scoring_engine import ScoreResult, ScoringEngine
 from editor.template_editor import TemplateEditorWindow
 from gui.import_answer_key_dialog import ImportAnswerKeyDialog
+from gui.export_reports_dialog import ExportReportsDialog
 from gui.main_window_scoring import open_scoring_review_editor_dialog
 from gui.main_window_recheck import open_recheck_dialog
 from models.answer_key import AnswerKeyRepository, SubjectKey
@@ -2780,14 +2781,22 @@ class MainWindow(QMainWindow):
         scoring_menu.addAction("Export Results", self.action_export_results)
 
         self.export_menu = self.menuBar().addMenu("Export")
-        self.act_export_subject_scores = self.export_menu.addAction("Xuất điểm 1 môn...")
+        self.act_export_subject_scores = self.export_menu.addAction("Xuất điểm môn...")
         self.act_export_subject_scores.triggered.connect(self.action_export_subject_scores)
-        self.act_export_all_scores = self.export_menu.addAction("Xuất điểm tất cả môn...")
+        self.act_export_subject_score_matrix = self.export_menu.addAction("Xuất điểm các môn...")
+        self.act_export_subject_score_matrix.triggered.connect(self.action_export_subject_score_matrix)
+        self.act_export_class_subject_scores = self.export_menu.addAction("Xuất điểm lớp...")
+        self.act_export_class_subject_scores.triggered.connect(self.action_export_class_subject_scores)
+        self.act_export_all_classes_subject_scores = self.export_menu.addAction("Xuất điểm các lớp...")
+        self.act_export_all_classes_subject_scores.triggered.connect(self.action_export_all_classes_subject_scores)
+        self.act_export_all_scores = self.export_menu.addAction("Xuất điểm chi tiết các môn...")
         self.act_export_all_scores.triggered.connect(self.action_export_all_subject_scores)
         self.export_menu.addSeparator()
         self.act_export_subject_api = self.export_menu.addAction("Xuất API bài làm theo môn (;)")
         self.act_export_subject_api.triggered.connect(self.action_export_subject_api_payload)
         self.export_menu.addSeparator()
+        self.act_export_reports_center = self.export_menu.addAction("Báo cáo thống kê...")
+        self.act_export_reports_center.triggered.connect(self.action_open_export_reports_center)
         self.act_export_range_report = self.export_menu.addAction("Báo cáo thống kê khoảng điểm...")
         self.act_export_range_report.triggered.connect(self.action_export_score_range_report)
         self.act_export_class_report = self.export_menu.addAction("Báo cáo thống kê theo lớp...")
@@ -2822,7 +2831,7 @@ class MainWindow(QMainWindow):
         self.ribbon_scoring_action = toolbar.addAction(style.standardIcon(QStyle.SP_CommandLink), "Tính điểm", self.action_calculate_scores)
         self.ribbon_recheck_action = toolbar.addAction(style.standardIcon(QStyle.SP_BrowserReload), "Phúc tra", self.action_open_recheck)
         self.ribbon_export_action = QAction(style.standardIcon(QStyle.SP_DriveNetIcon), "Export", self)
-        self.ribbon_export_action.triggered.connect(self.action_export_all_subject_scores)
+        self.ribbon_export_action.triggered.connect(self.action_open_export_reports_center)
         self.ribbon_export_action.setMenu(self.export_menu)
         toolbar.addAction(self.ribbon_export_action)
         toolbar.addSeparator()
@@ -3260,7 +3269,7 @@ class MainWindow(QMainWindow):
         self._refresh_ribbon_action_states()
 
     def _refresh_ribbon_action_states(self) -> None:
-        has_session = bool(str(getattr(self, "current_session_id", "") or "").strip())
+        has_session = self._has_session_context_for_export()
         has_subject_cfg = bool(self._effective_subject_configs_for_batch())
         has_batch_rows = bool(hasattr(self, "scan_list") and self.scan_list.rowCount() > 0)
         has_subject_selection = bool(hasattr(self, "batch_subject_combo") and self.batch_subject_combo.currentIndex() > 0)
@@ -3277,25 +3286,42 @@ class MainWindow(QMainWindow):
             self.ribbon_recheck_action.setEnabled(has_session and has_batch_rows)
         has_export_data = self._has_exportable_data()
         if getattr(self, "ribbon_export_action", None) is not None:
-            self.ribbon_export_action.setEnabled(has_session and has_export_data)
+            self.ribbon_export_action.setEnabled(has_session)
         self._refresh_export_action_states(has_session=has_session, has_export_data=has_export_data)
+
+    def _has_session_context_for_export(self) -> bool:
+        if bool(str(getattr(self, "current_session_id", "") or "").strip()):
+            return True
+        if getattr(self, "session", None) is not None:
+            sid = str(getattr(self.session, "session_id", "") or "").strip()
+            if sid:
+                return True
+        if hasattr(self, "exam_list_table"):
+            row = self.exam_list_table.currentRow()
+            if row >= 0 and bool(str(self._session_id_for_row(row) or "").strip()):
+                return True
+        return False
 
     def _refresh_export_action_states(self, *, has_session: bool | None = None, has_export_data: bool | None = None) -> None:
         if has_session is None:
-            has_session = bool(str(getattr(self, "current_session_id", "") or "").strip())
+            has_session = self._has_session_context_for_export()
         if has_export_data is None:
             has_export_data = self._has_exportable_data()
         for attr_name in [
             "act_export_subject_scores",
+            "act_export_subject_score_matrix",
+            "act_export_class_subject_scores",
+            "act_export_all_classes_subject_scores",
             "act_export_all_scores",
             "act_export_subject_api",
+            "act_export_reports_center",
             "act_export_range_report",
             "act_export_class_report",
             "act_export_management_report",
         ]:
             action = getattr(self, attr_name, None)
             if action is not None:
-                action.setEnabled(bool(has_session and has_export_data))
+                action.setEnabled(bool(has_session))
 
     def _iter_export_subjects(self) -> list[tuple[str, str]]:
         pairs: list[tuple[str, str]] = []
@@ -3548,10 +3574,19 @@ class MainWindow(QMainWindow):
             self.export_results()
 
     def action_export_subject_scores(self) -> None:
-        subject_key = self._pick_subject_for_export("Xuất điểm 1 môn", "Chọn môn cần xuất điểm:")
+        subject_key = self._pick_subject_for_export("Xuất điểm môn", "Chọn môn cần xuất điểm:")
         if not subject_key:
             return
         self._export_subject_scores(subject_key)
+
+    def action_export_subject_score_matrix(self) -> None:
+        self._export_subject_score_matrix()
+
+    def action_export_class_subject_scores(self) -> None:
+        self._export_class_subject_scores()
+
+    def action_export_all_classes_subject_scores(self) -> None:
+        self._export_all_classes_subject_scores()
 
     def action_export_all_subject_scores(self) -> None:
         self._export_all_subject_scores()
@@ -3581,6 +3616,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Báo cáo khoảng điểm", str(exc))
             return
         self._export_score_range_report(ranges)
+
+    def action_open_export_reports_center(self) -> None:
+        dlg = ExportReportsDialog(self)
+        dlg.exec()
 
     def action_export_class_report(self) -> None:
         self._export_class_report()
@@ -8038,18 +8077,6 @@ class MainWindow(QMainWindow):
             }
             blanks[sec] = [int(q_display) for q_display in display_questions if int(q_display) not in answered_display]
         return blanks
-        messages: list[str] = []
-        for sec in ["MCQ", "TF", "NUMERIC"]:
-            expected_set = set(expected.get(sec, []))
-            if not expected_set:
-                continue
-            actual_set = {int(q) for q in actual_map.get(sec, set())}
-            missing = sorted(expected_set - actual_set)
-            if missing:
-                messages.append(
-                    f"thiếu {sec} ({len(expected_set)-len(missing)}/{len(expected_set)}): {','.join(str(v) for v in missing)}"
-                )
-        return messages
 
     def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
         template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
@@ -13933,66 +13960,21 @@ class MainWindow(QMainWindow):
             return
         rows = self._score_rows_for_subject(subject)
         if not rows:
-            QMessageBox.information(self, "Xuất điểm 1 môn", "Môn này chưa có dữ liệu điểm.")
+            QMessageBox.information(self, "Xuất điểm môn", "Môn này chưa có dữ liệu điểm.")
             return
         cfg = self._subject_config_by_subject_key(subject) or {}
         suggested = self._safe_sheet_name(str(cfg.get("name", "") or "subject_scores"), fallback="subject_scores")
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Xuất điểm 1 môn",
+            "Xuất điểm môn",
             f"{suggested}.xlsx",
             "Excel (*.xlsx);;CSV (*.csv)",
         )
         if not path:
             return
         out = Path(path)
-        headers = [
-            "STT",
-            "SBD",
-            "Phòng thi",
-            "Họ tên",
-            "Ngày sinh",
-            "Lớp",
-            "Mã đề",
-            "Đúng",
-            "Sai",
-            "Bỏ trống",
-            "Điểm",
-            "Trạng thái",
-            "Ghi chú",
-        ]
-        student_meta = self._student_meta_by_sid()
-        room_by_sid: dict[str, str] = {}
-        for scan_item in self._scan_rows_for_subject(subject):
-            sid_scan = str(getattr(scan_item, "student_id", "") or "").strip()
-            room_scan = str(getattr(scan_item, "exam_room", "") or "").strip()
-            if sid_scan and room_scan and sid_scan not in room_by_sid:
-                room_by_sid[sid_scan] = room_scan
-        normalized: list[dict[str, object]] = []
-        for row in rows:
-            sid = str(row.get("student_id", "") or "").strip()
-            meta = student_meta.get(sid, {})
-            status_text = str(row.get("status", "") or "").strip()
-            status_fold = status_text.casefold()
-            has_error = bool(status_fold) and status_fold not in {"ok", "đã sửa"}
-            normalized.append({
-                "_has_error": has_error,
-                "SBD": sid,
-                "Phòng thi": str(row.get("exam_room", "") or room_by_sid.get(sid, "") or meta.get("exam_room", "")),
-                "Họ tên": str(row.get("name", "") or meta.get("name", "")),
-                "Ngày sinh": str(row.get("birth_date", "") or meta.get("birth_date", "")),
-                "Lớp": str(row.get("class_name", "") or meta.get("class_name", "")),
-                "Mã đề": str(row.get("exam_code", "") or ""),
-                "Đúng": row.get("correct", 0),
-                "Sai": row.get("wrong", 0),
-                "Bỏ trống": row.get("blank", 0),
-                "Điểm": row.get("score", 0),
-                "Trạng thái": status_text,
-                "Ghi chú": str(row.get("note", "") or ""),
-            })
-        normalized.sort(key=lambda x: (0 if bool(x.get("_has_error")) else 1, str(x.get("SBD", ""))))
-        for idx, row in enumerate(normalized, start=1):
-            row["STT"] = idx
+        headers = self._subject_score_export_headers()
+        normalized = self._build_subject_score_export_rows(subject)
         if out.suffix.lower() == ".csv":
             with out.open("w", newline="", encoding="utf-8-sig") as f:
                 writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
@@ -14025,14 +14007,318 @@ class MainWindow(QMainWindow):
                     max_len = max(max_len, len(str(cell.value or "")))
                 ws.column_dimensions[col_letter].width = min(60, max(10, max_len + 2))
             wb.save(out)
-        QMessageBox.information(self, "Xuất điểm 1 môn", f"Đã xuất dữ liệu:\n{out}")
+        QMessageBox.information(self, "Xuất điểm môn", f"Đã xuất dữ liệu:\n{out}")
+
+    def _subject_score_export_headers(self) -> list[str]:
+        return [
+            "STT",
+            "SBD",
+            "Phòng thi",
+            "Họ tên",
+            "Ngày sinh",
+            "Lớp",
+            "Mã đề",
+            "Đúng",
+            "Sai",
+            "Bỏ trống",
+            "Điểm",
+            "Trạng thái",
+            "Ghi chú",
+        ]
+
+    def _build_subject_score_export_rows(self, subject: str) -> list[dict[str, object]]:
+        rows = self._score_rows_for_subject(subject)
+        student_meta = self._student_meta_by_sid()
+        room_by_sid: dict[str, str] = {}
+        for scan_item in self._scan_rows_for_subject(subject):
+            sid_scan = str(getattr(scan_item, "student_id", "") or "").strip()
+            room_scan = str(getattr(scan_item, "exam_room", "") or "").strip()
+            if sid_scan and room_scan and sid_scan not in room_by_sid:
+                room_by_sid[sid_scan] = room_scan
+        normalized: list[dict[str, object]] = []
+        for row in rows:
+            sid = str(row.get("student_id", "") or "").strip()
+            meta = student_meta.get(sid, {})
+            status_text = str(row.get("status", "") or "").strip()
+            status_fold = status_text.casefold()
+            has_error = bool(status_fold) and status_fold not in {"ok", "đã sửa"}
+            normalized.append({
+                "_has_error": has_error,
+                "SBD": sid,
+                "Phòng thi": str(row.get("exam_room", "") or room_by_sid.get(sid, "") or meta.get("exam_room", "")),
+                "Họ tên": str(row.get("name", "") or meta.get("name", "")),
+                "Ngày sinh": str(row.get("birth_date", "") or meta.get("birth_date", "")),
+                "Lớp": str(row.get("class_name", "") or meta.get("class_name", "")),
+                "Mã đề": str(row.get("exam_code", "") or ""),
+                "Đúng": row.get("correct", 0),
+                "Sai": row.get("wrong", 0),
+                "Bỏ trống": row.get("blank", 0),
+                "Điểm": row.get("score", 0),
+                "Trạng thái": status_text,
+                "Ghi chú": str(row.get("note", "") or ""),
+            })
+        normalized.sort(key=lambda x: (0 if bool(x.get("_has_error")) else 1, str(x.get("SBD", ""))))
+        for idx, row in enumerate(normalized, start=1):
+            row["STT"] = idx
+        return normalized
+
+    def _export_subject_score_matrix(self) -> None:
+        subjects = self._iter_export_subjects()
+        if not subjects:
+            QMessageBox.information(self, "Xuất điểm các môn", "Chưa có môn nào để xuất.")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Xuất điểm các môn", "subject_scores_matrix.xlsx", "Excel (*.xlsx)")
+        if not path:
+            return
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "scores"
+        base_headers, score_headers, sorted_rows = self._build_subject_score_matrix_rows(subjects)
+        self._write_subject_score_matrix_sheet(ws, base_headers, score_headers, sorted_rows)
+        wb.save(path)
+        QMessageBox.information(self, "Xuất điểm các môn", f"Đã xuất dữ liệu:\n{path}")
+
+    def _short_subject_label_for_export(self, subject_key: str, fallback_label: str) -> str:
+        cfg = self._subject_config_by_subject_key(subject_key) or {}
+        raw = str(cfg.get("name", "") or fallback_label or subject_key).strip()
+        if not raw:
+            raw = str(subject_key or "").strip()
+        compact = re.sub(r"\s*[-–]\s*kỳ thi\b.*$", "", raw, flags=re.IGNORECASE).strip()
+        compact = re.sub(r"\s*[-–]\s*khối\b.*$", "", compact, flags=re.IGNORECASE).strip()
+        return compact or raw
+
+    def _build_subject_score_matrix_rows(self, subjects: list[tuple[str, str]]) -> tuple[list[str], list[str], list[dict[str, object]]]:
+        base_headers = ["STT", "SBD", "Họ tên", "Ngày sinh", "Lớp"]
+        score_headers = [self._short_subject_label_for_export(key, label) for label, key in subjects]
+        student_rows: dict[str, dict[str, object]] = {}
+        for idx, (label, key) in enumerate(subjects):
+            score_header = score_headers[idx]
+            for row in self._build_subject_score_export_rows(key):
+                sid = str(row.get("SBD", "") or "").strip()
+                if not sid:
+                    continue
+                rec = student_rows.setdefault(sid, {
+                    "SBD": sid,
+                    "Họ tên": row.get("Họ tên", ""),
+                    "Ngày sinh": row.get("Ngày sinh", ""),
+                    "Lớp": row.get("Lớp", ""),
+                })
+                if not rec.get("Họ tên") and row.get("Họ tên"):
+                    rec["Họ tên"] = row.get("Họ tên", "")
+                if not rec.get("Ngày sinh") and row.get("Ngày sinh"):
+                    rec["Ngày sinh"] = row.get("Ngày sinh", "")
+                if not rec.get("Lớp") and row.get("Lớp"):
+                    rec["Lớp"] = row.get("Lớp", "")
+                rec[score_header] = row.get("Điểm", 0)
+        sorted_rows = sorted(student_rows.values(), key=lambda x: str(x.get("SBD", "")))
+        return base_headers, score_headers, sorted_rows
+
+    def _write_subject_score_matrix_sheet(
+        self,
+        ws,
+        base_headers: list[str],
+        score_headers: list[str],
+        rows: list[dict[str, object]],
+    ) -> None:
+        from openpyxl.styles import Alignment
+        from openpyxl.styles import Border, Font, Side
+        from openpyxl.utils import get_column_letter
+
+        ws.append(base_headers + score_headers)
+        for idx, row in enumerate(rows, start=1):
+            row["STT"] = idx
+            ws.append([row.get(col, "") for col in base_headers] + [row.get(col, "") for col in score_headers])
+
+        border_side = Side(style="thin", color="000000")
+        base_font = Font(name="Times New Roman", size=12)
+        for row_cells in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+            for cell in row_cells:
+                cell.font = base_font
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.border = Border(left=border_side, right=border_side, top=border_side, bottom=border_side)
+        for cell in ws[1]:
+            cell.font = Font(name="Times New Roman", size=12, bold=True)
+
+        score_col_width = 136 / 7
+        score_col_indexes = set(range(len(base_headers) + 1, len(base_headers) + len(score_headers) + 1))
+        for col_idx in range(1, ws.max_column + 1):
+            col_letter = get_column_letter(col_idx)
+            if col_idx in score_col_indexes:
+                ws.column_dimensions[col_letter].width = score_col_width
+                continue
+            max_len = 0
+            for cell in ws[col_letter]:
+                max_len = max(max_len, len(str(cell.value or "")))
+            ws.column_dimensions[col_letter].width = min(60, max(10, max_len + 2))
+
+    @staticmethod
+    def _trim_subject_headers_without_scores(rows: list[dict[str, object]], score_headers: list[str]) -> list[str]:
+        kept_subject_headers: list[str] = []
+        for header in score_headers:
+            has_score = False
+            for row in rows:
+                if header not in row:
+                    continue
+                value = row.get(header, None)
+                if value is None:
+                    continue
+                if isinstance(value, str) and not value.strip():
+                    continue
+                has_score = True
+                break
+            if has_score:
+                kept_subject_headers.append(header)
+        return kept_subject_headers
+
+    def _build_class_matrix_rows(
+        self,
+        class_name: str,
+        score_rows: list[dict[str, object]],
+        score_headers: list[str],
+    ) -> list[dict[str, object]]:
+        score_by_sid: dict[str, dict[str, object]] = {}
+        for row in score_rows:
+            sid = str(row.get("SBD", "") or "").strip()
+            if sid:
+                score_by_sid[sid] = row
+        out_rows: list[dict[str, object]] = []
+        seen: set[str] = set()
+        if self.session:
+            for st in (self.session.students or []):
+                sid = str(getattr(st, "student_id", "") or "").strip()
+                st_class = str(getattr(st, "class_name", "") or "").strip()
+                if not sid or st_class != class_name:
+                    continue
+                rec: dict[str, object] = {
+                    "SBD": sid,
+                    "Họ tên": str(getattr(st, "name", "") or ""),
+                    "Ngày sinh": str(getattr(st, "birth_date", "") or ""),
+                    "Lớp": st_class,
+                }
+                score_row = score_by_sid.get(sid, {})
+                for header in score_headers:
+                    if header in score_row:
+                        rec[header] = score_row.get(header, "")
+                out_rows.append(rec)
+                seen.add(sid)
+        for row in score_rows:
+            sid = str(row.get("SBD", "") or "").strip()
+            st_class = str(row.get("Lớp", "") or "").strip()
+            if not sid or sid in seen or st_class != class_name:
+                continue
+            rec = {
+                "SBD": sid,
+                "Họ tên": row.get("Họ tên", ""),
+                "Ngày sinh": row.get("Ngày sinh", ""),
+                "Lớp": st_class,
+            }
+            for header in score_headers:
+                if header in row:
+                    rec[header] = row.get(header, "")
+            out_rows.append(rec)
+        out_rows.sort(key=lambda x: str(x.get("SBD", "")))
+        return out_rows
+
+    def _class_options_for_export(self) -> list[str]:
+        class_names: list[str] = []
+        seen: set[str] = set()
+        if self.session:
+            for st in (self.session.students or []):
+                class_name = str(getattr(st, "class_name", "") or "").strip()
+                if class_name and class_name not in seen:
+                    seen.add(class_name)
+                    class_names.append(class_name)
+        if class_names:
+            return sorted(class_names)
+        subjects = self._iter_export_subjects()
+        _base_headers, _score_headers, rows = self._build_subject_score_matrix_rows(subjects)
+        for row in rows:
+            class_name = str(row.get("Lớp", "") or "").strip()
+            if class_name and class_name not in seen:
+                seen.add(class_name)
+                class_names.append(class_name)
+        return sorted(class_names)
+
+    def _export_class_subject_scores(self) -> None:
+        subjects = self._iter_export_subjects()
+        if not subjects:
+            QMessageBox.information(self, "Xuất điểm lớp", "Chưa có môn nào để xuất.")
+            return
+        class_options = self._class_options_for_export()
+        if not class_options:
+            QMessageBox.information(self, "Xuất điểm lớp", "Chưa có dữ liệu lớp để xuất.")
+            return
+        picked_class, ok = QInputDialog.getItem(self, "Xuất điểm lớp", "Chọn lớp cần xuất:", class_options, 0, False)
+        if not ok:
+            return
+        class_name = str(picked_class or "").strip()
+        if not class_name:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Xuất điểm lớp",
+            f"{self._safe_sheet_name(class_name, fallback='class_scores')}.xlsx",
+            "Excel (*.xlsx)",
+        )
+        if not path:
+            return
+        from openpyxl import Workbook
+
+        base_headers, score_headers, rows = self._build_subject_score_matrix_rows(subjects)
+        class_rows = self._build_class_matrix_rows(class_name, rows, score_headers)
+        if not class_rows:
+            QMessageBox.information(self, "Xuất điểm lớp", "Lớp đã chọn chưa có dữ liệu học sinh để xuất.")
+            return
+        score_headers = self._trim_subject_headers_without_scores(class_rows, score_headers)
+        wb = Workbook()
+        ws = wb.active
+        ws.title = self._safe_sheet_name(class_name, fallback="class_scores")
+        self._write_subject_score_matrix_sheet(ws, base_headers, score_headers, class_rows)
+        wb.save(path)
+        QMessageBox.information(self, "Xuất điểm lớp", f"Đã xuất dữ liệu:\n{path}")
+
+    def _export_all_classes_subject_scores(self) -> None:
+        subjects = self._iter_export_subjects()
+        if not subjects:
+            QMessageBox.information(self, "Xuất điểm các lớp", "Chưa có môn nào để xuất.")
+            return
+        class_options = self._class_options_for_export()
+        if not class_options:
+            QMessageBox.information(self, "Xuất điểm các lớp", "Chưa có dữ liệu lớp để xuất.")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Xuất điểm các lớp", "all_class_subject_scores.xlsx", "Excel (*.xlsx)")
+        if not path:
+            return
+        from openpyxl import Workbook
+
+        base_headers, score_headers, rows = self._build_subject_score_matrix_rows(subjects)
+        wb = Workbook()
+        if wb.active:
+            wb.remove(wb.active)
+        exported_count = 0
+        for class_name in class_options:
+            ws = wb.create_sheet(self._safe_sheet_name(class_name, fallback="class_scores"))
+            class_rows = self._build_class_matrix_rows(class_name, rows, score_headers)
+            if not class_rows:
+                wb.remove(ws)
+                continue
+            exported_count += 1
+            class_score_headers = self._trim_subject_headers_without_scores(class_rows, score_headers)
+            self._write_subject_score_matrix_sheet(ws, base_headers, class_score_headers, class_rows)
+        if exported_count <= 0:
+            QMessageBox.information(self, "Xuất điểm các lớp", "Chưa có dữ liệu học sinh để xuất.")
+            return
+        wb.save(path)
+        QMessageBox.information(self, "Xuất điểm các lớp", f"Đã xuất dữ liệu:\n{path}")
 
     def _export_all_subject_scores(self) -> None:
         subjects = self._iter_export_subjects()
         if not subjects:
-            QMessageBox.information(self, "Xuất điểm tất cả môn", "Chưa có môn nào để xuất.")
+            QMessageBox.information(self, "Xuất điểm chi tiết các môn", "Chưa có môn nào để xuất.")
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Xuất điểm tất cả môn", "all_subject_scores.xlsx", "Excel (*.xlsx)")
+        path, _ = QFileDialog.getSaveFileName(self, "Xuất điểm chi tiết các môn", "all_subject_scores.xlsx", "Excel (*.xlsx)")
         if not path:
             return
         from openpyxl import Workbook
@@ -14068,7 +14354,7 @@ class MainWindow(QMainWindow):
             else:
                 ws_summary.append([key, label, 0, 0, 0, 0])
         wb.save(path)
-        QMessageBox.information(self, "Xuất điểm tất cả môn", f"Đã xuất dữ liệu:\n{path}")
+        QMessageBox.information(self, "Xuất điểm chi tiết các môn", f"Đã xuất dữ liệu:\n{path}")
 
     def _export_subject_api_payload(self, subject_key: str) -> None:
         subject = str(subject_key or "").strip()
@@ -14712,13 +14998,6 @@ def _patched_save_batch_for_selected_subject(self) -> bool:
     return ok
 
 
-MainWindow._subject_answer_key_signature = _patched_subject_answer_key_signature
-MainWindow._compute_blank_questions = _patched_compute_blank_questions
-MainWindow._build_recognition_content_text = _patched_build_recognition_content_text
-MainWindow._patched_build_blank_only_content_text = _patched_build_blank_only_content_text
-MainWindow._build_scan_row_payload_from_result = _patched_build_scan_row_payload_from_result
-MainWindow._load_batch_subject_state = _patched_load_batch_subject_state
-MainWindow._save_batch_for_selected_subject = _patched_save_batch_for_selected_subject
 
 
 
@@ -15009,9 +15288,6 @@ def _patched_restore_cached_working_batch_state_v3(self, subject_key: str) -> bo
     return self.scan_list.rowCount() > 0
 
 
-MainWindow._patched_rehydrate_cached_batch_row = _patched_rehydrate_cached_batch_row
-MainWindow._cache_working_batch_state = _patched_cache_working_batch_state_v3
-MainWindow._restore_cached_working_batch_state = _patched_restore_cached_working_batch_state_v3
 
 
 
@@ -15335,12 +15611,6 @@ def _patched_restore_cached_working_batch_state_v4(self, subject_key: str) -> bo
         cached_dirty = bool(cached.get('dirty', False))
         self.btn_save_batch_subject.setEnabled(cached_dirty and self.scan_list.rowCount() > 0)
     return self.scan_list.rowCount() > 0
-
-
-MainWindow._expected_questions_by_section = _patched_expected_questions_by_section_v2
-MainWindow._cache_working_batch_state = _patched_cache_working_batch_state_v4
-MainWindow._restore_cached_working_batch_state = _patched_restore_cached_working_batch_state_v4
-
 
 def run() -> None:
     bootstrap_application_db()
