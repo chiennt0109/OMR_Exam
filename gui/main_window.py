@@ -59,6 +59,7 @@ from core.omr_engine import OMRProcessor, OMRResult, RecognitionContext
 from core.scoring_engine import ScoreResult, ScoringEngine
 from editor.template_editor import TemplateEditorWindow
 from gui.import_answer_key_dialog import ImportAnswerKeyDialog
+from gui.export_reports_dialog import ExportReportsDialog
 from gui.main_window_scoring import open_scoring_review_editor_dialog
 from gui.main_window_recheck import open_recheck_dialog
 from models.answer_key import AnswerKeyRepository, SubjectKey
@@ -2794,6 +2795,8 @@ class MainWindow(QMainWindow):
         self.act_export_subject_api = self.export_menu.addAction("Xuất API bài làm theo môn (;)")
         self.act_export_subject_api.triggered.connect(self.action_export_subject_api_payload)
         self.export_menu.addSeparator()
+        self.act_export_reports_center = self.export_menu.addAction("Báo cáo thống kê...")
+        self.act_export_reports_center.triggered.connect(self.action_open_export_reports_center)
         self.act_export_range_report = self.export_menu.addAction("Báo cáo thống kê khoảng điểm...")
         self.act_export_range_report.triggered.connect(self.action_export_score_range_report)
         self.act_export_class_report = self.export_menu.addAction("Báo cáo thống kê theo lớp...")
@@ -3298,6 +3301,7 @@ class MainWindow(QMainWindow):
             "act_export_all_classes_subject_scores",
             "act_export_all_scores",
             "act_export_subject_api",
+            "act_export_reports_center",
             "act_export_range_report",
             "act_export_class_report",
             "act_export_management_report",
@@ -3599,6 +3603,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Báo cáo khoảng điểm", str(exc))
             return
         self._export_score_range_report(ranges)
+
+    def action_open_export_reports_center(self) -> None:
+        dlg = ExportReportsDialog(self)
+        dlg.exec()
 
     def action_export_class_report(self) -> None:
         self._export_class_report()
