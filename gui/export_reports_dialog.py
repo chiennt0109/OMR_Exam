@@ -44,6 +44,9 @@ class ExportReportsDialog(QDialog):
         self.main_window = parent_window
         self.setWindowTitle("Báo cáo thống kê")
         self.setWindowFlag(Qt.Window, True)
+        self.setWindowFlag(Qt.WindowMinimizeButtonHint, True)
+        self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
+        self.setWindowFlag(Qt.WindowCloseButtonHint, True)
 
         self.combo_defs: list[tuple[str, list[str]]] = []
 
@@ -136,7 +139,7 @@ class ExportReportsDialog(QDialog):
         self.report_list.setCurrentRow(0)
         self._ensure_default_combo()
         self.preview_report()
-        QTimer.singleShot(0, self.showFullScreen)
+        QTimer.singleShot(0, self.showMaximized)
 
     def _current_exam_text(self) -> str:
         session_id = str(getattr(self.main_window, "current_session_id", "") or "").strip()
