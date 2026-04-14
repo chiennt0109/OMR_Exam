@@ -14145,29 +14145,72 @@ class MainWindow(QMainWindow):
             ws.column_dimensions[col_letter].width = min(60, max(10, max_len + 2))
 
     @staticmethod
-    def _row_has_any_subject_score(row: dict[str, object], score_headers: list[str]) -> bool:
-        for header in score_headers:
-            if header not in row:
-                continue
-            value = row.get(header, None)
-            if value is None:
-                continue
-            if isinstance(value, str) and not value.strip():
-                continue
-            return True
-        return False
-
-    def _trim_matrix_rows_and_subjects(
-        self,
-        rows: list[dict[str, object]],
-        score_headers: list[str],
-    ) -> tuple[list[dict[str, object]], list[str]]:
-        filtered_rows = [row for row in rows if self._row_has_any_subject_score(row, score_headers)]
+    def _trim_subject_headers_without_scores(rows: list[dict[str, object]], score_headers: list[str]) -> list[str]:
         kept_subject_headers: list[str] = []
         for header in score_headers:
-            if any(header in row and row.get(header, None) not in ("", None) for row in filtered_rows):
+            has_score = False
+            for row in rows:
+                if header not in row:
+                    continue
+                value = row.get(header, None)
+                if value is None:
+                    continue
+                if isinstance(value, str) and not value.strip():
+                    continue
+                has_score = True
+                break
+            if has_score:
                 kept_subject_headers.append(header)
-        return filtered_rows, kept_subject_headers
+        return kept_subject_headers
+
+    def _build_class_matrix_rows(
+        self,
+        class_name: str,
+        score_rows: list[dict[str, object]],
+        score_headers: list[str],
+    ) -> list[dict[str, object]]:
+        score_by_sid: dict[str, dict[str, object]] = {}
+        for row in score_rows:
+            sid = str(row.get("SBD", "") or "").strip()
+            if sid:
+                score_by_sid[sid] = row
+        out_rows: list[dict[str, object]] = []
+        seen: set[str] = set()
+        if self.session:
+            for st in (self.session.students or []):
+                sid = str(getattr(st, "student_id", "") or "").strip()
+                st_class = str(getattr(st, "class_name", "") or "").strip()
+                if not sid or st_class != class_name:
+                    continue
+                rec: dict[str, object] = {
+                    "SBD": sid,
+                    "Họ tên": str(getattr(st, "name", "") or ""),
+                    "Ngày sinh": str(getattr(st, "birth_date", "") or ""),
+                    "Lớp": st_class,
+                }
+                score_row = score_by_sid.get(sid, {})
+                for header in score_headers:
+                    if header in score_row:
+                        rec[header] = score_row.get(header, "")
+                out_rows.append(rec)
+                seen.add(sid)
+        for row in score_rows:
+            sid = str(row.get("SBD", "") or "").strip()
+            st_class = str(row.get("Lớp", "") or "").strip()
+            if not sid or sid in seen or st_class != class_name:
+                continue
+            rec = {
+                "SBD": sid,
+                "Họ tên": row.get("Họ tên", ""),
+                "Ngày sinh": row.get("Ngày sinh", ""),
+                "Lớp": st_class,
+            }
+            for header in score_headers:
+                if header in row:
+                    rec[header] = row.get(header, "")
+            out_rows.append(rec)
+        out_rows.sort(key=lambda x: str(x.get("SBD", "")))
+        return out_rows
 
     def _class_options_for_export(self) -> list[str]:
         class_names: list[str] = []
@@ -14215,15 +14258,15 @@ class MainWindow(QMainWindow):
         from openpyxl import Workbook
 
         base_headers, score_headers, rows = self._build_subject_score_matrix_rows(subjects)
-        filtered_rows = [row for row in rows if str(row.get("Lớp", "") or "").strip() == class_name]
-        filtered_rows, score_headers = self._trim_matrix_rows_and_subjects(filtered_rows, score_headers)
-        if not filtered_rows:
-            QMessageBox.information(self, "Xuất điểm lớp", "Lớp đã chọn chưa có học sinh có điểm để xuất.")
+        class_rows = self._build_class_matrix_rows(class_name, rows, score_headers)
+        if not class_rows:
+            QMessageBox.information(self, "Xuất điểm lớp", "Lớp đã chọn chưa có dữ liệu học sinh để xuất.")
             return
+        score_headers = self._trim_subject_headers_without_scores(class_rows, score_headers)
         wb = Workbook()
         ws = wb.active
         ws.title = self._safe_sheet_name(class_name, fallback="class_scores")
-        self._write_subject_score_matrix_sheet(ws, base_headers, score_headers, filtered_rows)
+        self._write_subject_score_matrix_sheet(ws, base_headers, score_headers, class_rows)
         wb.save(path)
         QMessageBox.information(self, "Xuất điểm lớp", f"Đã xuất dữ liệu:\n{path}")
 
@@ -14248,15 +14291,15 @@ class MainWindow(QMainWindow):
         exported_count = 0
         for class_name in class_options:
             ws = wb.create_sheet(self._safe_sheet_name(class_name, fallback="class_scores"))
-            filtered_rows = [row for row in rows if str(row.get("Lớp", "") or "").strip() == class_name]
-            filtered_rows, class_score_headers = self._trim_matrix_rows_and_subjects(filtered_rows, score_headers)
-            if not filtered_rows:
+            class_rows = self._build_class_matrix_rows(class_name, rows, score_headers)
+            if not class_rows:
                 wb.remove(ws)
                 continue
             exported_count += 1
-            self._write_subject_score_matrix_sheet(ws, base_headers, class_score_headers, filtered_rows)
+            class_score_headers = self._trim_subject_headers_without_scores(class_rows, score_headers)
+            self._write_subject_score_matrix_sheet(ws, base_headers, class_score_headers, class_rows)
         if exported_count <= 0:
-            QMessageBox.information(self, "Xuất điểm các lớp", "Chưa có học sinh nào có điểm để xuất.")
+            QMessageBox.information(self, "Xuất điểm các lớp", "Chưa có dữ liệu học sinh để xuất.")
             return
         wb.save(path)
         QMessageBox.information(self, "Xuất điểm các lớp", f"Đã xuất dữ liệu:\n{path}")
