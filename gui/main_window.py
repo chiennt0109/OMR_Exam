@@ -2831,7 +2831,7 @@ class MainWindow(QMainWindow):
         self.ribbon_scoring_action = toolbar.addAction(style.standardIcon(QStyle.SP_CommandLink), "Tính điểm", self.action_calculate_scores)
         self.ribbon_recheck_action = toolbar.addAction(style.standardIcon(QStyle.SP_BrowserReload), "Phúc tra", self.action_open_recheck)
         self.ribbon_export_action = QAction(style.standardIcon(QStyle.SP_DriveNetIcon), "Export", self)
-        self.ribbon_export_action.triggered.connect(self.action_export_all_subject_scores)
+        self.ribbon_export_action.triggered.connect(self.action_open_export_reports_center)
         self.ribbon_export_action.setMenu(self.export_menu)
         toolbar.addAction(self.ribbon_export_action)
         toolbar.addSeparator()
