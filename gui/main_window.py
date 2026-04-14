@@ -8077,18 +8077,6 @@ class MainWindow(QMainWindow):
             }
             blanks[sec] = [int(q_display) for q_display in display_questions if int(q_display) not in answered_display]
         return blanks
-        messages: list[str] = []
-        for sec in ["MCQ", "TF", "NUMERIC"]:
-            expected_set = set(expected.get(sec, []))
-            if not expected_set:
-                continue
-            actual_set = {int(q) for q in actual_map.get(sec, set())}
-            missing = sorted(expected_set - actual_set)
-            if missing:
-                messages.append(
-                    f"thiếu {sec} ({len(expected_set)-len(missing)}/{len(expected_set)}): {','.join(str(v) for v in missing)}"
-                )
-        return messages
 
     def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
         template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
@@ -15010,13 +14998,6 @@ def _patched_save_batch_for_selected_subject(self) -> bool:
     return ok
 
 
-MainWindow._subject_answer_key_signature = _patched_subject_answer_key_signature
-MainWindow._compute_blank_questions = _patched_compute_blank_questions
-MainWindow._build_recognition_content_text = _patched_build_recognition_content_text
-MainWindow._patched_build_blank_only_content_text = _patched_build_blank_only_content_text
-MainWindow._build_scan_row_payload_from_result = _patched_build_scan_row_payload_from_result
-MainWindow._load_batch_subject_state = _patched_load_batch_subject_state
-MainWindow._save_batch_for_selected_subject = _patched_save_batch_for_selected_subject
 
 
 
@@ -15307,9 +15288,6 @@ def _patched_restore_cached_working_batch_state_v3(self, subject_key: str) -> bo
     return self.scan_list.rowCount() > 0
 
 
-MainWindow._patched_rehydrate_cached_batch_row = _patched_rehydrate_cached_batch_row
-MainWindow._cache_working_batch_state = _patched_cache_working_batch_state_v3
-MainWindow._restore_cached_working_batch_state = _patched_restore_cached_working_batch_state_v3
 
 
 
@@ -15633,12 +15611,6 @@ def _patched_restore_cached_working_batch_state_v4(self, subject_key: str) -> bo
         cached_dirty = bool(cached.get('dirty', False))
         self.btn_save_batch_subject.setEnabled(cached_dirty and self.scan_list.rowCount() > 0)
     return self.scan_list.rowCount() > 0
-
-
-MainWindow._expected_questions_by_section = _patched_expected_questions_by_section_v2
-MainWindow._cache_working_batch_state = _patched_cache_working_batch_state_v4
-MainWindow._restore_cached_working_batch_state = _patched_restore_cached_working_batch_state_v4
-
 
 def run() -> None:
     bootstrap_application_db()
