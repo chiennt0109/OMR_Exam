@@ -3286,7 +3286,7 @@ class MainWindow(QMainWindow):
             self.ribbon_recheck_action.setEnabled(has_session and has_batch_rows)
         has_export_data = self._has_exportable_data()
         if getattr(self, "ribbon_export_action", None) is not None:
-            self.ribbon_export_action.setEnabled(has_session and has_export_data)
+            self.ribbon_export_action.setEnabled(has_session)
         self._refresh_export_action_states(has_session=has_session, has_export_data=has_export_data)
 
     def _refresh_export_action_states(self, *, has_session: bool | None = None, has_export_data: bool | None = None) -> None:
@@ -3308,7 +3308,7 @@ class MainWindow(QMainWindow):
         ]:
             action = getattr(self, attr_name, None)
             if action is not None:
-                action.setEnabled(bool(has_session and has_export_data))
+                action.setEnabled(bool(has_session))
 
     def _iter_export_subjects(self) -> list[tuple[str, str]]:
         pairs: list[tuple[str, str]] = []
