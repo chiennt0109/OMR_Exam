@@ -3269,7 +3269,7 @@ class MainWindow(QMainWindow):
         self._refresh_ribbon_action_states()
 
     def _refresh_ribbon_action_states(self) -> None:
-        has_session = bool(str(getattr(self, "current_session_id", "") or "").strip())
+        has_session = self._has_session_context_for_export()
         has_subject_cfg = bool(self._effective_subject_configs_for_batch())
         has_batch_rows = bool(hasattr(self, "scan_list") and self.scan_list.rowCount() > 0)
         has_subject_selection = bool(hasattr(self, "batch_subject_combo") and self.batch_subject_combo.currentIndex() > 0)
@@ -3289,9 +3289,22 @@ class MainWindow(QMainWindow):
             self.ribbon_export_action.setEnabled(has_session)
         self._refresh_export_action_states(has_session=has_session, has_export_data=has_export_data)
 
+    def _has_session_context_for_export(self) -> bool:
+        if bool(str(getattr(self, "current_session_id", "") or "").strip()):
+            return True
+        if getattr(self, "session", None) is not None:
+            sid = str(getattr(self.session, "session_id", "") or "").strip()
+            if sid:
+                return True
+        if hasattr(self, "exam_list_table"):
+            row = self.exam_list_table.currentRow()
+            if row >= 0 and bool(str(self._session_id_for_row(row) or "").strip()):
+                return True
+        return False
+
     def _refresh_export_action_states(self, *, has_session: bool | None = None, has_export_data: bool | None = None) -> None:
         if has_session is None:
-            has_session = bool(str(getattr(self, "current_session_id", "") or "").strip())
+            has_session = self._has_session_context_for_export()
         if has_export_data is None:
             has_export_data = self._has_exportable_data()
         for attr_name in [
