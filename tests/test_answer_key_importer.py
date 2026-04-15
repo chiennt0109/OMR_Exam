@@ -110,6 +110,31 @@ class AnswerKeyImporterTests(unittest.TestCase):
             self.assertEqual(package.exam_keys["3001"].numeric_answers[27], "22")
             self.assertEqual(package.exam_keys["3001"].numeric_answers[28], "4,44")
 
+    def test_import_positional_matrix_without_header_and_reindex_per_section(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "positional.xlsx"
+            pd.DataFrame(
+                [
+                    ["tiêu đề tự do", "", ""],
+                    ["stt", "0101", "0102"],
+                    [1, "A", "B"],
+                    [2, "C", "D"],
+                    [3, "ĐSĐS", "SSĐĐ"],
+                    [4, "SĐĐS", "ĐĐSS"],
+                    [5, "12,5", "13"],
+                    [6, "-4", "7,2"],
+                ]
+            ).to_excel(path, index=False, header=False)
+            package = import_answer_key(path)
+            key_0101 = package.exam_keys["0101"]
+            key_0102 = package.exam_keys["0102"]
+            self.assertEqual(key_0101.mcq_answers, {1: "A", 2: "C"})
+            self.assertEqual(key_0102.mcq_answers, {1: "B", 2: "D"})
+            self.assertEqual(key_0101.true_false_answers[1], {"a": True, "b": False, "c": True, "d": False})
+            self.assertEqual(key_0102.true_false_answers[2], {"a": True, "b": True, "c": False, "d": False})
+            self.assertEqual(key_0101.numeric_answers, {1: "12,5", 2: "-4"})
+            self.assertEqual(key_0102.numeric_answers, {1: "13", 2: "7,2"})
+
 
 if __name__ == "__main__":
     unittest.main()
