@@ -49,6 +49,10 @@ class ExportReportsDialog(QDialog):
         self.setWindowFlag(Qt.WindowCloseButtonHint, True)
 
         self.combo_defs: list[tuple[str, list[str]]] = []
+        self._subject_pairs_cache: list[tuple[str, str]] | None = None
+        self._student_profile_cache: dict[str, dict[str, str]] | None = None
+        self._score_rows_cache: dict[str, list[dict]] = {}
+        self._subject_score_cache: dict[str, dict[str, float]] = {}
 
         self.report_list = QListWidget()
         for name in [
@@ -67,7 +71,6 @@ class ExportReportsDialog(QDialog):
         self.preview_table.setAlternatingRowColors(True)
         self.preview_table.setEditTriggers(QTableWidget.NoEditTriggers)
 
-        # right filters
         self.class_combo = QComboBox()
         self.class_combo.addItems(self._collect_class_options())
 
@@ -83,7 +86,10 @@ class ExportReportsDialog(QDialog):
 
         self.right_widget = QWidget()
         self.right_form = QFormLayout(self.right_widget)
-        self.row_class = QWidget(); row_class_layout = QVBoxLayout(self.row_class); row_class_layout.setContentsMargins(0, 0, 0, 0); row_class_layout.addWidget(self.class_combo)
+        self.row_class = QWidget()
+        row_class_layout = QVBoxLayout(self.row_class)
+        row_class_layout.setContentsMargins(0, 0, 0, 0)
+        row_class_layout.addWidget(self.class_combo)
         self.row_combo = QWidget()
         combo_layout = QVBoxLayout(self.row_combo)
         combo_layout.setContentsMargins(0, 0, 0, 0)
@@ -106,7 +112,6 @@ class ExportReportsDialog(QDialog):
         center_layout.addWidget(self.title_label)
         center_layout.addWidget(self.preview_table)
 
-        # bottom ribbon
         self.btn_preview = QPushButton("Xem trước")
         self.btn_export_excel = QPushButton("Xuất Excel")
         self.btn_export_pdf = QPushButton("Xuất PDF")
@@ -146,6 +151,8 @@ class ExportReportsDialog(QDialog):
         return session_id or "Chưa có kỳ thi"
 
     def _collect_subject_pairs(self) -> list[tuple[str, str]]:
+        if self._subject_pairs_cache is not None:
+            return list(self._subject_pairs_cache)
         out: list[tuple[str, str]] = []
         for _label, key in self.main_window._iter_export_subjects():
             cfg = self.main_window._subject_config_by_subject_key(key) or {}
@@ -155,7 +162,6 @@ class ExportReportsDialog(QDialog):
             clean = clean.split("- Kỳ thi", 1)[0].strip()
             clean = clean.split("- Khối", 1)[0].strip()
             out.append((clean or str(key), key))
-        # dedupe labels
         seen: set[str] = set()
         dedup: list[tuple[str, str]] = []
         for label, key in out:
@@ -164,19 +170,32 @@ class ExportReportsDialog(QDialog):
                 final = f"{label} ({key})"
             seen.add(final)
             dedup.append((final, key))
-        return dedup
+        self._subject_pairs_cache = dedup
+        return list(dedup)
+
+    def _score_rows_for_subject_cached(self, subject_key: str) -> list[dict]:
+        key = str(subject_key or "").strip()
+        if not key:
+            return []
+        if key not in self._score_rows_cache:
+            self._score_rows_cache[key] = list(self.main_window._score_rows_for_subject(key) or [])
+        return list(self._score_rows_cache.get(key, []))
 
     def _collect_class_options(self) -> list[str]:
         vals = ["Tất cả"]
-        classes = sorted(set(
-            str(profile.get("class_name", "") or "").strip()
-            for profile in self._student_profile_map().values()
-            if str(profile.get("class_name", "") or "").strip()
-        ))
+        classes = sorted(
+            set(
+                str(profile.get("class_name", "") or "").strip()
+                for profile in self._student_profile_map().values()
+                if str(profile.get("class_name", "") or "").strip()
+            )
+        )
         vals.extend(classes)
         return vals
 
     def _student_profile_map(self) -> dict[str, dict[str, str]]:
+        if self._student_profile_cache is not None:
+            return dict(self._student_profile_cache)
         out: dict[str, dict[str, str]] = {}
         if self.main_window.session:
             for st in (self.main_window.session.students or []):
@@ -190,16 +209,19 @@ class ExportReportsDialog(QDialog):
                     "exam_room": str(getattr(st, "exam_room", "") or ""),
                 }
         for _label, key in self._collect_subject_pairs():
-            for row in self.main_window._score_rows_for_subject(key):
+            for row in self._score_rows_for_subject_cached(key):
                 sid = str(row.get("student_id", "") or "").strip()
                 if not sid:
                     continue
-                rec = out.setdefault(sid, {
-                    "name": str(row.get("name", "") or ""),
-                    "birth_date": str(row.get("birth_date", "") or ""),
-                    "class_name": str(row.get("class_name", "") or ""),
-                    "exam_room": str(row.get("exam_room", "") or ""),
-                })
+                rec = out.setdefault(
+                    sid,
+                    {
+                        "name": str(row.get("name", "") or ""),
+                        "birth_date": str(row.get("birth_date", "") or ""),
+                        "class_name": str(row.get("class_name", "") or ""),
+                        "exam_room": str(row.get("exam_room", "") or ""),
+                    },
+                )
                 if not rec.get("name"):
                     rec["name"] = str(row.get("name", "") or "")
                 if not rec.get("birth_date"):
@@ -208,7 +230,8 @@ class ExportReportsDialog(QDialog):
                     rec["class_name"] = str(row.get("class_name", "") or "")
                 if not rec.get("exam_room"):
                     rec["exam_room"] = str(row.get("exam_room", "") or "")
-        return out
+        self._student_profile_cache = out
+        return dict(out)
 
     def _ensure_default_combo(self) -> None:
         if self.combo_defs:
@@ -216,40 +239,64 @@ class ExportReportsDialog(QDialog):
         subjects = [label for label, _ in self._collect_subject_pairs()]
         if len(subjects) >= 3:
             self.combo_defs.append(("Mặc định", subjects[:3]))
-            self._refresh_combo_list()
+            self._refresh_combo_list(select_index=0)
+
+    def _selected_combo(self) -> tuple[str, list[str]] | None:
+        if not self.combo_defs:
+            return None
+        row = self.combo_list.currentRow()
+        if 0 <= row < len(self.combo_defs):
+            return self.combo_defs[row]
+        return self.combo_defs[0]
 
     def _add_combo(self) -> None:
         name = self.combo_name_edit.text().strip() or f"Tổ hợp {len(self.combo_defs) + 1}"
-        subjects = [self.combo_sub1.currentText().strip(), self.combo_sub2.currentText().strip(), self.combo_sub3.currentText().strip()]
+        subjects = [
+            self.combo_sub1.currentText().strip(),
+            self.combo_sub2.currentText().strip(),
+            self.combo_sub3.currentText().strip(),
+        ]
         if len(set(subjects)) < 3:
             QMessageBox.warning(self, "Tổ hợp", "3 môn trong tổ hợp phải khác nhau.")
             return
         self.combo_defs.append((name, subjects))
-        self._refresh_combo_list()
+        self._refresh_combo_list(select_index=len(self.combo_defs) - 1)
+        self._last_report = None
 
     def _remove_combo(self) -> None:
         row = self.combo_list.currentRow()
         if row < 0 or row >= len(self.combo_defs):
             return
         self.combo_defs.pop(row)
-        self._refresh_combo_list()
+        next_row = min(row, len(self.combo_defs) - 1)
+        self._refresh_combo_list(select_index=next_row)
+        self._last_report = None
 
-    def _refresh_combo_list(self) -> None:
+    def _refresh_combo_list(self, select_index: int | None = None) -> None:
+        old_row = self.combo_list.currentRow()
         self.combo_list.clear()
         for name, subjects in self.combo_defs:
             self.combo_list.addItem(f"{name}: {subjects[0]}, {subjects[1]}, {subjects[2]}")
+        if self.combo_defs:
+            target = old_row if select_index is None else select_index
+            target = max(0, min(target, len(self.combo_defs) - 1))
+            self.combo_list.setCurrentRow(target)
 
     def _on_report_changed(self, text: str) -> None:
         self.title_label.setText(text or "Báo cáo thống kê")
-        # show right column only when needed
         needs_filters = text in {self.REPORT_COMBO_RANK, self.REPORT_COMBO_DIST, self.REPORT_CLASS_SUMMARY}
         self.right_widget.setVisible(needs_filters)
         self.row_class.setVisible(text == self.REPORT_CLASS_SUMMARY)
         self.row_combo.setVisible(text in {self.REPORT_COMBO_RANK, self.REPORT_COMBO_DIST, self.REPORT_CLASS_SUMMARY})
 
     def _subject_score_by_sid(self, subject_key: str) -> dict[str, float]:
+        key = str(subject_key or "").strip()
+        if not key:
+            return {}
+        if key in self._subject_score_cache:
+            return dict(self._subject_score_cache[key])
         out: dict[str, float] = {}
-        for row in self.main_window._score_rows_for_subject(subject_key):
+        for row in self._score_rows_for_subject_cached(key):
             sid = str(row.get("student_id", "") or "").strip()
             if not sid:
                 continue
@@ -257,30 +304,31 @@ class ExportReportsDialog(QDialog):
                 out[sid] = float(row.get("score", "") or 0)
             except Exception:
                 continue
-        return out
+        self._subject_score_cache[key] = out
+        return dict(out)
 
     def build_subject_distribution_report(self) -> ReportTable:
         headers = ["Mã môn", "Tổng bài", "0–<=1", "1–<2", "2–<3", "3–<4", "4–<5", "5–<6", "6–<7", "7–<8", "8–<9", "9–<10", "=10"]
         rows: list[list[object]] = []
         bins = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 7), (7, 8), (8, 9), (9, 10)]
         for label, key in self._collect_subject_pairs():
-            scores = []
-            for row in self.main_window._score_rows_for_subject(key):
+            scores: list[float] = []
+            for row in self._score_rows_for_subject_cached(key):
                 try:
                     scores.append(float(row.get("score", "") or 0))
                 except Exception:
                     pass
             counts = [0] * len(bins)
             perfect = 0
-            for s in scores:
-                if abs(s - 10.0) < 1e-9:
+            for score in scores:
+                if abs(score - 10.0) < 1e-9:
                     perfect += 1
                     continue
                 for idx, (lo, hi) in enumerate(bins):
-                    if idx == 0 and lo <= s <= hi:
+                    if idx == 0 and lo <= score <= hi:
                         counts[idx] += 1
                         break
-                    if lo <= s < hi:
+                    if lo <= score < hi:
                         counts[idx] += 1
                         break
             rows.append([label, len(scores), *counts, perfect])
@@ -291,7 +339,7 @@ class ExportReportsDialog(QDialog):
         rows: list[list[object]] = []
         for label, key in self._collect_subject_pairs():
             scores: list[float] = []
-            for row in self.main_window._score_rows_for_subject(key):
+            for row in self._score_rows_for_subject_cached(key):
                 try:
                     scores.append(float(row.get("score", "") or 0))
                 except Exception:
@@ -308,9 +356,10 @@ class ExportReportsDialog(QDialog):
 
     def build_combo_ranking_report(self) -> ReportTable:
         headers = ["STT", "Họ đệm", "Tên", "Ngày sinh", "Mã lớp", "Phòng thi", "Môn 1", "Môn 2", "Môn 3", "Tổng điểm", "Xếp hạng"]
-        if not self.combo_defs:
+        selected = self._selected_combo()
+        if not selected:
             return ReportTable(headers, [])
-        _name, subjects = self.combo_defs[0]
+        _name, subjects = selected
         score_maps = self._combo_score_maps(subjects)
         rows: list[list[object]] = []
         profiles = self._student_profile_map()
@@ -323,9 +372,19 @@ class ExportReportsDialog(QDialog):
             parts = full_name.split()
             ho_dem = " ".join(parts[:-1]) if len(parts) > 1 else ""
             ten = parts[-1] if parts else ""
-            rows.append([0, ho_dem, ten, str(profile.get("birth_date", "") or ""), str(profile.get("class_name", "") or ""), str(profile.get("exam_room", "") or ""), *vals, total, ""])
-        sortable = [(idx, r) for idx, r in enumerate(rows) if isinstance(r[9], (int, float))]
-        sortable.sort(key=lambda x: float(x[1][9]), reverse=True)
+            rows.append([
+                0,
+                ho_dem,
+                ten,
+                str(profile.get("birth_date", "") or ""),
+                str(profile.get("class_name", "") or ""),
+                str(profile.get("exam_room", "") or ""),
+                *vals,
+                total,
+                "",
+            ])
+        sortable = [(idx, row) for idx, row in enumerate(rows) if isinstance(row[9], (int, float))]
+        sortable.sort(key=lambda item: float(item[1][9]), reverse=True)
         rank_by_idx = {idx: rank + 1 for rank, (idx, _row) in enumerate(sortable)}
         for idx, row in enumerate(rows, start=1):
             row[0] = idx
@@ -336,7 +395,7 @@ class ExportReportsDialog(QDialog):
         headers = ["Khoảng điểm", "Tổng cộng"] + [name for name, _ in self.combo_defs]
         if not self.combo_defs:
             return ReportTable(headers, [])
-        bins = []
+        bins: list[tuple[float, float]] = []
         cur = 27.0
         while cur < 30.0:
             nxt = round(cur + 0.25, 2)
@@ -344,8 +403,8 @@ class ExportReportsDialog(QDialog):
             cur = nxt
         bins.append((30.0, 30.0))
 
-        combo_totals: list[list[float]] = []
         profiles = self._student_profile_map()
+        combo_totals: list[list[float]] = []
         for _name, subjects in self.combo_defs:
             maps = self._combo_score_maps(subjects)
             totals: list[float] = []
@@ -358,21 +417,25 @@ class ExportReportsDialog(QDialog):
         rows: list[list[object]] = []
         for lo, hi in bins:
             label = f"{lo:.2f}-{hi:.2f}" if lo != hi else "=30.00"
-            counts = []
+            counts: list[int] = []
             for totals in combo_totals:
-                c = 0
-                for t in totals:
-                    if lo == hi and abs(t - 30.0) < 1e-9:
-                        c += 1
-                    elif lo <= t < hi:
-                        c += 1
-                counts.append(c)
+                count = 0
+                for total in totals:
+                    if lo == hi and abs(total - 30.0) < 1e-9:
+                        count += 1
+                    elif lo <= total < hi:
+                        count += 1
+                counts.append(count)
             rows.append([label, sum(counts), *counts])
         return ReportTable(headers, rows)
 
     def build_class_summary_report(self) -> ReportTable:
         subjects = self._collect_subject_pairs()
         score_by_subject = {label: self._subject_score_by_sid(key) for label, key in subjects}
+        combo_score_maps = {
+            combo_name: self._combo_score_maps(combo_subjects)
+            for combo_name, combo_subjects in self.combo_defs
+        }
         headers = ["STT", "SBD", "Họ tên", "Ngày sinh", "Mã lớp", "Phòng thi"] + [label for label, _ in subjects] + [name for name, _ in self.combo_defs]
         grouped: dict[str, list[list[object]]] = {}
         profiles = self._student_profile_map()
@@ -383,9 +446,9 @@ class ExportReportsDialog(QDialog):
             row = [0, sid, str(profile.get("name", "") or ""), str(profile.get("birth_date", "") or ""), cls, str(profile.get("exam_room", "") or "")]
             for label, _ in subjects:
                 row.append(score_by_subject.get(label, {}).get(sid, ""))
-            for _combo_name, combo_subjects in self.combo_defs:
-                maps = self._combo_score_maps(combo_subjects)
-                vals = [maps[i].get(sid, None) for i in range(3)]
+            for combo_name, _combo_subjects in self.combo_defs:
+                maps = combo_score_maps.get(combo_name, [])
+                vals = [maps[i].get(sid, None) for i in range(3)] if len(maps) >= 3 else [None, None, None]
                 row.append(round(sum(float(v) for v in vals), 4) if all(isinstance(v, (int, float)) for v in vals) else "")
             grouped.setdefault(cls, []).append(row)
 
@@ -396,7 +459,7 @@ class ExportReportsDialog(QDialog):
         all_rows: list[list[object]] = []
         for cls in sorted(grouped):
             rows = grouped[cls]
-            rows.sort(key=lambda x: str(x[1]))
+            rows.sort(key=lambda item: str(item[1]))
             for idx, row in enumerate(rows, start=1):
                 row[0] = idx
             if rows:
@@ -482,7 +545,8 @@ class ExportReportsDialog(QDialog):
         x = 40
         y = 60
         line_h = 22
-        painter.drawText(x, y, " | ".join(self._last_report.headers))
+        header_line = " | ".join(self._last_report.headers)
+        painter.drawText(x, y, header_line)
         y += line_h
         for row in self._last_report.rows:
             painter.drawText(x, y, " | ".join("" if v is None else str(v) for v in row))
@@ -490,5 +554,7 @@ class ExportReportsDialog(QDialog):
             if y > writer.height() - 60:
                 writer.newPage()
                 y = 60
+                painter.drawText(x, y, header_line)
+                y += line_h
         painter.end()
         QMessageBox.information(self, "Báo cáo", f"Đã xuất PDF:\n{path}")

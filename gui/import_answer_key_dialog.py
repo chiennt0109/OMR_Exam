@@ -7,370 +7,259 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QGridLayout,
+    QFormLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
-    QLineEdit,
     QMessageBox,
-    QInputDialog,
     QPushButton,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
-    QTabWidget,
-    QTextEdit,
     QVBoxLayout,
 )
 
-from core.answer_key_importer import ImportedAnswerKey, ImportedAnswerKeyPackage
+from models.answer_key import SubjectKey
 
 
 @dataclass
-class PreviewRow:
-    question: int
-    answer_type: str
-    answer_value: str
+class ImportedAnswerRow:
+    section: str
+    question_no: int
+    answer: str
 
 
 class ImportAnswerKeyDialog(QDialog):
-    def __init__(self, imported: ImportedAnswerKeyPackage, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Preview Imported Answer Keys")
-        self.resize(980, 620)
-        self.setWindowState(self.windowState() | Qt.WindowMaximized)
-        self.imported = imported
-        self.exam_tables: dict[str, QTableWidget] = {}
+    def __init__(self, parent_window, rows: list[ImportedAnswerRow], subject_key: str) -> None:
+        super().__init__(parent_window)
+        self.main_window = parent_window
+        self.rows = rows
+        self.subject_key = str(subject_key or "").strip()
+        self._is_refreshing = False
 
-        first_exam = next(iter(imported.exam_keys.values()), ImportedAnswerKey())
-        self.exam_id_edit = QLineEdit(str(first_exam.exam_id))
-        self.exam_codes_label = QLabel()
+        self.setWindowTitle("Kiểm tra và nhập đáp án")
+        self.resize(960, 760)
 
-        self.mcq_count_edit = QLineEdit("0")
-        self.tf_count_edit = QLineEdit("0")
-        self.numeric_count_edit = QLineEdit("0")
+        self.exam_code_combo = QComboBox(self)
+        self.exam_code_combo.setEditable(True)
+        self._load_exam_codes()
 
-        top = QHBoxLayout()
-        top.addWidget(QLabel("Exam ID:"))
-        top.addWidget(self.exam_id_edit)
-        top.addWidget(QLabel("Mã đề:"))
-        top.addWidget(self.exam_codes_label)
+        self.mcq_count_spin = QSpinBox(self)
+        self.mcq_count_spin.setRange(0, 500)
+        self.tf_count_spin = QSpinBox(self)
+        self.tf_count_spin.setRange(0, 500)
+        self.numeric_count_spin = QSpinBox(self)
+        self.numeric_count_spin.setRange(0, 500)
+        self.lbl_total = QLabel(self)
 
-        mapping = QGridLayout()
-        mapping.addWidget(QLabel("Mapping sections (theo thứ tự dòng tab hiện tại):"), 0, 0, 1, 4)
-        mapping.addWidget(QLabel("MCQ số câu"), 1, 0)
-        mapping.addWidget(self.mcq_count_edit, 1, 1)
-        mapping.addWidget(QLabel("TF số câu"), 1, 2)
-        mapping.addWidget(self.tf_count_edit, 1, 3)
-        mapping.addWidget(QLabel("NUMERIC số câu"), 2, 0)
-        mapping.addWidget(self.numeric_count_edit, 2, 1)
-        btn_apply_mapping = QPushButton("Apply Mapping")
-        btn_apply_mapping.clicked.connect(self._apply_mapping)
-        mapping.addWidget(btn_apply_mapping, 2, 3)
+        self.table = QTableWidget(0, 3, self)
+        self.table.setHorizontalHeaderLabels(["Phần", "Câu", "Đáp án"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
 
-        self.tabs = QTabWidget()
-        self.tabs.currentChanged.connect(self._on_tab_changed)
-        self.tabs.tabBarDoubleClicked.connect(self._rename_exam_code)
+        self.btn_add = QPushButton("Thêm dòng", self)
+        self.btn_delete = QPushButton("Xóa dòng chọn", self)
+        self.btn_apply_mapping = QPushButton("Áp mapping phần", self)
 
-        btn_add = QPushButton("Add Row")
-        btn_add.clicked.connect(self._add_empty_row)
-        btn_delete = QPushButton("Delete Row")
-        btn_delete.clicked.connect(self._delete_selected_rows)
-        btn_rename = QPushButton("Rename Exam Code")
-        btn_rename.clicked.connect(lambda: self._rename_exam_code(self.tabs.currentIndex()))
+        form = QFormLayout()
+        form.addRow("Mã đề", self.exam_code_combo)
+        form.addRow("Số câu MCQ", self.mcq_count_spin)
+        form.addRow("Số câu TF", self.tf_count_spin)
+        form.addRow("Số câu NUMERIC", self.numeric_count_spin)
+        form.addRow("Tổng số dòng", self.lbl_total)
 
-        self.summary_text = QTextEdit()
-        self.summary_text.setReadOnly(True)
-        self.summary_text.setPlaceholderText("Tóm tắt đáp án hiện tại sẽ hiển thị ở đây.")
-        self.summary_text.setMinimumHeight(100)
-        self.summary_text.setMaximumHeight(180)
+        actions = QHBoxLayout()
+        actions.addWidget(self.btn_add)
+        actions.addWidget(self.btn_delete)
+        actions.addStretch(1)
+        actions.addWidget(self.btn_apply_mapping)
 
-        btn_box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        btn_box.accepted.connect(self._on_accept)
-        btn_box.rejected.connect(self.reject)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=self)
 
         layout = QVBoxLayout(self)
-        layout.addLayout(top)
-        layout.addLayout(mapping)
-        layout.addWidget(self.tabs)
-        btn_row = QHBoxLayout()
-        btn_row.addWidget(btn_add)
-        btn_row.addWidget(btn_delete)
-        btn_row.addWidget(btn_rename)
-        btn_row.addStretch()
-        layout.addLayout(btn_row)
-        layout.addWidget(QLabel("Tóm tắt đáp án / mô tả chấm khi nhập sai:"))
-        layout.addWidget(self.summary_text)
-        layout.addWidget(btn_box)
+        layout.addLayout(form)
+        layout.addWidget(self.table, 1)
+        layout.addLayout(actions)
+        layout.addWidget(buttons)
+
+        self.btn_add.clicked.connect(self._append_row)
+        self.btn_delete.clicked.connect(self._delete_selected_rows)
+        self.btn_apply_mapping.clicked.connect(self._apply_mapping)
+        self.table.itemChanged.connect(self._handle_table_changed)
+        self.mcq_count_spin.valueChanged.connect(self._refresh_total_label)
+        self.tf_count_spin.valueChanged.connect(self._refresh_total_label)
+        self.numeric_count_spin.valueChanged.connect(self._refresh_total_label)
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
 
         self._load_rows()
+        self._guess_section_counts()
+        self._refresh_total_label()
 
-    def _build_table(self) -> QTableWidget:
-        table = QTableWidget(0, 3)
-        table.setHorizontalHeaderLabels(["Question", "Type", "Answer"])
-        return table
-
-    def _append_row(self, table: QTableWidget, row: PreviewRow) -> None:
-        r = table.rowCount()
-        table.insertRow(r)
-        table.setItem(r, 0, QTableWidgetItem(str(row.question)))
-
-        type_combo = QComboBox()
-        type_combo.addItems(["MCQ", "TF", "NUMERIC"])
-        type_combo.setCurrentText(row.answer_type)
-        type_combo.currentTextChanged.connect(lambda _text: self._handle_table_changed())
-        table.setCellWidget(r, 1, type_combo)
-        answer_item = QTableWidgetItem(row.answer_value)
-        table.setItem(r, 2, answer_item)
+    def _load_exam_codes(self) -> None:
+        existing = self.main_window._fetch_answer_keys_for_subject_scoped(self.subject_key) or {}
+        codes = sorted(str(code or "").strip() for code in existing.keys() if str(code or "").strip())
+        if not codes:
+            codes = ["0000"]
+        self.exam_code_combo.clear()
+        self.exam_code_combo.addItems(codes)
+        if self.exam_code_combo.findText("0000") < 0:
+            self.exam_code_combo.addItem("0000")
+        self.exam_code_combo.setCurrentText(codes[0] if codes else "0000")
 
     def _load_rows(self) -> None:
-        self.tabs.clear()
-        self.exam_tables.clear()
-        for exam_code, key in sorted(self.imported.exam_keys.items()):
-            table = self._build_table()
-            table.itemChanged.connect(lambda _item, tbl=table: self._handle_table_changed(tbl))
-            self.exam_tables[exam_code] = table
-            self.tabs.addTab(table, exam_code)
+        self._is_refreshing = True
+        self.table.setRowCount(0)
+        for row in self.rows:
+            self._append_row(row.section, row.question_no, row.answer)
+        self._is_refreshing = False
+        self._refresh_total_label()
 
-            rows: list[PreviewRow] = []
-            for q, ans in sorted(key.mcq_answers.items()):
-                rows.append(PreviewRow(q, "MCQ", ans))
-            for q, ans in sorted(key.true_false_answers.items()):
-                text = "".join("T" if ans.get(ch, False) else "F" for ch in ["a", "b", "c", "d"])
-                rows.append(PreviewRow(q, "TF", text))
-            for q, ans in sorted(key.numeric_answers.items()):
-                rows.append(PreviewRow(q, "NUMERIC", ans))
-            for sec, answer_type in [("MCQ", "MCQ"), ("TF", "TF"), ("NUMERIC", "NUMERIC")]:
-                invalid_map = (key.invalid_answer_rows or {}).get(sec, {}) if isinstance(getattr(key, "invalid_answer_rows", {}), dict) else {}
-                for q, ans in sorted((invalid_map or {}).items()):
-                    rows.append(PreviewRow(int(q), answer_type, str(ans)))
+    def _append_row(self, section: str = "MCQ", question_no: int = 1, answer: str = "") -> None:
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        section_combo = QComboBox(self.table)
+        section_combo.addItems(["MCQ", "TF", "NUMERIC"])
+        target_section = str(section or "MCQ").strip().upper() or "MCQ"
+        section_combo.setCurrentText(target_section if target_section in {"MCQ", "TF", "NUMERIC"} else "MCQ")
+        section_combo.currentTextChanged.connect(self._refresh_total_label)
+        self.table.setCellWidget(row, 0, section_combo)
 
-            rows.sort(key=lambda x: int(x.question))
-            for row in rows:
-                self._append_row(table, row)
+        q_item = QTableWidgetItem(str(question_no))
+        q_item.setTextAlignment(Qt.AlignCenter)
+        self.table.setItem(row, 1, q_item)
 
-        self._refresh_exam_codes_label()
-        self._update_section_counts_from_current_tab()
-        self._refresh_summary()
-
-    def _refresh_exam_codes_label(self) -> None:
-        codes = sorted(self.exam_tables.keys())
-        self.exam_codes_label.setText(", ".join(codes) if codes else "-")
-
-    def _current_table(self) -> QTableWidget | None:
-        w = self.tabs.currentWidget()
-        return w if isinstance(w, QTableWidget) else None
-
-    def _on_tab_changed(self, _idx: int) -> None:
-        self._update_section_counts_from_current_tab()
-        self._refresh_summary()
-
-    def _update_section_counts_from_current_tab(self) -> None:
-        table = self._current_table()
-        counts = {"MCQ": 0, "TF": 0, "NUMERIC": 0}
-        if table:
-            for r in range(table.rowCount()):
-                widget = table.cellWidget(r, 1)
-                if widget:
-                    counts[widget.currentText()] += 1
-        self.mcq_count_edit.setText(str(counts["MCQ"]))
-        self.tf_count_edit.setText(str(counts["TF"]))
-        self.numeric_count_edit.setText(str(counts["NUMERIC"]))
-
-    def _add_empty_row(self) -> None:
-        table = self._current_table()
-        if not table:
-            return
-        self._append_row(
-            table,
-            PreviewRow(question=table.rowCount() + 1, answer_type="MCQ", answer_value="A"),
-        )
-        self._update_section_counts_from_current_tab()
-        self._refresh_summary()
+        answer_item = QTableWidgetItem(str(answer))
+        self.table.setItem(row, 2, answer_item)
 
     def _delete_selected_rows(self) -> None:
-        table = self._current_table()
-        if not table:
+        rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()}, reverse=True)
+        if not rows:
             return
-        selected_rows = sorted({idx.row() for idx in table.selectedIndexes()}, reverse=True)
-        if not selected_rows:
-            QMessageBox.information(self, "Delete Row", "Chọn ít nhất một dòng để xoá.")
-            return
-        for row_idx in selected_rows:
-            table.removeRow(row_idx)
-        self._update_section_counts_from_current_tab()
-        self._refresh_summary()
+        self._is_refreshing = True
+        for row in rows:
+            self.table.removeRow(row)
+        self._is_refreshing = False
+        self._refresh_total_label()
 
     def _apply_mapping(self) -> None:
-        table = self._current_table()
-        if not table:
-            return
-        try:
-            mcq_count = int(self.mcq_count_edit.text().strip() or "0")
-            tf_count = int(self.tf_count_edit.text().strip() or "0")
-            numeric_count = int(self.numeric_count_edit.text().strip() or "0")
-        except ValueError:
-            QMessageBox.warning(self, "Invalid mapping", "Section counts must be integer values.")
-            return
-
-        total = table.rowCount()
-        if mcq_count + tf_count + numeric_count > total:
-            QMessageBox.warning(self, "Invalid mapping", "Sum of section counts exceeds total rows in current tab.")
-            return
-
-        for r in range(total):
-            widget = table.cellWidget(r, 1)
-            if not widget:
-                continue
-            if r < mcq_count:
-                widget.setCurrentText("MCQ")
-            elif r < mcq_count + tf_count:
-                widget.setCurrentText("TF")
-            else:
-                widget.setCurrentText("NUMERIC")
-        self._refresh_summary()
-
-    def _handle_table_changed(self, table: QTableWidget | None = None) -> None:
-        if table is not None and table is not self._current_table():
-            return
-        self._update_section_counts_from_current_tab()
-        self._refresh_summary()
-
-    def _rename_exam_code(self, index: int) -> None:
-        if index < 0 or index >= self.tabs.count():
-            return
-        table = self.tabs.widget(index)
-        if not isinstance(table, QTableWidget):
-            return
-        old_code = self.tabs.tabText(index).strip()
-        new_code, ok = QInputDialog.getText(self, "Đổi mã đề", "Mã đề mới:", text=old_code)
-        if not ok:
-            return
-        new_code = new_code.strip() or old_code
-        if new_code != old_code and new_code in self.exam_tables:
-            QMessageBox.warning(self, "Đổi mã đề", f"Mã đề '{new_code}' đã tồn tại.")
-            return
-        if new_code == old_code:
-            return
-        del self.exam_tables[old_code]
-        self.exam_tables[new_code] = table
-        self.tabs.setTabText(index, new_code)
-        self._refresh_exam_codes_label()
-        self._refresh_summary()
-
-    @staticmethod
-    def _tf_to_text(flags: dict[str, bool]) -> str:
-        return "".join("Đ" if bool((flags or {}).get(ch)) else "S" for ch in ["a", "b", "c", "d"])
-
-    def _rows_from_table(self, table: QTableWidget) -> list[PreviewRow]:
-        rows: list[PreviewRow] = []
-        for row_idx in range(table.rowCount()):
-            q_item = table.item(row_idx, 0)
-            a_item = table.item(row_idx, 2)
-            widget = table.cellWidget(row_idx, 1)
-            if not q_item or not a_item or widget is None:
-                continue
-            q_text = (q_item.text() or "").strip()
-            if not q_text.lstrip("-").isdigit():
-                continue
-            rows.append(
-                PreviewRow(
-                    question=int(q_text),
-                    answer_type=widget.currentText(),
-                    answer_value=(a_item.text() or "").strip(),
-                )
+        total = self.table.rowCount()
+        mcq = int(self.mcq_count_spin.value())
+        tf = int(self.tf_count_spin.value())
+        numeric = int(self.numeric_count_spin.value())
+        if mcq + tf + numeric != total:
+            QMessageBox.warning(
+                self,
+                "Mapping phần",
+                "Tổng số câu MCQ + TF + NUMERIC phải đúng bằng tổng số dòng hiện có để tránh gán nhầm phần.",
             )
-        rows.sort(key=lambda row: (row.question, row.answer_type))
-        return rows
-
-    def _refresh_summary(self) -> None:
-        exam_code = self.tabs.tabText(self.tabs.currentIndex()).strip() if self.tabs.count() else ""
-        table = self._current_table()
-        if not table:
-            self.summary_text.clear()
             return
-        rows = self._rows_from_table(table)
-        if not rows:
-            self.summary_text.setPlainText("Chưa có đáp án cho mã đề hiện tại.")
-            return
-        chunks = [f"Mã đề: {exam_code or '-'}"]
-        for answer_type in ["MCQ", "TF", "NUMERIC"]:
-            same_type = [row for row in rows if row.answer_type == answer_type]
-            if not same_type:
-                chunks.append(f"{answer_type}: -")
+        self._is_refreshing = True
+        for row in range(total):
+            combo = self.table.cellWidget(row, 0)
+            if not isinstance(combo, QComboBox):
                 continue
-            values = ", ".join(f"Câu {row.question}: {row.answer_value}" for row in same_type)
-            chunks.append(f"{answer_type}: {values}")
-        chunks.append("Nếu nhập đáp án sai chuẩn, dòng đó vẫn được giữ lại để chấm theo mô tả full-credit/invalid hiện có.")
-        self.summary_text.setPlainText("\n".join(chunks))
+            if row < mcq:
+                combo.setCurrentText("MCQ")
+            elif row < mcq + tf:
+                combo.setCurrentText("TF")
+            else:
+                combo.setCurrentText("NUMERIC")
+        self._is_refreshing = False
+        self._refresh_total_label()
+
+    def _guess_section_counts(self) -> None:
+        mcq = 0
+        tf = 0
+        numeric = 0
+        for row in range(self.table.rowCount()):
+            combo = self.table.cellWidget(row, 0)
+            text = combo.currentText().strip().upper() if isinstance(combo, QComboBox) else "MCQ"
+            if text == "MCQ":
+                mcq += 1
+            elif text == "TF":
+                tf += 1
+            else:
+                numeric += 1
+        self.mcq_count_spin.setValue(mcq)
+        self.tf_count_spin.setValue(tf)
+        self.numeric_count_spin.setValue(numeric)
+
+    def _refresh_total_label(self) -> None:
+        total = self.table.rowCount()
+        typed_total = int(self.mcq_count_spin.value()) + int(self.tf_count_spin.value()) + int(self.numeric_count_spin.value())
+        suffix = ""
+        if typed_total != total:
+            suffix = f" | Mapping hiện tại: {typed_total}"
+        self.lbl_total.setText(f"{total}{suffix}")
+
+    def _handle_table_changed(self, _item) -> None:
+        if self._is_refreshing:
+            return
+        self._refresh_total_label()
+
+    def _rows_from_table(self) -> list[ImportedAnswerRow]:
+        out: list[ImportedAnswerRow] = []
+        seen_pairs: set[tuple[str, int]] = set()
+        for row in range(self.table.rowCount()):
+            combo = self.table.cellWidget(row, 0)
+            section = combo.currentText().strip().upper() if isinstance(combo, QComboBox) else "MCQ"
+            q_text = str(self.table.item(row, 1).text() if self.table.item(row, 1) else "").strip()
+            answer = str(self.table.item(row, 2).text() if self.table.item(row, 2) else "").strip()
+            if not q_text:
+                raise ValueError(f"Dòng {row + 1}: thiếu số câu.")
+            try:
+                question_no = int(q_text)
+            except Exception as exc:
+                raise ValueError(f"Dòng {row + 1}: số câu không hợp lệ.") from exc
+            if question_no <= 0:
+                raise ValueError(f"Dòng {row + 1}: số câu phải lớn hơn 0.")
+            pair = (section, question_no)
+            if pair in seen_pairs:
+                raise ValueError(f"Dòng {row + 1}: trùng cặp phần/câu {section} - {question_no}.")
+            seen_pairs.add(pair)
+            out.append(ImportedAnswerRow(section=section, question_no=question_no, answer=answer))
+        return out
 
     def _on_accept(self) -> None:
+        exam_code = str(self.exam_code_combo.currentText() or "").strip()
+        if not exam_code:
+            QMessageBox.warning(self, "Nhập đáp án", "Vui lòng nhập mã đề.")
+            return
         try:
-            exam_id = int(self.exam_id_edit.text().strip())
-        except Exception:
-            QMessageBox.warning(self, "Invalid exam id", "Exam ID must be an integer.")
+            rows = self._rows_from_table()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Nhập đáp án", str(exc))
             return
 
-        package = ImportedAnswerKeyPackage()
-        try:
-            for exam_code, table in self.exam_tables.items():
-                key = package.exam_keys.setdefault(exam_code, ImportedAnswerKey(exam_id=exam_id))
-                key.mcq_answers = {}
-                key.true_false_answers = {}
-                key.numeric_answers = {}
-                key.full_credit_questions = {}
-                key.invalid_answer_rows = {}
-                for row_idx in range(table.rowCount()):
-                    q_item = table.item(row_idx, 0)
-                    a_item = table.item(row_idx, 2)
-                    if not q_item or not a_item:
-                        continue
-                    q = int((q_item.text() or "").strip())
-                    answer_type = table.cellWidget(row_idx, 1).currentText()
-                    answer_text = (a_item.text() or "").strip()
+        answers: dict[int, str] = {}
+        tf_answers: dict[int, dict[str, bool]] = {}
+        numeric_answers: dict[int, str] = {}
 
-                    if answer_type == "MCQ":
-                        val = answer_text.upper()
-                        if val not in {"A", "B", "C", "D", "E"}:
-                            bucket = key.full_credit_questions.setdefault("MCQ", [])
-                            if q not in bucket:
-                                bucket.append(q)
-                            key.invalid_answer_rows.setdefault("MCQ", {})[q] = answer_text
-                        else:
-                            key.mcq_answers[q] = val
-                    elif answer_type == "NUMERIC":
-                        token = answer_text.replace(" ", "").replace(",", ".")
-                        if token.startswith(("+", "-")):
-                            token = token[1:]
-                        if not token or token.count(".") > 1 or not token.replace(".", "").isdigit():
-                            bucket = key.full_credit_questions.setdefault("NUMERIC", [])
-                            if q not in bucket:
-                                bucket.append(q)
-                            key.invalid_answer_rows.setdefault("NUMERIC", {})[q] = answer_text
-                        else:
-                            key.numeric_answers[q] = answer_text
-                    else:
-                        token = answer_text.replace(" ", "").upper()
-                        if len(token) != 4 or any(ch not in {"T", "F", "D", "S", "Đ"} for ch in token):
-                            bucket = key.full_credit_questions.setdefault("TF", [])
-                            if q not in bucket:
-                                bucket.append(q)
-                            key.invalid_answer_rows.setdefault("TF", {})[q] = answer_text
-                        else:
-                            key.true_false_answers[q] = {
-                                "a": token[0] in {"T", "D", "Đ"},
-                                "b": token[1] in {"T", "D", "Đ"},
-                                "c": token[2] in {"T", "D", "Đ"},
-                                "d": token[3] in {"T", "D", "Đ"},
-                            }
-        except ImportError as exc:
-            QMessageBox.warning(self, "Validation error", str(exc))
-            return
-        except Exception as exc:
-            QMessageBox.warning(self, "Validation error", f"Invalid edited data: {exc}")
-            return
+        for row in rows:
+            if row.section == "MCQ":
+                answers[int(row.question_no)] = str(row.answer or "").strip().upper()
+            elif row.section == "TF":
+                text = str(row.answer or "").strip().upper()
+                tf_answers[int(row.question_no)] = {
+                    key: (text[idx] in {"Đ", "D", "T", "1"})
+                    for idx, key in enumerate(["a", "b", "c", "d"])
+                    if idx < len(text) and text[idx] in {"Đ", "D", "T", "1", "S", "F", "0"}
+                }
+            else:
+                numeric_answers[int(row.question_no)] = str(row.answer or "").strip()
 
-        self.imported = package
-        self._refresh_exam_codes_label()
+        existing = self.main_window._fetch_answer_keys_for_subject_scoped(self.subject_key) or {}
+        merged = dict(existing)
+        merged[exam_code] = {
+            "mcq_answers": answers,
+            "true_false_answers": tf_answers,
+            "numeric_answers": numeric_answers,
+        }
+        self.main_window._save_answer_keys_for_subject_scoped(self.subject_key, merged)
         self.accept()
 
-    def result_answer_key(self) -> ImportedAnswerKeyPackage:
-        return self.imported
+
+__all__ = ["ImportAnswerKeyDialog", "ImportedAnswerRow"]

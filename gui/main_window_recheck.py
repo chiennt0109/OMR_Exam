@@ -84,17 +84,34 @@ def open_recheck_dialog(self) -> None:
     if not cached_sid_list:
         cached_sid_list = [str(x).strip() for x in (recheck_sid_lists.get(subject_key, []) or []) if str(x).strip()]
     requested_sids = list(cached_sid_list)
+    subject_cfg_cached = self._subject_config_by_subject_key(subject_key) or {}
+    subject_room_cache: dict[str, str] = {}
+    student_profile_cache: dict[str, dict] = {}
+
     def _persist_recheck_sid_list(current_sids: list[str]) -> None:
-        if self.session:
+        normalized_current = list(current_sids)
+        old_session_list = [
+            str(x).strip()
+            for x in (
+                (recheck_sid_lists.get(subject_key, []) if isinstance(recheck_sid_lists, dict) else [])
+                or []
+            )
+            if str(x).strip()
+        ]
+        old_state_list = [str(x).strip() for x in (self.database.get_app_state(sid_cache_key, []) or []) if str(x).strip()]
+        if self.session and old_session_list != normalized_current:
             cfg = dict(self.session.config or {})
             sid_cache = cfg.get("recheck_sid_lists", {}) if isinstance(cfg.get("recheck_sid_lists", {}), dict) else {}
-            sid_cache[str(subject_key)] = list(current_sids)
+            sid_cache[str(subject_key)] = normalized_current
             cfg["recheck_sid_lists"] = sid_cache
             self.session.config = cfg
             self.session_dirty = True
             self._persist_session_quietly()
-        self.database.set_app_state(sid_cache_key, list(current_sids))
-        self.database.set_app_state(flag_key, True)
+            recheck_sid_lists[str(subject_key)] = normalized_current
+        if old_state_list != normalized_current:
+            self.database.set_app_state(sid_cache_key, normalized_current)
+        if not bool(self.database.get_app_state(flag_key, False)):
+            self.database.set_app_state(flag_key, True)
 
     def _normalize_sid_list(raw_sids: list[str]) -> list[str]:
         out: list[str] = []
@@ -108,9 +125,17 @@ def open_recheck_dialog(self) -> None:
             seen.add(sid_norm)
         return out
 
+    def _student_profile_cached(sid: str) -> dict:
+        sid_key = str(sid or "").strip()
+        if sid_key not in student_profile_cache:
+            student_profile_cache[sid_key] = self._student_profile_by_id(sid_key)
+        return dict(student_profile_cache.get(sid_key, {}) or {})
+
     def _subject_room_for_sid_quick(sid: str) -> str:
-        cfg = self._subject_config_by_subject_key(subject_key) or {}
-        return self._subject_room_for_student_id(sid, cfg)
+        sid_key = str(sid or "").strip()
+        if sid_key not in subject_room_cache:
+            subject_room_cache[sid_key] = self._subject_room_for_student_id(sid_key, subject_cfg_cached)
+        return subject_room_cache.get(sid_key, "")
 
     def _open_recheck_list_builder(initial_sids: list[str]) -> list[str] | None:
         builder = QDialog(self)
@@ -185,7 +210,7 @@ def open_recheck_dialog(self) -> None:
             room = _subject_room_for_sid_quick(sid_val)
             if not room or room == "-":
                 continue
-            profile = self._student_profile_by_id(sid_val)
+            profile = _student_profile_cached(sid_val)
             available_students.append(
                 {
                     "sid": sid_val,
@@ -198,7 +223,7 @@ def open_recheck_dialog(self) -> None:
             for st in (self.session.students or []) if self.session else []:
                 sid_val = str(getattr(st, "student_id", "") or "").strip()
                 if sid_val:
-                    profile = self._student_profile_by_id(sid_val)
+                    profile = _student_profile_cached(sid_val)
                     available_students.append(
                         {
                             "sid": sid_val,
@@ -225,7 +250,7 @@ def open_recheck_dialog(self) -> None:
             for sid in chosen_sids:
                 prof = profile_by_sid.get(sid, {})
                 if not prof:
-                    st_prof = self._student_profile_by_id(sid)
+                    st_prof = _student_profile_cached(sid)
                     prof = {"sid": sid, "name": str(st_prof.get("name", "") or "-"), "class_name": str(st_prof.get("class_name", "") or "-"), "room": _subject_room_for_sid_quick(sid) or "-"}
                 r = chosen_tbl.rowCount()
                 chosen_tbl.insertRow(r)
@@ -763,7 +788,7 @@ def open_recheck_dialog(self) -> None:
         for idx, entry in enumerate(recheck_entries, start=1):
             res = entry.get("result")
             sid = str(getattr(res, "student_id", "") or "").strip() if isinstance(res, OMRResult) else str(entry.get("requested_sid", "") or "").strip()
-            prof = self._student_profile_by_id(sid)
+            prof = _student_profile_cached(sid)
             score_text = _score_display_for_sid(sid, res if isinstance(res, OMRResult) else None)
             row = tbl.rowCount()
             tbl.insertRow(row)
@@ -824,7 +849,7 @@ def open_recheck_dialog(self) -> None:
             f"SBD: {sid or '-'} | Mã đề: {str(getattr(res, 'exam_code', '') or '-')} | Điểm: {score_here}\n"
             f"Nội dung: {detail_content or '-'}"
         )
-        prof = self._student_profile_by_id(sid)
+        prof = _student_profile_cached(sid)
         if tbl.item(r, 2):
             tbl.item(r, 2).setText(str(prof.get("name", "") or "-"))
         if tbl.item(r, 4):
@@ -847,7 +872,7 @@ def open_recheck_dialog(self) -> None:
         return text
 
     def _save_current() -> None:
-        nonlocal subject_score_map
+        nonlocal subject_score_map, requested_sids
         r = tbl.currentRow()
         if r < 0 or r >= len(recheck_entries):
             return
@@ -858,10 +883,17 @@ def open_recheck_dialog(self) -> None:
             QMessageBox.information(dlg, "Phúc tra", "SBD này không có bài thi tham chiếu để lưu chỉnh sửa.")
             return
         old_sid = str(getattr(res, "student_id", "") or "").strip()
+        old_sid_norm = self._normalized_student_id_for_match(old_sid)
         old_exam = str(getattr(res, "exam_code", "") or "").strip()
         old_score = _current_score_for_result(res)
+        old_mcq = {int(k): str(v or "").strip().upper()[:1] for k, v in (getattr(res, "mcq_answers", {}) or {}).items()}
+        old_tf = {int(k): dict(v or {}) for k, v in (getattr(res, "true_false_answers", {}) or {}).items()}
+        old_numeric = {int(k): str(v or "").strip() for k, v in (getattr(res, "numeric_answers", {}) or {}).items()}
         new_sid = _selected_sid_value().strip()
         new_exam = str(inp_exam.currentText() or "").strip()
+        if not new_exam or _answer_key_for_exam(new_exam) is None:
+            QMessageBox.warning(dlg, "Phúc tra", "Mã đề đã chọn chưa có đáp án cho môn này.")
+            return
         new_mcq: dict[int, str] = {}
         new_tf: dict[int, dict[str, bool]] = {}
         new_numeric: dict[int, str] = {}
@@ -880,18 +912,42 @@ def open_recheck_dialog(self) -> None:
                     new_tf[q_no] = parsed[q_no]
             elif sec == "NUMERIC":
                 new_numeric[q_no] = student_txt
+        normalized_new_mcq = {int(k): str(v or "").strip().upper()[:1] for k, v in new_mcq.items()}
+        normalized_new_tf = {int(k): dict(v or {}) for k, v in new_tf.items()}
+        normalized_new_numeric = {int(k): str(v or "").strip() for k, v in new_numeric.items()}
+        target_sid = new_sid or old_sid
+        has_changed = (
+            target_sid != old_sid
+            or new_exam != old_exam
+            or old_mcq != normalized_new_mcq
+            or old_tf != normalized_new_tf
+            or old_numeric != normalized_new_numeric
+        )
+        if not has_changed:
+            QMessageBox.information(dlg, "Phúc tra", "Không có thay đổi để lưu.")
+            return
         if new_sid:
             res.student_id = new_sid
         res.exam_code = new_exam
-        res.mcq_answers = {int(k): str(v or "").strip().upper()[:1] for k, v in (new_mcq or {}).items()}
-        res.true_false_answers = {int(k): dict(v or {}) for k, v in (new_tf or {}).items()}
-        res.numeric_answers = {int(k): str(v or "").strip() for k, v in (new_numeric or {}).items()}
+        res.mcq_answers = normalized_new_mcq
+        res.true_false_answers = normalized_new_tf
+        res.numeric_answers = normalized_new_numeric
         res.answer_string = ""
         self._persist_single_scan_result_to_db(res, note="recheck_edit")
         new_score = _current_score_for_result(res)
+        new_sid_text = str(getattr(res, "student_id", "") or "").strip()
+        new_sid_norm = self._normalized_student_id_for_match(new_sid_text)
+        if old_sid_norm and old_sid_norm in scan_by_sid_norm and scan_by_sid_norm.get(old_sid_norm) is res and old_sid_norm != new_sid_norm:
+            scan_by_sid_norm.pop(old_sid_norm, None)
+        if new_sid_norm:
+            scan_by_sid_norm[new_sid_norm] = res
+        if old_sid_norm != new_sid_norm:
+            requested_sids = [new_sid_text if self._normalized_student_id_for_match(x) == old_sid_norm else x for x in requested_sids]
+            requested_sids = _normalize_sid_list(requested_sids)
+            _persist_recheck_sid_list(requested_sids)
         changes: list[str] = []
-        if old_sid != str(getattr(res, "student_id", "") or "").strip():
-            changes.append(f"Lỗi SBD -> sửa từ {old_sid or '-'} thành {str(getattr(res, 'student_id', '') or '-')}")
+        if old_sid != new_sid_text:
+            changes.append(f"Lỗi SBD -> sửa từ {old_sid or '-'} thành {new_sid_text or '-'}")
         if old_exam != str(getattr(res, "exam_code", "") or "").strip():
             changes.append(f"Lỗi mã đề -> sửa từ {old_exam or '-'} thành {str(getattr(res, 'exam_code', '') or '-')}")
         if abs(new_score - old_score) > 1e-9:
@@ -913,23 +969,24 @@ def open_recheck_dialog(self) -> None:
             )
         history_all[:] = self.database.fetch_recheck_history(str(self.current_session_id or ""), subject_key=subject_key)
         subject_scores_map = self.scoring_results_by_subject.get(subject_key, {}) or {}
-        sid_key_new = str(getattr(res, "student_id", "") or "").strip()
-        if sid_key_new:
-            row_payload = dict(subject_scores_map.get(sid_key_new, {}) or {})
+        if old_sid and old_sid != new_sid_text:
+            subject_scores_map.pop(old_sid, None)
+        if new_sid_text:
+            row_payload = dict(subject_scores_map.get(new_sid_text, {}) or {})
             row_payload["recheck_score"] = float(new_score)
-            row_payload["score"] = row_payload.get("score", float(new_score))
+            row_payload["score"] = float(new_score)
             row_payload["final_score"] = float(new_score)
             row_payload["baithiphuctra"] = (
                 f"MCQ:{self._format_mcq_answers(getattr(res, 'mcq_answers', {}) or {})} | "
                 f"TF:{self._format_tf_answers(getattr(res, 'true_false_answers', {}) or {})} | "
                 f"NUM:{self._format_numeric_answers(getattr(res, 'numeric_answers', {}) or {})}"
             )
-            subject_scores_map[sid_key_new] = row_payload
+            subject_scores_map[new_sid_text] = row_payload
             self.scoring_results_by_subject[subject_key] = subject_scores_map
             subject_score_map = self.scoring_results_by_subject.get(subject_key, {}) or {}
         self.calculate_scores(subject_key=subject_key, mode="Tính lại toàn bộ", note="recheck_edit")
         sid = str(getattr(res, "student_id", "") or "").strip()
-        prof = self._student_profile_by_id(sid)
+        prof = _student_profile_cached(sid)
         tbl.setItem(r, 1, QTableWidgetItem(sid or "-"))
         tbl.setItem(r, 2, QTableWidgetItem(str(prof.get("name", "") or "-")))
         tbl.setItem(r, 3, QTableWidgetItem(str(prof.get("class_name", "") or "-")))
@@ -995,7 +1052,7 @@ def open_recheck_dialog(self) -> None:
         for i, entry in enumerate(recheck_entries):
             res = entry.get("result")
             sid = str(getattr(res, "student_id", "") or "").strip() if isinstance(res, OMRResult) else str(entry.get("requested_sid", "") or "").strip()
-            prof = self._student_profile_by_id(sid)
+            prof = _student_profile_cached(sid)
             score_value = tbl.item(i, 6).text() if tbl.item(i, 6) else "-"
             h_items = [x for x in history_all if str(x.get("student_code", "") or "").strip() == sid]
             h_text = "\n".join(f"[{str(x.get('created_at', '') or '-')}] {str(x.get('change_text', '') or '-')}" for x in h_items) or "-"

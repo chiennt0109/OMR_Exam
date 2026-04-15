@@ -1746,30 +1746,25 @@ class MainWindow(QMainWindow):
         return "cancel"
 
     def _save_current_work(self) -> bool:
-        if self.stack.currentIndex() == 5 and self.embedded_exam_dialog:
-            if not self._embedded_exam_has_real_changes():
-                return True
-            return bool(self._save_embedded_exam_editor())
-
-        if self._current_route_name == "workspace_scoring":
-            subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
-            # DB-first: chỉ persist scoring khi subject thực sự dirty.
-            if subject_key and subject_key in self._scoring_dirty_subjects:
-                rows = list((self.scoring_results_by_subject.get(subject_key, {}) or {}).values())
-                mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
-                note = self.scoring_phase_note.text().strip() if hasattr(self, "scoring_phase_note") else ""
+        if self._has_batch_unsaved_changes():
+            return self._save_batch_for_selected_subject(
+                show_success_message=False,
+                reload_after_save=False,
+                refresh_exam_list=False,
+            )
+        if self._has_scoring_unsaved_changes():
+            subject_key = self._resolve_preferred_scoring_subject()
+            if subject_key:
+                rows = self._collect_scoring_preview_rows(subject_key)
+                cfg = self._subject_config_by_subject_key(subject_key) or {}
+                mode = str((cfg or {}).get("scoring_last_mode", "Tính lại toàn bộ") or "Tính lại toàn bộ")
+                note = str((cfg or {}).get("scoring_phase_last_note", "") or "")
                 self._persist_scoring_results_for_subject(subject_key, rows, mode, note, mark_saved=True)
-                self._refresh_scoring_state_label(subject_key)
-
-        if hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled():
-            self._save_batch_for_selected_subject()
-            if self.btn_save_batch_subject.isEnabled():
-                return False
-
-        if self.session and self._session_has_real_changes():
-            self.save_session()
-            return not self.session_dirty
+                self._persist_runtime_session_state_quietly()
+                return True
+            return False
         return True
+
     def _handle_pending_changes_before_switch(self, target_text: str) -> bool:
         if not self._has_pending_unsaved_work():
             return True
@@ -4014,7 +4009,11 @@ class MainWindow(QMainWindow):
             )
             if choice == "cancel":
                 return
-            if choice == "save" and not self._save_batch_for_selected_subject():
+            if choice == "save" and not self._save_batch_for_selected_subject(
+                show_success_message=False,
+                reload_after_save=False,
+                refresh_exam_list=False,
+            ):
                 return
         self._navigate_to(
             "session_dashboard",
@@ -4257,7 +4256,6 @@ class MainWindow(QMainWindow):
         self._refresh_scoring_state_label(subject_key)
 
     def _persist_scoring_results_for_subject(self, subject_key: str, rows: list[dict], mode: str, note: str, *, mark_saved: bool) -> None:
-        # scoring dirty/save lifecycle
         subject = str(subject_key or "").strip()
         if not subject:
             return
@@ -4270,11 +4268,27 @@ class MainWindow(QMainWindow):
         try:
             self.database.conn.execute("DELETE FROM scores WHERE subject_key = ?", (subject,))
             for payload in packed.values():
-                self.database.upsert_score_row(subject, str(payload.get("student_id", "") or ""), str(payload.get("exam_code", "") or ""), dict(payload))
+                self.database.upsert_score_row(
+                    subject,
+                    str(payload.get("student_id", "") or ""),
+                    str(payload.get("exam_code", "") or ""),
+                    dict(payload),
+                )
         except Exception:
             pass
         if mark_saved:
             self._mark_subject_scoring_saved(subject, len(packed), mode, note)
+
+    def _persist_scoring_results(self, subject_key: str, phase: dict | None = None) -> None:
+        subject = str(subject_key or "").strip()
+        if not subject:
+            return
+        payloads = list((self.scoring_results_by_subject.get(subject, {}) or {}).values())
+        phase = dict(phase or {})
+        mode = str(phase.get("mode", "Tính lại toàn bộ") or "Tính lại toàn bộ")
+        note = str(phase.get("note", "") or "")
+        self._persist_scoring_results_for_subject(subject, payloads, mode, note, mark_saved=True)
+
     def _load_scoring_results_for_subject_from_storage(self, subject_key: str) -> dict[str, dict]:
         # DB là nguồn chuẩn cho scoring; chỉ dùng runtime cache đã có nếu cùng subject trong phiên hiện tại.
         subject = str(subject_key or "").strip()
@@ -4295,75 +4309,80 @@ class MainWindow(QMainWindow):
             self.scoring_results_by_subject[subject] = dict(loaded)
         return loaded
     def _load_cached_scoring_results_for_subject(self, subject_key: str) -> None:
-        # Helper UI-only: nạp preview scoring từ nguồn đã persist (DB/runtime đã load từ DB),
-        # không dùng session config làm nguồn lõi.
         subject = str(subject_key or "").strip()
         if not subject or not hasattr(self, "score_preview_table"):
             return
         stored_rows = self._load_scoring_results_for_subject_from_storage(subject)
         loaded_rows = []
-        for sid, payload in stored_rows.items():
-            if not isinstance(payload, dict):
-                continue
-            payload_with_defaults = dict(payload)
-            payload_with_defaults.setdefault("student_id", str(sid))
-            payload_with_defaults.setdefault("subject", subject)
-            loaded_rows.append(self.scoring_engine.score_result_from_dict(payload_with_defaults))
+        for _, payload in (stored_rows or {}).items():
+            if isinstance(payload, dict):
+                loaded_rows.append(dict(payload))
+        loaded_rows.sort(key=lambda row: (
+            0 if str((row or {}).get("status", "") or "").startswith("Lỗi") else 1,
+            str((row or {}).get("student_id", "") or ""),
+        ))
 
-        loaded_rows.sort(key=lambda row: str(row.student_id or ""))
-        self.score_rows = list(loaded_rows)
-        self.score_preview_table.setRowCount(0)
         success_count = 0
         error_count = 0
         edited_count = 0
         pending_count = 0
-
-        for i, r in enumerate(loaded_rows):
-            payload = stored_rows.get(str(r.student_id or "").strip(), {}) if isinstance(stored_rows, dict) else {}
-            recheck_score = payload.get("recheck_score", "") if isinstance(payload, dict) else ""
-            final_score_display = recheck_score if recheck_score not in {"", None} else r.score
-            class_name = str(payload.get("class_name", "") or getattr(r, "class_name", "") or "-") if isinstance(payload, dict) else "-"
-            birth_date = str(payload.get("birth_date", "") or getattr(r, "birth_date", "") or "-") if isinstance(payload, dict) else "-"
-            status_text = str(payload.get("status", "") or "OK") if isinstance(payload, dict) else "OK"
-
-            self.score_preview_table.insertRow(i)
-            self.score_preview_table.setItem(i, 0, QTableWidgetItem(r.student_id or "-"))
-            self.score_preview_table.setItem(i, 1, QTableWidgetItem(r.name or "-"))
-            self.score_preview_table.setItem(i, 2, QTableWidgetItem(class_name))
-            self.score_preview_table.setItem(i, 3, QTableWidgetItem(birth_date))
-            self.score_preview_table.setItem(i, 4, QTableWidgetItem(r.exam_code))
-            self.score_preview_table.setItem(i, 5, QTableWidgetItem(str(getattr(r, "mcq_correct", 0))))
-            tf_statement_count = self._tf_statement_correct_count(str(getattr(r, "tf_compare", "") or ""))
-            self.score_preview_table.setItem(i, 6, QTableWidgetItem(str(tf_statement_count)))
-            self.score_preview_table.setItem(i, 7, QTableWidgetItem(str(getattr(r, "numeric_correct", 0))))
-            self.score_preview_table.setItem(i, 8, QTableWidgetItem(str(r.correct)))
-            self.score_preview_table.setItem(i, 9, QTableWidgetItem(str(r.wrong)))
-            self.score_preview_table.setItem(i, 10, QTableWidgetItem(str(r.blank)))
-            self.score_preview_table.setItem(i, 11, QTableWidgetItem(str(final_score_display)))
-            status_item = QTableWidgetItem(status_text)
-            if status_text != "OK":
-                status_item.setForeground(QColor("red"))
-            category = "success"
-            if status_text.startswith("Lỗi"):
-                category = "error"
-            elif status_text == "Đã sửa":
-                category = "edited"
-            elif status_text in {"Chưa chấm", "Cần chấm lại"}:
-                category = "pending"
-            status_item.setData(Qt.UserRole, category)
-            self.score_preview_table.setItem(i, 12, status_item)
-
-            if status_text.startswith("Lỗi"):
-                error_count += 1
-            else:
-                success_count += 1
-            if status_text == "Đã sửa":
-                edited_count += 1
-            if status_text in {"Chưa chấm", "Cần chấm lại"}:
-                pending_count += 1
-
-        self._apply_scoring_filter()
+        self.score_preview_table.setSortingEnabled(False)
+        self.score_preview_table.setUpdatesEnabled(False)
+        try:
+            self.score_preview_table.setRowCount(0)
+            for row in loaded_rows:
+                r = self.score_preview_table.rowCount()
+                self.score_preview_table.insertRow(r)
+                status_text = str((row or {}).get("status", "") or (row or {}).get("note", "") or "OK")
+                if status_text.startswith("Lỗi"):
+                    error_count += 1
+                else:
+                    success_count += 1
+                if status_text == "Đã sửa":
+                    edited_count += 1
+                if status_text in {"Chưa chấm", "Cần chấm lại"}:
+                    pending_count += 1
+                values = [
+                    str((row or {}).get("student_id", "") or "-"),
+                    str((row or {}).get("name", "") or "-"),
+                    str((row or {}).get("class_name", "") or "-"),
+                    str((row or {}).get("birth_date", "") or "-"),
+                    str((row or {}).get("exam_code", "") or "-"),
+                    str((row or {}).get("mcq_correct", 0)),
+                    str(self._tf_statement_correct_count(str((row or {}).get("tf_compare", "") or ""))),
+                    str((row or {}).get("numeric_correct", 0)),
+                    str((row or {}).get("correct", 0)),
+                    str((row or {}).get("wrong", 0)),
+                    str((row or {}).get("blank", 0)),
+                    str((row or {}).get("recheck_score", "") if (row or {}).get("recheck_score", "") not in {"", None} else (row or {}).get("score", 0)),
+                    status_text,
+                ]
+                for col, value in enumerate(values):
+                    item = QTableWidgetItem(value)
+                    if col == 12 and status_text != "OK":
+                        item.setForeground(QColor("red"))
+                        category = "success"
+                        if status_text.startswith("Lỗi"):
+                            category = "error"
+                        elif status_text == "Đã sửa":
+                            category = "edited"
+                        elif status_text in {"Chưa chấm", "Cần chấm lại"}:
+                            category = "pending"
+                        item.setData(Qt.UserRole, category)
+                    self.score_preview_table.setItem(r, col, item)
+                if status_text.startswith("Lỗi"):
+                    for col in range(self.score_preview_table.columnCount()):
+                        item = self.score_preview_table.item(r, col)
+                        if item:
+                            item.setBackground(QColor(255, 225, 225))
+        finally:
+            self.score_preview_table.setUpdatesEnabled(True)
+            self.score_preview_table.viewport().update()
+        self._current_scoring_subject = subject
+        self._refresh_scoring_state_label(subject)
         self._update_scoring_status_bar(success_count, error_count, edited_count, pending_count)
+        self._apply_scoring_filter()
+
     def _scoring_filter_column_from_combo_index(combo_index: int) -> int | None:
         mapping = {
             0: None,  # Tất cả
@@ -4469,8 +4488,7 @@ class MainWindow(QMainWindow):
     def _handle_scoring_subject_changed(self, _index: int) -> None:
         subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
         if subject_key:
-            self._apply_subject_section_visibility(subject_key)
-            self.calculate_scores(subject_key=subject_key, mode="Tính lại toàn bộ", note="auto_refresh_subject_change")
+            self._ensure_scoring_preview_current(subject_key, reason="auto_refresh_subject_change", force=False)
 
     def _sync_current_batch_subject_snapshot(self, persist_to_db: bool = True) -> tuple[str, list[OMRResult]]:
         # Helper này chỉ còn phục vụ thao tác explicit save của Batch Scan.
@@ -4534,7 +4552,7 @@ class MainWindow(QMainWindow):
         self._current_route_name = "workspace_scoring"
         selected_subject = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
         if selected_subject:
-            self.calculate_scores(subject_key=selected_subject, mode="Tính lại toàn bộ", note="auto_refresh_open_scoring")
+            self._ensure_scoring_preview_current(selected_subject, reason="auto_refresh_open_scoring", force=False)
 
     def _back_to_batch_scan(self) -> None:
         # workspace sub-route
@@ -4923,57 +4941,49 @@ class MainWindow(QMainWindow):
         self._refresh_dashboard_summary_from_db(selected_subject)
         self._show_scoring_panel()
     def _refresh_scoring_phase_table(self) -> None:
-        if not hasattr(self, "scoring_phase_table"):
+        if not hasattr(self, "score_phase_table"):
             return
-
-        phase_map: dict[str, dict] = {}
-        subject_keys = list(self._eligible_scoring_subject_keys() or [])
-        current_subject = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
-        if current_subject and current_subject not in subject_keys:
-            subject_keys.append(current_subject)
-
-        for subject in subject_keys:
-            for payload in (self.database.fetch_scores_for_subject(subject) or []):
-                if not isinstance(payload, dict):
+        subjects = self._subject_configs_for_scoring()
+        self.score_phase_table.setUpdatesEnabled(False)
+        try:
+            self.score_phase_table.setRowCount(0)
+            for cfg in subjects:
+                subject = str((cfg or {}).get("subject", "") or "").strip()
+                if not subject:
                     continue
-                phase_marker = str(payload.get("phase", "") or "").strip()
-                phase_timestamp = str(payload.get("phase_timestamp", "") or "").strip()
-                phase_mode = str(payload.get("phase_mode", "") or payload.get("mode", "") or "").strip()
-                if not phase_marker:
-                    if not phase_timestamp and not phase_mode:
-                        continue
-                    phase_marker = f"{phase_timestamp}::{subject}::{phase_mode}"
-                entry = phase_map.setdefault(
-                    phase_marker,
-                    {
-                        "timestamp": phase_timestamp or "-",
-                        "subject": str(payload.get("subject", "") or subject or "-"),
-                        "mode": phase_mode or "-",
-                        "count": 0,
-                        "note": str(payload.get("note", "") or "").strip(),
-                    },
-                )
-                entry["count"] += 1
-                if not entry.get("note") and str(payload.get("note", "") or "").strip():
-                    entry["note"] = str(payload.get("note", "") or "").strip()
-                if entry.get("timestamp") in {"", "-"} and phase_timestamp:
-                    entry["timestamp"] = phase_timestamp
+                saved_at = str((cfg or {}).get("scoring_saved_at", "") or "").strip()
+                mode = str((cfg or {}).get("scoring_last_mode", "") or "").strip()
+                note = str((cfg or {}).get("scoring_phase_last_note", "") or "").strip()
+                count = int((cfg or {}).get("scoring_result_count", 0) or 0)
 
-        phases = sorted(
-            phase_map.values(),
-            key=lambda p: str(p.get("timestamp", "") or ""),
-            reverse=True,
-        )
-        self.scoring_phases = list(phases)
+                if (not saved_at and count <= 0) or (not mode and not note):
+                    stored_rows = self._load_scoring_results_for_subject_from_storage(subject)
+                    latest = None
+                    latest_ts = ""
+                    for payload in (stored_rows or {}).values():
+                        if not isinstance(payload, dict):
+                            continue
+                        ts = str(payload.get("phase_timestamp", "") or "")
+                        if ts >= latest_ts:
+                            latest_ts = ts
+                            latest = payload
+                    if latest is not None:
+                        saved_at = saved_at or latest_ts
+                        mode = mode or str((latest or {}).get("phase_mode", "") or "")
+                        note = note or str((latest or {}).get("note", "") or (latest or {}).get("status", "") or "")
+                        count = count or len(stored_rows or {})
 
-        self.scoring_phase_table.setRowCount(0)
-        for i, p in enumerate(phases[:100]):
-            self.scoring_phase_table.insertRow(i)
-            self.scoring_phase_table.setItem(i, 0, QTableWidgetItem(str(p.get("timestamp", "-"))))
-            self.scoring_phase_table.setItem(i, 1, QTableWidgetItem(str(p.get("subject", "-"))))
-            self.scoring_phase_table.setItem(i, 2, QTableWidgetItem(str(p.get("mode", "-"))))
-            self.scoring_phase_table.setItem(i, 3, QTableWidgetItem(str(p.get("count", 0))))
-            self.scoring_phase_table.setItem(i, 4, QTableWidgetItem(str(p.get("note", ""))))
+                r = self.score_phase_table.rowCount()
+                self.score_phase_table.insertRow(r)
+                self.score_phase_table.setItem(r, 0, QTableWidgetItem(subject or "-"))
+                self.score_phase_table.setItem(r, 1, QTableWidgetItem(saved_at or "-"))
+                self.score_phase_table.setItem(r, 2, QTableWidgetItem(mode or "-"))
+                self.score_phase_table.setItem(r, 3, QTableWidgetItem(str(count)))
+                self.score_phase_table.setItem(r, 4, QTableWidgetItem(note or "-"))
+        finally:
+            self.score_phase_table.setUpdatesEnabled(True)
+            self.score_phase_table.viewport().update()
+
     def _run_scoring_from_panel(self) -> None:
         subject_key = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
         mode = self.scoring_mode_combo.currentText() if hasattr(self, "scoring_mode_combo") else "Tính lại toàn bộ"
@@ -5085,75 +5095,93 @@ class MainWindow(QMainWindow):
             return True
         except Exception:
             return False
-    def _save_batch_for_selected_subject(self) -> bool:
+    def _save_batch_for_selected_subject(
+        self,
+        *,
+        show_success_message: bool = True,
+        reload_after_save: bool = False,
+        refresh_exam_list: bool = False,
+    ) -> bool:
         subject_cfg = self._selected_batch_subject_config()
         if not subject_cfg:
-            QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
+            if show_success_message:
+                QMessageBox.warning(self, "Lưu Batch", "Vui lòng chọn môn trước khi lưu Batch.")
             return False
         row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
         if row_count <= 0:
-            QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
+            if show_success_message:
+                QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
             return False
-        if not self.current_session_id:
-            QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy kỳ thi hiện tại để lưu trạng thái Batch theo môn.")
-            return False
+
+        saved_rows = self._serialize_scan_grid_rows_for_save()
+        saved_results = [self._serialize_omr_result(result) for result in (self.scan_results or [])]
+        subject_key = self._subject_key_from_cfg(subject_cfg)
+        saved_at = datetime.now().isoformat(timespec="seconds")
+
+        subject_cfg["batch_saved_rows"] = saved_rows
+        subject_cfg["batch_saved"] = True
+        subject_cfg["batch_saved_at"] = saved_at
+        subject_cfg["batch_result_count"] = len(saved_results)
+
         try:
-            selected_instance = self._ensure_subject_instance_key(subject_cfg)
-            subject_cfgs, source = self._resolve_current_session_subject_configs_for_update()
-            if not subject_cfgs:
-                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy danh sách môn trong kỳ thi hiện tại để cập nhật.")
+            self.sync_current_batch_subject_snapshot(persist_to_db=True)
+        except Exception:
+            pass
+
+        if subject_key:
+            try:
+                self.database.replace_scan_results_for_subject(subject_key, saved_results, note="save_batch_subject")
+                self._mark_subject_batch_saved(subject_key, len(saved_results), saved_at)
+            except Exception as exc:
+                QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu dữ liệu Batch Scan vào CSDL: {exc}")
                 return False
-            for idx, item in enumerate(subject_cfgs):
-                if isinstance(item, dict):
-                    self._ensure_subject_instance_key(item, idx)
-            matched_idx = self._find_subject_config_index_for_batch_save(subject_cfg, subject_cfgs)
+            self._batch_loaded_runtime_key = self._batch_runtime_key(subject_key)
+            self._current_batch_data_source = "database"
+            self._mark_scoring_stale_after_batch_save(subject_key)
 
-            subject_key, current_results = self._sync_current_batch_subject_snapshot(persist_to_db=True)
-            if not subject_key:
-                QMessageBox.warning(self, "Lưu Batch", "Không xác định được môn Batch hiện tại để lưu.")
-                return False
-            timestamp = datetime.now().isoformat(timespec="seconds")
-            result_count = len(current_results)
-
-            if matched_idx < 0:
-                QMessageBox.warning(self, "Lưu Batch", "Không tìm thấy môn tương ứng trong kỳ thi để cập nhật.")
-                return False
-
-            target = subject_cfgs[matched_idx]
-            target["subject_instance_key"] = selected_instance
-            if not str(target.get("subject_uid", "") or "").strip():
-                target["subject_uid"] = str(subject_cfg.get("subject_uid", "") or str(uuid.uuid4()))
-            target["batch_saved"] = bool(result_count)
-            target["batch_saved_at"] = timestamp if result_count else ""
-            target["batch_result_count"] = result_count
-            target["batch_saved_rows"] = []
-            target["batch_saved_preview"] = []
-            target["batch_saved_results"] = []
-
-            if self.session and isinstance(self.session.config, dict):
-                runtime_cfgs = self.session.config.get("subject_configs", [])
-                if isinstance(runtime_cfgs, list) and 0 <= matched_idx < len(runtime_cfgs) and isinstance(runtime_cfgs[matched_idx], dict):
-                    runtime_cfgs[matched_idx].update(target)
-                self.session.config["subject_configs"] = subject_cfgs
-
-            if not self._persist_current_session_subject_configs(subject_cfgs):
-                QMessageBox.warning(self, "Lưu Batch", "Không thể lưu dữ liệu kỳ thi hiện tại vào hệ thống.")
-                return False
-
-            if isinstance(self.batch_editor_return_payload, dict):
-                self.batch_editor_return_payload["subject_configs"] = subject_cfgs
-            self.scan_results_by_subject[self._batch_result_subject_key(subject_key)] = list(current_results)
-            self.batch_working_state_by_subject.pop(self._batch_runtime_key(subject_key), None)
-            self._upsert_session_registry(self.current_session_id, self.session.exam_name if self.session else None)
-            self._refresh_exam_list()
+        self.btn_save_batch_subject.setEnabled(False)
+        self._persist_current_session_subject_configs()
+        if reload_after_save:
+            self._load_batch_subject_state(subject_cfg, source_hint="after_save", force_reload=False)
+        else:
             self._update_batch_scan_scope_summary()
-            self.btn_save_batch_subject.setEnabled(False)
-            self._load_batch_subject_state(target, source_hint="after_save")
-            QMessageBox.information(self, "Lưu Batch", "Đã lưu trạng thái Batch Scan cho môn đã chọn.")
-            return True
-        except Exception as exc:
-            QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu trạng thái Batch\n{exc}")
-            return False
+
+        current_route = str(getattr(self, "_current_route", "") or "").strip()
+        if refresh_exam_list or current_route in {"exam_list", "dashboard"}:
+            self._refresh_exam_list()
+
+        if show_success_message:
+            QMessageBox.information(self, "Lưu Batch", f"Đã lưu {len(saved_results)} bài của môn '{subject_key or 'hiện tại'}'.")
+        return True
+
+    def _mark_scoring_stale_after_batch_save(self, subject_key: str, note: str = "Batch Scan đã thay đổi") -> None:
+        subject = str(subject_key or "").strip()
+        if not subject:
+            return
+        cfg = self._subject_config_by_subject_key(subject) or {}
+        existing_count = int((cfg or {}).get("scoring_result_count", 0) or 0)
+        if existing_count <= 0:
+            existing_count = len(self.scoring_results_by_subject.get(subject, {}) or {})
+        self._clear_subject_scoring_saved_state(
+            subject,
+            count=existing_count,
+            mode=str((cfg or {}).get("scoring_last_mode", "") or ""),
+            note=note,
+        )
+
+    def _ensure_scoring_preview_current(self, subject_key: str, reason: str = "", force: bool = False) -> None:
+        subject = str(subject_key or "").strip()
+        if not subject:
+            return
+        self._current_scoring_subject = subject
+        self._apply_subject_section_visibility(subject)
+        cached_rows = self._load_scoring_results_for_subject_from_storage(subject)
+        is_dirty = subject in self._scoring_dirty_subjects
+        if force or is_dirty or not cached_rows:
+            self.calculate_scores(subject_key=subject, mode="Tính lại toàn bộ", note=reason)
+            return
+        self._load_cached_scoring_results_for_subject(subject)
+
     def _build_correction_tab(self) -> QWidget:
         w = QWidget()
         splitter = QSplitter(Qt.Horizontal)
@@ -12681,63 +12709,68 @@ class MainWindow(QMainWindow):
 
         self.score_rows = rows
         rows.sort(key=lambda r: (0 if str(getattr(r, "scoring_note", "") or "").startswith("Lỗi") else 1, str(getattr(r, "student_id", "") or "")))
-        self.score_preview_table.setRowCount(0)
         success_count = 0
         error_count = 0
         edited_count = 0
         pending_count = 0
+        self.score_preview_table.setSortingEnabled(False)
+        self.score_preview_table.setUpdatesEnabled(False)
+        try:
+            self.score_preview_table.setRowCount(0)
+            for i, r in enumerate(rows):
+                sid_key = str(r.student_id or "").strip()
+                existing_payload = prev_subject_scores.get(sid_key, {}) if sid_key else {}
+                recheck_score = existing_payload.get("recheck_score", "") if isinstance(existing_payload, dict) else ""
+                final_score_display = recheck_score if recheck_score not in {"", None} else r.score
+                class_name = str(getattr(r, "class_name", "") or existing_payload.get("class_name", "") or "-") if isinstance(existing_payload, dict) else str(getattr(r, "class_name", "") or "-")
+                birth_date = str(getattr(r, "birth_date", "") or existing_payload.get("birth_date", "") or "-") if isinstance(existing_payload, dict) else str(getattr(r, "birth_date", "") or "-")
+                status_text = str(getattr(r, "scoring_note", "") or "OK")
+                if sid_key in edited_student_ids:
+                    status_text = "Đã sửa"
+                elif isinstance(existing_payload, dict) and existing_payload.get("status") == "Đã sửa":
+                    status_text = "Đã sửa"
 
-        for i, r in enumerate(rows):
-            sid_key = str(r.student_id or "").strip()
-            existing_payload = prev_subject_scores.get(sid_key, {}) if sid_key else {}
-            recheck_score = existing_payload.get("recheck_score", "") if isinstance(existing_payload, dict) else ""
-            final_score_display = recheck_score if recheck_score not in {"", None} else r.score
-            class_name = str(getattr(r, "class_name", "") or existing_payload.get("class_name", "") or "-") if isinstance(existing_payload, dict) else str(getattr(r, "class_name", "") or "-")
-            birth_date = str(getattr(r, "birth_date", "") or existing_payload.get("birth_date", "") or "-") if isinstance(existing_payload, dict) else str(getattr(r, "birth_date", "") or "-")
-            status_text = str(getattr(r, "scoring_note", "") or "OK")
-            if sid_key in edited_student_ids:
-                status_text = "Đã sửa"
-            elif isinstance(existing_payload, dict) and existing_payload.get("status") == "Đã sửa":
-                status_text = "Đã sửa"
-
-            self.score_preview_table.insertRow(i)
-            self.score_preview_table.setItem(i, 0, QTableWidgetItem(r.student_id or "-"))
-            self.score_preview_table.setItem(i, 1, QTableWidgetItem(r.name or "-"))
-            self.score_preview_table.setItem(i, 2, QTableWidgetItem(class_name))
-            self.score_preview_table.setItem(i, 3, QTableWidgetItem(birth_date))
-            self.score_preview_table.setItem(i, 4, QTableWidgetItem(r.exam_code))
-            self.score_preview_table.setItem(i, 5, QTableWidgetItem(str(getattr(r, "mcq_correct", 0))))
-            tf_statement_count = self._tf_statement_correct_count(str(getattr(r, "tf_compare", "") or ""))
-            self.score_preview_table.setItem(i, 6, QTableWidgetItem(str(tf_statement_count)))
-            self.score_preview_table.setItem(i, 7, QTableWidgetItem(str(getattr(r, "numeric_correct", 0))))
-            self.score_preview_table.setItem(i, 8, QTableWidgetItem(str(r.correct)))
-            self.score_preview_table.setItem(i, 9, QTableWidgetItem(str(r.wrong)))
-            self.score_preview_table.setItem(i, 10, QTableWidgetItem(str(r.blank)))
-            self.score_preview_table.setItem(i, 11, QTableWidgetItem(str(final_score_display)))
-            status_item = QTableWidgetItem(status_text)
-            if status_text != "OK":
-                status_item.setForeground(QColor("red"))
-            category = "success"
-            if status_text.startswith("Lỗi"):
-                category = "error"
-            elif status_text == "Đã sửa":
-                category = "edited"
-            elif status_text in {"Chưa chấm", "Cần chấm lại"}:
-                category = "pending"
-            status_item.setData(Qt.UserRole, category)
-            self.score_preview_table.setItem(i, 12, status_item)
-            if status_text.startswith("Lỗi"):
-                for col in range(self.score_preview_table.columnCount()):
-                    item = self.score_preview_table.item(i, col)
-                    if item:
-                        item.setBackground(QColor(255, 225, 225))
-                error_count += 1
-            else:
-                success_count += 1
-            if status_text == "Đã sửa":
-                edited_count += 1
-            if status_text in {"Chưa chấm", "Cần chấm lại"}:
-                pending_count += 1
+                self.score_preview_table.insertRow(i)
+                self.score_preview_table.setItem(i, 0, QTableWidgetItem(r.student_id or "-"))
+                self.score_preview_table.setItem(i, 1, QTableWidgetItem(r.name or "-"))
+                self.score_preview_table.setItem(i, 2, QTableWidgetItem(class_name))
+                self.score_preview_table.setItem(i, 3, QTableWidgetItem(birth_date))
+                self.score_preview_table.setItem(i, 4, QTableWidgetItem(r.exam_code))
+                self.score_preview_table.setItem(i, 5, QTableWidgetItem(str(getattr(r, "mcq_correct", 0))))
+                tf_statement_count = self._tf_statement_correct_count(str(getattr(r, "tf_compare", "") or ""))
+                self.score_preview_table.setItem(i, 6, QTableWidgetItem(str(tf_statement_count)))
+                self.score_preview_table.setItem(i, 7, QTableWidgetItem(str(getattr(r, "numeric_correct", 0))))
+                self.score_preview_table.setItem(i, 8, QTableWidgetItem(str(r.correct)))
+                self.score_preview_table.setItem(i, 9, QTableWidgetItem(str(r.wrong)))
+                self.score_preview_table.setItem(i, 10, QTableWidgetItem(str(r.blank)))
+                self.score_preview_table.setItem(i, 11, QTableWidgetItem(str(final_score_display)))
+                status_item = QTableWidgetItem(status_text)
+                if status_text != "OK":
+                    status_item.setForeground(QColor("red"))
+                category = "success"
+                if status_text.startswith("Lỗi"):
+                    category = "error"
+                elif status_text == "Đã sửa":
+                    category = "edited"
+                elif status_text in {"Chưa chấm", "Cần chấm lại"}:
+                    category = "pending"
+                status_item.setData(Qt.UserRole, category)
+                self.score_preview_table.setItem(i, 12, status_item)
+                if status_text.startswith("Lỗi"):
+                    for col in range(self.score_preview_table.columnCount()):
+                        item = self.score_preview_table.item(i, col)
+                        if item:
+                            item.setBackground(QColor(255, 225, 225))
+                    error_count += 1
+                else:
+                    success_count += 1
+                if status_text == "Đã sửa":
+                    edited_count += 1
+                if status_text in {"Chưa chấm", "Cần chấm lại"}:
+                    pending_count += 1
+        finally:
+            self.score_preview_table.setUpdatesEnabled(True)
+            self.score_preview_table.viewport().update()
 
         phase = {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
