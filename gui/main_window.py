@@ -9406,7 +9406,7 @@ class MainWindow(QMainWindow):
             self.scan_blank_summary[idx] = blank_map
             self.scan_blank_questions[idx] = blank_map.get("MCQ", [])
             if idx < self.scan_list.rowCount():
-                self.scan_list.setItem(idx, self.SCAN_COL_CONTENT, QTableWidgetItem(self._build_recognition_content_text(res, blank_map, expected)))
+                self.scan_list.setItem(idx, self.SCAN_COL_CONTENT, QTableWidgetItem(self._build_recognition_content_text(scoped, blank_map, expected)))
                 sid_item = self.scan_list.item(idx, 0)
                 if sid_item:
                     sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(scoped))
@@ -9741,10 +9741,9 @@ class MainWindow(QMainWindow):
         available_exam_codes: set[str] | None = None,
         forced_status: str = "",
     ) -> dict:
-        display_result = copy.deepcopy(result)
         scoped_result = self._scoped_result_copy(result)
         blank_map = self._compute_blank_questions(scoped_result)
-        expected_by_section = self._expected_questions_by_section(display_result)
+        expected_by_section = self._expected_questions_by_section(scoped_result)
         sid = str(getattr(result, "student_id", "") or "").strip()
         exam_code_text = str(getattr(result, "exam_code", "") or "").strip()
         room_text = str(self._subject_room_for_student_id(sid) or "").strip() if sid else ""
@@ -9769,7 +9768,7 @@ class MainWindow(QMainWindow):
         content_text = (
             manual_content_override
             if manual_content_override
-            else self._build_recognition_content_text(display_result, blank_map, expected_by_section)
+            else self._build_recognition_content_text(scoped_result, blank_map, expected_by_section)
         )
         recognized_short = self._short_recognition_text_for_result(scoped_result)
 
