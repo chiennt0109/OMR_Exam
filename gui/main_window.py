@@ -9174,10 +9174,19 @@ class MainWindow(QMainWindow):
 
         expected_by_section = {sec: list(vals) for sec, vals in template_expected.items()}
         subject_key_name = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-        key = self._subject_answer_key_for_result(result, subject_key_name)
-        if key is not None:
-            full_credit = getattr(key, "full_credit_questions", {}) or {}
-            invalid_rows = getattr(key, "invalid_answer_rows", {}) or {}
+        key_payload: Any = None
+        if subject_key_name:
+            configured = self._fetch_answer_keys_for_subject_scoped(subject_key_name) or {}
+            if configured:
+                first_code = next(iter(configured.keys()))
+                key_payload = configured.get(first_code)
+            elif self.answer_keys is not None:
+                subject_candidates = [x for x in self.answer_keys.keys.values() if str(getattr(x, "subject", "") or "") == subject_key_name]
+                if subject_candidates:
+                    key_payload = sorted(subject_candidates, key=lambda x: str(getattr(x, "exam_code", "") or ""))[0]
+        if key_payload is not None:
+            full_credit = (key_payload.get("full_credit_questions", {}) if isinstance(key_payload, dict) else getattr(key_payload, "full_credit_questions", {})) or {}
+            invalid_rows = (key_payload.get("invalid_answer_rows", {}) if isinstance(key_payload, dict) else getattr(key_payload, "invalid_answer_rows", {})) or {}
 
             def _extra_for_section(sec: str) -> set[int]:
                 extra: set[int] = set()
@@ -9193,10 +9202,13 @@ class MainWindow(QMainWindow):
                         continue
                 return extra
 
+            mcq_map = (key_payload.get("mcq_answers", {}) if isinstance(key_payload, dict) else getattr(key_payload, "answers", {})) or {}
+            tf_map = (key_payload.get("true_false_answers", {}) if isinstance(key_payload, dict) else getattr(key_payload, "true_false_answers", {})) or {}
+            numeric_map = (key_payload.get("numeric_answers", {}) if isinstance(key_payload, dict) else getattr(key_payload, "numeric_answers", {})) or {}
             key_sections = {
-                "MCQ": sorted(set(int(q) for q in (getattr(key, "answers", {}) or {}).keys()) | _extra_for_section("MCQ")),
-                "TF": sorted(set(int(q) for q in (getattr(key, "true_false_answers", {}) or {}).keys()) | _extra_for_section("TF")),
-                "NUMERIC": sorted(set(int(q) for q in (getattr(key, "numeric_answers", {}) or {}).keys()) | _extra_for_section("NUMERIC")),
+                "MCQ": sorted(set(int(q) for q in mcq_map.keys()) | _extra_for_section("MCQ")),
+                "TF": sorted(set(int(q) for q in tf_map.keys()) | _extra_for_section("TF")),
+                "NUMERIC": sorted(set(int(q) for q in numeric_map.keys()) | _extra_for_section("NUMERIC")),
             }
             for sec in ["MCQ", "TF", "NUMERIC"]:
                 # Always follow answer-key scope if key exists.
@@ -9238,36 +9250,22 @@ class MainWindow(QMainWindow):
         blank_map: dict[str, list[int]],
         expected_by_section: dict[str, list[int]] | None = None,
     ) -> str:
-        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
-        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
-        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
-        expected = expected_by_section or {}
-        expected_mcq = list(expected.get("MCQ", []) or [])
-        expected_tf = list(expected.get("TF", []) or [])
-        expected_numeric = list(expected.get("NUMERIC", []) or [])
-
         parts: list[str] = []
-        blank_parts: list[str] = []
         mcq_blank = list((blank_map or {}).get("MCQ", []) or [])
         if mcq_blank:
-            blank_parts.append(f"MCQ[{','.join(str(v) for v in mcq_blank)}]")
+            parts.append(f"MCQ trống: {', '.join(str(v) for v in mcq_blank)}")
         tf_blank = list((blank_map or {}).get("TF", []) or [])
         tf_blank_detail = dict(getattr(result, "tf_blank_detail", {}) or {})
         if tf_blank:
             tf_chunks: list[str] = []
             for q in tf_blank:
                 missing_count = int(tf_blank_detail.get(int(q), 0) or 0)
-                if missing_count > 0:
-                    tf_chunks.append(f"{int(q)}({missing_count}/4 ý)")
-                else:
-                    tf_chunks.append(str(int(q)))
-            blank_parts.append(f"TF[{', '.join(tf_chunks)}]")
+                tf_chunks.append(f"{missing_count if missing_count > 0 else 4} ý/câu {int(q)}")
+            parts.append("TF trống: " + "; ".join(tf_chunks))
         numeric_blank = list((blank_map or {}).get("NUMERIC", []) or [])
         if numeric_blank:
-            blank_parts.append(f"NUM[{','.join(str(v) for v in numeric_blank)}]")
-        if blank_parts:
-            parts.append("Trống: " + " | ".join(blank_parts))
-        return " | ".join(parts) if parts else ""
+            parts.append(f"Num trống: {', '.join(str(v) for v in numeric_blank)}")
+        return "; ".join(parts) + (";" if parts else "")
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
         if result is None:
