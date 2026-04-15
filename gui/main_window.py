@@ -7487,15 +7487,27 @@ class MainWindow(QMainWindow):
             parts.append(f"TF: {self._format_tf_answers_with_expected(tf_payload, expected_tf)}")
         if numeric_payload or expected_numeric:
             parts.append(f"NUM: {self._format_numeric_answers_with_expected(numeric_payload, expected_numeric)}")
-        if parts:
-            return " | ".join(parts)
-
-        blank_parts = []
-        for sec in ["MCQ", "TF", "NUMERIC"]:
-            vals = list((blank_map or {}).get(sec, []) or [])
-            if vals:
-                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
-        return " | ".join(blank_parts) if blank_parts else ""
+        blank_parts: list[str] = []
+        mcq_blank = list((blank_map or {}).get("MCQ", []) or [])
+        if mcq_blank:
+            blank_parts.append(f"MCQ[{','.join(str(v) for v in mcq_blank)}]")
+        tf_blank_detail = dict(getattr(result, "tf_blank_detail", {}) or {})
+        tf_blank = list((blank_map or {}).get("TF", []) or [])
+        if tf_blank:
+            tf_chunks: list[str] = []
+            for q in tf_blank:
+                missing_count = int(tf_blank_detail.get(int(q), 0) or 0)
+                if missing_count > 0:
+                    tf_chunks.append(f"{int(q)}({missing_count}/4 ý)")
+                else:
+                    tf_chunks.append(str(int(q)))
+            blank_parts.append(f"TF[{', '.join(tf_chunks)}]")
+        numeric_blank = list((blank_map or {}).get("NUMERIC", []) or [])
+        if numeric_blank:
+            blank_parts.append(f"NUM[{','.join(str(v) for v in numeric_blank)}]")
+        if blank_parts:
+            parts.append("Trống: " + " | ".join(blank_parts))
+        return " | ".join(parts) if parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
         if result is None:
@@ -7530,114 +7542,30 @@ class MainWindow(QMainWindow):
 
     def _compute_blank_questions(self, result) -> dict[str, list[int]]:
         expected_by_section = self._expected_questions_by_section(result)
-        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-        configured_counts = self._subject_section_question_counts(subject_key)
-        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
-        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
-        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
-        answer_string_text = str(getattr(result, "answer_string", "") or "").strip()
-        answer_string_compact = answer_string_text.replace(";", "")
-        is_api_answer_string = bool(getattr(result, "answer_string_api_mode", False))
-        # Only API answer string may backfill missing maps.
-        # Non-API display must always come from canonical answer maps.
-        if is_api_answer_string and answer_string_compact and (not mcq_payload or not tf_payload or not numeric_payload):
-            answer_key = self._subject_answer_key_for_result(result, subject_key)
-            if answer_key is not None:
-                cursor = 0
-                if not mcq_payload:
-                    for q in sorted(int(k) for k in (getattr(answer_key, "answers", {}) or {}).keys()):
-                        if cursor >= len(answer_string_compact):
-                            break
-                        ch = answer_string_compact[cursor]
-                        cursor += 1
-                        if ch and ch != "_":
-                            mcq_payload[int(q)] = str(ch).upper()
-                else:
-                    cursor += len(sorted(int(k) for k in (getattr(answer_key, "answers", {}) or {}).keys()))
-                if not tf_payload:
-                    for q in sorted(int(k) for k in (getattr(answer_key, "true_false_answers", {}) or {}).keys()):
-                        chunk = answer_string_compact[cursor: cursor + 4]
-                        cursor += 4
-                        if not chunk:
-                            break
-                        flags: dict[str, bool] = {}
-                        for idx, key in enumerate(["a", "b", "c", "d"]):
-                            if idx >= len(chunk):
-                                continue
-                            c = chunk[idx]
-                            if c == "Đ":
-                                flags[key] = True
-                            elif c == "S":
-                                flags[key] = False
-                        if flags:
-                            tf_payload[int(q)] = flags
-                else:
-                    cursor += 4 * len(sorted(int(k) for k in (getattr(answer_key, "true_false_answers", {}) or {}).keys()))
-                if not numeric_payload:
-                    for q in sorted(int(k) for k in (getattr(answer_key, "numeric_answers", {}) or {}).keys()):
-                        raw_key = str((getattr(answer_key, "numeric_answers", {}) or {}).get(q, "") or "")
-                        normalized_key = str(raw_key).strip().replace(" ", "").lstrip("+").replace(".", ",")
-                        width = len(normalized_key) if normalized_key else max(1, len(raw_key.strip()))
-                        chunk = answer_string_compact[cursor: cursor + width]
-                        cursor += width
-                        if not chunk:
-                            break
-                        if any(ch != "_" for ch in chunk):
-                            numeric_payload[int(q)] = chunk.replace("_", "").strip()
-        section_answers = {
-            "MCQ": set(int(q) for q in (mcq_payload or {}).keys()),
-            "TF": set(int(q) for q in (tf_payload or {}).keys()),
-            "NUMERIC": set(int(q) for q in (numeric_payload or {}).keys()),
+        mcq_payload = {int(q): str(a) for q, a in (dict(getattr(result, "mcq_answers", {}) or {})).items()}
+        tf_payload = {int(q): dict(v or {}) for q, v in (dict(getattr(result, "true_false_answers", {}) or {})).items()}
+        numeric_payload = {int(q): str(v) for q, v in (dict(getattr(result, "numeric_answers", {}) or {})).items()}
+
+        mcq_expected = sorted(set(int(q) for q in (expected_by_section.get("MCQ", []) or [])))
+        tf_expected = sorted(set(int(q) for q in (expected_by_section.get("TF", []) or [])))
+        numeric_expected = sorted(set(int(q) for q in (expected_by_section.get("NUMERIC", []) or [])))
+
+        blanks: dict[str, list[int]] = {
+            "MCQ": [int(q) for q in mcq_expected if not str(mcq_payload.get(int(q), "") or "").strip()],
+            "TF": [],
+            "NUMERIC": [int(q) for q in numeric_expected if not str(numeric_payload.get(int(q), "") or "").strip()],
         }
-        blanks: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
 
-        def _display_actual_mapping(actual_questions: list[int], limit: int) -> tuple[list[int], dict[int, int], dict[int, int]]:
-            actual_sorted = sorted(set(int(q) for q in (actual_questions or [])))
-            if limit > 0:
-                actual_sorted = actual_sorted[:limit]
-                if not actual_sorted:
-                    display_questions = list(range(1, limit + 1))
-                    actual_sorted = list(display_questions)
-                else:
-                    contiguous = actual_sorted == list(range(1, len(actual_sorted) + 1))
-                    display_questions = list(actual_sorted) if contiguous else list(range(1, len(actual_sorted) + 1))
-            else:
-                display_questions = list(actual_sorted)
-            display_to_actual = {
-                int(display_q): int(actual_q)
-                for display_q, actual_q in zip(display_questions, actual_sorted)
-            }
-            actual_to_display = {
-                int(actual_q): int(display_q)
-                for display_q, actual_q in zip(display_questions, actual_sorted)
-            }
-            return display_questions, display_to_actual, actual_to_display
+        tf_blank_detail: dict[int, int] = {}
+        for q in tf_expected:
+            flags = tf_payload.get(int(q), {})
+            flags = flags if isinstance(flags, dict) else {}
+            missing_count = sum(1 for key in ["a", "b", "c", "d"] if key not in flags)
+            if missing_count > 0:
+                tf_blank_detail[int(q)] = int(missing_count)
+                blanks["TF"].append(int(q))
 
-        for sec in ["MCQ", "TF", "NUMERIC"]:
-            limit = max(0, int(configured_counts.get(sec, 0) or 0))
-            actual_questions = sorted(set(int(q) for q in (expected_by_section.get(sec, []) or [])))
-            if limit <= 0 and not actual_questions:
-                continue
-
-            display_questions, display_to_actual, actual_to_display = _display_actual_mapping(actual_questions, limit)
-            if sec == "TF":
-                missing_tf_statements = 0
-                for display_q in display_questions:
-                    actual_q = int(display_to_actual.get(int(display_q), int(display_q)))
-                    flags = tf_payload.get(actual_q, {})
-                    flags = flags if isinstance(flags, dict) else {}
-                    for key in ["a", "b", "c", "d"]:
-                        if key not in flags:
-                            missing_tf_statements += 1
-                blanks[sec] = list(range(1, missing_tf_statements + 1))
-                continue
-
-            answered_display = {
-                int(actual_to_display[q_actual])
-                for q_actual in section_answers.get(sec, set())
-                if int(q_actual) in actual_to_display
-            }
-            blanks[sec] = [int(q_display) for q_display in display_questions if int(q_display) not in answered_display]
+        setattr(result, "tf_blank_detail", tf_blank_detail)
         return blanks
         messages: list[str] = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
@@ -7789,15 +7717,30 @@ class MainWindow(QMainWindow):
             parts.append(f"TF: {self._format_tf_answers_with_expected(tf_payload, expected_tf)}")
         if numeric_payload or expected_numeric:
             parts.append(f"NUM: {self._format_numeric_answers_with_expected(numeric_payload, expected_numeric)}")
-        if parts:
-            return " | ".join(parts)
+        blank_parts: list[str] = []
+        mcq_blank = list((blank_map or {}).get("MCQ", []) or [])
+        if mcq_blank:
+            blank_parts.append(f"MCQ[{','.join(str(v) for v in mcq_blank)}]")
 
-        blank_parts = []
-        for sec in ["MCQ", "TF", "NUMERIC"]:
-            vals = list((blank_map or {}).get(sec, []) or [])
-            if vals:
-                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
-        return " | ".join(blank_parts) if blank_parts else ""
+        tf_blank = list((blank_map or {}).get("TF", []) or [])
+        tf_blank_detail = dict(getattr(result, "tf_blank_detail", {}) or {})
+        if tf_blank:
+            tf_chunks: list[str] = []
+            for q in tf_blank:
+                missing_count = int(tf_blank_detail.get(int(q), 0) or 0)
+                if missing_count > 0:
+                    tf_chunks.append(f"{int(q)}({missing_count}/4 ý)")
+                else:
+                    tf_chunks.append(str(int(q)))
+            blank_parts.append(f"TF[{', '.join(tf_chunks)}]")
+
+        numeric_blank = list((blank_map or {}).get("NUMERIC", []) or [])
+        if numeric_blank:
+            blank_parts.append(f"NUM[{','.join(str(v) for v in numeric_blank)}]")
+
+        if blank_parts:
+            parts.append("Trống: " + " | ".join(blank_parts))
+        return " | ".join(parts) if parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
         if result is None:
@@ -7923,15 +7866,27 @@ class MainWindow(QMainWindow):
             parts.append(f"TF: {self._format_tf_answers_with_expected(tf_payload, expected_tf)}")
         if numeric_payload or expected_numeric:
             parts.append(f"NUM: {self._format_numeric_answers_with_expected(numeric_payload, expected_numeric)}")
-        if parts:
-            return " | ".join(parts)
-
-        blank_parts = []
-        for sec in ["MCQ", "TF", "NUMERIC"]:
-            vals = list((blank_map or {}).get(sec, []) or [])
-            if vals:
-                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
-        return " | ".join(blank_parts) if blank_parts else ""
+        blank_parts: list[str] = []
+        mcq_blank = list((blank_map or {}).get("MCQ", []) or [])
+        if mcq_blank:
+            blank_parts.append(f"MCQ[{','.join(str(v) for v in mcq_blank)}]")
+        tf_blank = list((blank_map or {}).get("TF", []) or [])
+        tf_blank_detail = dict(getattr(result, "tf_blank_detail", {}) or {})
+        if tf_blank:
+            tf_chunks: list[str] = []
+            for q in tf_blank:
+                missing_count = int(tf_blank_detail.get(int(q), 0) or 0)
+                if missing_count > 0:
+                    tf_chunks.append(f"{int(q)}({missing_count}/4 ý)")
+                else:
+                    tf_chunks.append(str(int(q)))
+            blank_parts.append(f"TF[{', '.join(tf_chunks)}]")
+        numeric_blank = list((blank_map or {}).get("NUMERIC", []) or [])
+        if numeric_blank:
+            blank_parts.append(f"NUM[{','.join(str(v) for v in numeric_blank)}]")
+        if blank_parts:
+            parts.append("Trống: " + " | ".join(blank_parts))
+        return " | ".join(parts) if parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
         code_text = str(getattr(result, "exam_code", "") or "").strip()
@@ -8043,15 +7998,27 @@ class MainWindow(QMainWindow):
             parts.append(f"TF: {self._format_tf_answers_with_expected(tf_payload, expected_tf)}")
         if numeric_payload or expected_numeric:
             parts.append(f"NUM: {self._format_numeric_answers_with_expected(numeric_payload, expected_numeric)}")
-        if parts:
-            return " | ".join(parts)
-
-        blank_parts = []
-        for sec in ["MCQ", "TF", "NUMERIC"]:
-            vals = list((blank_map or {}).get(sec, []) or [])
-            if vals:
-                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
-        return " | ".join(blank_parts) if blank_parts else ""
+        blank_parts: list[str] = []
+        mcq_blank = list((blank_map or {}).get("MCQ", []) or [])
+        if mcq_blank:
+            blank_parts.append(f"MCQ[{','.join(str(v) for v in mcq_blank)}]")
+        tf_blank = list((blank_map or {}).get("TF", []) or [])
+        tf_blank_detail = dict(getattr(result, "tf_blank_detail", {}) or {})
+        if tf_blank:
+            tf_chunks: list[str] = []
+            for q in tf_blank:
+                missing_count = int(tf_blank_detail.get(int(q), 0) or 0)
+                if missing_count > 0:
+                    tf_chunks.append(f"{int(q)}({missing_count}/4 ý)")
+                else:
+                    tf_chunks.append(str(int(q)))
+            blank_parts.append(f"TF[{', '.join(tf_chunks)}]")
+        numeric_blank = list((blank_map or {}).get("NUMERIC", []) or [])
+        if numeric_blank:
+            blank_parts.append(f"NUM[{','.join(str(v) for v in numeric_blank)}]")
+        if blank_parts:
+            parts.append("Trống: " + " | ".join(blank_parts))
+        return " | ".join(parts) if parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
         code_text = str(getattr(result, "exam_code", "") or "").strip()
@@ -9280,9 +9247,8 @@ class MainWindow(QMainWindow):
                 "NUMERIC": sorted(set(int(q) for q in (getattr(key, "numeric_answers", {}) or {}).keys()) | _extra_for_section("NUMERIC")),
             }
             for sec in ["MCQ", "TF", "NUMERIC"]:
-                if key_sections[sec]:
-                    # Prefer answer-key scope over template scope to keep the answer string consistent.
-                    expected_by_section[sec] = key_sections[sec]
+                # Always follow answer-key scope if key exists.
+                expected_by_section[sec] = key_sections[sec]
 
         if not any(expected_by_section.get(sec, []) for sec in ["MCQ", "TF", "NUMERIC"]):
             return {sec: list(vals) for sec, vals in template_expected.items()}
@@ -9335,15 +9301,27 @@ class MainWindow(QMainWindow):
             parts.append(f"TF: {self._format_tf_answers_with_expected(tf_payload, expected_tf)}")
         if numeric_payload or expected_numeric:
             parts.append(f"NUM: {self._format_numeric_answers_with_expected(numeric_payload, expected_numeric)}")
-        if parts:
-            return " | ".join(parts)
-
-        blank_parts = []
-        for sec in ["MCQ", "TF", "NUMERIC"]:
-            vals = list((blank_map or {}).get(sec, []) or [])
-            if vals:
-                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
-        return " | ".join(blank_parts) if blank_parts else ""
+        blank_parts: list[str] = []
+        mcq_blank = list((blank_map or {}).get("MCQ", []) or [])
+        if mcq_blank:
+            blank_parts.append(f"MCQ[{','.join(str(v) for v in mcq_blank)}]")
+        tf_blank = list((blank_map or {}).get("TF", []) or [])
+        tf_blank_detail = dict(getattr(result, "tf_blank_detail", {}) or {})
+        if tf_blank:
+            tf_chunks: list[str] = []
+            for q in tf_blank:
+                missing_count = int(tf_blank_detail.get(int(q), 0) or 0)
+                if missing_count > 0:
+                    tf_chunks.append(f"{int(q)}({missing_count}/4 ý)")
+                else:
+                    tf_chunks.append(str(int(q)))
+            blank_parts.append(f"TF[{', '.join(tf_chunks)}]")
+        numeric_blank = list((blank_map or {}).get("NUMERIC", []) or [])
+        if numeric_blank:
+            blank_parts.append(f"NUM[{','.join(str(v) for v in numeric_blank)}]")
+        if blank_parts:
+            parts.append("Trống: " + " | ".join(blank_parts))
+        return " | ".join(parts) if parts else ""
 
     def _trim_result_answers_to_expected_scope(self, result) -> None:
         if result is None:
