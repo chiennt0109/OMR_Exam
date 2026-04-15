@@ -7472,27 +7472,13 @@ class MainWindow(QMainWindow):
         blank_map: dict[str, list[int]],
         expected_by_section: dict[str, list[int]] | None = None,
     ) -> str:
-        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
-        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
-        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
-        expected = expected_by_section or {}
-        expected_mcq = list(expected.get("MCQ", []) or [])
-        expected_tf = list(expected.get("TF", []) or [])
-        expected_numeric = list(expected.get("NUMERIC", []) or [])
-
         parts: list[str] = []
-        if mcq_payload or expected_mcq:
-            parts.append(f"MCQ: {self._format_mcq_answers_with_expected(mcq_payload, expected_mcq)}")
-        if tf_payload or expected_tf:
-            parts.append(f"TF: {self._format_tf_answers_with_expected(tf_payload, expected_tf)}")
-        if numeric_payload or expected_numeric:
-            parts.append(f"NUM: {self._format_numeric_answers_with_expected(numeric_payload, expected_numeric)}")
         blank_parts: list[str] = []
         mcq_blank = list((blank_map or {}).get("MCQ", []) or [])
         if mcq_blank:
             blank_parts.append(f"MCQ[{','.join(str(v) for v in mcq_blank)}]")
-        tf_blank_detail = dict(getattr(result, "tf_blank_detail", {}) or {})
         tf_blank = list((blank_map or {}).get("TF", []) or [])
+        tf_blank_detail = dict(getattr(result, "tf_blank_detail", {}) or {})
         if tf_blank:
             tf_chunks: list[str] = []
             for q in tf_blank:
@@ -7702,21 +7688,7 @@ class MainWindow(QMainWindow):
         blank_map: dict[str, list[int]],
         expected_by_section: dict[str, list[int]] | None = None,
     ) -> str:
-        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
-        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
-        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
-        expected = expected_by_section or {}
-        expected_mcq = list(expected.get("MCQ", []) or [])
-        expected_tf = list(expected.get("TF", []) or [])
-        expected_numeric = list(expected.get("NUMERIC", []) or [])
-
         parts: list[str] = []
-        if mcq_payload or expected_mcq:
-            parts.append(f"MCQ: {self._format_mcq_answers_with_expected(mcq_payload, expected_mcq)}")
-        if tf_payload or expected_tf:
-            parts.append(f"TF: {self._format_tf_answers_with_expected(tf_payload, expected_tf)}")
-        if numeric_payload or expected_numeric:
-            parts.append(f"NUM: {self._format_numeric_answers_with_expected(numeric_payload, expected_numeric)}")
         blank_parts: list[str] = []
         mcq_blank = list((blank_map or {}).get("MCQ", []) or [])
         if mcq_blank:
@@ -7860,12 +7832,6 @@ class MainWindow(QMainWindow):
         expected_numeric = list(expected.get("NUMERIC", []) or [])
 
         parts: list[str] = []
-        if mcq_payload or expected_mcq:
-            parts.append(f"MCQ: {self._format_mcq_answers_with_expected(mcq_payload, expected_mcq)}")
-        if tf_payload or expected_tf:
-            parts.append(f"TF: {self._format_tf_answers_with_expected(tf_payload, expected_tf)}")
-        if numeric_payload or expected_numeric:
-            parts.append(f"NUM: {self._format_numeric_answers_with_expected(numeric_payload, expected_numeric)}")
         blank_parts: list[str] = []
         mcq_blank = list((blank_map or {}).get("MCQ", []) or [])
         if mcq_blank:
@@ -7983,21 +7949,7 @@ class MainWindow(QMainWindow):
         blank_map: dict[str, list[int]],
         expected_by_section: dict[str, list[int]] | None = None,
     ) -> str:
-        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
-        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
-        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
-        expected = expected_by_section or {}
-        expected_mcq = list(expected.get("MCQ", []) or [])
-        expected_tf = list(expected.get("TF", []) or [])
-        expected_numeric = list(expected.get("NUMERIC", []) or [])
-
         parts: list[str] = []
-        if mcq_payload or expected_mcq:
-            parts.append(f"MCQ: {self._format_mcq_answers_with_expected(mcq_payload, expected_mcq)}")
-        if tf_payload or expected_tf:
-            parts.append(f"TF: {self._format_tf_answers_with_expected(tf_payload, expected_tf)}")
-        if numeric_payload or expected_numeric:
-            parts.append(f"NUM: {self._format_numeric_answers_with_expected(numeric_payload, expected_numeric)}")
         blank_parts: list[str] = []
         mcq_blank = list((blank_map or {}).get("MCQ", []) or [])
         if mcq_blank:
@@ -9295,12 +9247,6 @@ class MainWindow(QMainWindow):
         expected_numeric = list(expected.get("NUMERIC", []) or [])
 
         parts: list[str] = []
-        if mcq_payload or expected_mcq:
-            parts.append(f"MCQ: {self._format_mcq_answers_with_expected(mcq_payload, expected_mcq)}")
-        if tf_payload or expected_tf:
-            parts.append(f"TF: {self._format_tf_answers_with_expected(tf_payload, expected_tf)}")
-        if numeric_payload or expected_numeric:
-            parts.append(f"NUM: {self._format_numeric_answers_with_expected(numeric_payload, expected_numeric)}")
         blank_parts: list[str] = []
         mcq_blank = list((blank_map or {}).get("MCQ", []) or [])
         if mcq_blank:
