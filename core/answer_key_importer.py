@@ -38,6 +38,16 @@ def _read_file(file_path: str | Path) -> pd.DataFrame:
     raise ImportError(f"Unsupported file type '{ext}'. Use .xlsx or .csv")
 
 
+def _read_file_raw(file_path: str | Path) -> pd.DataFrame:
+    path = Path(file_path)
+    ext = path.suffix.lower()
+    if ext == ".xlsx":
+        return pd.read_excel(path, sheet_name=0, engine="openpyxl", header=None)
+    if ext == ".csv":
+        return pd.read_csv(path, header=None)
+    raise ImportError(f"Unsupported file type '{ext}'. Use .xlsx or .csv")
+
+
 def _read_excel_multilevel(file_path: str | Path) -> pd.DataFrame | None:
     path = Path(file_path)
     if path.suffix.lower() != ".xlsx":
@@ -254,6 +264,97 @@ def _parse_exam_matrix(
     return package
 
 
+def _parse_positional_exam_matrix(
+    raw_df: pd.DataFrame,
+    *,
+    strict: bool = True,
+    award_full_credit_for_invalid: bool = False,
+) -> ImportedAnswerKeyPackage | None:
+    # Positional rule:
+    # - Row 2 (index 1), from column B (index >= 1): exam code list
+    # - Column A (index 0), from row 3 (index >= 2): question order 1..n
+    if raw_df is None or raw_df.empty or raw_df.shape[0] < 3 or raw_df.shape[1] < 2:
+        return None
+
+    exam_cols: list[tuple[int, str]] = []
+    for col_idx in range(1, raw_df.shape[1]):
+        code = str(raw_df.iat[1, col_idx] if col_idx < raw_df.shape[1] else "").strip()
+        if code and code.lower() != "nan":
+            exam_cols.append((col_idx, code))
+    if not exam_cols:
+        return None
+
+    package = ImportedAnswerKeyPackage(
+        exam_keys={code: ImportedAnswerKey() for _, code in exam_cols}
+    )
+    section_counters: dict[str, int] = {"MCQ": 0, "TF": 0, "NUMERIC": 0}
+    expected_source_question = 1
+    has_any_answer_row = False
+
+    for row_idx in range(2, raw_df.shape[0]):
+        source_q_raw = raw_df.iat[row_idx, 0] if raw_df.shape[1] > 0 else ""
+        source_q_text = "" if pd.isna(source_q_raw) else str(source_q_raw).strip()
+        if not source_q_text:
+            continue
+        source_question = _ensure_question(row_idx, source_q_text)
+        if source_question != expected_source_question:
+            raise ImportError(
+                f"Row {row_idx + 1}: cột A phải đánh số liên tục từ 1..n (gặp {source_question}, mong đợi {expected_source_question})."
+            )
+        expected_source_question += 1
+
+        values: dict[str, str] = {}
+        for col_idx, exam_code in exam_cols:
+            value = raw_df.iat[row_idx, col_idx] if col_idx < raw_df.shape[1] else ""
+            values[exam_code] = "" if pd.isna(value) else str(value).strip()
+        non_empty = [v for v in values.values() if v]
+        if not non_empty:
+            continue
+
+        has_any_answer_row = True
+        row_types: list[str] = []
+        for v in non_empty:
+            up = v.upper()
+            if up in MCQ_CHOICES:
+                row_types.append("MCQ")
+            elif _is_numeric_token(v):
+                row_types.append("NUMERIC")
+            elif _is_tf_token(v):
+                row_types.append("TF")
+        inferred_type = row_types[0] if row_types else "MCQ"
+        section_counters[inferred_type] += 1
+        section_q = section_counters[inferred_type]
+
+        for exam_code, v in values.items():
+            if not v:
+                continue
+            up = v.upper()
+            target = package.exam_keys[exam_code]
+            if up in MCQ_CHOICES:
+                target.mcq_answers[section_q] = up
+                continue
+            if _is_numeric_token(v):
+                target.numeric_answers[section_q] = v
+                continue
+            if _is_tf_token(v):
+                target.true_false_answers[section_q] = _parse_tf_token(row_idx, exam_code, v)
+                continue
+            message = (
+                f"Row {row_idx + 1}, exam '{exam_code}': invalid value '{v}'. "
+                "Expected MCQ(A-E), TF(4 chars T/F or Đ/S), or numeric."
+            )
+            if strict:
+                raise ImportError(message)
+            package.warnings.append(message)
+            if award_full_credit_for_invalid:
+                bucket = target.full_credit_questions.setdefault(inferred_type, [])
+                if section_q not in bucket:
+                    bucket.append(section_q)
+                target.invalid_answer_rows.setdefault(inferred_type, {})[section_q] = v
+
+    return package if has_any_answer_row else None
+
+
 def import_answer_key(
     file_path: str | Path,
     exam_id: int = 1,
@@ -261,6 +362,22 @@ def import_answer_key(
     strict: bool = True,
     award_full_credit_for_invalid: bool = False,
 ) -> ImportedAnswerKeyPackage:
+    raw_df: pd.DataFrame | None = None
+    try:
+        raw_df = _read_file_raw(file_path)
+    except Exception:
+        raw_df = None
+    positional_package = _parse_positional_exam_matrix(
+        raw_df,
+        strict=strict,
+        award_full_credit_for_invalid=award_full_credit_for_invalid,
+    ) if raw_df is not None else None
+    if positional_package is not None:
+        package = positional_package
+        for key in package.exam_keys.values():
+            key.exam_id = exam_id
+        return package
+
     multi = _read_excel_multilevel(file_path)
     if multi is not None:
         first_col = multi.columns[0]
