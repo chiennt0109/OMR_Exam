@@ -6201,6 +6201,7 @@ class MainWindow(QMainWindow):
             self._debug_scan_result_state("restore_subject_loaded_first_row", self.scan_results[0])
         self._close_wait_progress(wait_dlg)
         return source != "empty"
+    @staticmethod
     def _normalized_mcq_answer_map(raw_map: object) -> dict[int, str]:
         normalized: dict[int, str] = {}
         if not isinstance(raw_map, dict):
