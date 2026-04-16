@@ -40,7 +40,6 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
     sid_current = str(getattr(result, "student_id", "") or "-").strip()
     sid_display_map: dict[str, str] = {}
     sid_reverse_map: dict[str, str] = {}
-
     def _sid_label(sid_text: str) -> str:
         profile = self._student_profile_by_id(sid_text)
         label = f"[{sid_text}] - {str(profile.get('name', '') or '-')} - {str(profile.get('class_name', '') or '-')}"
@@ -85,10 +84,8 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
             combo.view().setMinimumWidth(max(combo.width(), fm.averageCharWidth() * max(12, longest) + 40))
         except Exception:
             pass
-
     _fit_combo_popup_width(inp_sid)
     _fit_combo_popup_width(inp_code)
-
     def _attach_combo_filter(combo: QComboBox) -> None:
         if combo.lineEdit() is None:
             return
@@ -96,7 +93,6 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
         completer.setCaseSensitivity(Qt.CaseInsensitive)
         completer.setFilterMode(Qt.MatchContains)
         combo.setCompleter(completer)
-
     _attach_combo_filter(inp_sid)
     _attach_combo_filter(inp_code)
     top_form.addRow("SBD", inp_sid)
@@ -286,9 +282,24 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
 
     section_limits = self._subject_section_question_counts(subject_key)
     invalid_rows = dict(getattr(key, "invalid_answer_rows", {}) or {})
-    mcq_qs = sorted({int(x) for x in list((key.answers or {}).keys()) + list((invalid_rows.get("MCQ", {}) or {}).keys())})
-    tf_qs = sorted({int(x) for x in list((key.true_false_answers or {}).keys()) + list((invalid_rows.get("TF", {}) or {}).keys())})
-    numeric_qs = sorted({int(x) for x in list((key.numeric_answers or {}).keys()) + list((invalid_rows.get("NUMERIC", {}) or {}).keys())})
+    mcq_qs = sorted(
+        {
+            int(x)
+            for x in list((key.answers or {}).keys()) + list((invalid_rows.get("MCQ", {}) or {}).keys())
+        }
+    )
+    tf_qs = sorted(
+        {
+            int(x)
+            for x in list((key.true_false_answers or {}).keys()) + list((invalid_rows.get("TF", {}) or {}).keys())
+        }
+    )
+    numeric_qs = sorted(
+        {
+            int(x)
+            for x in list((key.numeric_answers or {}).keys()) + list((invalid_rows.get("NUMERIC", {}) or {}).keys())
+        }
+    )
     mcq_limit = int(section_limits.get("MCQ", 0) or 0)
     tf_limit = int(section_limits.get("TF", 0) or 0)
     numeric_limit = int(section_limits.get("NUMERIC", 0) or 0)
@@ -300,7 +311,13 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
         numeric_qs = numeric_qs[:numeric_limit]
     for q_display, q_actual in enumerate(mcq_qs, start=1):
         student_val = _value_by_actual_or_display((result.mcq_answers or {}), q_actual, q_display)
-        answer_val = str((key.answers or {}).get(q_actual, (invalid_rows.get("MCQ", {}) or {}).get(q_actual, "")) or "")
+        answer_val = str(
+            (key.answers or {}).get(
+                q_actual,
+                (invalid_rows.get("MCQ", {}) or {}).get(q_actual, ""),
+            )
+            or ""
+        )
         _append_row("MCQ", q_display, q_actual, answer_val, str(student_val or ""))
     for q_display, q_actual in enumerate(tf_qs, start=1):
         answer_flags = (key.true_false_answers or {}).get(q_actual, {}) or {}
@@ -311,12 +328,23 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
         _append_row("TF", q_display, q_actual, answer_text, _tf_compact(student_flags))
     for q_display, q_actual in enumerate(numeric_qs, start=1):
         student_val = _value_by_actual_or_display((result.numeric_answers or {}), q_actual, q_display)
-        answer_val = str((key.numeric_answers or {}).get(q_actual, (invalid_rows.get("NUMERIC", {}) or {}).get(q_actual, "")) or "")
+        answer_val = str(
+            (key.numeric_answers or {}).get(
+                q_actual,
+                (invalid_rows.get("NUMERIC", {}) or {}).get(q_actual, ""),
+            )
+            or ""
+        )
         _append_row("NUMERIC", q_display, q_actual, answer_val, str(student_val or ""))
 
     subject_cfg = self._subject_config_by_subject_key(subject_key) or {}
     try:
-        scored_row = self.scoring_engine.score(result, key, student_name=str(getattr(result, "full_name", "") or ""), subject_config=subject_cfg)
+        scored_row = self.scoring_engine.score(
+            result,
+            key,
+            student_name=str(getattr(result, "full_name", "") or ""),
+            subject_config=subject_cfg,
+        )
         formula_txt = self.scoring_engine.describe_formula(key, subject_cfg)
         score_info.setText(f"Điểm hiện tại: {float(getattr(scored_row, 'score', 0.0) or 0.0):g}\nCông thức: {formula_txt}")
     except Exception:
@@ -357,10 +385,8 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
     initial_snapshot = _current_dialog_snapshot()
     buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
     lay.addWidget(buttons)
-
     def _accept_without_confirm() -> None:
         dlg.accept()
-
     def _reject_with_confirm() -> None:
         if _current_dialog_snapshot() != initial_snapshot:
             choice = QMessageBox.question(
@@ -373,25 +399,11 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
             if choice != QMessageBox.Yes:
                 return
         dlg.reject()
-
     buttons.accepted.connect(_accept_without_confirm)
     buttons.rejected.connect(_reject_with_confirm)
     if dlg.exec() != QDialog.Accepted:
         return
 
-    final_snapshot = _current_dialog_snapshot()
-    if final_snapshot == initial_snapshot:
-        return
-
-    selected_exam_code = str(inp_code.currentData() or inp_code.currentText() or "").strip()
-    selected_key = self.answer_keys.get_flexible(subject_key, selected_exam_code) if self.answer_keys else None
-    if selected_key is None:
-        QMessageBox.warning(self, "Tính điểm", "Mã đề đã chọn chưa có đáp án nên không thể lưu giải trình.")
-        return
-
-    new_mcq: dict[int, str] = {}
-    new_tf: dict[int, dict[str, bool]] = {}
-    new_numeric: dict[int, str] = {}
     for r in range(grid.rowCount()):
         section = str(grid.item(r, 0).text() if grid.item(r, 0) else "").strip().upper()
         q_item = grid.item(r, 1)
@@ -400,32 +412,30 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
         if q_no <= 0:
             continue
         if section == "MCQ":
-            new_mcq[q_no] = student_txt.upper()[:1]
+            target_key = q_no if q_no in (result.mcq_answers or {}) else int(grid.item(r, 1).text() if grid.item(r, 1) else q_no)
+            result.mcq_answers[target_key] = student_txt.upper()[:1]
         elif section == "NUMERIC":
-            new_numeric[q_no] = student_txt
+            target_key = q_no if q_no in (result.numeric_answers or {}) else int(grid.item(r, 1).text() if grid.item(r, 1) else q_no)
+            result.numeric_answers[target_key] = student_txt
         elif section == "TF":
             tf_flags: dict[str, bool] = {}
             compact = "".join(ch for ch in student_txt.upper() if ch in {"Đ", "D", "S", "T", "F", "1", "0"})
-            expected_len = max(1, len(_tf_compact((selected_key.true_false_answers or {}).get(q_no, {}) or {})))
+            expected_len = max(1, len(_tf_compact((key.true_false_answers or {}).get(q_no, {}) or {})))
             compact = compact[:expected_len]
             for i, ch in enumerate(compact):
-                key_flag = ["a", "b", "c", "d"][i] if i < 4 else f"k{i + 1}"
+                key_flag = ["a", "b", "c", "d"][i] if i < 4 else f"k{i+1}"
                 tf_flags[key_flag] = ch in {"Đ", "D", "T", "1"}
             if tf_flags:
-                new_tf[q_no] = tf_flags
+                target_key = q_no if q_no in (result.true_false_answers or {}) else int(grid.item(r, 1).text() if grid.item(r, 1) else q_no)
+                result.true_false_answers[target_key] = tf_flags
 
     sid_selected = str(inp_sid.currentData() or inp_sid.currentText() or "").strip()
     if sid_selected in sid_reverse_map:
         sid_selected = sid_reverse_map[sid_selected]
     if sid_selected.startswith("[") and "]" in sid_selected:
         sid_selected = sid_selected[1:].split("]", 1)[0].strip()
-
     result.student_id = sid_selected
-    result.exam_code = selected_exam_code
-    result.mcq_answers = {int(k): str(v or "").strip().upper()[:1] for k, v in new_mcq.items()}
-    result.true_false_answers = {int(k): dict(v or {}) for k, v in new_tf.items()}
-    result.numeric_answers = {int(k): str(v or "").strip() for k, v in new_numeric.items()}
-    result.answer_string = ""
+    result.exam_code = str(inp_code.currentData() or inp_code.currentText() or "").strip()
 
     self.database.update_scan_result_payload(
         self._batch_result_subject_key(subject_key),

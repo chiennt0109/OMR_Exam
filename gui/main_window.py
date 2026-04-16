@@ -4208,15 +4208,6 @@ class MainWindow(QMainWindow):
                 refreshed.append(self._deserialize_omr_result(item))
             except Exception:
                 continue
-        refreshed, scope_changed = self._canonicalize_results_for_subject_storage(subject, refreshed)
-        if scope_changed:
-            try:
-                self.database.replace_scan_results_for_subject(
-                    scoped_subject,
-                    [self._serialize_omr_result(result) for result in refreshed],
-                )
-            except Exception:
-                pass
         self.scan_results_by_subject[scoped_subject] = list(refreshed)
         return refreshed
 
@@ -4548,7 +4539,6 @@ class MainWindow(QMainWindow):
 
         current_results = self._current_scan_results_snapshot()
         for result in current_results:
-            self._apply_subject_scope_to_result(result, subject_key=subject_key, subject_cfg=subject_cfg)
             result.answer_string = self._normalize_non_api_answer_string(result, subject_key)
             self._debug_scan_result_state("sync_snapshot", result)
 
@@ -7360,198 +7350,61 @@ class MainWindow(QMainWindow):
         self._update_batch_scan_scope_summary()
         QMessageBox.information(self, "API bài thi", f"Đã nạp {len(out)} dòng từ API bài thi.")
 
-    def _trim_result_answers_to_expected_scope(self, result) -> None:
-        self._apply_subject_scope_to_result(result)
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
 
-    def _scoped_result_copy(self, result, subject_key: str = "", subject_cfg: dict | None = None):
-        scoped = copy.deepcopy(result)
-        self._apply_subject_scope_to_result(scoped, subject_key=subject_key, subject_cfg=subject_cfg)
-        return scoped
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
 
-    def _template_expected_questions_by_section(self) -> dict[str, list[int]]:
-        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
-        if not self.template:
-            return template_expected
-        for z in self.template.zones:
-            if not z.grid:
-                continue
-            count = int(z.grid.question_count or z.grid.rows or 0)
-            start = int(z.grid.question_start)
-            rng = list(range(start, start + max(0, count)))
-            if z.zone_type.value == "MCQ_BLOCK":
-                template_expected["MCQ"].extend(rng)
-            elif z.zone_type.value == "TRUE_FALSE_BLOCK":
-                template_expected["TF"].extend(rng)
-            elif z.zone_type.value == "NUMERIC_BLOCK":
-                template_expected["NUMERIC"].extend(rng)
-        return template_expected
+    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        parsed_parts: list[str] = []
+        mcq = self._format_mcq_answers(getattr(result, "mcq_answers", {}) or {})
+        tf = self._format_tf_answers(getattr(result, "true_false_answers", {}) or {})
+        num = self._format_numeric_answers(getattr(result, "numeric_answers", {}) or {})
+        if mcq and mcq != "-":
+            parsed_parts.append(f"MCQ: {mcq}")
+        if tf and tf != "-":
+            parsed_parts.append(f"TF: {tf}")
+        if num and num != "-":
+            parsed_parts.append(f"NUM: {num}")
 
-    def _raw_subject_question_counts(self, subject_cfg: dict | None = None, subject_key: str = "") -> dict[str, int]:
-        cfg = dict(subject_cfg or {}) if isinstance(subject_cfg, dict) else {}
-        if not cfg and subject_key:
-            cfg = dict(self._subject_config_by_subject_key(subject_key) or {})
-        raw_counts = (cfg.get("question_counts", {}) if isinstance(cfg, dict) else {}) or {}
-        if not isinstance(raw_counts, dict):
-            raw_counts = {}
-        return {
-            "MCQ": max(0, int(raw_counts.get("MCQ", 0) or 0)),
-            "TF": max(0, int(raw_counts.get("TF", 0) or 0)),
-            "NUMERIC": max(0, int(raw_counts.get("NUMERIC", 0) or 0)),
-        }
-
-    def _answer_key_scope_by_section(self, key_payload) -> dict[str, list[int]]:
-        if key_payload is None:
-            return {"MCQ": [], "TF": [], "NUMERIC": []}
-        full_credit = (key_payload.get("full_credit_questions", {}) if isinstance(key_payload, dict) else getattr(key_payload, "full_credit_questions", {})) or {}
-        invalid_rows = (key_payload.get("invalid_answer_rows", {}) if isinstance(key_payload, dict) else getattr(key_payload, "invalid_answer_rows", {})) or {}
-
-        def _extra_for_section(sec: str) -> set[int]:
-            extra: set[int] = set()
-            for q in list((full_credit.get(sec, []) or [])):
-                try:
-                    extra.add(int(q))
-                except Exception:
-                    continue
-            for q in dict((invalid_rows.get(sec, {}) or {})).keys():
-                try:
-                    extra.add(int(q))
-                except Exception:
-                    continue
-            return extra
-
-        def _sorted_question_keys(payload: object) -> list[int]:
-            out: set[int] = set()
-            for q in dict(payload or {}).keys():
-                try:
-                    out.add(int(q))
-                except Exception:
-                    continue
-            return sorted(out)
-
-        mcq_map = (key_payload.get("mcq_answers", {}) if isinstance(key_payload, dict) else getattr(key_payload, "answers", {})) or {}
-        tf_map = (key_payload.get("true_false_answers", {}) if isinstance(key_payload, dict) else getattr(key_payload, "true_false_answers", {})) or {}
-        numeric_map = (key_payload.get("numeric_answers", {}) if isinstance(key_payload, dict) else getattr(key_payload, "numeric_answers", {})) or {}
-        return {
-            "MCQ": sorted(set(_sorted_question_keys(mcq_map)) | _extra_for_section("MCQ")),
-            "TF": sorted(set(_sorted_question_keys(tf_map)) | _extra_for_section("TF")),
-            "NUMERIC": sorted(set(_sorted_question_keys(numeric_map)) | _extra_for_section("NUMERIC")),
-        }
-
-    def _detected_question_scope_by_section(self, result) -> dict[str, list[int]]:
-        mcq = sorted({int(q) for q in dict(getattr(result, "mcq_answers", {}) or {}).keys() if str(q).strip().lstrip("-").isdigit() and int(q) > 0})
-        tf = sorted({int(q) for q in dict(getattr(result, "true_false_answers", {}) or {}).keys() if str(q).strip().lstrip("-").isdigit() and int(q) > 0})
-        numeric = sorted({int(q) for q in dict(getattr(result, "numeric_answers", {}) or {}).keys() if str(q).strip().lstrip("-").isdigit() and int(q) > 0})
-        return {"MCQ": mcq, "TF": tf, "NUMERIC": numeric}
-
-    def _canonical_scope_info_for_result(
-        self,
-        result,
-        subject_key: str = "",
-        subject_cfg: dict | None = None,
-    ) -> tuple[dict[str, list[int]], bool]:
-        current_subject_key = str(subject_key or self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
-        cfg = dict(subject_cfg or {}) if isinstance(subject_cfg, dict) else {}
-        if not cfg and current_subject_key:
-            cfg = dict(self._subject_config_by_subject_key(current_subject_key) or {})
-
-        template_expected = self._template_expected_questions_by_section()
-        raw_counts = self._raw_subject_question_counts(cfg, current_subject_key)
-        counts_configured = any(int(raw_counts.get(sec, 0) or 0) > 0 for sec in ["MCQ", "TF", "NUMERIC"])
-
-        counts_scope: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        blank_parts = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
-            limit = max(0, int(raw_counts.get(sec, 0) or 0))
-            if limit <= 0:
-                counts_scope[sec] = []
-                continue
-            template_section = list(template_expected.get(sec, []) or [])
-            counts_scope[sec] = list(template_section[:limit]) if template_section else list(range(1, limit + 1))
-
-        key_payload = self._subject_answer_key_for_result(result, current_subject_key) if current_subject_key else None
-        answer_key_present = key_payload is not None
-        key_scope = self._answer_key_scope_by_section(key_payload) if answer_key_present else {"MCQ": [], "TF": [], "NUMERIC": []}
-
-        if counts_configured:
-            merged_scope: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
-            for sec in ["MCQ", "TF", "NUMERIC"]:
-                allowed = [int(q) for q in (counts_scope.get(sec, []) or [])]
-                if not allowed:
-                    merged_scope[sec] = []
-                    continue
-                if answer_key_present and key_scope.get(sec):
-                    allowed_set = set(allowed)
-                    filtered = [int(q) for q in (key_scope.get(sec, []) or []) if int(q) in allowed_set]
-                    merged_scope[sec] = filtered or list(allowed)
+            vals = blank_map.get(sec, [])
+            if vals:
+                if sec == "TF":
+                    blank_parts.append(f"{sec} trống: {len(vals)}")
                 else:
-                    merged_scope[sec] = list(allowed)
-            return merged_scope, True
+                    blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        merged = parsed_parts + blank_parts
+        return " | ".join(merged) if merged else "-"
 
-        if answer_key_present:
-            return key_scope, True
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
 
-        detected_scope = self._detected_question_scope_by_section(result)
-        if any(detected_scope.get(sec, []) for sec in ["MCQ", "TF", "NUMERIC"]):
-            return detected_scope, False
-
-        return template_expected, False
-
-    def _canonical_expected_questions_by_section(
-        self,
-        result,
-        subject_key: str = "",
-        subject_cfg: dict | None = None,
-    ) -> dict[str, list[int]]:
-        expected, _ = self._canonical_scope_info_for_result(result, subject_key=subject_key, subject_cfg=subject_cfg)
-        return expected
-
-    def _apply_subject_scope_to_result(
-        self,
-        result,
-        subject_key: str = "",
-        subject_cfg: dict | None = None,
-    ) -> bool:
-        if result is None:
-            return False
-        expected, scope_locked = self._canonical_scope_info_for_result(result, subject_key=subject_key, subject_cfg=subject_cfg)
-        if not scope_locked:
-            return False
-
-        before_state = self._serialize_omr_result(result)
-        result.mcq_answers = self._normalize_answer_map_to_expected_scope(
-            getattr(result, "mcq_answers", {}) or {},
-            list(expected.get("MCQ", []) or []),
-            lambda v: str(v or "").strip().upper()[:1],
-        )
-        result.true_false_answers = self._normalize_answer_map_to_expected_scope(
-            getattr(result, "true_false_answers", {}) or {},
-            list(expected.get("TF", []) or []),
-            lambda v: {
-                str(k or "").strip().lower(): bool(flag)
-                for k, flag in (dict(v or {}) if isinstance(v, dict) else {}).items()
-                if str(k or "").strip().lower() in {"a", "b", "c", "d"}
-            },
-        )
-        result.numeric_answers = self._normalize_answer_map_to_expected_scope(
-            getattr(result, "numeric_answers", {}) or {},
-            list(expected.get("NUMERIC", []) or []),
-            lambda v: str(v or "").strip(),
-        )
-        return self._serialize_omr_result(result) != before_state
-
-    def _canonicalize_results_for_subject_storage(self, subject_key: str, results: list[OMRResult]) -> tuple[list[OMRResult], bool]:
-        normalized: list[OMRResult] = []
-        changed = False
-        current_subject_key = str(subject_key or "").strip()
-        subject_cfg = self._subject_config_by_subject_key(current_subject_key) or {}
-        for result in list(results or []):
-            scoped = copy.deepcopy(result)
-            before_state = self._serialize_omr_result(scoped)
-            self._apply_subject_scope_to_result(scoped, subject_key=current_subject_key, subject_cfg=subject_cfg)
-            scoped.answer_string = self._normalize_non_api_answer_string(scoped, current_subject_key)
-            if self._serialize_omr_result(scoped) != before_state or str(getattr(result, "answer_string", "") or "") != str(getattr(scoped, "answer_string", "") or ""):
-                changed = True
-            normalized.append(scoped)
-        return normalized, changed
+    def _scoped_result_copy(self, result):
+        scoped = copy.deepcopy(result)
+        self._trim_result_answers_to_expected_scope(scoped)
+        return scoped
 
     def _match_answer_key_payload_by_exam_code(self, mapping: dict, exam_code: str):
         if not isinstance(mapping, dict) or not mapping:
@@ -7585,11 +7438,213 @@ class MainWindow(QMainWindow):
         scoped = {"MCQ": [], "TF": [], "NUMERIC": []}
         for sec in ["MCQ", "TF", "NUMERIC"]:
             limit = max(0, int(counts.get(sec, 0) or 0))
-            scoped[sec] = list((template_expected.get(sec, []) or [])[:limit]) if limit > 0 else []
+            if limit <= 0:
+                scoped[sec] = []
+                continue
+            template_section = [int(q) for q in (template_expected.get(sec, []) or []) if str(q).strip().lstrip("-").isdigit() and int(q) > 0]
+            scoped[sec] = list(template_section[:limit]) if template_section else list(range(1, limit + 1))
         return scoped
 
     def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
-        return self._canonical_expected_questions_by_section(result)
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        subject_cfg = self._selected_batch_subject_config() or self._resolve_subject_config_for_batch()
+        current_subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+        answer_subject_key = str(self._answer_key_subject_key(current_subject_key, subject_cfg) or "").strip()
+        exam_code = str(getattr(result, "exam_code", "") or "").strip()
+        normalized_exam_code = self._normalize_exam_code_text(exam_code)
+        key_payload: Any = None
+        has_configured_keys = False
+
+        imported_answer_keys = self._subject_imported_answer_keys_for_main(subject_cfg or {})
+        if imported_answer_keys:
+            has_configured_keys = True
+            key_payload = self._match_answer_key_payload_by_exam_code(imported_answer_keys, exam_code)
+
+        if key_payload is None and current_subject_key:
+            configured = self._fetch_answer_keys_for_subject_scoped(current_subject_key, subject_cfg) or {}
+            if configured:
+                has_configured_keys = True
+                key_payload = self._match_answer_key_payload_by_exam_code(configured, exam_code)
+
+        if key_payload is None and self.answer_keys is not None:
+            subject_candidates: list[str] = []
+            for candidate in [current_subject_key, answer_subject_key]:
+                candidate_text = str(candidate or "").strip()
+                if candidate_text and candidate_text not in subject_candidates:
+                    subject_candidates.append(candidate_text)
+            for candidate_subject in subject_candidates:
+                rows = [
+                    row for row in self.answer_keys.keys.values()
+                    if str(getattr(row, "subject", "") or "").strip() == candidate_subject
+                ]
+                if rows:
+                    has_configured_keys = True
+                for row in rows:
+                    row_exam_code = str(getattr(row, "exam_code", "") or "").strip()
+                    if exam_code and row_exam_code == exam_code:
+                        key_payload = row
+                        break
+                    if normalized_exam_code and self._normalize_exam_code_text(row_exam_code) == normalized_exam_code:
+                        key_payload = row
+                        break
+                if key_payload is not None:
+                    break
+
+        scoped_by_counts = self._question_scope_from_subject_counts(template_expected, subject_cfg, current_subject_key)
+
+        if key_payload is not None:
+            full_credit = (key_payload.get("full_credit_questions", {}) if isinstance(key_payload, dict) else getattr(key_payload, "full_credit_questions", {})) or {}
+            invalid_rows = (key_payload.get("invalid_answer_rows", {}) if isinstance(key_payload, dict) else getattr(key_payload, "invalid_answer_rows", {})) or {}
+
+            def _extra_for_section(sec: str) -> set[int]:
+                extra: set[int] = set()
+                for q in list((full_credit.get(sec, []) or [])):
+                    try:
+                        extra.add(int(q))
+                    except Exception:
+                        continue
+                for q in dict((invalid_rows.get(sec, {}) or {})).keys():
+                    try:
+                        extra.add(int(q))
+                    except Exception:
+                        continue
+                return extra
+
+            def _sorted_question_keys(payload: object) -> list[int]:
+                out: set[int] = set()
+                for q in dict(payload or {}).keys():
+                    try:
+                        out.add(int(q))
+                    except Exception:
+                        continue
+                return sorted(out)
+
+            mcq_map = (key_payload.get("mcq_answers", {}) if isinstance(key_payload, dict) else getattr(key_payload, "answers", {})) or {}
+            tf_map = (key_payload.get("true_false_answers", {}) if isinstance(key_payload, dict) else getattr(key_payload, "true_false_answers", {})) or {}
+            numeric_map = (key_payload.get("numeric_answers", {}) if isinstance(key_payload, dict) else getattr(key_payload, "numeric_answers", {})) or {}
+            key_scope = {
+                "MCQ": sorted(set(_sorted_question_keys(mcq_map)) | _extra_for_section("MCQ")),
+                "TF": sorted(set(_sorted_question_keys(tf_map)) | _extra_for_section("TF")),
+                "NUMERIC": sorted(set(_sorted_question_keys(numeric_map)) | _extra_for_section("NUMERIC")),
+            }
+
+            if any(scoped_by_counts.get(sec, []) for sec in ["MCQ", "TF", "NUMERIC"]):
+                merged_scope: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    allowed = [int(q) for q in (scoped_by_counts.get(sec, []) or [])]
+                    if not allowed:
+                        merged_scope[sec] = []
+                        continue
+                    allowed_set = set(allowed)
+                    filtered = [int(q) for q in (key_scope.get(sec, []) or []) if int(q) in allowed_set]
+                    merged_scope[sec] = filtered or list(allowed)
+                return merged_scope
+
+            return key_scope
+        if any(scoped_by_counts.get(sec, []) for sec in ["MCQ", "TF", "NUMERIC"]):
+            return scoped_by_counts
+
+        if has_configured_keys:
+            return {"MCQ": [], "TF": [], "NUMERIC": []}
+
+        return {sec: list(vals) for sec, vals in template_expected.items()}
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+        has_exam_code_zone = any(z.zone_type.value == "EXAM_CODE_BLOCK" for z in self.template.zones)
+        has_student_id_zone = any(z.zone_type.value == "STUDENT_ID_BLOCK" for z in self.template.zones)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, v in sorted(answers.items(), key=lambda x: int(x[0])):
+            value = str(v).strip()
+            chunks.append(f"{int(q)}={value if value else '_'}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_mcq_answers_with_expected(answers: dict[int, str], expected_questions: list[int]) -> str:
+        expected = sorted({int(q) for q in (expected_questions or []) if int(q) > 0})
+        if not expected:
+            return MainWindow._format_mcq_answers(answers)
+        chunks: list[str] = []
+        for q in expected:
+            ans = str((answers or {}).get(int(q), "") or "").strip().upper()
+            chunks.append(f"{int(q)}{ans if ans else '_'}")
+        return "; ".join(chunks) if chunks else "-"
+
+    @staticmethod
+    def _format_tf_answers_with_expected(answers: dict[int, dict[str, bool]], expected_questions: list[int]) -> str:
+        expected = sorted({int(q) for q in (expected_questions or []) if int(q) > 0})
+        if not expected:
+            return MainWindow._format_tf_answers(answers)
+        chunks: list[str] = []
+        for q in expected:
+            flags = dict((answers or {}).get(int(q), {}) or {})
+            marks = "".join(("Đ" if bool(flags.get(k)) else "S") if k in flags else "_" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks) if chunks else "-"
+
+    @staticmethod
+    def _format_numeric_answers_with_expected(answers: dict[int, str], expected_questions: list[int]) -> str:
+        expected = sorted({int(q) for q in (expected_questions or []) if int(q) > 0})
+        if not expected:
+            return MainWindow._format_numeric_answers(answers)
+        chunks: list[str] = []
+        for q in expected:
+            value = str((answers or {}).get(int(q), "") or "").strip()
+            chunks.append(f"{int(q)}={value if value else '_'}")
+        return "; ".join(chunks) if chunks else "-"
+
+    def _build_recognition_content_text(
+        self,
+        result,
+        blank_map: dict[str, list[int]],
+        expected_by_section: dict[str, list[int]] | None = None,
+    ) -> str:
+        parts: list[str] = []
+        blank_parts: list[str] = []
+        mcq_blank = list((blank_map or {}).get("MCQ", []) or [])
+        if mcq_blank:
+            blank_parts.append(f"MCQ[{','.join(str(v) for v in mcq_blank)}]")
+        tf_blank = list((blank_map or {}).get("TF", []) or [])
+        tf_blank_detail = dict(getattr(result, "tf_blank_detail", {}) or {})
+        if tf_blank:
+            tf_chunks: list[str] = []
+            for q in tf_blank:
+                missing_count = int(tf_blank_detail.get(int(q), 0) or 0)
+                if missing_count > 0:
+                    tf_chunks.append(f"{int(q)}({missing_count}/4 ý)")
+                else:
+                    tf_chunks.append(str(int(q)))
+            blank_parts.append(f"TF[{', '.join(tf_chunks)}]")
+        numeric_blank = list((blank_map or {}).get("NUMERIC", []) or [])
+        if numeric_blank:
+            blank_parts.append(f"NUM[{','.join(str(v) for v in numeric_blank)}]")
+        if blank_parts:
+            parts.append("Trống: " + " | ".join(blank_parts))
+        return " | ".join(parts) if parts else ""
 
     def _normalize_answer_map_to_expected_scope(self, data: dict, expected_questions: list[int], cast_value):
         normalized: dict[int, Any] = {}
@@ -7608,7 +7663,7 @@ class MainWindow(QMainWindow):
             }
         )
         if not expected_set:
-            return normalized
+            return {}
         if not normalized:
             return {}
 
@@ -7621,6 +7676,55 @@ class MainWindow(QMainWindow):
         for src_q, dst_q in zip(actual_set, expected_set):
             remapped[dst_q] = normalized[src_q]
         return remapped
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        if result is None:
+            return
+
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(
+            code_text
+            and "?" not in code_text
+            and (
+                not avail_codes
+                or code_text in avail_codes
+                or self._normalize_exam_code_text(code_text) in avail_codes
+            )
+        )
+        if not code_valid:
+            return
+
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+        if not subject_key:
+            return
+        if self.template is None:
+            return
+
+        expected = self._expected_questions_by_section(result)
+        if not any(expected.get(sec, []) for sec in ["MCQ", "TF", "NUMERIC"]):
+            return
+
+        result.mcq_answers = self._normalize_answer_map_to_expected_scope(
+            result.mcq_answers or {},
+            list(expected.get("MCQ", []) or []),
+            lambda v: str(v or "").strip().upper()[:1],
+        )
+        result.true_false_answers = self._normalize_answer_map_to_expected_scope(
+            result.true_false_answers or {},
+            list(expected.get("TF", []) or []),
+            lambda v: {
+                str(k or "").strip().lower(): bool(flag)
+                for k, flag in (dict(v or {}) if isinstance(v, dict) else {}).items()
+                if str(k or "").strip().lower() in {"a", "b", "c", "d"}
+            },
+        )
+        result.numeric_answers = self._normalize_answer_map_to_expected_scope(
+            result.numeric_answers or {},
+            list(expected.get("NUMERIC", []) or []),
+            lambda v: str(v or "").strip(),
+        )
+        result.sync_legacy_aliases()
 
     def _compute_blank_questions(self, result) -> dict[str, list[int]]:
         expected_by_section = self._expected_questions_by_section(result)
@@ -7662,50 +7766,102 @@ class MainWindow(QMainWindow):
                 )
         return messages
 
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = {sec: list(vals) for sec, vals in template_expected.items()}
+        subject_key_name = self.active_batch_subject_key
+        if not subject_key_name and self.session and self.session.subjects:
+            subject_key_name = self.session.subjects[0]
+        if self.answer_keys and subject_key_name:
+            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
+            if key:
+                full_credit = getattr(key, "full_credit_questions", {}) or {}
+                invalid_rows = getattr(key, "invalid_answer_rows", {}) or {}
+
+                def _extra_for_section(sec: str) -> set[int]:
+                    extra: set[int] = set()
+                    for q in list((full_credit.get(sec, []) or [])):
+                        try:
+                            extra.add(int(q))
+                        except Exception:
+                            continue
+                    for q in dict((invalid_rows.get(sec, {}) or {})).keys():
+                        try:
+                            extra.add(int(q))
+                        except Exception:
+                            continue
+                    return extra
+
+                key_sections = {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys()) | _extra_for_section("MCQ")),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys()) | _extra_for_section("TF")),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys()) | _extra_for_section("NUMERIC")),
+                }
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    key_set = set(key_sections[sec])
+                    if key_set:
+                        # For display/content scope: always preserve answer-key numbering.
+                        expected_by_section[sec] = key_sections[sec]
+        if not any(expected_by_section.get(sec, []) for sec in ["MCQ", "TF", "NUMERIC"]):
+            # fallback only when answer-key scope is unavailable.
+            return {sec: list(vals) for sec, vals in template_expected.items()}
+        return expected_by_section
+
     @staticmethod
     def _format_mcq_answers(answers: dict[int, str]) -> str:
         if not answers:
             return "-"
-        return "; ".join(
-            f"{int(q)}{str(a or '').strip().upper()[:1] or '_'}"
-            for q, a in sorted((answers or {}).items(), key=lambda x: int(x[0]))
-        )
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
 
     @staticmethod
     def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
         if not answers:
             return "-"
         chunks: list[str] = []
-        for q, flags in sorted((answers or {}).items(), key=lambda x: int(x[0])):
-            row = dict(flags or {})
-            marks = "".join(("Đ" if bool(row.get(k)) else "S") if k in row else "_" for k in ["a", "b", "c", "d"])
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
             chunks.append(f"{int(q)}{marks}")
-        return "; ".join(chunks) if chunks else "-"
+        return "; ".join(chunks)
 
     @staticmethod
     def _format_numeric_answers(answers: dict[int, str]) -> str:
         if not answers:
             return "-"
         chunks: list[str] = []
-        for q, v in sorted((answers or {}).items(), key=lambda x: int(x[0])):
-            value = str(v or "").strip()
+        for q, v in sorted(answers.items(), key=lambda x: int(x[0])):
+            value = str(v).strip()
             chunks.append(f"{int(q)}={value if value else '_'}")
-        return "; ".join(chunks) if chunks else "-"
+        return "; ".join(chunks)
 
     @staticmethod
     def _format_mcq_answers_with_expected(answers: dict[int, str], expected_questions: list[int]) -> str:
-        expected = sorted({int(q) for q in (expected_questions or []) if str(q).strip().lstrip('-').isdigit() and int(q) > 0})
+        expected = sorted({int(q) for q in (expected_questions or []) if int(q) > 0})
         if not expected:
             return MainWindow._format_mcq_answers(answers)
         chunks: list[str] = []
         for q in expected:
-            ans = str((answers or {}).get(int(q), "") or "").strip().upper()[:1]
+            ans = str((answers or {}).get(int(q), "") or "").strip().upper()
             chunks.append(f"{int(q)}{ans if ans else '_'}")
         return "; ".join(chunks) if chunks else "-"
 
     @staticmethod
     def _format_tf_answers_with_expected(answers: dict[int, dict[str, bool]], expected_questions: list[int]) -> str:
-        expected = sorted({int(q) for q in (expected_questions or []) if str(q).strip().lstrip('-').isdigit() and int(q) > 0})
+        expected = sorted({int(q) for q in (expected_questions or []) if int(q) > 0})
         if not expected:
             return MainWindow._format_tf_answers(answers)
         chunks: list[str] = []
@@ -7717,7 +7873,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _format_numeric_answers_with_expected(answers: dict[int, str], expected_questions: list[int]) -> str:
-        expected = sorted({int(q) for q in (expected_questions or []) if str(q).strip().lstrip('-').isdigit() and int(q) > 0})
+        expected = sorted({int(q) for q in (expected_questions or []) if int(q) > 0})
         if not expected:
             return MainWindow._format_numeric_answers(answers)
         chunks: list[str] = []
@@ -7725,6 +7881,1568 @@ class MainWindow(QMainWindow):
             value = str((answers or {}).get(int(q), "") or "").strip()
             chunks.append(f"{int(q)}={value if value else '_'}")
         return "; ".join(chunks) if chunks else "-"
+
+    def _build_recognition_content_text(
+        self,
+        result,
+        blank_map: dict[str, list[int]],
+        expected_by_section: dict[str, list[int]] | None = None,
+    ) -> str:
+        parts: list[str] = []
+        blank_parts: list[str] = []
+        mcq_blank = list((blank_map or {}).get("MCQ", []) or [])
+        if mcq_blank:
+            blank_parts.append(f"MCQ[{','.join(str(v) for v in mcq_blank)}]")
+
+        tf_blank = list((blank_map or {}).get("TF", []) or [])
+        tf_blank_detail = dict(getattr(result, "tf_blank_detail", {}) or {})
+        if tf_blank:
+            tf_chunks: list[str] = []
+            for q in tf_blank:
+                missing_count = int(tf_blank_detail.get(int(q), 0) or 0)
+                if missing_count > 0:
+                    tf_chunks.append(f"{int(q)}({missing_count}/4 ý)")
+                else:
+                    tf_chunks.append(str(int(q)))
+            blank_parts.append(f"TF[{', '.join(tf_chunks)}]")
+
+        numeric_blank = list((blank_map or {}).get("NUMERIC", []) or [])
+        if numeric_blank:
+            blank_parts.append(f"NUM[{','.join(str(v) for v in numeric_blank)}]")
+
+        if blank_parts:
+            parts.append("Trống: " + " | ".join(blank_parts))
+        return " | ".join(parts) if parts else ""
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        if result is None:
+            return
+
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
+
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+        if not subject_key:
+            return
+        if self.template is None:
+            return
+
+        expected = self._expected_questions_by_section(result)
+        if not any(expected.get(sec, []) for sec in ["MCQ", "TF", "NUMERIC"]):
+            return
+
+        def _trim_map_by_expected(data: dict, expected_questions: list[int], cast_value):
+            normalized = {int(q): cast_value(v) for q, v in (data or {}).items()}
+            expected_set = sorted({int(q) for q in (expected_questions or []) if str(q).strip().lstrip('-').isdigit() and int(q) > 0})
+            if not expected_set:
+                return normalized
+            return {q: normalized[q] for q in expected_set if q in normalized}
+
+        result.mcq_answers = _trim_map_by_expected(result.mcq_answers or {}, list(expected.get("MCQ", []) or []), lambda v: str(v))
+        result.true_false_answers = _trim_map_by_expected(result.true_false_answers or {}, list(expected.get("TF", []) or []), lambda v: dict(v or {}))
+        result.numeric_answers = _trim_map_by_expected(result.numeric_answers or {}, list(expected.get("NUMERIC", []) or []), lambda v: str(v))
+
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = dict(template_expected)
+        subject_key_name = self.active_batch_subject_key
+        if not subject_key_name and self.session and self.session.subjects:
+            subject_key_name = self.session.subjects[0]
+        if self.answer_keys and subject_key_name:
+            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
+            if key:
+                key_sections = {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                }
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    if not key_sections[sec]:
+                        continue
+                    template_set = set(template_expected.get(sec, []))
+                    key_set = set(key_sections[sec])
+                    if template_set:
+                        overlap = sorted(template_set & key_set)
+                        if overlap:
+                            expected_by_section[sec] = overlap
+                        else:
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
+                    else:
+                        expected_by_section[sec] = key_sections[sec]
+        return expected_by_section
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, v in sorted(answers.items(), key=lambda x: int(x[0])):
+            value = str(v).strip()
+            chunks.append(f"{int(q)}={value if value else '_'}")
+        return "; ".join(chunks)
+
+    def _build_recognition_content_text(
+        self,
+        result,
+        blank_map: dict[str, list[int]],
+        expected_by_section: dict[str, list[int]] | None = None,
+    ) -> str:
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+        expected = expected_by_section or {}
+        expected_mcq = list(expected.get("MCQ", []) or [])
+        expected_tf = list(expected.get("TF", []) or [])
+        expected_numeric = list(expected.get("NUMERIC", []) or [])
+
+        parts: list[str] = []
+        blank_parts: list[str] = []
+        mcq_blank = list((blank_map or {}).get("MCQ", []) or [])
+        if mcq_blank:
+            blank_parts.append(f"MCQ[{','.join(str(v) for v in mcq_blank)}]")
+        tf_blank = list((blank_map or {}).get("TF", []) or [])
+        tf_blank_detail = dict(getattr(result, "tf_blank_detail", {}) or {})
+        if tf_blank:
+            tf_chunks: list[str] = []
+            for q in tf_blank:
+                missing_count = int(tf_blank_detail.get(int(q), 0) or 0)
+                if missing_count > 0:
+                    tf_chunks.append(f"{int(q)}({missing_count}/4 ý)")
+                else:
+                    tf_chunks.append(str(int(q)))
+            blank_parts.append(f"TF[{', '.join(tf_chunks)}]")
+        numeric_blank = list((blank_map or {}).get("NUMERIC", []) or [])
+        if numeric_blank:
+            blank_parts.append(f"NUM[{','.join(str(v) for v in numeric_blank)}]")
+        if blank_parts:
+            parts.append("Trống: " + " | ".join(blank_parts))
+        return " | ".join(parts) if parts else ""
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = dict(template_expected)
+        subject_key_name = self.active_batch_subject_key
+        if not subject_key_name and self.session and self.session.subjects:
+            subject_key_name = self.session.subjects[0]
+        if self.answer_keys and subject_key_name:
+            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
+            if key:
+                key_sections = {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                }
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    if not key_sections[sec]:
+                        continue
+                    template_set = set(template_expected.get(sec, []))
+                    key_set = set(key_sections[sec])
+                    if template_set:
+                        overlap = sorted(template_set & key_set)
+                        if overlap:
+                            expected_by_section[sec] = overlap
+                        else:
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
+                    else:
+                        expected_by_section[sec] = key_sections[sec]
+        return expected_by_section
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, v in sorted(answers.items(), key=lambda x: int(x[0])):
+            value = str(v).strip()
+            chunks.append(f"{int(q)}={value if value else '_'}")
+        return "; ".join(chunks)
+
+    def _build_recognition_content_text(
+        self,
+        result,
+        blank_map: dict[str, list[int]],
+        expected_by_section: dict[str, list[int]] | None = None,
+    ) -> str:
+        parts: list[str] = []
+        blank_parts: list[str] = []
+        mcq_blank = list((blank_map or {}).get("MCQ", []) or [])
+        if mcq_blank:
+            blank_parts.append(f"MCQ[{','.join(str(v) for v in mcq_blank)}]")
+        tf_blank = list((blank_map or {}).get("TF", []) or [])
+        tf_blank_detail = dict(getattr(result, "tf_blank_detail", {}) or {})
+        if tf_blank:
+            tf_chunks: list[str] = []
+            for q in tf_blank:
+                missing_count = int(tf_blank_detail.get(int(q), 0) or 0)
+                if missing_count > 0:
+                    tf_chunks.append(f"{int(q)}({missing_count}/4 ý)")
+                else:
+                    tf_chunks.append(str(int(q)))
+            blank_parts.append(f"TF[{', '.join(tf_chunks)}]")
+        numeric_blank = list((blank_map or {}).get("NUMERIC", []) or [])
+        if numeric_blank:
+            blank_parts.append(f"NUM[{','.join(str(v) for v in numeric_blank)}]")
+        if blank_parts:
+            parts.append("Trống: " + " | ".join(blank_parts))
+        return " | ".join(parts) if parts else ""
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = dict(template_expected)
+        subject_key_name = self.active_batch_subject_key
+        if not subject_key_name and self.session and self.session.subjects:
+            subject_key_name = self.session.subjects[0]
+        if self.answer_keys and subject_key_name:
+            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
+            if key:
+                key_sections = {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                }
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    if not key_sections[sec]:
+                        continue
+                    template_set = set(template_expected.get(sec, []))
+                    key_set = set(key_sections[sec])
+                    if template_set:
+                        overlap = sorted(template_set & key_set)
+                        if overlap:
+                            expected_by_section[sec] = overlap
+                        else:
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
+                    else:
+                        expected_by_section[sec] = key_sections[sec]
+        return expected_by_section
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+
+        blank_parts = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            vals = list((blank_map or {}).get(sec, []) or [])
+            if vals:
+                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        merged = parts + blank_parts
+        return " | ".join(merged) if merged else ""
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = dict(template_expected)
+        subject_key_name = self.active_batch_subject_key
+        if not subject_key_name and self.session and self.session.subjects:
+            subject_key_name = self.session.subjects[0]
+        if self.answer_keys and subject_key_name:
+            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
+            if key:
+                key_sections = {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                }
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    if not key_sections[sec]:
+                        continue
+                    template_set = set(template_expected.get(sec, []))
+                    key_set = set(key_sections[sec])
+                    if template_set:
+                        overlap = sorted(template_set & key_set)
+                        if overlap:
+                            expected_by_section[sec] = overlap
+                        else:
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
+                    else:
+                        expected_by_section[sec] = key_sections[sec]
+        return expected_by_section
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+
+        blank_parts = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            vals = list((blank_map or {}).get(sec, []) or [])
+            if vals:
+                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        merged = parts + blank_parts
+        return " | ".join(merged) if merged else ""
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = dict(template_expected)
+        subject_key_name = self.active_batch_subject_key
+        if not subject_key_name and self.session and self.session.subjects:
+            subject_key_name = self.session.subjects[0]
+        if self.answer_keys and subject_key_name:
+            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
+            if key:
+                key_sections = {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                }
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    if not key_sections[sec]:
+                        continue
+                    template_set = set(template_expected.get(sec, []))
+                    key_set = set(key_sections[sec])
+                    if template_set:
+                        overlap = sorted(template_set & key_set)
+                        if overlap:
+                            expected_by_section[sec] = overlap
+                        else:
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
+                    else:
+                        expected_by_section[sec] = key_sections[sec]
+        return expected_by_section
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+
+        blank_parts = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            vals = list((blank_map or {}).get(sec, []) or [])
+            if vals:
+                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        merged = parts + blank_parts
+        return " | ".join(merged) if merged else ""
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = dict(template_expected)
+        subject_key_name = self.active_batch_subject_key
+        if not subject_key_name and self.session and self.session.subjects:
+            subject_key_name = self.session.subjects[0]
+        if self.answer_keys and subject_key_name:
+            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
+            if key:
+                key_sections = {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                }
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    if not key_sections[sec]:
+                        continue
+                    template_set = set(template_expected.get(sec, []))
+                    key_set = set(key_sections[sec])
+                    if template_set:
+                        overlap = sorted(template_set & key_set)
+                        if overlap:
+                            expected_by_section[sec] = overlap
+                        else:
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
+                    else:
+                        expected_by_section[sec] = key_sections[sec]
+        return expected_by_section
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+
+        blank_parts = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            vals = list((blank_map or {}).get(sec, []) or [])
+            if vals:
+                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        merged = parts + blank_parts
+        return " | ".join(merged) if merged else ""
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = dict(template_expected)
+        subject_key_name = self.active_batch_subject_key
+        if not subject_key_name and self.session and self.session.subjects:
+            subject_key_name = self.session.subjects[0]
+        if self.answer_keys and subject_key_name:
+            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
+            if key:
+                key_sections = {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                }
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    if not key_sections[sec]:
+                        continue
+                    template_set = set(template_expected.get(sec, []))
+                    key_set = set(key_sections[sec])
+                    if template_set:
+                        overlap = sorted(template_set & key_set)
+                        if overlap:
+                            expected_by_section[sec] = overlap
+                        else:
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
+                    else:
+                        expected_by_section[sec] = key_sections[sec]
+        return expected_by_section
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+
+        blank_parts = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            vals = list((blank_map or {}).get(sec, []) or [])
+            if vals:
+                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        merged = parts + blank_parts
+        return " | ".join(merged) if merged else ""
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = dict(template_expected)
+        subject_key_name = self.active_batch_subject_key
+        if not subject_key_name and self.session and self.session.subjects:
+            subject_key_name = self.session.subjects[0]
+        if self.answer_keys and subject_key_name:
+            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
+            if key:
+                key_sections = {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                }
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    if not key_sections[sec]:
+                        continue
+                    template_set = set(template_expected.get(sec, []))
+                    key_set = set(key_sections[sec])
+                    if template_set:
+                        overlap = sorted(template_set & key_set)
+                        if overlap:
+                            expected_by_section[sec] = overlap
+                        else:
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
+                    else:
+                        expected_by_section[sec] = key_sections[sec]
+        return expected_by_section
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+
+        blank_parts = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            vals = list((blank_map or {}).get(sec, []) or [])
+            if vals:
+                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        merged = parts + blank_parts
+        return " | ".join(merged) if merged else ""
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = dict(template_expected)
+        subject_key_name = self.active_batch_subject_key
+        if not subject_key_name and self.session and self.session.subjects:
+            subject_key_name = self.session.subjects[0]
+        if self.answer_keys and subject_key_name:
+            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
+            if key:
+                key_sections = {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                }
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    if not key_sections[sec]:
+                        continue
+                    template_set = set(template_expected.get(sec, []))
+                    key_set = set(key_sections[sec])
+                    if template_set:
+                        overlap = sorted(template_set & key_set)
+                        if overlap:
+                            expected_by_section[sec] = overlap
+                        else:
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
+                    else:
+                        expected_by_section[sec] = key_sections[sec]
+        return expected_by_section
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+
+        blank_parts = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            vals = list((blank_map or {}).get(sec, []) or [])
+            if vals:
+                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        merged = parts + blank_parts
+        return " | ".join(merged) if merged else ""
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = dict(template_expected)
+        subject_key_name = self.active_batch_subject_key
+        if not subject_key_name and self.session and self.session.subjects:
+            subject_key_name = self.session.subjects[0]
+        if self.answer_keys and subject_key_name:
+            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
+            if key:
+                key_sections = {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                }
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    if not key_sections[sec]:
+                        continue
+                    template_set = set(template_expected.get(sec, []))
+                    key_set = set(key_sections[sec])
+                    if template_set:
+                        overlap = sorted(template_set & key_set)
+                        if overlap:
+                            expected_by_section[sec] = overlap
+                        else:
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
+                    else:
+                        expected_by_section[sec] = key_sections[sec]
+        return expected_by_section
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+
+        blank_parts = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            vals = list((blank_map or {}).get(sec, []) or [])
+            if vals:
+                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        merged = parts + blank_parts
+        return " | ".join(merged) if merged else ""
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = dict(template_expected)
+        subject_key_name = self.active_batch_subject_key
+        if not subject_key_name and self.session and self.session.subjects:
+            subject_key_name = self.session.subjects[0]
+        if self.answer_keys and subject_key_name:
+            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
+            if key:
+                key_sections = {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                }
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    if not key_sections[sec]:
+                        continue
+                    template_set = set(template_expected.get(sec, []))
+                    key_set = set(key_sections[sec])
+                    if template_set:
+                        overlap = sorted(template_set & key_set)
+                        if overlap:
+                            expected_by_section[sec] = overlap
+                        else:
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
+                    else:
+                        expected_by_section[sec] = key_sections[sec]
+        return expected_by_section
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+
+        blank_parts = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            vals = list((blank_map or {}).get(sec, []) or [])
+            if vals:
+                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        merged = parts + blank_parts
+        return " | ".join(merged) if merged else ""
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = dict(template_expected)
+        subject_key_name = self.active_batch_subject_key
+        if not subject_key_name and self.session and self.session.subjects:
+            subject_key_name = self.session.subjects[0]
+        if self.answer_keys and subject_key_name:
+            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
+            if key:
+                key_sections = {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                }
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    if not key_sections[sec]:
+                        continue
+                    template_set = set(template_expected.get(sec, []))
+                    key_set = set(key_sections[sec])
+                    if template_set:
+                        overlap = sorted(template_set & key_set)
+                        if overlap:
+                            expected_by_section[sec] = overlap
+                        else:
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
+                    else:
+                        expected_by_section[sec] = key_sections[sec]
+        return expected_by_section
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+
+        blank_parts = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            vals = list((blank_map or {}).get(sec, []) or [])
+            if vals:
+                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        merged = parts + blank_parts
+        return " | ".join(merged) if merged else ""
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = dict(template_expected)
+        subject_key_name = self.active_batch_subject_key
+        if not subject_key_name and self.session and self.session.subjects:
+            subject_key_name = self.session.subjects[0]
+        if self.answer_keys and subject_key_name:
+            key = self.answer_keys.get(subject_key_name, (result.exam_code or "").strip())
+            if key:
+                key_sections = {
+                    "MCQ": sorted(set(int(q) for q in (key.answers or {}).keys())),
+                    "TF": sorted(set(int(q) for q in (key.true_false_answers or {}).keys())),
+                    "NUMERIC": sorted(set(int(q) for q in (key.numeric_answers or {}).keys())),
+                }
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    if not key_sections[sec]:
+                        continue
+                    template_set = set(template_expected.get(sec, []))
+                    key_set = set(key_sections[sec])
+                    if template_set:
+                        overlap = sorted(template_set & key_set)
+                        if overlap:
+                            expected_by_section[sec] = overlap
+                        else:
+                            # When numbering between template and answer-key differs,
+                            # prioritize answer-key numbering to keep section slicing correct.
+                            expected_by_section[sec] = key_sections[sec]
+                    else:
+                        expected_by_section[sec] = key_sections[sec]
+        return expected_by_section
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}={str(v).strip()}" for q, v in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    def _build_recognition_content_text(self, result, blank_map: dict[str, list[int]]) -> str:
+        mcq_payload = dict(getattr(result, "mcq_answers", {}) or {})
+        tf_payload = dict(getattr(result, "true_false_answers", {}) or {})
+        numeric_payload = dict(getattr(result, "numeric_answers", {}) or {})
+
+        parts: list[str] = []
+        if mcq_payload:
+            parts.append(f"MCQ: {self._format_mcq_answers(mcq_payload)}")
+        if tf_payload:
+            parts.append(f"TF: {self._format_tf_answers(tf_payload)}")
+        if numeric_payload:
+            parts.append(f"NUM: {self._format_numeric_answers(numeric_payload)}")
+
+        blank_parts = []
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            vals = list((blank_map or {}).get(sec, []) or [])
+            if vals:
+                blank_parts.append(f"{sec} trống: {','.join(str(v) for v in vals)}")
+        merged = parts + blank_parts
+        return " | ".join(merged) if merged else ""
+
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
+        expected = self._expected_questions_by_section(result)
+        if expected.get("MCQ"):
+            allow = set(expected["MCQ"])
+            result.mcq_answers = {int(q): str(a) for q, a in (result.mcq_answers or {}).items() if int(q) in allow}
+        if expected.get("TF"):
+            allow = set(expected["TF"])
+            result.true_false_answers = {int(q): dict(a) for q, a in (result.true_false_answers or {}).items() if int(q) in allow}
+        if expected.get("NUMERIC"):
+            allow = set(expected["NUMERIC"])
+            result.numeric_answers = {int(q): str(a) for q, a in (result.numeric_answers or {}).items() if int(q) in allow}
+
+    def _expected_questions_by_section(self, result) -> dict[str, list[int]]:
+        template_expected: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+        if self.template:
+            for z in self.template.zones:
+                if not z.grid:
+                    continue
+                count = int(z.grid.question_count or z.grid.rows or 0)
+                start = int(z.grid.question_start)
+                rng = list(range(start, start + max(0, count)))
+                if z.zone_type.value == "MCQ_BLOCK":
+                    template_expected["MCQ"].extend(rng)
+                elif z.zone_type.value == "TRUE_FALSE_BLOCK":
+                    template_expected["TF"].extend(rng)
+                elif z.zone_type.value == "NUMERIC_BLOCK":
+                    template_expected["NUMERIC"].extend(rng)
+            template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
+
+        expected_by_section = {sec: list(vals) for sec, vals in template_expected.items()}
+        subject_key_name = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+        key_payload: Any = None
+        if subject_key_name:
+            configured = self._fetch_answer_keys_for_subject_scoped(subject_key_name) or {}
+            if configured:
+                first_code = next(iter(configured.keys()))
+                key_payload = configured.get(first_code)
+            elif self.answer_keys is not None:
+                subject_candidates = [x for x in self.answer_keys.keys.values() if str(getattr(x, "subject", "") or "") == subject_key_name]
+                if subject_candidates:
+                    key_payload = sorted(subject_candidates, key=lambda x: str(getattr(x, "exam_code", "") or ""))[0]
+        if key_payload is not None:
+            full_credit = (key_payload.get("full_credit_questions", {}) if isinstance(key_payload, dict) else getattr(key_payload, "full_credit_questions", {})) or {}
+            invalid_rows = (key_payload.get("invalid_answer_rows", {}) if isinstance(key_payload, dict) else getattr(key_payload, "invalid_answer_rows", {})) or {}
+
+            def _extra_for_section(sec: str) -> set[int]:
+                extra: set[int] = set()
+                for q in list((full_credit.get(sec, []) or [])):
+                    try:
+                        extra.add(int(q))
+                    except Exception:
+                        continue
+                for q in dict((invalid_rows.get(sec, {}) or {})).keys():
+                    try:
+                        extra.add(int(q))
+                    except Exception:
+                        continue
+                return extra
+
+            mcq_map = (key_payload.get("mcq_answers", {}) if isinstance(key_payload, dict) else getattr(key_payload, "answers", {})) or {}
+            tf_map = (key_payload.get("true_false_answers", {}) if isinstance(key_payload, dict) else getattr(key_payload, "true_false_answers", {})) or {}
+            numeric_map = (key_payload.get("numeric_answers", {}) if isinstance(key_payload, dict) else getattr(key_payload, "numeric_answers", {})) or {}
+            key_sections = {
+                "MCQ": sorted(set(int(q) for q in mcq_map.keys()) | _extra_for_section("MCQ")),
+                "TF": sorted(set(int(q) for q in tf_map.keys()) | _extra_for_section("TF")),
+                "NUMERIC": sorted(set(int(q) for q in numeric_map.keys()) | _extra_for_section("NUMERIC")),
+            }
+            for sec in ["MCQ", "TF", "NUMERIC"]:
+                # Always follow answer-key scope if key exists.
+                expected_by_section[sec] = key_sections[sec]
+
+        if not any(expected_by_section.get(sec, []) for sec in ["MCQ", "TF", "NUMERIC"]):
+            return {sec: list(vals) for sec, vals in template_expected.items()}
+        return expected_by_section
+
+    @staticmethod
+    def _format_mcq_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        return "; ".join(f"{int(q)}{str(a).strip()}" for q, a in sorted(answers.items(), key=lambda x: int(x[0])))
+
+    @staticmethod
+    def _format_tf_answers(answers: dict[int, dict[str, bool]]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, flags in sorted(answers.items(), key=lambda x: int(x[0])):
+            marks = "".join(("Đ" if bool((flags or {}).get(k)) else "S") if k in (flags or {}) else "_" for k in ["a", "b", "c", "d"])
+            chunks.append(f"{int(q)}{marks}")
+        return "; ".join(chunks)
+
+    @staticmethod
+    def _format_numeric_answers(answers: dict[int, str]) -> str:
+        if not answers:
+            return "-"
+        chunks: list[str] = []
+        for q, v in sorted(answers.items(), key=lambda x: int(x[0])):
+            value = str(v).strip()
+            chunks.append(f"{int(q)}={value if value else '_'}")
+        return "; ".join(chunks)
 
     def _build_recognition_content_text(
         self,
@@ -7756,6 +9474,36 @@ class MainWindow(QMainWindow):
             lines.append(f"Num trống: {', '.join(str(v) for v in numeric_blank)}")
 
         return "\n".join(lines)
+    def _trim_result_answers_to_expected_scope(self, result) -> None:
+        if result is None:
+            return
+
+        code_text = str(getattr(result, "exam_code", "") or "").strip()
+        avail_codes = self._available_exam_codes()
+        code_valid = bool(code_text and "?" not in code_text and (not avail_codes or code_text in avail_codes or self._normalize_exam_code_text(code_text) in avail_codes))
+        if not code_valid:
+            return
+
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+        if not subject_key:
+            return
+        if self.template is None:
+            return
+
+        expected = self._expected_questions_by_section(result)
+        if not any(expected.get(sec, []) for sec in ["MCQ", "TF", "NUMERIC"]):
+            return
+
+        def _trim_map_by_expected(data: dict, expected_questions: list[int], cast_value):
+            normalized = {int(q): cast_value(v) for q, v in (data or {}).items()}
+            expected_set = sorted({int(q) for q in (expected_questions or []) if str(q).strip().lstrip('-').isdigit() and int(q) > 0})
+            if not expected_set:
+                return normalized
+            return {q: normalized[q] for q in expected_set if q in normalized}
+
+        result.mcq_answers = _trim_map_by_expected(result.mcq_answers or {}, list(expected.get("MCQ", []) or []), lambda v: str(v))
+        result.true_false_answers = _trim_map_by_expected(result.true_false_answers or {}, list(expected.get("TF", []) or []), lambda v: dict(v or {}))
+        result.numeric_answers = _trim_map_by_expected(result.numeric_answers or {}, list(expected.get("NUMERIC", []) or []), lambda v: str(v))
 
     def _count_mismatch_status_parts(self, result) -> list[str]:
         expected = self._expected_questions_by_section(result)
@@ -8146,11 +9894,7 @@ class MainWindow(QMainWindow):
         effective_forced_status = str(forced_status or manual_override_status or "").strip()
         status_text = effective_forced_status or (", ".join(status_parts) if status_parts else "OK")
         manual_content_override = str(getattr(result, "manual_content_override", "") or "").strip()
-        content_text = (
-            manual_content_override
-            if manual_content_override
-            else self._build_recognition_content_text(scoped_result, blank_map, expected_by_section)
-        )
+        content_text = self._build_recognition_content_text(scoped_result, blank_map, expected_by_section)
         recognized_short = self._short_recognition_text_for_result(scoped_result)
 
         if row_idx is not None and row_idx >= 0:
@@ -8994,8 +10738,38 @@ class MainWindow(QMainWindow):
         return ";".join(parts) if use_semicolon else "".join(parts)
 
     def _build_answer_string_for_result(self, result, subject_key: str = "") -> str:
-        scoped_result = self._scoped_result_copy(result, subject_key=subject_key)
+        scoped_result = self._scoped_result_copy(result)
         key = self._subject_answer_key_for_result(scoped_result, subject_key)
+        expected_by_section = self._expected_questions_by_section(scoped_result)
+        if key is not None and any(expected_by_section.get(sec, []) for sec in ["MCQ", "TF", "NUMERIC"]):
+            invalid_rows = getattr(key, "invalid_answer_rows", {}) or {}
+
+            def _filter_question_map(payload: object, expected_questions: list[int]) -> dict[int, Any]:
+                expected_set = {int(q) for q in (expected_questions or [])}
+                filtered: dict[int, Any] = {}
+                for q_raw, value in dict(payload or {}).items():
+                    try:
+                        q_no = int(q_raw)
+                    except Exception:
+                        continue
+                    if q_no in expected_set:
+                        filtered[q_no] = value
+                return filtered
+
+            scoped_key = type("ScopedAnswerKey", (), {})()
+            setattr(scoped_key, "answers", _filter_question_map(getattr(key, "answers", {}) or {}, expected_by_section.get("MCQ", [])))
+            setattr(scoped_key, "true_false_answers", _filter_question_map(getattr(key, "true_false_answers", {}) or {}, expected_by_section.get("TF", [])))
+            setattr(scoped_key, "numeric_answers", _filter_question_map(getattr(key, "numeric_answers", {}) or {}, expected_by_section.get("NUMERIC", [])))
+            setattr(
+                scoped_key,
+                "invalid_answer_rows",
+                {
+                    "MCQ": _filter_question_map((invalid_rows.get("MCQ", {}) or {}), expected_by_section.get("MCQ", [])),
+                    "TF": _filter_question_map((invalid_rows.get("TF", {}) or {}), expected_by_section.get("TF", [])),
+                    "NUMERIC": _filter_question_map((invalid_rows.get("NUMERIC", {}) or {}), expected_by_section.get("NUMERIC", [])),
+                },
+            )
+            key = scoped_key
         use_semicolon = not bool(getattr(scoped_result, "answer_string_api_mode", False))
         return self._answer_string_from_maps(
             scoped_result.mcq_answers or {},
@@ -9391,9 +11165,12 @@ class MainWindow(QMainWindow):
         answer_text = str(getattr(result, "answer_string", "") or "").strip()
         if bool(getattr(result, "answer_string_api_mode", False)):
             return answer_text
+        if answer_text:
+            return answer_text
         subject = str(subject_key or self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
         rebuilt = str(self._build_answer_string_for_result(result, subject) or "").strip()
-        setattr(result, "answer_string", rebuilt)
+        if rebuilt:
+            setattr(result, "answer_string", rebuilt)
         return rebuilt
 
     @staticmethod
@@ -9409,7 +11186,6 @@ class MainWindow(QMainWindow):
         image_path = str(getattr(result, "image_path", "") or "").strip()
         if not subject_key or not image_path:
             return
-        self._apply_subject_scope_to_result(result, subject_key=subject_key)
         result.answer_string = self._normalize_non_api_answer_string(result, subject_key)
         row_idx = self._row_index_by_image_path(image_path)
         serialized = self._serialize_omr_result(result)
@@ -9665,7 +11441,7 @@ class MainWindow(QMainWindow):
             self.scan_image_preview.set_overlay_markers(self._recognition_overlay_positions_for_result(result))
             self.scan_image_preview.set_markers(self._marker_positions_for_result(result))
 
-        preview_result = self._lightweight_result_copy(result)
+        preview_result = self._scoped_result_copy(self._lightweight_result_copy(result))
         section_counts = self._subject_section_question_counts(self._current_batch_subject_key())
         expected_actual = self._expected_questions_by_section(preview_result)
 
@@ -9795,13 +11571,13 @@ class MainWindow(QMainWindow):
             content = ""
             if restored_for_edit is not None:
                 scoped_for_edit = self._scoped_result_copy(restored_for_edit)
-                content = str(getattr(restored_for_edit, "manual_content_override", "") or "").strip()
+                content = str(self._build_answer_string_for_result(scoped_for_edit, self._current_batch_subject_key()) or "").strip()
                 if not content:
                     content = str(getattr(scoped_for_edit, "cached_recognized_short", "") or "").strip()
                 if not content:
                     content = str(self._short_recognition_text_for_result(scoped_for_edit) or "").strip()
                 if not content:
-                    content = str(self._build_answer_string_for_result(scoped_for_edit, self._current_batch_subject_key()) or "").strip()
+                    content = str(getattr(restored_for_edit, "manual_content_override", "") or "").strip()
             if not content:
                 content = str(sid_item_existing.data(Qt.UserRole + 2) if sid_item_existing else "").strip()
             if not content:

@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSplitter,
+    QStyle,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -32,6 +33,50 @@ from PySide6.QtWidgets import (
 
 from core.omr_engine import OMRResult
 from models.answer_key import SubjectKey
+
+
+def action_open_recheck(self) -> None:
+    return open_recheck_dialog(self)
+
+
+def refresh_recheck_action_state(self, *, has_session: bool, has_batch_rows: bool) -> None:
+    action = getattr(self, "ribbon_recheck_action", None)
+    if action is not None:
+        action.setEnabled(bool(has_session and has_batch_rows))
+
+
+def create_recheck_ribbon_action(self, toolbar, style):
+    self.ribbon_recheck_action = toolbar.addAction(
+        style.standardIcon(QStyle.SP_BrowserReload),
+        "Phúc tra",
+        self.action_open_recheck,
+    )
+    return self.ribbon_recheck_action
+
+
+def copy_recheck_history_to_cloned_session(
+    self,
+    *,
+    source_session_id: str,
+    new_session_id: str,
+    new_name: str,
+    subject_key_map: dict[str, str],
+) -> None:
+    source_histories = list(self.database.fetch_recheck_history(source_session_id) or [])
+    for item in source_histories:
+        old_hist_subject = str(item.get("subject_key", "") or "")
+        new_hist_subject = subject_key_map.get(old_hist_subject, old_hist_subject)
+        self.database.add_recheck_history(
+            session_id=new_session_id,
+            exam_name=new_name,
+            subject_key=new_hist_subject,
+            student_code=str(item.get("student_code", "") or ""),
+            exam_code=str(item.get("exam_code", "") or ""),
+            change_text=str(item.get("change_text", "") or ""),
+            old_score=float(item.get("old_score", 0.0) or 0.0),
+            new_score=float(item.get("new_score", 0.0) or 0.0),
+            payload=dict(item.get("payload", {}) or {}),
+        )
 
 
 def open_recheck_dialog(self) -> None:
@@ -1097,4 +1142,10 @@ def open_recheck_dialog(self) -> None:
     return
 
 
-__all__ = ["open_recheck_dialog"]
+__all__ = [
+    "action_open_recheck",
+    "copy_recheck_history_to_cloned_session",
+    "create_recheck_ribbon_action",
+    "open_recheck_dialog",
+    "refresh_recheck_action_state",
+]
