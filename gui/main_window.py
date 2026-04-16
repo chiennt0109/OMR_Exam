@@ -4361,14 +4361,15 @@ class MainWindow(QMainWindow):
                 r = self.score_preview_table.rowCount()
                 self.score_preview_table.insertRow(r)
                 status_text = str((row or {}).get("status", "") or (row or {}).get("note", "") or "OK")
-                if status_text.startswith("Lỗi"):
-                    error_count += 1
-                else:
+                status_category = self._status_category(status_text)
+                if status_category == "success":
                     success_count += 1
-                if status_text == "Đã sửa":
+                elif status_category == "edited":
                     edited_count += 1
-                if status_text in {"Chưa chấm", "Cần chấm lại"}:
+                elif status_category == "pending":
                     pending_count += 1
+                elif status_category in {"error", "duplicate", "wrong_code"}:
+                    error_count += 1
                 values = [
                     str((row or {}).get("student_id", "") or "-"),
                     str((row or {}).get("name", "") or "-"),
@@ -4388,16 +4389,10 @@ class MainWindow(QMainWindow):
                     item = QTableWidgetItem(value)
                     if col == 12 and status_text != "OK":
                         item.setForeground(QColor("red"))
-                        category = "success"
-                        if status_text.startswith("Lỗi"):
-                            category = "error"
-                        elif status_text == "Đã sửa":
-                            category = "edited"
-                        elif status_text in {"Chưa chấm", "Cần chấm lại"}:
-                            category = "pending"
-                        item.setData(Qt.UserRole, category)
+                    if col == 12:
+                        item.setData(Qt.UserRole, status_category)
                     self.score_preview_table.setItem(r, col, item)
-                if status_text.startswith("Lỗi"):
+                if status_category in {"error", "duplicate", "wrong_code"}:
                     for col in range(self.score_preview_table.columnCount()):
                         item = self.score_preview_table.item(r, col)
                         if item:
@@ -4434,7 +4429,8 @@ class MainWindow(QMainWindow):
         col = self._scoring_filter_column_from_combo_index(self.scoring_filter_column.currentIndex()) if hasattr(self, "scoring_filter_column") else None
         for i in range(self.score_preview_table.rowCount()):
             status_item = self.score_preview_table.item(i, 12)
-            status_category = str(status_item.data(Qt.UserRole) if status_item else "success")
+            status_text = str(status_item.text() if status_item else "")
+            status_category = str(status_item.data(Qt.UserRole) if status_item else "").strip() or self._status_category(status_text)
             status_ok = self.scoring_status_filter_mode in {"all", "", status_category}
             if not value:
                 self.score_preview_table.setRowHidden(i, not status_ok)
@@ -4450,14 +4446,61 @@ class MainWindow(QMainWindow):
         self.scoring_status_filter_mode = str(link or "all").strip() or "all"
         self._apply_scoring_filter()
 
+    @staticmethod
+    def _status_category(status_text: str) -> str:
+        text = str(status_text or "").strip()
+        low = text.casefold()
+        if not text or text == "OK":
+            return "success"
+        if "đã sửa" in low:
+            return "edited"
+        if "chưa chấm" in low or "cần chấm lại" in low:
+            return "pending"
+        if "trùng sbd" in low or "duplicate" in low:
+            return "duplicate"
+        if "mã đề" in low and ("sai" in low or "không" in low or "?" in text):
+            return "wrong_code"
+        if low.startswith("lỗi") or text != "OK":
+            return "error"
+        return "success"
+
+    def _collect_status_counts(self, status_texts: list[str]) -> dict[str, int]:
+        counts = {
+            "all": 0,
+            "success": 0,
+            "error": 0,
+            "duplicate": 0,
+            "wrong_code": 0,
+            "edited": 0,
+            "pending": 0,
+        }
+        for raw in status_texts:
+            status_text = str(raw or "").strip() or "OK"
+            category = self._status_category(status_text)
+            counts["all"] += 1
+            if category in counts:
+                counts[category] += 1
+        return counts
+
     def _update_scoring_status_bar(self, success_count: int, error_count: int, edited_count: int, pending_count: int = 0) -> None:
         if not hasattr(self, "scoring_status_bar"):
             return
+        status_texts = [
+            str(self.score_preview_table.item(r, 12).text() if self.score_preview_table.item(r, 12) else "OK")
+            for r in range(self.score_preview_table.rowCount())
+        ] if hasattr(self, "score_preview_table") else []
+        counts = self._collect_status_counts(status_texts)
+        success_count = counts.get("success", int(success_count))
+        error_count = counts.get("error", int(error_count))
+        edited_count = counts.get("edited", int(edited_count))
+        pending_count = counts.get("pending", int(pending_count))
         self.scoring_status_bar.setText(
             f"Thống kê chấm điểm: "
             f"<a href='all'><b>Tất cả</b></a> | "
             f"<a href='success' style='color:#0b7a0b;font-weight:600'>Thành công {int(success_count)}</a> | "
             f"<a href='error' style='color:#c62828;font-weight:600'>Lỗi {int(error_count)}</a> | "
+            f"<a href='duplicate' style='color:#6a1b9a;font-weight:600'>Trùng SBD {int(counts.get('duplicate', 0))}</a> | "
+            f"<a href='wrong_code' style='color:#ef6c00;font-weight:600'>Sai mã đề {int(counts.get('wrong_code', 0))}</a> | "
             f"<a href='edited' style='color:#1565c0;font-weight:600'>Đã sửa {int(edited_count)}</a> | "
             f"<a href='pending' style='color:#6d4c41;font-weight:600'>Chưa chấm/Cần chấm lại {int(pending_count)}</a>"
         )
@@ -4559,6 +4602,13 @@ class MainWindow(QMainWindow):
             self.batch_scan_status_bottom.setVisible(True)
         if hasattr(self, "scoring_panel"):
             self.scoring_panel.setVisible(False)
+        self.batch_status_filter_mode = "all"
+        if hasattr(self, "search_value"):
+            self.search_value.clear()
+        if hasattr(self, "filter_column"):
+            self.filter_column.setCurrentIndex(0)
+        if hasattr(self, "scan_list"):
+            self._apply_scan_filter()
         self._current_route_name = "workspace_batch_scan"
         if hasattr(self, "batch_subject_combo") and self.batch_subject_combo.count() > 0:
             cfg = self._selected_batch_subject_config()
@@ -4577,6 +4627,13 @@ class MainWindow(QMainWindow):
             self.batch_scan_status_bottom.setVisible(False)
         if hasattr(self, "scoring_panel"):
             self.scoring_panel.setVisible(True)
+        self.scoring_status_filter_mode = "all"
+        if hasattr(self, "scoring_search_value"):
+            self.scoring_search_value.clear()
+        if hasattr(self, "scoring_filter_column"):
+            self.scoring_filter_column.setCurrentIndex(0)
+        if hasattr(self, "score_preview_table"):
+            self._apply_scoring_filter()
         self._current_route_name = "workspace_scoring"
         selected_subject = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
         if selected_subject:
@@ -6082,32 +6139,24 @@ class MainWindow(QMainWindow):
         if hasattr(self, "scan_list"):
             visible_rows = sum(1 for r in range(total_rows) if not self.scan_list.isRowHidden(r))
         file_status = str(self.batch_scan_state_value.text() if hasattr(self, "batch_scan_state_value") else "-").strip() or "-"
-        error_count = duplicate_count = wrong_code_count = edited_count = 0
+        status_texts = []
         if hasattr(self, "scan_list"):
             for r in range(total_rows):
                 status_item = self.scan_list.item(r, self.SCAN_COL_STATUS)
-                status_txt = str(status_item.text() if status_item else "").strip()
-                low = status_txt.lower()
-                is_edited = "đã sửa" in low
-                if is_edited:
-                    edited_count += 1
-                    continue
-                if status_txt and status_txt != "OK":
-                    error_count += 1
-                if "trùng sbd" in low or "duplicate" in low:
-                    duplicate_count += 1
-                if "mã đề" in low and ("sai" in low or "không" in low or "?" in status_txt):
-                    wrong_code_count += 1
-        issue_total = error_count + edited_count
+                status_texts.append(str(status_item.toolTip() if status_item and status_item.toolTip() else (status_item.text() if status_item else "")).strip() or "OK")
+        counts = self._collect_status_counts(status_texts)
+        issue_total = int(counts.get("error", 0)) + int(counts.get("edited", 0)) + int(counts.get("pending", 0))
         bar_text = f"Trạng thái file: {file_status} | Lọc: {visible_rows}/{total_rows}"
         if issue_total > 0:
             bar_text += (
                 " | "
                 f"<a href='all'><b>Tất cả</b></a> | "
-                f"<a href='error' style='color:#c62828;font-weight:600'>Lỗi nhận dạng: {error_count}</a> | "
-                f"<a href='duplicate' style='color:#6a1b9a;font-weight:600'>Trùng SBD: {duplicate_count}</a> | "
-                f"<a href='wrong_code' style='color:#ef6c00;font-weight:600'>Sai mã đề: {wrong_code_count}</a> | "
-                f"<a href='edited' style='color:#1565c0;font-weight:600'>Đã sửa: {edited_count}</a>"
+                f"<a href='success' style='color:#0b7a0b;font-weight:600'>Thành công: {int(counts.get('success', 0))}</a> | "
+                f"<a href='error' style='color:#c62828;font-weight:600'>Lỗi nhận dạng: {int(counts.get('error', 0))}</a> | "
+                f"<a href='duplicate' style='color:#6a1b9a;font-weight:600'>Trùng SBD: {int(counts.get('duplicate', 0))}</a> | "
+                f"<a href='wrong_code' style='color:#ef6c00;font-weight:600'>Sai mã đề: {int(counts.get('wrong_code', 0))}</a> | "
+                f"<a href='edited' style='color:#1565c0;font-weight:600'>Đã sửa: {int(counts.get('edited', 0))}</a> | "
+                f"<a href='pending' style='color:#6d4c41;font-weight:600'>Chưa chấm/Cần chấm lại: {int(counts.get('pending', 0))}</a>"
             )
             self.batch_scan_status_bottom.setTextFormat(Qt.RichText)
         else:
@@ -6139,6 +6188,11 @@ class MainWindow(QMainWindow):
             return
         self._switching_batch_subject = True
         try:
+            self.batch_status_filter_mode = "all"
+            if hasattr(self, "search_value"):
+                self.search_value.clear()
+            if hasattr(self, "filter_column"):
+                self.filter_column.setCurrentIndex(0)
             previous_runtime_key = str(getattr(self, "active_batch_subject_key", "") or "").strip()
             cfg = self._selected_batch_subject_config()
             next_runtime_key = ""
@@ -9552,17 +9606,13 @@ class MainWindow(QMainWindow):
         value = _normalize(self.search_value.text())
         col = self._scan_filter_column_from_combo_index(self.filter_column.currentIndex())
         for i in range(self.scan_list.rowCount()):
-            status_text = str(self.scan_list.item(i, self.SCAN_COL_STATUS).text() if self.scan_list.item(i, self.SCAN_COL_STATUS) else "").strip().lower()
-            is_edited = "đã sửa" in status_text
+            status_item = self.scan_list.item(i, self.SCAN_COL_STATUS)
+            status_text_raw = str(status_item.toolTip() if status_item and status_item.toolTip() else (status_item.text() if status_item else "")).strip()
+            status_category = self._status_category(status_text_raw)
             status_ok = True
-            if self.batch_status_filter_mode == "error":
-                status_ok = (not is_edited) and bool(status_text and status_text != "ok")
-            elif self.batch_status_filter_mode == "duplicate":
-                status_ok = (not is_edited) and ("trùng sbd" in status_text or "duplicate" in status_text)
-            elif self.batch_status_filter_mode == "wrong_code":
-                status_ok = (not is_edited) and (("mã đề" in status_text) and ("sai" in status_text or "không" in status_text or "?" in status_text))
-            elif self.batch_status_filter_mode == "edited":
-                status_ok = is_edited
+            mode = str(self.batch_status_filter_mode or "all").strip() or "all"
+            if mode not in {"all", ""}:
+                status_ok = status_category == mode
             if not value:
                 self.scan_list.setRowHidden(i, not status_ok)
                 continue
@@ -9960,6 +10010,7 @@ class MainWindow(QMainWindow):
         full_status = str(payload.get("status", "") or "OK")
         status_item = QTableWidgetItem(self._compact_status_text(full_status, max_len=150))
         status_item.setToolTip(full_status)
+        status_item.setData(Qt.UserRole, self._status_category(full_status))
         if full_status != "OK":
             status_item.setForeground(Qt.red)
         self.scan_list.setItem(row_idx, self.SCAN_COL_STATUS, status_item)
@@ -11297,6 +11348,52 @@ class MainWindow(QMainWindow):
         cfg["batch_saved_preview"] = []
         cfg["batch_saved_results"] = []
         self.batch_working_state_by_subject.pop(self._batch_runtime_key(subject), None)
+
+    def _persisted_scan_payload_for_image(self, image_key: str, subject_key: str = "") -> dict:
+        image_lookup = self._result_identity_key(image_key)
+        subject = str(subject_key or self._current_batch_subject_key() or "").strip()
+        if not image_lookup or not subject:
+            return {}
+        for payload in (self.database.fetch_scan_results_for_subject(self._batch_result_subject_key(subject)) or []):
+            if self._result_identity_key(str((payload or {}).get("image_path", "") or "")) == image_lookup:
+                return dict(payload or {})
+        return {}
+
+    def _history_snapshot_for_row(self, row: int) -> tuple[list[str], str]:
+        image_key = self._row_image_key(row)
+        if not image_key:
+            return [], ""
+
+        history: list[str] = [str(x) for x in (self.scan_edit_history.get(image_key, []) or []) if str(x or "").strip()]
+        latest = str(self.scan_last_adjustment.get(image_key, "") or "")
+
+        result = self._result_by_image_path(image_key)
+        if result is not None:
+            result_history = [str(x) for x in (getattr(result, "edit_history", []) or []) if str(x or "").strip()]
+            if len(result_history) > len(history):
+                history = list(result_history)
+            if not latest:
+                latest = str(getattr(result, "last_adjustment", "") or "")
+
+        sid_item = self.scan_list.item(row, 0) if hasattr(self, "scan_list") else None
+        row_payload = dict(sid_item.data(Qt.UserRole + 12) or {}) if sid_item else {}
+        serialized = dict(sid_item.data(Qt.UserRole + 10) or {}) if sid_item else {}
+        payload_history = [str(x) for x in (row_payload.get("edit_history", []) or serialized.get("edit_history", [])) if str(x or "").strip()]
+        if len(payload_history) > len(history):
+            history = list(payload_history)
+        latest = latest or str(row_payload.get("last_adjustment", "") or serialized.get("last_adjustment", "") or "")
+
+        db_payload = self._persisted_scan_payload_for_image(image_key)
+        db_history = [str(x) for x in (db_payload.get("edit_history", []) or []) if str(x or "").strip()]
+        if len(db_history) > len(history):
+            history = list(db_history)
+        latest = latest or str(db_payload.get("last_adjustment", "") or "")
+
+        if history:
+            self.scan_edit_history[image_key] = list(history)
+            self.scan_last_adjustment[image_key] = str(latest or history[-1])
+        return history, str(latest or (history[-1] if history else ""))
+
     def _refresh_all_statuses(self) -> None:
         duplicate_count_map: dict[str, int] = {}
         canonical_by_image: dict[str, OMRResult] = {}
@@ -11315,6 +11412,7 @@ class MainWindow(QMainWindow):
                 subject_scope=subject_scope,
                 available_exam_codes=available_exam_codes,
             )
+        self._update_batch_scan_bottom_status_text()
 
     def _on_scan_cell_clicked(self, row: int, col: int) -> None:
         if row < 0:
@@ -11322,21 +11420,21 @@ class MainWindow(QMainWindow):
         # Only show edit history when clicking the Status column.
         if col != 6:
             return
-        image_key = self._row_image_key(row)
-        history = list(self.scan_edit_history.get(image_key, []) or [])
-        if (not history) and image_key:
-            result = self._result_by_image_path(image_key)
-            history = [str(x) for x in (getattr(result, "edit_history", []) or []) if str(x or "").strip()] if result is not None else []
-            if history:
-                self.scan_edit_history[image_key] = list(history)
-                self.scan_last_adjustment[image_key] = str(getattr(result, "last_adjustment", "") or history[-1])
+        history, latest = self._history_snapshot_for_row(row)
+        status_item = self.scan_list.item(row, self.SCAN_COL_STATUS) if hasattr(self, "scan_list") else None
+        status_text = str(status_item.toolTip() if status_item and status_item.toolTip() else (status_item.text() if status_item else "")).strip() or "OK"
         if not history:
-            QMessageBox.information(self, "Lịch sử sửa", "Chưa có lịch sử điều chỉnh trong Status cho bài thi này.")
+            QMessageBox.information(
+                self,
+                "Lịch sử sửa",
+                "Chưa có lịch sử điều chỉnh trong Status cho bài thi này."
+                f"\n\nTrạng thái hiện tại: {status_text}",
+            )
             return
-        latest = self.scan_last_adjustment.get(image_key, history[-1])
         QMessageBox.information(
             self,
             "Lịch sử sửa bài",
+            f"Trạng thái hiện tại: {status_text}\n\n"
             "Điều chỉnh gần nhất:\n"
             + latest
             + "\n\nToàn bộ lịch sử:\n"
@@ -11417,6 +11515,7 @@ class MainWindow(QMainWindow):
         display_status = self._compact_status_text(full_status, max_len=150)
         status_item = QTableWidgetItem(display_status)
         status_item.setToolTip(full_status)
+        status_item.setData(Qt.UserRole, self._status_category(full_status))
         if full_status != "OK":
             status_item.setForeground(Qt.red)
         self.scan_list.setItem(idx, 6, status_item)
