@@ -4480,8 +4480,6 @@ class MainWindow(QMainWindow):
             counts["all"] += 1
             if category in counts:
                 counts[category] += 1
-            if category in {"duplicate", "wrong_code"}:
-                counts["error"] += 1
         return counts
 
     def _update_scoring_status_bar(self, success_count: int, error_count: int, edited_count: int, pending_count: int = 0) -> None:
@@ -4604,6 +4602,13 @@ class MainWindow(QMainWindow):
             self.batch_scan_status_bottom.setVisible(True)
         if hasattr(self, "scoring_panel"):
             self.scoring_panel.setVisible(False)
+        self.batch_status_filter_mode = "all"
+        if hasattr(self, "search_value"):
+            self.search_value.clear()
+        if hasattr(self, "filter_column"):
+            self.filter_column.setCurrentIndex(0)
+        if hasattr(self, "scan_list"):
+            self._apply_scan_filter()
         self._current_route_name = "workspace_batch_scan"
         if hasattr(self, "batch_subject_combo") and self.batch_subject_combo.count() > 0:
             cfg = self._selected_batch_subject_config()
@@ -4622,6 +4627,13 @@ class MainWindow(QMainWindow):
             self.batch_scan_status_bottom.setVisible(False)
         if hasattr(self, "scoring_panel"):
             self.scoring_panel.setVisible(True)
+        self.scoring_status_filter_mode = "all"
+        if hasattr(self, "scoring_search_value"):
+            self.scoring_search_value.clear()
+        if hasattr(self, "scoring_filter_column"):
+            self.scoring_filter_column.setCurrentIndex(0)
+        if hasattr(self, "score_preview_table"):
+            self._apply_scoring_filter()
         self._current_route_name = "workspace_scoring"
         selected_subject = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
         if selected_subject:
@@ -6176,6 +6188,11 @@ class MainWindow(QMainWindow):
             return
         self._switching_batch_subject = True
         try:
+            self.batch_status_filter_mode = "all"
+            if hasattr(self, "search_value"):
+                self.search_value.clear()
+            if hasattr(self, "filter_column"):
+                self.filter_column.setCurrentIndex(0)
             previous_runtime_key = str(getattr(self, "active_batch_subject_key", "") or "").strip()
             cfg = self._selected_batch_subject_config()
             next_runtime_key = ""
@@ -9595,10 +9612,7 @@ class MainWindow(QMainWindow):
             status_ok = True
             mode = str(self.batch_status_filter_mode or "all").strip() or "all"
             if mode not in {"all", ""}:
-                if mode == "error":
-                    status_ok = status_category in {"error", "duplicate", "wrong_code"}
-                else:
-                    status_ok = status_category == mode
+                status_ok = status_category == mode
             if not value:
                 self.scan_list.setRowHidden(i, not status_ok)
                 continue
@@ -11334,6 +11348,52 @@ class MainWindow(QMainWindow):
         cfg["batch_saved_preview"] = []
         cfg["batch_saved_results"] = []
         self.batch_working_state_by_subject.pop(self._batch_runtime_key(subject), None)
+
+    def _persisted_scan_payload_for_image(self, image_key: str, subject_key: str = "") -> dict:
+        image_lookup = self._result_identity_key(image_key)
+        subject = str(subject_key or self._current_batch_subject_key() or "").strip()
+        if not image_lookup or not subject:
+            return {}
+        for payload in (self.database.fetch_scan_results_for_subject(self._batch_result_subject_key(subject)) or []):
+            if self._result_identity_key(str((payload or {}).get("image_path", "") or "")) == image_lookup:
+                return dict(payload or {})
+        return {}
+
+    def _history_snapshot_for_row(self, row: int) -> tuple[list[str], str]:
+        image_key = self._row_image_key(row)
+        if not image_key:
+            return [], ""
+
+        history: list[str] = [str(x) for x in (self.scan_edit_history.get(image_key, []) or []) if str(x or "").strip()]
+        latest = str(self.scan_last_adjustment.get(image_key, "") or "")
+
+        result = self._result_by_image_path(image_key)
+        if result is not None:
+            result_history = [str(x) for x in (getattr(result, "edit_history", []) or []) if str(x or "").strip()]
+            if len(result_history) > len(history):
+                history = list(result_history)
+            if not latest:
+                latest = str(getattr(result, "last_adjustment", "") or "")
+
+        sid_item = self.scan_list.item(row, 0) if hasattr(self, "scan_list") else None
+        row_payload = dict(sid_item.data(Qt.UserRole + 12) or {}) if sid_item else {}
+        serialized = dict(sid_item.data(Qt.UserRole + 10) or {}) if sid_item else {}
+        payload_history = [str(x) for x in (row_payload.get("edit_history", []) or serialized.get("edit_history", [])) if str(x or "").strip()]
+        if len(payload_history) > len(history):
+            history = list(payload_history)
+        latest = latest or str(row_payload.get("last_adjustment", "") or serialized.get("last_adjustment", "") or "")
+
+        db_payload = self._persisted_scan_payload_for_image(image_key)
+        db_history = [str(x) for x in (db_payload.get("edit_history", []) or []) if str(x or "").strip()]
+        if len(db_history) > len(history):
+            history = list(db_history)
+        latest = latest or str(db_payload.get("last_adjustment", "") or "")
+
+        if history:
+            self.scan_edit_history[image_key] = list(history)
+            self.scan_last_adjustment[image_key] = str(latest or history[-1])
+        return history, str(latest or (history[-1] if history else ""))
+
     def _refresh_all_statuses(self) -> None:
         duplicate_count_map: dict[str, int] = {}
         canonical_by_image: dict[str, OMRResult] = {}
@@ -11352,6 +11412,7 @@ class MainWindow(QMainWindow):
                 subject_scope=subject_scope,
                 available_exam_codes=available_exam_codes,
             )
+        self._update_batch_scan_bottom_status_text()
 
     def _on_scan_cell_clicked(self, row: int, col: int) -> None:
         if row < 0:
@@ -11359,21 +11420,21 @@ class MainWindow(QMainWindow):
         # Only show edit history when clicking the Status column.
         if col != 6:
             return
-        image_key = self._row_image_key(row)
-        history = list(self.scan_edit_history.get(image_key, []) or [])
-        if (not history) and image_key:
-            result = self._result_by_image_path(image_key)
-            history = [str(x) for x in (getattr(result, "edit_history", []) or []) if str(x or "").strip()] if result is not None else []
-            if history:
-                self.scan_edit_history[image_key] = list(history)
-                self.scan_last_adjustment[image_key] = str(getattr(result, "last_adjustment", "") or history[-1])
+        history, latest = self._history_snapshot_for_row(row)
+        status_item = self.scan_list.item(row, self.SCAN_COL_STATUS) if hasattr(self, "scan_list") else None
+        status_text = str(status_item.toolTip() if status_item and status_item.toolTip() else (status_item.text() if status_item else "")).strip() or "OK"
         if not history:
-            QMessageBox.information(self, "Lịch sử sửa", "Chưa có lịch sử điều chỉnh trong Status cho bài thi này.")
+            QMessageBox.information(
+                self,
+                "Lịch sử sửa",
+                "Chưa có lịch sử điều chỉnh trong Status cho bài thi này."
+                f"\n\nTrạng thái hiện tại: {status_text}",
+            )
             return
-        latest = self.scan_last_adjustment.get(image_key, history[-1])
         QMessageBox.information(
             self,
             "Lịch sử sửa bài",
+            f"Trạng thái hiện tại: {status_text}\n\n"
             "Điều chỉnh gần nhất:\n"
             + latest
             + "\n\nToàn bộ lịch sử:\n"
