@@ -331,7 +331,7 @@ class ExportReportsDialog(QDialog):
                     if lo <= score < hi:
                         counts[idx] += 1
                         break
-            rows.append([label, len(subject_rows), *counts, perfect])
+            rows.append([label, len(scores), *counts, perfect])
         return ReportTable(headers, rows)
 
     def build_subject_stats_report(self) -> ReportTable:

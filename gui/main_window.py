@@ -14090,9 +14090,9 @@ class MainWindow(QMainWindow):
                 if score_value is not None:
                     scores.append(score_value)
             if scores:
-                ws_summary.append([key, label, len(rows), round(sum(scores) / len(scores), 4), min(scores), max(scores)])
+                ws_summary.append([key, label, len(scores), round(sum(scores) / len(scores), 4), min(scores), max(scores)])
             else:
-                ws_summary.append([key, label, len(rows), 0, 0, 0])
+                ws_summary.append([key, label, 0, 0, 0, 0])
         wb.save(path)
         QMessageBox.information(self, "Xuất điểm chi tiết các môn", f"Đã xuất dữ liệu:\n{path}")
 
