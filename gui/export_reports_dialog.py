@@ -178,7 +178,7 @@ class ExportReportsDialog(QDialog):
         if not key:
             return []
         if key not in self._score_rows_cache:
-            self._score_rows_cache[key] = list(self.main_window._score_rows_for_subject(key) or [])
+            self._score_rows_cache[key] = list(self.main_window._ensure_export_score_rows_for_subject(key) or [])
         return list(self._score_rows_cache.get(key, []))
 
     def _collect_class_options(self) -> list[str]:
@@ -300,10 +300,10 @@ class ExportReportsDialog(QDialog):
             sid = str(row.get("student_id", "") or "").strip()
             if not sid:
                 continue
-            try:
-                out[sid] = float(row.get("score", "") or 0)
-            except Exception:
+            score_value = self.main_window._score_value_for_statistics(row)
+            if score_value is None:
                 continue
+            out[sid] = score_value
         self._subject_score_cache[key] = out
         return dict(out)
 
@@ -312,12 +312,12 @@ class ExportReportsDialog(QDialog):
         rows: list[list[object]] = []
         bins = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 7), (7, 8), (8, 9), (9, 10)]
         for label, key in self._collect_subject_pairs():
+            subject_rows = self._score_rows_for_subject_cached(key)
             scores: list[float] = []
-            for row in self._score_rows_for_subject_cached(key):
-                try:
-                    scores.append(float(row.get("score", "") or 0))
-                except Exception:
-                    pass
+            for row in subject_rows:
+                score_value = self.main_window._score_value_for_statistics(row)
+                if score_value is not None:
+                    scores.append(score_value)
             counts = [0] * len(bins)
             perfect = 0
             for score in scores:
@@ -331,7 +331,7 @@ class ExportReportsDialog(QDialog):
                     if lo <= score < hi:
                         counts[idx] += 1
                         break
-            rows.append([label, len(scores), *counts, perfect])
+            rows.append([label, len(subject_rows), *counts, perfect])
         return ReportTable(headers, rows)
 
     def build_subject_stats_report(self) -> ReportTable:
@@ -340,10 +340,9 @@ class ExportReportsDialog(QDialog):
         for label, key in self._collect_subject_pairs():
             scores: list[float] = []
             for row in self._score_rows_for_subject_cached(key):
-                try:
-                    scores.append(float(row.get("score", "") or 0))
-                except Exception:
-                    pass
+                score_value = self.main_window._score_value_for_statistics(row)
+                if score_value is not None:
+                    scores.append(score_value)
             if scores:
                 rows.append([label, round(mean(scores), 4), round(median(scores), 4), max(scores), min(scores)])
             else:
