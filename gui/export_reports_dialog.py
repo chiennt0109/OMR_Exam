@@ -178,7 +178,7 @@ class ExportReportsDialog(QDialog):
         if not key:
             return []
         if key not in self._score_rows_cache:
-            self._score_rows_cache[key] = list(self.main_window._score_rows_for_subject(key) or [])
+            self._score_rows_cache[key] = list(self.main_window._ensure_export_score_rows_for_subject(key) or [])
         return list(self._score_rows_cache.get(key, []))
 
     def _collect_class_options(self) -> list[str]:
@@ -312,8 +312,9 @@ class ExportReportsDialog(QDialog):
         rows: list[list[object]] = []
         bins = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 7), (7, 8), (8, 9), (9, 10)]
         for label, key in self._collect_subject_pairs():
+            subject_rows = self._score_rows_for_subject_cached(key)
             scores: list[float] = []
-            for row in self._score_rows_for_subject_cached(key):
+            for row in subject_rows:
                 try:
                     scores.append(float(row.get("score", "") or 0))
                 except Exception:
@@ -331,7 +332,7 @@ class ExportReportsDialog(QDialog):
                     if lo <= score < hi:
                         counts[idx] += 1
                         break
-            rows.append([label, len(scores), *counts, perfect])
+            rows.append([label, len(subject_rows), *counts, perfect])
         return ReportTable(headers, rows)
 
     def build_subject_stats_report(self) -> ReportTable:
