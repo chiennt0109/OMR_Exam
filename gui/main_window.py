@@ -3628,6 +3628,24 @@ class MainWindow(QMainWindow):
             raise ValueError("Không có khoảng điểm hợp lệ.")
         return ranges
 
+    @staticmethod
+    def _format_birth_date_for_export(value: object) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        candidates = [raw]
+        if "T" in raw:
+            candidates.append(raw.split("T", 1)[0].strip())
+        if " " in raw:
+            candidates.append(raw.split(" ", 1)[0].strip())
+        for text in candidates:
+            for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%Y/%m/%d", "%d.%m.%Y"):
+                try:
+                    return datetime.strptime(text, fmt).strftime("%d/%m/%Y")
+                except Exception:
+                    continue
+        return raw
+
     def _score_rows_for_subject(self, subject_key: str) -> list[dict]:
         payload = self._load_scoring_results_for_subject_from_storage(subject_key)
         rows = [dict(v) for v in payload.values() if isinstance(v, dict)]
@@ -13742,6 +13760,10 @@ class MainWindow(QMainWindow):
             for cell in ws[1]:
                 cell.font = Font(name="Times New Roman", size=12, bold=True)
                 cell.alignment = Alignment(horizontal="center", vertical="center")
+            name_col = headers.index("Họ tên") + 1 if "Họ tên" in headers else -1
+            if name_col > 0:
+                for row_idx in range(2, ws.max_row + 1):
+                    ws.cell(row=row_idx, column=name_col).alignment = Alignment(horizontal="left", vertical="center")
             for col in ws.columns:
                 max_len = 0
                 col_letter = col[0].column_letter
@@ -13789,7 +13811,7 @@ class MainWindow(QMainWindow):
                 "SBD": sid,
                 "Phòng thi": str(row.get("exam_room", "") or room_by_sid.get(sid, "") or meta.get("exam_room", "")),
                 "Họ tên": str(row.get("name", "") or meta.get("name", "")),
-                "Ngày sinh": str(row.get("birth_date", "") or meta.get("birth_date", "")),
+                "Ngày sinh": self._format_birth_date_for_export(row.get("birth_date", "") or meta.get("birth_date", "")),
                 "Lớp": str(row.get("class_name", "") or meta.get("class_name", "")),
                 "Mã đề": str(row.get("exam_code", "") or ""),
                 "Đúng": row.get("correct", 0),
@@ -13843,13 +13865,13 @@ class MainWindow(QMainWindow):
                 rec = student_rows.setdefault(sid, {
                     "SBD": sid,
                     "Họ tên": row.get("Họ tên", ""),
-                    "Ngày sinh": row.get("Ngày sinh", ""),
+                    "Ngày sinh": self._format_birth_date_for_export(row.get("Ngày sinh", "")),
                     "Lớp": row.get("Lớp", ""),
                 })
                 if not rec.get("Họ tên") and row.get("Họ tên"):
                     rec["Họ tên"] = row.get("Họ tên", "")
                 if not rec.get("Ngày sinh") and row.get("Ngày sinh"):
-                    rec["Ngày sinh"] = row.get("Ngày sinh", "")
+                    rec["Ngày sinh"] = self._format_birth_date_for_export(row.get("Ngày sinh", ""))
                 if not rec.get("Lớp") and row.get("Lớp"):
                     rec["Lớp"] = row.get("Lớp", "")
                 rec[score_header] = row.get("Điểm", 0)
@@ -13881,6 +13903,10 @@ class MainWindow(QMainWindow):
                 cell.border = Border(left=border_side, right=border_side, top=border_side, bottom=border_side)
         for cell in ws[1]:
             cell.font = Font(name="Times New Roman", size=12, bold=True)
+        name_col = base_headers.index("Họ tên") + 1 if "Họ tên" in base_headers else -1
+        if name_col > 0:
+            for row_idx in range(2, ws.max_row + 1):
+                ws.cell(row=row_idx, column=name_col).alignment = Alignment(horizontal="left", vertical="center")
 
         score_col_width = 136 / 7
         score_col_indexes = set(range(len(base_headers) + 1, len(base_headers) + len(score_headers) + 1))
@@ -13935,7 +13961,7 @@ class MainWindow(QMainWindow):
                 rec: dict[str, object] = {
                     "SBD": sid,
                     "Họ tên": str(getattr(st, "name", "") or ""),
-                    "Ngày sinh": str(getattr(st, "birth_date", "") or ""),
+                    "Ngày sinh": self._format_birth_date_for_export(getattr(st, "birth_date", "") or ""),
                     "Lớp": st_class,
                 }
                 score_row = score_by_sid.get(sid, {})
@@ -13952,7 +13978,7 @@ class MainWindow(QMainWindow):
             rec = {
                 "SBD": sid,
                 "Họ tên": row.get("Họ tên", ""),
-                "Ngày sinh": row.get("Ngày sinh", ""),
+                "Ngày sinh": self._format_birth_date_for_export(row.get("Ngày sinh", "")),
                 "Lớp": st_class,
             }
             for header in score_headers:

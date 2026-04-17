@@ -204,7 +204,7 @@ class ExportReportsDialog(QDialog):
                     continue
                 out[sid] = {
                     "name": str(getattr(st, "name", "") or ""),
-                    "birth_date": str(getattr(st, "birth_date", "") or ""),
+                    "birth_date": self.main_window._format_birth_date_for_export(getattr(st, "birth_date", "") or ""),
                     "class_name": str(getattr(st, "class_name", "") or ""),
                     "exam_room": str(getattr(st, "exam_room", "") or ""),
                 }
@@ -217,7 +217,7 @@ class ExportReportsDialog(QDialog):
                     sid,
                     {
                         "name": str(row.get("name", "") or ""),
-                        "birth_date": str(row.get("birth_date", "") or ""),
+                        "birth_date": self.main_window._format_birth_date_for_export(row.get("birth_date", "") or ""),
                         "class_name": str(row.get("class_name", "") or ""),
                         "exam_room": str(row.get("exam_room", "") or ""),
                     },
@@ -225,7 +225,7 @@ class ExportReportsDialog(QDialog):
                 if not rec.get("name"):
                     rec["name"] = str(row.get("name", "") or "")
                 if not rec.get("birth_date"):
-                    rec["birth_date"] = str(row.get("birth_date", "") or "")
+                    rec["birth_date"] = self.main_window._format_birth_date_for_export(row.get("birth_date", "") or "")
                 if not rec.get("class_name"):
                     rec["class_name"] = str(row.get("class_name", "") or "")
                 if not rec.get("exam_room"):
@@ -511,6 +511,15 @@ class ExportReportsDialog(QDialog):
         if not path:
             return
         from openpyxl import Workbook
+        from openpyxl.styles import Alignment
+
+        def _apply_name_alignment(ws_obj, headers: list[str]) -> None:
+            if "Họ tên" not in headers:
+                return
+            name_col = headers.index("Họ tên") + 1
+            for row_idx in range(2, ws_obj.max_row + 1):
+                ws_obj.cell(row=row_idx, column=name_col).alignment = Alignment(horizontal="left", vertical="center")
+
         wb = Workbook()
         report_name = self.report_list.currentItem().text() if self.report_list.currentItem() else "report"
         if report_name == self.REPORT_CLASS_SUMMARY and self._last_report.grouped_rows:
@@ -521,12 +530,14 @@ class ExportReportsDialog(QDialog):
                 ws.append(self._last_report.headers)
                 for row in rows:
                     ws.append(row)
+                _apply_name_alignment(ws, self._last_report.headers)
         else:
             ws = wb.active
             ws.title = "report"
             ws.append(self._last_report.headers)
             for row in self._last_report.rows:
                 ws.append(row)
+            _apply_name_alignment(ws, self._last_report.headers)
         wb.save(Path(path))
         QMessageBox.information(self, "Báo cáo", f"Đã xuất Excel:\n{path}")
 
