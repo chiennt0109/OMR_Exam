@@ -265,8 +265,9 @@ class SubjectConfigDialog(QDialog):
     ):
         super().__init__(parent)
         self.setWindowTitle("Cấu hình môn học")
+        self.resize(980, 760)
+        self.setMinimumSize(880, 680)
         self.setWindowState(self.windowState() | Qt.WindowMaximized)
-        self.resize(1180, 820)
         data = data or {}
         subject_options = subject_options or []
         block_options = block_options or ["10", "11", "12"]
@@ -300,6 +301,7 @@ class SubjectConfigDialog(QDialog):
 
         lay = QVBoxLayout(self)
         form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
         self.subject_name = QComboBox(); self.subject_name.setEditable(True); self.subject_name.addItems(subject_options)
         if str(data.get("name", "")).strip():
@@ -307,11 +309,24 @@ class SubjectConfigDialog(QDialog):
 
         self.block_name = QComboBox(); self.block_name.setEditable(True); self.block_name.addItems(block_options)
         self.block_name.setCurrentText(str(data.get("block", block_options[0] if block_options else "10")))
+        self.is_essay_subject = QCheckBox("Môn tự luận")
+        self.is_essay_subject.setChecked(bool(data.get("is_essay_subject", False)))
 
         self.template_path = QLineEdit(str(data.get("template_path", "")))
         self.scan_folder = QLineEdit(str(data.get("scan_folder", "")))
         self.answer_key = QLineEdit(str(data.get("answer_key_path", "")))
         self.answer_key_key = QLineEdit(str(data.get("answer_key_key", ""))); self.answer_key_key.setReadOnly(True)
+        self._fit_line_edit_to_text(self.template_path, min_chars=42, max_chars=78, padding=30)
+        self._fit_line_edit_to_text(self.scan_folder, min_chars=42, max_chars=78, padding=30)
+        self._fit_line_edit_to_text(self.answer_key, min_chars=42, max_chars=78, padding=30)
+        self._fit_line_edit_to_text(self.answer_key_key, min_chars=20, max_chars=36, padding=28)
+        self.template_path.setClearButtonEnabled(True)
+        self.scan_folder.setClearButtonEnabled(True)
+        self.answer_key.setClearButtonEnabled(True)
+        self.template_path.textChanged.connect(lambda _text: self._fit_line_edit_to_text(self.template_path, min_chars=42, max_chars=78, padding=30))
+        self.scan_folder.textChanged.connect(lambda _text: self._fit_line_edit_to_text(self.scan_folder, min_chars=42, max_chars=78, padding=30))
+        self.answer_key.textChanged.connect(lambda _text: self._fit_line_edit_to_text(self.answer_key, min_chars=42, max_chars=78, padding=30))
+        self.answer_key_key.textChanged.connect(lambda _text: self._fit_line_edit_to_text(self.answer_key_key, min_chars=20, max_chars=36, padding=28))
         self._exam_room_mapping_cache: dict[str, list[str]] = {}
         self.exam_room_name = QComboBox(); self.exam_room_name.setEditable(True)
         seed_room = str(data.get("exam_room_name", "") or "").strip()
@@ -319,22 +334,45 @@ class SubjectConfigDialog(QDialog):
             self.exam_room_name.addItem(seed_room)
             self.exam_room_name.setCurrentText(seed_room)
         self.exam_room_mapping_selector = QComboBox()
+        self.exam_room_mapping_selector.setMinimumWidth(260)
         self.exam_room_mapping_selector.currentIndexChanged.connect(self._on_exam_room_mapping_selected)
-        self.btn_import_exam_room_mapping = QPushButton("Import mapping SBD/phòng từ Excel")
+        self.btn_import_exam_room_mapping = QPushButton("Import...")
         self.btn_import_exam_room_mapping.clicked.connect(self._import_exam_room_mapping_from_file)
+        self.btn_delete_exam_room_mapping = QPushButton("Xóa phòng")
+        self.btn_delete_exam_room_mapping.clicked.connect(self._remove_selected_exam_room_mapping)
         self.exam_room_mapping_hint = QLabel("Chưa nạp mapping SBD/phòng.")
+        self.exam_room_mapping_hint.setWordWrap(False)
         room_map_wrap = QWidget()
-        room_map_lay = QVBoxLayout(room_map_wrap)
+        room_map_lay = QHBoxLayout(room_map_wrap)
         room_map_lay.setContentsMargins(0, 0, 0, 0)
-        room_map_lay.addWidget(self.exam_room_mapping_selector)
-        room_map_lay.addWidget(self.exam_room_mapping_hint)
-        room_map_lay.addWidget(self.btn_import_exam_room_mapping, alignment=Qt.AlignLeft)
+        room_map_lay.setSpacing(8)
+        room_map_lay.addWidget(self.exam_room_mapping_selector, 0)
+        room_map_lay.addWidget(self.btn_import_exam_room_mapping, 0)
+        room_map_lay.addWidget(self.btn_delete_exam_room_mapping, 0)
+        room_map_lay.addWidget(self.exam_room_mapping_hint, 1)
         self._restore_exam_room_mapping_from_data(data, seed_room)
         self.answer_codes = QLineEdit(", ".join(sorted((data.get("imported_answer_keys") or {}).keys()))); self.answer_codes.setReadOnly(True)
+        self._fit_line_edit_to_text(self.answer_codes, min_chars=24, max_chars=56, padding=28)
+        self.answer_codes.textChanged.connect(lambda _text: self._fit_line_edit_to_text(self.answer_codes, min_chars=24, max_chars=56, padding=28))
         self.answer_summary = QTextEdit()
         self.answer_summary.setReadOnly(True)
-        self.answer_summary.setMinimumHeight(110)
-        self.answer_summary.setMaximumHeight(180)
+        self.answer_summary.setFixedSize(640, 170)
+        self.answer_summary.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.answer_summary.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        self.direct_score_import_data: dict = copy.deepcopy(data.get("direct_score_import", {}) or {})
+        self.direct_score_import_path = QLineEdit(str(self.direct_score_import_data.get("path", "") or ""))
+        self.direct_score_import_path.setReadOnly(True)
+        self._fit_line_edit_to_text(self.direct_score_import_path, min_chars=42, max_chars=78, padding=30)
+        self.direct_score_import_path.textChanged.connect(lambda _text: self._fit_line_edit_to_text(self.direct_score_import_path, min_chars=42, max_chars=78, padding=30))
+        self.btn_import_direct_score = QPushButton("Import file điểm...")
+        self.btn_import_direct_score.clicked.connect(self._import_direct_score_file)
+        self.direct_score_import_summary = QTextEdit()
+        self.direct_score_import_summary.setReadOnly(True)
+        self.direct_score_import_summary.setFixedSize(640, 160)
+        self.direct_score_import_summary.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.direct_score_import_summary.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._refresh_direct_score_import_summary()
 
         self.paper_part_label = QLabel(str(paper_part_count))
 
@@ -360,32 +398,59 @@ class SubjectConfigDialog(QDialog):
 
         self.total_score = QLineEdit(); self.total_score.setReadOnly(True)
 
-        row_tpl = QHBoxLayout(); row_tpl.addWidget(self.template_path); b_tpl = QPushButton("..."); row_tpl.addWidget(b_tpl); b_tpl_repo = QPushButton("Kho mẫu..."); row_tpl.addWidget(b_tpl_repo)
+        self._score_line_edits = [
+            self.sec_mcq_total, self.sec_tf_total, self.sec_tf_1, self.sec_tf_2, self.sec_tf_3, self.sec_tf_4, self.sec_numeric_total,
+            self.q_mcq, self.q_tf_1, self.q_tf_2, self.q_tf_3, self.q_tf_4, self.q_numeric, self.total_score,
+        ]
+        for _score_edit in self._score_line_edits:
+            _score_edit.setAlignment(Qt.AlignRight)
+            self._fit_line_edit_to_text(_score_edit)
+            _score_edit.textChanged.connect(lambda _text, widget=_score_edit: self._fit_line_edit_to_text(widget))
+
+        row_tpl = QHBoxLayout(); row_tpl.setContentsMargins(0, 0, 0, 0); row_tpl.addWidget(self.template_path); b_tpl = QPushButton("..."); row_tpl.addWidget(b_tpl); b_tpl_repo = QPushButton("Kho mẫu..."); row_tpl.addWidget(b_tpl_repo); row_tpl.addStretch(1)
         b_tpl.clicked.connect(self._browse_template)
         b_tpl_repo.clicked.connect(self._pick_template_from_repo)
-        row_scan = QHBoxLayout(); row_scan.addWidget(self.scan_folder); b_scan = QPushButton("..."); row_scan.addWidget(b_scan)
+        row_scan = QHBoxLayout(); row_scan.setContentsMargins(0, 0, 0, 0); row_scan.addWidget(self.scan_folder); b_scan = QPushButton("..."); row_scan.addWidget(b_scan); row_scan.addStretch(1)
         b_scan.clicked.connect(self._browse_scan_folder)
-        row_key = QHBoxLayout(); row_key.addWidget(self.answer_key); b_key = QPushButton("..."); row_key.addWidget(b_key)
+        row_key = QHBoxLayout(); row_key.setContentsMargins(0, 0, 0, 0); row_key.addWidget(self.answer_key); b_key = QPushButton("..."); row_key.addWidget(b_key)
         b_key_view = QPushButton("Xem/Sửa đáp án...")
         row_key.addWidget(b_key_view)
+        row_key.addStretch(1)
         b_key.clicked.connect(self._browse_answer_key)
         b_key_view.clicked.connect(self._edit_current_answer_keys)
 
-        form.addRow("Tên môn", self.subject_name)
-        form.addRow("Khối", self.block_name)
-        form.addRow("Giấy thi riêng (tùy chọn)", row_tpl)
-        form.addRow("Thư mục bài thi môn", row_scan)
-        form.addRow("Đáp án môn", row_key)
-        form.addRow("Mã đáp án môn_khối", self.answer_key_key)
-        form.addRow("Phòng thi môn", self.exam_room_name)
-        form.addRow("Mapping SBD phòng thi", room_map_wrap)
-        form.addRow("Các mã đề của môn", self.answer_codes)
-        form.addRow("Tóm tắt đáp án", self.answer_summary)
-        form.addRow("Số phần giấy thi", self.paper_part_label)
-        form.addRow("Cách nhập điểm", self.score_mode)
+        subject_row_wrap = QWidget()
+        subject_row_lay = QHBoxLayout(subject_row_wrap)
+        subject_row_lay.setContentsMargins(0, 0, 0, 0)
+        subject_row_lay.setSpacing(10)
+        subject_row_lay.addWidget(self.subject_name, 1)
+        subject_row_lay.addWidget(self.is_essay_subject, 0, Qt.AlignRight)
+
+        top_form = QFormLayout()
+        top_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        top_form.addRow("Tên môn", subject_row_wrap)
+        top_form.addRow("Khối", self.block_name)
+        lay.addLayout(top_form)
+
+        self.standard_config_widget = QWidget()
+        standard_lay = QVBoxLayout(self.standard_config_widget)
+        standard_lay.setContentsMargins(0, 0, 0, 0)
+        standard_lay.setSpacing(10)
+        standard_form = QFormLayout()
+        standard_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        standard_form.addRow("Giấy thi riêng (tùy chọn)", row_tpl)
+        standard_form.addRow("Thư mục bài thi môn", row_scan)
+        standard_form.addRow("Đáp án môn", row_key)
+        standard_form.addRow("Mã đáp án môn_khối", self.answer_key_key)
+        standard_form.addRow("Danh sách SBD phòng thi", room_map_wrap)
+        standard_form.addRow("Các mã đề của môn", self.answer_codes)
+        standard_form.addRow("Tóm tắt đáp án", self.answer_summary)
+        standard_form.addRow("Số phần giấy thi", self.paper_part_label)
+        standard_form.addRow("Cách nhập điểm", self.score_mode)
 
         self.section_group = QGroupBox("Điểm theo phần")
         sec_form = QFormLayout(self.section_group)
+        sec_form.setFieldGrowthPolicy(QFormLayout.FieldsStayAtSizeHint)
         sec_form.addRow("MCQ tổng điểm", self.sec_mcq_total)
         sec_form.addRow("TF tổng điểm", self.sec_tf_total)
         sec_form.addRow("TF đúng 1 ý", self.sec_tf_1)
@@ -396,6 +461,7 @@ class SubjectConfigDialog(QDialog):
 
         self.question_group = QGroupBox("Điểm theo câu")
         q_form = QFormLayout(self.question_group)
+        q_form.setFieldGrowthPolicy(QFormLayout.FieldsStayAtSizeHint)
         q_form.addRow("MCQ điểm/câu", self.q_mcq)
         q_form.addRow("TF đúng 1 ý", self.q_tf_1)
         q_form.addRow("TF đúng 2 ý", self.q_tf_2)
@@ -403,14 +469,30 @@ class SubjectConfigDialog(QDialog):
         q_form.addRow("TF đúng 4 ý", self.q_tf_4)
         q_form.addRow("NUMERIC điểm/câu", self.q_numeric)
 
-        form.addRow("Tổng điểm bài thi", self.total_score)
+        standard_form.addRow("Tổng điểm bài thi", self.total_score)
+        standard_lay.addLayout(standard_form)
+        standard_lay.addWidget(self.section_group)
+        standard_lay.addWidget(self.question_group)
+        lay.addWidget(self.standard_config_widget)
 
-        lay.addLayout(form)
-        lay.addWidget(self.section_group)
-        lay.addWidget(self.question_group)
+        self.essay_import_group = QGroupBox("Import điểm trực tiếp theo SBD")
+        essay_form = QFormLayout(self.essay_import_group)
+        essay_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        direct_file_row = QHBoxLayout()
+        direct_file_row.setContentsMargins(0, 0, 0, 0)
+        direct_file_row.addWidget(self.direct_score_import_path)
+        direct_file_row.addWidget(self.btn_import_direct_score)
+        direct_file_row.addStretch(1)
+        essay_form.addRow("File điểm", direct_file_row)
+        direct_note = QLabel("Bắt buộc chọn cột SBD và cột Điểm. Cột Phòng thi là tùy chọn; nếu không có, hệ thống sẽ dùng phòng thi chung của kỳ thi.")
+        direct_note.setWordWrap(True)
+        essay_form.addRow("Quy tắc import", direct_note)
+        essay_form.addRow("Tóm tắt import", self.direct_score_import_summary)
+        lay.addWidget(self.essay_import_group)
 
         self.subject_name.currentTextChanged.connect(self._update_answer_key_key)
         self.block_name.currentTextChanged.connect(self._update_answer_key_key)
+        self.is_essay_subject.toggled.connect(self._refresh_subject_mode_ui)
         self.score_mode.currentTextChanged.connect(self._refresh_score_mode_ui)
         self.template_path.textChanged.connect(self._update_paper_parts)
 
@@ -422,10 +504,7 @@ class SubjectConfigDialog(QDialog):
         self._refresh_answer_key_summary()
         self._update_paper_parts()
         self._refresh_score_mode_ui()
-
-        self.section_group.setVisible(True)
-        self.question_group.setVisible(True)
-        self._refresh_score_mode_ui()
+        self._refresh_subject_mode_ui()
 
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept)
@@ -496,10 +575,26 @@ class SubjectConfigDialog(QDialog):
         tpl = self.template_path.text().strip() or self.common_template_path
         return self._template_question_counts(tpl)
 
+    @staticmethod
+    def _fit_line_edit_to_text(widget: QLineEdit, min_chars: int = 5, max_chars: int = 14, padding: int = 24) -> None:
+        text = str(widget.text() or "").strip()
+        metrics = widget.fontMetrics()
+        min_width = metrics.horizontalAdvance("0" * max(1, min_chars)) + padding
+        sample = text if text else ("0" * max(1, min_chars))
+        width = metrics.horizontalAdvance(sample[:max_chars]) + padding
+        width = max(min_width, width)
+        width = min(width, metrics.horizontalAdvance("0" * max_chars) + padding)
+        widget.setFixedWidth(width)
+        widget.setToolTip(widget.text() or widget.placeholderText() or "")
+
     def _refresh_score_mode_ui(self) -> None:
+        keep_size = self.size()
         section_mode = self.score_mode.currentText() == "Điểm theo phần"
         self.section_group.setVisible(section_mode)
         self.question_group.setVisible(not section_mode)
+        self.layout().activate()
+        if keep_size.isValid() and not self.isMaximized():
+            self.resize(keep_size)
         self._update_total_score()
 
     def _update_total_score(self) -> None:
@@ -708,6 +803,127 @@ class SubjectConfigDialog(QDialog):
         self.answer_codes.setText(", ".join(sorted(self.answer_key_data.keys())))
         self.answer_summary.setPlainText(self._describe_answer_key_data(self.answer_key_data))
 
+    def _refresh_subject_mode_ui(self) -> None:
+        is_essay = self.is_essay_subject.isChecked()
+        self.standard_config_widget.setVisible(not is_essay)
+        self.essay_import_group.setVisible(is_essay)
+
+    def _refresh_direct_score_import_summary(self) -> None:
+        payload = self.direct_score_import_data if isinstance(self.direct_score_import_data, dict) else {}
+        rows = payload.get("rows", []) or []
+        path_text = str(payload.get("path", "") or "")
+        mapping = payload.get("mapping", {}) or {}
+        self.direct_score_import_path.setText(path_text)
+        if not rows:
+            self.direct_score_import_summary.setPlainText(
+                "Chưa nạp file điểm trực tiếp.\n\n"
+                "Yêu cầu tối thiểu:\n"
+                "- Có cột SBD\n"
+                "- Có cột Điểm\n"
+                "- Cột Phòng thi là tùy chọn; nếu không có sẽ dùng phòng thi chung của kỳ thi."
+            )
+            return
+        preview_lines = []
+        for rec in rows[:8]:
+            sid = str((rec or {}).get("sid", "") or "").strip()
+            score = str((rec or {}).get("score", "") or "").strip()
+            room = str((rec or {}).get("room", "") or "").strip() or "[dùng phòng chung của kỳ thi]"
+            preview_lines.append(f"- SBD {sid}: điểm {score} | phòng {room}")
+        if len(rows) > 8:
+            preview_lines.append(f"- ... còn {len(rows) - 8} dòng")
+        summary = [
+            f"Số dòng hợp lệ: {len(rows)}",
+            f"Cột SBD: {mapping.get('student_id_column', '-')}",
+            f"Cột Điểm: {mapping.get('score_column', '-')}",
+            f"Cột Phòng thi: {mapping.get('room_column', '[không dùng]')}",
+            "",
+            "Xem trước:",
+            *preview_lines,
+        ]
+        self.direct_score_import_summary.setPlainText("\n".join(summary))
+
+    @staticmethod
+    def _find_header_index(keys: set[str], combo: QComboBox) -> int:
+        normalized_keys = {str(k or "").strip().lower().replace(" ", "").replace("_", "") for k in keys}
+        for i in range(combo.count()):
+            text = str(combo.itemText(i) or "").strip().lower().replace(" ", "").replace("_", "")
+            if text in normalized_keys:
+                return i
+        return 0
+
+    def _import_direct_score_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import điểm trực tiếp theo SBD",
+            "",
+            "Data files (*.xlsx *.csv *.txt *.tsv);;All files (*.*)",
+        )
+        if not path:
+            return
+        try:
+            headers, raw_rows = self._load_exam_room_mapping_rows(Path(path))
+        except Exception as exc:
+            QMessageBox.warning(self, "Import điểm trực tiếp", f"Không đọc được file:\n{exc}")
+            return
+        if not headers or not raw_rows:
+            QMessageBox.warning(self, "Import điểm trực tiếp", "Không tìm thấy dữ liệu hợp lệ trong file điểm.")
+            return
+        pick = QDialog(self)
+        pick.setWindowTitle("Chọn cột import điểm trực tiếp")
+        pick_l = QFormLayout(pick)
+        sid_col = QComboBox(); sid_col.addItems(headers)
+        score_col = QComboBox(); score_col.addItems(headers)
+        room_col = QComboBox(); room_col.addItem("[Không dùng]", ""); room_col.addItems(headers)
+        sid_col.setCurrentIndex(self._find_header_index({"sbd", "studentid", "student_id", "sobaodanh"}, sid_col))
+        score_col.setCurrentIndex(self._find_header_index({"diem", "score", "mark", "point"}, score_col))
+        room_col.setCurrentIndex(self._find_header_index({"phongthi", "examroom", "exam_room", "room"}, room_col))
+        pick_l.addRow("Cột SBD *", sid_col)
+        pick_l.addRow("Cột Điểm *", score_col)
+        pick_l.addRow("Cột Phòng thi", room_col)
+        pick_note = QLabel("Nếu không chọn cột Phòng thi, hệ thống sẽ dùng phòng thi chung của kỳ thi khi import.")
+        pick_note.setWordWrap(True)
+        pick_l.addRow("", pick_note)
+        pick_btn = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        pick_btn.accepted.connect(pick.accept)
+        pick_btn.rejected.connect(pick.reject)
+        pick_l.addRow(pick_btn)
+        if pick.exec() != QDialog.Accepted:
+            return
+        sid_key = sid_col.currentText().strip()
+        score_key = score_col.currentText().strip()
+        room_key = str(room_col.currentData() or room_col.currentText() or "").strip()
+        rows: list[dict[str, str]] = []
+        skipped = 0
+        for rec in raw_rows:
+            sid = str(rec.get(sid_key, "") or "").strip()
+            score_text = str(rec.get(score_key, "") or "").strip()
+            room = str(rec.get(room_key, "") or "").strip() if room_key and room_key != "[Không dùng]" else ""
+            if not sid or not score_text:
+                skipped += 1
+                continue
+            try:
+                score_value = str(float(score_text.replace(",", "."))).rstrip("0").rstrip(".")
+            except Exception:
+                skipped += 1
+                continue
+            rows.append({"sid": sid, "score": score_value, "room": room})
+        if not rows:
+            QMessageBox.warning(self, "Import điểm trực tiếp", "Không có dòng hợp lệ sau khi chọn cột SBD và Điểm.")
+            return
+        self.direct_score_import_data = {
+            "path": path,
+            "mapping": {
+                "student_id_column": sid_key,
+                "score_column": score_key,
+                "room_column": room_key if room_key and room_key != "[Không dùng]" else "",
+                "fallback_room_policy": "use_exam_common_room_if_missing",
+            },
+            "rows": rows,
+            "skipped_rows": skipped,
+        }
+        self._refresh_direct_score_import_summary()
+        QMessageBox.information(self, "Import điểm trực tiếp", f"Đã nạp {len(rows)} dòng hợp lệ cho môn tự luận.")
+
     def _edit_current_answer_keys(self) -> None:
         if not self.answer_key_data:
             QMessageBox.information(self, "Đáp án môn", "Môn này chưa có đáp án. Hãy import file hoặc thêm đáp án trước.")
@@ -784,8 +1000,9 @@ class SubjectConfigDialog(QDialog):
     def _refresh_exam_room_mapping_selector(self) -> None:
         self.exam_room_mapping_selector.clear()
         if not self._exam_room_mapping_cache:
-            self.exam_room_mapping_selector.addItem("[Chưa có mapping]", "")
+            self.exam_room_mapping_selector.addItem("[Chưa có danh sách]", "")
             self.exam_room_mapping_hint.setText("Chưa nạp mapping SBD/phòng.")
+            self.btn_delete_exam_room_mapping.setEnabled(False)
             return
         for room in sorted(self._exam_room_mapping_cache.keys()):
             cnt = len(self._exam_room_mapping_cache.get(room, []))
@@ -795,6 +1012,7 @@ class SubjectConfigDialog(QDialog):
             idx = self.exam_room_mapping_selector.findData(current_room)
             if idx >= 0:
                 self.exam_room_mapping_selector.setCurrentIndex(idx)
+        self.btn_delete_exam_room_mapping.setEnabled(self.exam_room_mapping_selector.count() > 0)
         self._on_exam_room_mapping_selected(self.exam_room_mapping_selector.currentIndex())
 
     def _on_exam_room_mapping_selected(self, _index: int) -> None:
@@ -802,7 +1020,22 @@ class SubjectConfigDialog(QDialog):
         if room:
             self.exam_room_name.setCurrentText(room)
             count = len(self._exam_room_mapping_cache.get(room, []))
-            self.exam_room_mapping_hint.setText(f"Đã chọn mapping phòng '{room}' với {count} SBD.")
+            self.exam_room_mapping_hint.setText(f"{room}: {count} SBD")
+            self.btn_delete_exam_room_mapping.setEnabled(True)
+        else:
+            self.exam_room_mapping_hint.setText("Chưa nạp mapping SBD/phòng.")
+            self.btn_delete_exam_room_mapping.setEnabled(False)
+
+    def _remove_selected_exam_room_mapping(self) -> None:
+        room = str(self.exam_room_mapping_selector.currentData() or "").strip()
+        if not room:
+            return
+        self._exam_room_mapping_cache.pop(room, None)
+        if self.exam_room_name.currentText().strip() == room:
+            self.exam_room_name.setCurrentText("")
+        if self._exam_room_mapping_cache and not self.exam_room_name.currentText().strip():
+            self.exam_room_name.setCurrentText(sorted(self._exam_room_mapping_cache.keys())[0])
+        self._refresh_exam_room_mapping_selector()
 
     @staticmethod
     def _load_exam_room_mapping_rows(path: Path) -> tuple[list[str], list[dict[str, str]]]:
@@ -870,14 +1103,16 @@ class SubjectConfigDialog(QDialog):
         return {
             "name": self.subject_name.currentText().strip(),
             "block": self.block_name.currentText().strip(),
+            "is_essay_subject": bool(self.is_essay_subject.isChecked()),
             "template_path": self.template_path.text().strip(),
             "scan_folder": self.scan_folder.text().strip(),
             "answer_key_path": self.answer_key.text().strip(),
             "answer_key_key": self.answer_key_key.text().strip(),
-            "exam_room_name": self.exam_room_name.currentText().strip(),
-            "exam_room_sbd_mapping": ",".join(self._exam_room_mapping_cache.get(self.exam_room_name.currentText().strip(), [])),
+            "exam_room_name": str(self.exam_room_mapping_selector.currentData() or self.exam_room_name.currentText() or "").strip(),
+            "exam_room_sbd_mapping": ",".join(self._exam_room_mapping_cache.get(str(self.exam_room_mapping_selector.currentData() or self.exam_room_name.currentText() or "").strip(), [])),
             "exam_room_sbd_mapping_by_room": {str(k): list(v) for k, v in (self._exam_room_mapping_cache or {}).items()},
             "imported_answer_keys": self.answer_key_data,
+            "direct_score_import": copy.deepcopy(self.direct_score_import_data),
             "score_mode": self.score_mode.currentText(),
             "section_scores": section_scores,
             "question_scores": question_scores,
@@ -2518,6 +2753,11 @@ class MainWindow(QMainWindow):
             self._refresh_exam_list()
             self._refresh_session_info()
             self._refresh_batch_subject_controls()
+            self._refresh_ribbon_action_states()
+            if hasattr(self, "scoring_subject_combo"):
+                preferred_scoring = self._resolve_preferred_scoring_subject()
+                self._populate_scoring_subjects(preferred_scoring)
+                self._refresh_scoring_phase_table()
             QMessageBox.information(self, "Xem kỳ thi", "Đã lưu thông số kỳ thi.")
             if self.embedded_exam_dialog:
                 self.embedded_exam_dialog.show()
@@ -3273,6 +3513,7 @@ class MainWindow(QMainWindow):
         has_batch_rows = bool(hasattr(self, "scan_list") and self.scan_list.rowCount() > 0)
         has_subject_selection = bool(hasattr(self, "batch_subject_combo") and self.batch_subject_combo.currentIndex() > 0)
         has_exam_selection = bool(hasattr(self, "exam_list_table") and self.exam_list_table.currentRow() >= 0)
+        has_scoring_subjects = bool(self._eligible_scoring_subject_keys()) if has_session else False
         if getattr(self, "ribbon_new_exam_action", None) is not None:
             self.ribbon_new_exam_action.setEnabled(True)
         if getattr(self, "ribbon_view_exam_action", None) is not None:
@@ -3280,7 +3521,7 @@ class MainWindow(QMainWindow):
         if getattr(self, "ribbon_batch_scan_action", None) is not None:
             self.ribbon_batch_scan_action.setEnabled(has_session and has_subject_cfg)
         if getattr(self, "ribbon_scoring_action", None) is not None:
-            self.ribbon_scoring_action.setEnabled(has_session and has_subject_selection and has_batch_rows)
+            self.ribbon_scoring_action.setEnabled(has_session and has_scoring_subjects)
         if getattr(self, "ribbon_recheck_action", None) is not None:
             self.ribbon_recheck_action.setEnabled(has_session and has_batch_rows)
         has_export_data = self._has_exportable_data()
@@ -3395,6 +3636,114 @@ class MainWindow(QMainWindow):
         if rows:
             return rows
         return self._refresh_scan_results_from_db(subject_key) or []
+
+    def _subject_uses_direct_score_import(self, subject_or_cfg: str | dict | None) -> bool:
+        cfg = subject_or_cfg if isinstance(subject_or_cfg, dict) else self._subject_config_by_subject_key(str(subject_or_cfg or "").strip())
+        if not isinstance(cfg, dict):
+            return False
+        return bool(cfg.get("is_essay_subject"))
+
+    def _direct_score_import_rows_for_subject(self, subject_or_cfg: str | dict | None) -> list[dict]:
+        cfg = subject_or_cfg if isinstance(subject_or_cfg, dict) else self._subject_config_by_subject_key(str(subject_or_cfg or "").strip())
+        if not isinstance(cfg, dict) or not self._subject_uses_direct_score_import(cfg):
+            return []
+
+        payload = cfg.get("direct_score_import", {}) or {}
+        raw_rows = payload.get("rows", []) or []
+        normalized: list[dict] = []
+        for raw in raw_rows:
+            if not isinstance(raw, dict):
+                continue
+            sid = str(raw.get("student_id", "") or "").strip()
+            score_text = str(raw.get("score", "") or "").strip()
+            if not sid or score_text == "":
+                continue
+            normalized.append({
+                "student_id": sid,
+                "score": score_text,
+                "exam_room": str(raw.get("exam_room", "") or raw.get("room", "") or "").strip(),
+                "manually_edited": bool(raw.get("manually_edited", False)),
+            })
+        normalized.sort(key=lambda row: (str(row.get("student_id", "") or ""), str(row.get("exam_room", "") or "")))
+        return normalized
+
+    def _build_direct_score_payloads_for_subject(self, subject_key: str) -> list[dict]:
+        subject = str(subject_key or "").strip()
+        if not subject:
+            return []
+
+        cfg = self._subject_config_by_subject_key(subject) or {}
+        if not self._subject_uses_direct_score_import(cfg):
+            return []
+
+        default_room = str((cfg or {}).get("exam_room_name", "") or "").strip()
+        payloads: list[dict] = []
+        for row in self._direct_score_import_rows_for_subject(cfg):
+            sid = str(row.get("student_id", "") or "").strip()
+            score_text = str(row.get("score", "") or "").strip().replace(",", ".")
+            if not sid or score_text == "":
+                continue
+            try:
+                score_value = float(score_text)
+            except Exception:
+                continue
+
+            profile = self._student_profile_by_id(sid)
+            room_text = (
+                str(row.get("exam_room", "") or "").strip()
+                or self._subject_room_for_student_id(cfg, sid)
+                or default_room
+                or str(profile.get("exam_room", "") or "").strip()
+            )
+
+            is_manual_edit = bool(row.get("manually_edited", False))
+            payloads.append({
+                "student_id": sid,
+                "name": str(profile.get("name", "") or "").strip(),
+                "subject": subject,
+                "exam_code": "",
+                "mcq_correct": 0,
+                "tf_correct": 0,
+                "numeric_correct": 0,
+                "tf_compare": "",
+                "numeric_compare": "",
+                "correct": 0,
+                "wrong": 0,
+                "blank": 0,
+                "score": score_value,
+                "class_name": str(profile.get("class_name", "") or "").strip(),
+                "birth_date": str(profile.get("birth_date", "") or "").strip(),
+                "exam_room": room_text,
+                "status": "OK",
+                "note": "Nhập điểm trực tiếp (đã sửa)" if is_manual_edit else "Nhập điểm trực tiếp",
+                "manually_edited": is_manual_edit,
+            })
+        payloads.sort(key=lambda row: str(row.get("student_id", "") or ""))
+        return payloads
+
+    def _materialize_direct_score_rows_for_subject(self, subject_key: str, *, persist: bool = False) -> dict[str, dict]:
+        subject = str(subject_key or "").strip()
+        if not subject:
+            return {}
+
+        payloads = self._build_direct_score_payloads_for_subject(subject)
+        packed: dict[str, dict] = {}
+        for payload in payloads:
+            sid_key = str(payload.get("student_id", "") or "").strip()
+            if sid_key:
+                packed[sid_key] = dict(payload)
+
+        if packed:
+            self.scoring_results_by_subject[subject] = dict(packed)
+            if persist:
+                self._persist_scoring_results_for_subject(
+                    subject,
+                    list(packed.values()),
+                    "Nhập điểm trực tiếp",
+                    "essay_direct_import",
+                    mark_saved=True,
+                )
+        return packed
 
     def _student_meta_by_sid(self) -> dict[str, dict[str, str]]:
         lookup: dict[str, dict[str, str]] = {}
@@ -4332,6 +4681,8 @@ class MainWindow(QMainWindow):
             sid_key = str(payload.get("student_id", "") or "").strip()
             if sid_key:
                 loaded[sid_key] = dict(payload)
+        if not loaded and self._subject_uses_direct_score_import(subject):
+            loaded = self._materialize_direct_score_rows_for_subject(subject, persist=True)
         if loaded:
             self.scoring_results_by_subject[subject] = dict(loaded)
         return loaded
@@ -4361,15 +4712,14 @@ class MainWindow(QMainWindow):
                 r = self.score_preview_table.rowCount()
                 self.score_preview_table.insertRow(r)
                 status_text = str((row or {}).get("status", "") or (row or {}).get("note", "") or "OK")
-                status_category = self._status_category(status_text)
-                if status_category == "success":
-                    success_count += 1
-                elif status_category == "edited":
-                    edited_count += 1
-                elif status_category == "pending":
-                    pending_count += 1
-                elif status_category in {"error", "duplicate", "wrong_code"}:
+                if status_text.startswith("Lỗi"):
                     error_count += 1
+                else:
+                    success_count += 1
+                if status_text == "Đã sửa":
+                    edited_count += 1
+                if status_text in {"Chưa chấm", "Cần chấm lại"}:
+                    pending_count += 1
                 values = [
                     str((row or {}).get("student_id", "") or "-"),
                     str((row or {}).get("name", "") or "-"),
@@ -4389,10 +4739,16 @@ class MainWindow(QMainWindow):
                     item = QTableWidgetItem(value)
                     if col == 12 and status_text != "OK":
                         item.setForeground(QColor("red"))
-                    if col == 12:
-                        item.setData(Qt.UserRole, status_category)
+                        category = "success"
+                        if status_text.startswith("Lỗi"):
+                            category = "error"
+                        elif status_text == "Đã sửa":
+                            category = "edited"
+                        elif status_text in {"Chưa chấm", "Cần chấm lại"}:
+                            category = "pending"
+                        item.setData(Qt.UserRole, category)
                     self.score_preview_table.setItem(r, col, item)
-                if status_category in {"error", "duplicate", "wrong_code"}:
+                if status_text.startswith("Lỗi"):
                     for col in range(self.score_preview_table.columnCount()):
                         item = self.score_preview_table.item(r, col)
                         if item:
@@ -4429,8 +4785,7 @@ class MainWindow(QMainWindow):
         col = self._scoring_filter_column_from_combo_index(self.scoring_filter_column.currentIndex()) if hasattr(self, "scoring_filter_column") else None
         for i in range(self.score_preview_table.rowCount()):
             status_item = self.score_preview_table.item(i, 12)
-            status_text = str(status_item.text() if status_item else "")
-            status_category = str(status_item.data(Qt.UserRole) if status_item else "").strip() or self._status_category(status_text)
+            status_category = str(status_item.data(Qt.UserRole) if status_item else "success")
             status_ok = self.scoring_status_filter_mode in {"all", "", status_category}
             if not value:
                 self.score_preview_table.setRowHidden(i, not status_ok)
@@ -4446,61 +4801,14 @@ class MainWindow(QMainWindow):
         self.scoring_status_filter_mode = str(link or "all").strip() or "all"
         self._apply_scoring_filter()
 
-    @staticmethod
-    def _status_category(status_text: str) -> str:
-        text = str(status_text or "").strip()
-        low = text.casefold()
-        if not text or text == "OK":
-            return "success"
-        if "đã sửa" in low:
-            return "edited"
-        if "chưa chấm" in low or "cần chấm lại" in low:
-            return "pending"
-        if "trùng sbd" in low or "duplicate" in low:
-            return "duplicate"
-        if "mã đề" in low and ("sai" in low or "không" in low or "?" in text):
-            return "wrong_code"
-        if low.startswith("lỗi") or text != "OK":
-            return "error"
-        return "success"
-
-    def _collect_status_counts(self, status_texts: list[str]) -> dict[str, int]:
-        counts = {
-            "all": 0,
-            "success": 0,
-            "error": 0,
-            "duplicate": 0,
-            "wrong_code": 0,
-            "edited": 0,
-            "pending": 0,
-        }
-        for raw in status_texts:
-            status_text = str(raw or "").strip() or "OK"
-            category = self._status_category(status_text)
-            counts["all"] += 1
-            if category in counts:
-                counts[category] += 1
-        return counts
-
     def _update_scoring_status_bar(self, success_count: int, error_count: int, edited_count: int, pending_count: int = 0) -> None:
         if not hasattr(self, "scoring_status_bar"):
             return
-        status_texts = [
-            str(self.score_preview_table.item(r, 12).text() if self.score_preview_table.item(r, 12) else "OK")
-            for r in range(self.score_preview_table.rowCount())
-        ] if hasattr(self, "score_preview_table") else []
-        counts = self._collect_status_counts(status_texts)
-        success_count = counts.get("success", int(success_count))
-        error_count = counts.get("error", int(error_count))
-        edited_count = counts.get("edited", int(edited_count))
-        pending_count = counts.get("pending", int(pending_count))
         self.scoring_status_bar.setText(
             f"Thống kê chấm điểm: "
             f"<a href='all'><b>Tất cả</b></a> | "
             f"<a href='success' style='color:#0b7a0b;font-weight:600'>Thành công {int(success_count)}</a> | "
             f"<a href='error' style='color:#c62828;font-weight:600'>Lỗi {int(error_count)}</a> | "
-            f"<a href='duplicate' style='color:#6a1b9a;font-weight:600'>Trùng SBD {int(counts.get('duplicate', 0))}</a> | "
-            f"<a href='wrong_code' style='color:#ef6c00;font-weight:600'>Sai mã đề {int(counts.get('wrong_code', 0))}</a> | "
             f"<a href='edited' style='color:#1565c0;font-weight:600'>Đã sửa {int(edited_count)}</a> | "
             f"<a href='pending' style='color:#6d4c41;font-weight:600'>Chưa chấm/Cần chấm lại {int(pending_count)}</a>"
         )
@@ -4547,11 +4855,97 @@ class MainWindow(QMainWindow):
         subject = str(self.scoring_subject_combo.currentData() or self.scoring_subject_combo.currentText() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
         if not sid or not subject:
             return
+        if self._subject_uses_direct_score_import(subject):
+            self._open_essay_score_editor_from_table(row, subject)
+            return
         result = self._find_scoring_scan_result(subject, sid, exam_code)
         if result is None:
             QMessageBox.warning(self, "Tính điểm", "Không tìm thấy bài scan gốc để mở màn hình sửa.")
             return
         self._open_scoring_review_editor(subject, result)
+
+    def _update_direct_score_import_row(self, subject_key: str, student_id: str, score_text: str, exam_room: str = "") -> bool:
+        subject = str(subject_key or "").strip()
+        sid = str(student_id or "").strip()
+        if not subject or not sid:
+            return False
+        cfg = self._subject_config_by_subject_key(subject)
+        if not isinstance(cfg, dict) or not self._subject_uses_direct_score_import(cfg):
+            return False
+        direct_payload = cfg.setdefault("direct_score_import", {})
+        rows = direct_payload.setdefault("rows", [])
+        if not isinstance(rows, list):
+            rows = []
+            direct_payload["rows"] = rows
+
+        target_room = str(exam_room or "").strip()
+        matched = False
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            row_sid = str(row.get("student_id", "") or "").strip()
+            row_room = str(row.get("exam_room", "") or row.get("room", "") or "").strip()
+            if row_sid != sid:
+                continue
+            if target_room and row_room and row_room != target_room:
+                continue
+            row["score"] = str(score_text or "").strip()
+            row["manually_edited"] = True
+            if target_room:
+                row["exam_room"] = target_room
+            matched = True
+            break
+
+        if not matched:
+            rows.append({
+                "student_id": sid,
+                "score": str(score_text or "").strip(),
+                "exam_room": target_room,
+                "manually_edited": True,
+            })
+
+        cfg["direct_score_import"] = direct_payload
+        subject_cfgs = list(self.subject_configs or [])
+        idx = self._find_subject_config_index_for_batch_save(cfg, subject_cfgs)
+        if idx >= 0:
+            subject_cfgs[idx] = cfg
+            self.subject_configs = subject_cfgs
+        if self.session:
+            self.session.config = {**(self.session.config or {}), "subject_configs": list(self.subject_configs or [])}
+        self._persist_current_session_subject_configs(list(self.subject_configs or []))
+        self._persist_runtime_session_state_quietly()
+        return True
+
+    def _open_essay_score_editor_from_table(self, row: int, subject_key: str) -> None:
+        sid = str(self.score_preview_table.item(row, 0).text() if self.score_preview_table.item(row, 0) else "").strip()
+        name = str(self.score_preview_table.item(row, 1).text() if self.score_preview_table.item(row, 1) else "").strip()
+        exam_room = str(self.score_preview_table.item(row, 3).text() if self.score_preview_table.item(row, 3) else "").strip()
+        current_score = str(self.score_preview_table.item(row, 6).text() if self.score_preview_table.item(row, 6) else "").strip()
+        if not sid:
+            return
+        new_score, ok = QInputDialog.getText(
+            self,
+            "Sửa điểm tự luận",
+            f"SBD: {sid}\nHọ tên: {name or '-'}\nPhòng thi: {exam_room or '-'}\n\nĐiểm:",
+            text=current_score,
+        )
+        if not ok:
+            return
+        score_text = str(new_score or "").strip().replace(",", ".")
+        if score_text == "":
+            QMessageBox.warning(self, "Sửa điểm tự luận", "Điểm không được để trống.")
+            return
+        try:
+            float(score_text)
+        except Exception:
+            QMessageBox.warning(self, "Sửa điểm tự luận", "Điểm không hợp lệ.")
+            return
+        if not self._update_direct_score_import_row(subject_key, sid, score_text, exam_room):
+            QMessageBox.warning(self, "Sửa điểm tự luận", "Không cập nhật được dữ liệu điểm trực tiếp của môn.")
+            return
+        self.calculate_scores(subject_key, mode="Tính lại toàn bộ", note="essay_manual_edit")
+        self._ensure_scoring_preview_current(subject_key, reason="essay_manual_edit", force=True)
+        QMessageBox.information(self, "Sửa điểm tự luận", "Đã cập nhật điểm tự luận và đồng bộ lại bảng tính điểm.")
 
     def _open_scoring_review_editor(self, subject_key: str, result: OMRResult) -> None:
         return open_scoring_review_editor_dialog(self, subject_key, result)
@@ -4602,13 +4996,6 @@ class MainWindow(QMainWindow):
             self.batch_scan_status_bottom.setVisible(True)
         if hasattr(self, "scoring_panel"):
             self.scoring_panel.setVisible(False)
-        self.batch_status_filter_mode = "all"
-        if hasattr(self, "search_value"):
-            self.search_value.clear()
-        if hasattr(self, "filter_column"):
-            self.filter_column.setCurrentIndex(0)
-        if hasattr(self, "scan_list"):
-            self._apply_scan_filter()
         self._current_route_name = "workspace_batch_scan"
         if hasattr(self, "batch_subject_combo") and self.batch_subject_combo.count() > 0:
             cfg = self._selected_batch_subject_config()
@@ -4627,13 +5014,6 @@ class MainWindow(QMainWindow):
             self.batch_scan_status_bottom.setVisible(False)
         if hasattr(self, "scoring_panel"):
             self.scoring_panel.setVisible(True)
-        self.scoring_status_filter_mode = "all"
-        if hasattr(self, "scoring_search_value"):
-            self.scoring_search_value.clear()
-        if hasattr(self, "scoring_filter_column"):
-            self.scoring_filter_column.setCurrentIndex(0)
-        if hasattr(self, "score_preview_table"):
-            self._apply_scoring_filter()
         self._current_route_name = "workspace_scoring"
         selected_subject = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
         if selected_subject:
@@ -4756,6 +5136,8 @@ class MainWindow(QMainWindow):
         key = self._subject_key_from_cfg(cfg)
         if not key:
             return False
+        if self._subject_uses_direct_score_import(cfg):
+            return bool(self._direct_score_import_rows_for_subject(cfg))
         scoped_key = self._batch_result_subject_key(key)
         if self.scan_results_by_subject.get(scoped_key):
             return True
@@ -5026,7 +5408,7 @@ class MainWindow(QMainWindow):
                 return
 
         if not self._eligible_scoring_subject_keys():
-            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan trước khi tính điểm.")
+            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan hoặc đã import điểm trực tiếp trước khi tính điểm.")
             return
 
         self._navigate_to(
@@ -5049,7 +5431,7 @@ class MainWindow(QMainWindow):
         try:
             self.score_phase_table.setRowCount(0)
             for cfg in subjects:
-                subject = str((cfg or {}).get("subject", "") or "").strip()
+                subject = self._subject_key_from_cfg(cfg)
                 if not subject:
                     continue
                 saved_at = str((cfg or {}).get("scoring_saved_at", "") or "").strip()
@@ -6139,24 +6521,32 @@ class MainWindow(QMainWindow):
         if hasattr(self, "scan_list"):
             visible_rows = sum(1 for r in range(total_rows) if not self.scan_list.isRowHidden(r))
         file_status = str(self.batch_scan_state_value.text() if hasattr(self, "batch_scan_state_value") else "-").strip() or "-"
-        status_texts = []
+        error_count = duplicate_count = wrong_code_count = edited_count = 0
         if hasattr(self, "scan_list"):
             for r in range(total_rows):
                 status_item = self.scan_list.item(r, self.SCAN_COL_STATUS)
-                status_texts.append(str(status_item.toolTip() if status_item and status_item.toolTip() else (status_item.text() if status_item else "")).strip() or "OK")
-        counts = self._collect_status_counts(status_texts)
-        issue_total = int(counts.get("error", 0)) + int(counts.get("edited", 0)) + int(counts.get("pending", 0))
+                status_txt = str(status_item.text() if status_item else "").strip()
+                low = status_txt.lower()
+                is_edited = "đã sửa" in low
+                if is_edited:
+                    edited_count += 1
+                    continue
+                if status_txt and status_txt != "OK":
+                    error_count += 1
+                if "trùng sbd" in low or "duplicate" in low:
+                    duplicate_count += 1
+                if "mã đề" in low and ("sai" in low or "không" in low or "?" in status_txt):
+                    wrong_code_count += 1
+        issue_total = error_count + edited_count
         bar_text = f"Trạng thái file: {file_status} | Lọc: {visible_rows}/{total_rows}"
         if issue_total > 0:
             bar_text += (
                 " | "
                 f"<a href='all'><b>Tất cả</b></a> | "
-                f"<a href='success' style='color:#0b7a0b;font-weight:600'>Thành công: {int(counts.get('success', 0))}</a> | "
-                f"<a href='error' style='color:#c62828;font-weight:600'>Lỗi nhận dạng: {int(counts.get('error', 0))}</a> | "
-                f"<a href='duplicate' style='color:#6a1b9a;font-weight:600'>Trùng SBD: {int(counts.get('duplicate', 0))}</a> | "
-                f"<a href='wrong_code' style='color:#ef6c00;font-weight:600'>Sai mã đề: {int(counts.get('wrong_code', 0))}</a> | "
-                f"<a href='edited' style='color:#1565c0;font-weight:600'>Đã sửa: {int(counts.get('edited', 0))}</a> | "
-                f"<a href='pending' style='color:#6d4c41;font-weight:600'>Chưa chấm/Cần chấm lại: {int(counts.get('pending', 0))}</a>"
+                f"<a href='error' style='color:#c62828;font-weight:600'>Lỗi nhận dạng: {error_count}</a> | "
+                f"<a href='duplicate' style='color:#6a1b9a;font-weight:600'>Trùng SBD: {duplicate_count}</a> | "
+                f"<a href='wrong_code' style='color:#ef6c00;font-weight:600'>Sai mã đề: {wrong_code_count}</a> | "
+                f"<a href='edited' style='color:#1565c0;font-weight:600'>Đã sửa: {edited_count}</a>"
             )
             self.batch_scan_status_bottom.setTextFormat(Qt.RichText)
         else:
@@ -6188,11 +6578,6 @@ class MainWindow(QMainWindow):
             return
         self._switching_batch_subject = True
         try:
-            self.batch_status_filter_mode = "all"
-            if hasattr(self, "search_value"):
-                self.search_value.clear()
-            if hasattr(self, "filter_column"):
-                self.filter_column.setCurrentIndex(0)
             previous_runtime_key = str(getattr(self, "active_batch_subject_key", "") or "").strip()
             cfg = self._selected_batch_subject_config()
             next_runtime_key = ""
@@ -6278,6 +6663,19 @@ class MainWindow(QMainWindow):
         if tpl_for_view:
             self._apply_template_recognition_settings(tpl_for_view)
             self.template = tpl_for_view
+
+        if self._subject_uses_direct_score_import(cfg):
+            self.scan_results = []
+            self.scan_files = []
+            if hasattr(self, "scan_list"):
+                self.scan_list.setRowCount(0)
+            self.batch_scan_state_value.setText("Môn tự luận - dùng import điểm trực tiếp")
+            self._current_batch_data_source = "essay_direct_import"
+            self._batch_loaded_runtime_key = runtime_key
+            self._clear_batch_preview_panels()
+            self._update_batch_scan_scope_summary()
+            self._close_wait_progress(wait_dlg)
+            return True
 
         loaded_results: list[OMRResult] = list(self._refresh_scan_results_from_db(subject_key) or [])
         scoped_subject = self._batch_result_subject_key(subject_key)
@@ -6750,6 +7148,14 @@ class MainWindow(QMainWindow):
                 subject_cfg = self._merge_saved_batch_snapshot(cfgs[0])
         if self.session and not subject_cfg:
             QMessageBox.warning(self, "Batch Scan", "Không có môn nào để nhận dạng trong kỳ thi hiện tại.")
+            return
+
+        if subject_cfg and self._subject_uses_direct_score_import(subject_cfg):
+            QMessageBox.information(
+                self,
+                "Batch Scan",
+                "Môn tự luận không đi qua nhận dạng OMR. Hãy import điểm trực tiếp theo SBD trong cấu hình môn, sau đó mở Tính điểm / Export.",
+            )
             return
 
         if hasattr(self, "batch_recognition_mode_combo"):
@@ -9606,13 +10012,17 @@ class MainWindow(QMainWindow):
         value = _normalize(self.search_value.text())
         col = self._scan_filter_column_from_combo_index(self.filter_column.currentIndex())
         for i in range(self.scan_list.rowCount()):
-            status_item = self.scan_list.item(i, self.SCAN_COL_STATUS)
-            status_text_raw = str(status_item.toolTip() if status_item and status_item.toolTip() else (status_item.text() if status_item else "")).strip()
-            status_category = self._status_category(status_text_raw)
+            status_text = str(self.scan_list.item(i, self.SCAN_COL_STATUS).text() if self.scan_list.item(i, self.SCAN_COL_STATUS) else "").strip().lower()
+            is_edited = "đã sửa" in status_text
             status_ok = True
-            mode = str(self.batch_status_filter_mode or "all").strip() or "all"
-            if mode not in {"all", ""}:
-                status_ok = status_category == mode
+            if self.batch_status_filter_mode == "error":
+                status_ok = (not is_edited) and bool(status_text and status_text != "ok")
+            elif self.batch_status_filter_mode == "duplicate":
+                status_ok = (not is_edited) and ("trùng sbd" in status_text or "duplicate" in status_text)
+            elif self.batch_status_filter_mode == "wrong_code":
+                status_ok = (not is_edited) and (("mã đề" in status_text) and ("sai" in status_text or "không" in status_text or "?" in status_text))
+            elif self.batch_status_filter_mode == "edited":
+                status_ok = is_edited
             if not value:
                 self.scan_list.setRowHidden(i, not status_ok)
                 continue
@@ -10010,7 +10420,6 @@ class MainWindow(QMainWindow):
         full_status = str(payload.get("status", "") or "OK")
         status_item = QTableWidgetItem(self._compact_status_text(full_status, max_len=150))
         status_item.setToolTip(full_status)
-        status_item.setData(Qt.UserRole, self._status_category(full_status))
         if full_status != "OK":
             status_item.setForeground(Qt.red)
         self.scan_list.setItem(row_idx, self.SCAN_COL_STATUS, status_item)
@@ -11348,52 +11757,6 @@ class MainWindow(QMainWindow):
         cfg["batch_saved_preview"] = []
         cfg["batch_saved_results"] = []
         self.batch_working_state_by_subject.pop(self._batch_runtime_key(subject), None)
-
-    def _persisted_scan_payload_for_image(self, image_key: str, subject_key: str = "") -> dict:
-        image_lookup = self._result_identity_key(image_key)
-        subject = str(subject_key or self._current_batch_subject_key() or "").strip()
-        if not image_lookup or not subject:
-            return {}
-        for payload in (self.database.fetch_scan_results_for_subject(self._batch_result_subject_key(subject)) or []):
-            if self._result_identity_key(str((payload or {}).get("image_path", "") or "")) == image_lookup:
-                return dict(payload or {})
-        return {}
-
-    def _history_snapshot_for_row(self, row: int) -> tuple[list[str], str]:
-        image_key = self._row_image_key(row)
-        if not image_key:
-            return [], ""
-
-        history: list[str] = [str(x) for x in (self.scan_edit_history.get(image_key, []) or []) if str(x or "").strip()]
-        latest = str(self.scan_last_adjustment.get(image_key, "") or "")
-
-        result = self._result_by_image_path(image_key)
-        if result is not None:
-            result_history = [str(x) for x in (getattr(result, "edit_history", []) or []) if str(x or "").strip()]
-            if len(result_history) > len(history):
-                history = list(result_history)
-            if not latest:
-                latest = str(getattr(result, "last_adjustment", "") or "")
-
-        sid_item = self.scan_list.item(row, 0) if hasattr(self, "scan_list") else None
-        row_payload = dict(sid_item.data(Qt.UserRole + 12) or {}) if sid_item else {}
-        serialized = dict(sid_item.data(Qt.UserRole + 10) or {}) if sid_item else {}
-        payload_history = [str(x) for x in (row_payload.get("edit_history", []) or serialized.get("edit_history", [])) if str(x or "").strip()]
-        if len(payload_history) > len(history):
-            history = list(payload_history)
-        latest = latest or str(row_payload.get("last_adjustment", "") or serialized.get("last_adjustment", "") or "")
-
-        db_payload = self._persisted_scan_payload_for_image(image_key)
-        db_history = [str(x) for x in (db_payload.get("edit_history", []) or []) if str(x or "").strip()]
-        if len(db_history) > len(history):
-            history = list(db_history)
-        latest = latest or str(db_payload.get("last_adjustment", "") or "")
-
-        if history:
-            self.scan_edit_history[image_key] = list(history)
-            self.scan_last_adjustment[image_key] = str(latest or history[-1])
-        return history, str(latest or (history[-1] if history else ""))
-
     def _refresh_all_statuses(self) -> None:
         duplicate_count_map: dict[str, int] = {}
         canonical_by_image: dict[str, OMRResult] = {}
@@ -11412,7 +11775,6 @@ class MainWindow(QMainWindow):
                 subject_scope=subject_scope,
                 available_exam_codes=available_exam_codes,
             )
-        self._update_batch_scan_bottom_status_text()
 
     def _on_scan_cell_clicked(self, row: int, col: int) -> None:
         if row < 0:
@@ -11420,21 +11782,21 @@ class MainWindow(QMainWindow):
         # Only show edit history when clicking the Status column.
         if col != 6:
             return
-        history, latest = self._history_snapshot_for_row(row)
-        status_item = self.scan_list.item(row, self.SCAN_COL_STATUS) if hasattr(self, "scan_list") else None
-        status_text = str(status_item.toolTip() if status_item and status_item.toolTip() else (status_item.text() if status_item else "")).strip() or "OK"
+        image_key = self._row_image_key(row)
+        history = list(self.scan_edit_history.get(image_key, []) or [])
+        if (not history) and image_key:
+            result = self._result_by_image_path(image_key)
+            history = [str(x) for x in (getattr(result, "edit_history", []) or []) if str(x or "").strip()] if result is not None else []
+            if history:
+                self.scan_edit_history[image_key] = list(history)
+                self.scan_last_adjustment[image_key] = str(getattr(result, "last_adjustment", "") or history[-1])
         if not history:
-            QMessageBox.information(
-                self,
-                "Lịch sử sửa",
-                "Chưa có lịch sử điều chỉnh trong Status cho bài thi này."
-                f"\n\nTrạng thái hiện tại: {status_text}",
-            )
+            QMessageBox.information(self, "Lịch sử sửa", "Chưa có lịch sử điều chỉnh trong Status cho bài thi này.")
             return
+        latest = self.scan_last_adjustment.get(image_key, history[-1])
         QMessageBox.information(
             self,
             "Lịch sử sửa bài",
-            f"Trạng thái hiện tại: {status_text}\n\n"
             "Điều chỉnh gần nhất:\n"
             + latest
             + "\n\nToàn bộ lịch sử:\n"
@@ -11515,7 +11877,6 @@ class MainWindow(QMainWindow):
         display_status = self._compact_status_text(full_status, max_len=150)
         status_item = QTableWidgetItem(display_status)
         status_item.setToolTip(full_status)
-        status_item.setData(Qt.UserRole, self._status_category(full_status))
         if full_status != "OK":
             status_item.setForeground(Qt.red)
         self.scan_list.setItem(idx, 6, status_item)
@@ -12416,51 +12777,63 @@ class MainWindow(QMainWindow):
             section_limits = self._subject_section_question_counts(self._current_batch_subject_key())
             mcq_map_actual_to_display = question_mapping_state.get("MCQ", {}).get("actual_to_display", {}) or {}
             mcq_data = data_snapshot.get("mcq_answers", {}) or {}
-            mcq_data_display_keys = {
-                int(mcq_map_actual_to_display.get(int(q), int(q)))
-                for q in mcq_data.keys()
-            }
-            mcq_questions = sorted(set(expected.get("MCQ", []) or []).union(mcq_data_display_keys))
             mcq_limit = int(section_limits.get("MCQ", 0) or 0)
-            if mcq_limit > 0:
+            if mcq_limit <= 0:
+                mcq_questions = []
+                mcq_data_display = {}
+            else:
+                mcq_data_display_keys = {
+                    int(mcq_map_actual_to_display.get(int(q), int(q)))
+                    for q in mcq_data.keys()
+                }
+                mcq_questions = sorted(set(expected.get("MCQ", []) or []).union(mcq_data_display_keys))
                 mcq_questions = list(mcq_questions[:mcq_limit])
-            mcq_data_display = {
-                int(mcq_map_actual_to_display.get(int(q), int(q))): str(v)
-                for q, v in mcq_data.items()
-                if int(mcq_map_actual_to_display.get(int(q), int(q))) in set(mcq_questions)
-            }
+                allowed_mcq_questions = set(mcq_questions)
+                mcq_data_display = {
+                    int(mcq_map_actual_to_display.get(int(q), int(q))): str(v)
+                    for q, v in mcq_data.items()
+                    if int(mcq_map_actual_to_display.get(int(q), int(q))) in allowed_mcq_questions
+                }
 
             tf_data = data_snapshot.get("true_false_answers", {}) or {}
             tf_map_actual_to_display = question_mapping_state.get("TF", {}).get("actual_to_display", {}) or {}
-            tf_data_display_keys = {
-                int(tf_map_actual_to_display.get(int(q), int(q)))
-                for q in tf_data.keys()
-            }
-            tf_questions = sorted(set(expected.get("TF", []) or []).union(tf_data_display_keys))
             tf_limit = int(section_limits.get("TF", 0) or 0)
-            if tf_limit > 0:
+            if tf_limit <= 0:
+                tf_questions = []
+                tf_data = {}
+            else:
+                tf_data_display_keys = {
+                    int(tf_map_actual_to_display.get(int(q), int(q)))
+                    for q in tf_data.keys()
+                }
+                tf_questions = sorted(set(expected.get("TF", []) or []).union(tf_data_display_keys))
                 tf_questions = list(tf_questions[:tf_limit])
-            tf_data = {
-                int(tf_map_actual_to_display.get(int(q), int(q))): dict(v or {})
-                for q, v in tf_data.items()
-                if int(tf_map_actual_to_display.get(int(q), int(q))) in set(tf_questions)
-            }
+                allowed_tf_questions = set(tf_questions)
+                tf_data = {
+                    int(tf_map_actual_to_display.get(int(q), int(q))): dict(v or {})
+                    for q, v in tf_data.items()
+                    if int(tf_map_actual_to_display.get(int(q), int(q))) in allowed_tf_questions
+                }
 
             numeric_data = data_snapshot.get("numeric_answers", {}) or {}
             numeric_map_actual_to_display = question_mapping_state.get("NUMERIC", {}).get("actual_to_display", {}) or {}
-            numeric_data_display_keys = {
-                int(numeric_map_actual_to_display.get(int(q), int(q)))
-                for q in numeric_data.keys()
-            }
-            numeric_questions = sorted(set(expected.get("NUMERIC", []) or []).union(numeric_data_display_keys))
             numeric_limit = int(section_limits.get("NUMERIC", 0) or 0)
-            if numeric_limit > 0:
+            if numeric_limit <= 0:
+                numeric_questions = []
+                numeric_data = {}
+            else:
+                numeric_data_display_keys = {
+                    int(numeric_map_actual_to_display.get(int(q), int(q)))
+                    for q in numeric_data.keys()
+                }
+                numeric_questions = sorted(set(expected.get("NUMERIC", []) or []).union(numeric_data_display_keys))
                 numeric_questions = list(numeric_questions[:numeric_limit])
-            numeric_data = {
-                int(numeric_map_actual_to_display.get(int(q), int(q))): str(v)
-                for q, v in numeric_data.items()
-                if int(numeric_map_actual_to_display.get(int(q), int(q))) in set(numeric_questions)
-            }
+                allowed_numeric_questions = set(numeric_questions)
+                numeric_data = {
+                    int(numeric_map_actual_to_display.get(int(q), int(q))): str(v)
+                    for q, v in numeric_data.items()
+                    if int(numeric_map_actual_to_display.get(int(q), int(q))) in allowed_numeric_questions
+                }
             grid_local = editor_refs.get("answer_grid")
             if isinstance(grid_local, QTableWidget):
                 grid_local.blockSignals(True)
@@ -12773,8 +13146,189 @@ class MainWindow(QMainWindow):
         self._load_selected_result_for_correction()
         QMessageBox.information(self, "Correction", "Manual correction applied to selected scan.")
 
+    def _finalize_scoring_rows(
+        self,
+        subject: str,
+        rows: list,
+        prev_subject_scores: dict[str, dict],
+        edited_student_ids: set[str],
+        mode_text: str,
+        note: str,
+        missing: int,
+        failed_scans: list[dict[str, str]],
+        smart_scored_scans: list[dict[str, str]],
+    ) -> list:
+        self.score_rows = rows
+        rows.sort(key=lambda r: (0 if str(getattr(r, "scoring_note", "") or "").startswith("Lỗi") else 1, str(getattr(r, "student_id", "") or "")))
+        success_count = 0
+        error_count = 0
+        edited_count = 0
+        pending_count = 0
+        self.score_preview_table.setSortingEnabled(False)
+        self.score_preview_table.setUpdatesEnabled(False)
+        try:
+            self.score_preview_table.setRowCount(0)
+            for i, r in enumerate(rows):
+                sid_key = str(r.student_id or "").strip()
+                existing_payload = prev_subject_scores.get(sid_key, {}) if sid_key else {}
+                recheck_score = existing_payload.get("recheck_score", "") if isinstance(existing_payload, dict) else ""
+                final_score_display = recheck_score if recheck_score not in {"", None} else r.score
+                class_name = str(getattr(r, "class_name", "") or existing_payload.get("class_name", "") or "-") if isinstance(existing_payload, dict) else str(getattr(r, "class_name", "") or "-")
+                birth_date = str(getattr(r, "birth_date", "") or existing_payload.get("birth_date", "") or "-") if isinstance(existing_payload, dict) else str(getattr(r, "birth_date", "") or "-")
+                status_text = str(getattr(r, "scoring_note", "") or "OK")
+                if sid_key in edited_student_ids:
+                    status_text = "Đã sửa"
+                elif isinstance(existing_payload, dict) and existing_payload.get("status") == "Đã sửa":
+                    status_text = "Đã sửa"
+
+                self.score_preview_table.insertRow(i)
+                self.score_preview_table.setItem(i, 0, QTableWidgetItem(r.student_id or "-"))
+                self.score_preview_table.setItem(i, 1, QTableWidgetItem(r.name or "-"))
+                self.score_preview_table.setItem(i, 2, QTableWidgetItem(class_name))
+                self.score_preview_table.setItem(i, 3, QTableWidgetItem(birth_date))
+                self.score_preview_table.setItem(i, 4, QTableWidgetItem(r.exam_code))
+                self.score_preview_table.setItem(i, 5, QTableWidgetItem(str(getattr(r, "mcq_correct", 0))))
+                tf_statement_count = self._tf_statement_correct_count(str(getattr(r, "tf_compare", "") or ""))
+                self.score_preview_table.setItem(i, 6, QTableWidgetItem(str(tf_statement_count)))
+                self.score_preview_table.setItem(i, 7, QTableWidgetItem(str(getattr(r, "numeric_correct", 0))))
+                self.score_preview_table.setItem(i, 8, QTableWidgetItem(str(r.correct)))
+                self.score_preview_table.setItem(i, 9, QTableWidgetItem(str(r.wrong)))
+                self.score_preview_table.setItem(i, 10, QTableWidgetItem(str(r.blank)))
+                self.score_preview_table.setItem(i, 11, QTableWidgetItem(str(final_score_display)))
+                status_item = QTableWidgetItem(status_text)
+                if status_text != "OK":
+                    status_item.setForeground(QColor("red"))
+                category = "success"
+                if status_text.startswith("Lỗi"):
+                    category = "error"
+                elif status_text == "Đã sửa":
+                    category = "edited"
+                elif status_text in {"Chưa chấm", "Cần chấm lại"}:
+                    category = "pending"
+                status_item.setData(Qt.UserRole, category)
+                self.score_preview_table.setItem(i, 12, status_item)
+                if status_text.startswith("Lỗi"):
+                    for col in range(self.score_preview_table.columnCount()):
+                        item = self.score_preview_table.item(i, col)
+                        if item:
+                            item.setBackground(QColor(255, 225, 225))
+                    error_count += 1
+                else:
+                    success_count += 1
+                if status_text == "Đã sửa":
+                    edited_count += 1
+                if status_text in {"Chưa chấm", "Cần chấm lại"}:
+                    pending_count += 1
+        finally:
+            self.score_preview_table.setUpdatesEnabled(True)
+            self.score_preview_table.viewport().update()
+
+        phase = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "subject": subject,
+            "mode": mode_text,
+            "count": len(rows),
+            "missing": missing,
+            "failed_count": len(failed_scans),
+            "success_count": len(rows),
+            "failed_scans": list(failed_scans),
+            "smart_scoring_count": len(smart_scored_scans),
+            "smart_scored_scans": list(smart_scored_scans),
+            "note": note,
+        }
+        phase_marker = f"{phase['timestamp']}::{subject}::{mode_text}"
+
+        subject_scores = dict(prev_subject_scores)
+        for r in rows:
+            sid_key = (r.student_id or "").strip()
+            if sid_key:
+                old_payload = (prev_subject_scores.get(sid_key, {}) or {})
+                row_class_name = str(getattr(r, "class_name", "") or old_payload.get("class_name", "") or "-")
+                row_birth_date = str(getattr(r, "birth_date", "") or old_payload.get("birth_date", "") or "-")
+                row_exam_room = str(
+                    getattr(r, "exam_room", "")
+                    or old_payload.get("exam_room", "")
+                    or self._student_profile_by_id(sid_key).get("exam_room", "")
+                    or ""
+                )
+                row_status = "Đã sửa" if (sid_key in edited_student_ids or old_payload.get("status") == "Đã sửa") else str(getattr(r, "scoring_note", "") or "OK")
+                subject_scores[sid_key] = {
+                    "student_id": r.student_id,
+                    "name": r.name,
+                    "subject": r.subject,
+                    "class_name": row_class_name,
+                    "birth_date": row_birth_date,
+                    "exam_room": row_exam_room,
+                    "exam_code": r.exam_code,
+                    "mcq_correct": getattr(r, "mcq_correct", 0),
+                    "tf_correct": getattr(r, "tf_correct", 0),
+                    "numeric_correct": getattr(r, "numeric_correct", 0),
+                    "tf_compare": getattr(r, "tf_compare", ""),
+                    "numeric_compare": getattr(r, "numeric_compare", ""),
+                    "correct": r.correct,
+                    "wrong": r.wrong,
+                    "blank": r.blank,
+                    "score": r.score,
+                    "recheck_score": (prev_subject_scores.get(sid_key, {}) or {}).get("recheck_score", ""),
+                    "baithiphuctra": (prev_subject_scores.get(sid_key, {}) or {}).get("baithiphuctra", ""),
+                    "phase": phase_marker,
+                    "phase_timestamp": phase["timestamp"],
+                    "phase_mode": mode_text,
+                    "note": str(getattr(r, "scoring_note", "") or ""),
+                    "status": row_status,
+                }
+
+        self.scoring_results_by_subject[subject] = subject_scores
+        self._persist_scoring_results(subject, phase=phase)
+        self._update_scoring_status_bar(success_count, error_count, edited_count, pending_count)
+        self._apply_scoring_filter()
+        self._current_scoring_subject = subject
+        self._scoring_dirty_subjects.discard(subject)
+        self._persist_runtime_session_state_quietly()
+        return rows
+
     def calculate_scores(self, subject_key: str = "", mode: str = "Tính lại toàn bộ", note: str = "") -> list:
         subject = (subject_key or self._resolve_preferred_scoring_subject() or "General").strip()
+        subject_cfg = self._subject_config_by_subject_key(subject) or {}
+        is_direct_score_subject = self._subject_uses_direct_score_import(subject_cfg)
+        self._apply_subject_section_visibility(subject)
+
+        mode_text = (mode or ("Nhập điểm trực tiếp" if is_direct_score_subject else "Tính lại toàn bộ")).strip()
+        prev_subject_scores = self.scoring_results_by_subject.get(subject, {})
+        rows = []
+        missing = 0
+        failed_scans: list[dict[str, str]] = []
+        smart_scored_scans: list[dict[str, str]] = []
+        edited_student_ids: set[str] = set()
+
+        if is_direct_score_subject:
+            imported_payloads = self._build_direct_score_payloads_for_subject(subject)
+            if not imported_payloads:
+                silent_missing_notes = {"auto_refresh_subject_change", "auto_refresh_open_scoring"}
+                if str(note or "").strip() not in silent_missing_notes:
+                    QMessageBox.warning(self, "Missing data", "Môn tự luận chưa có dữ liệu import điểm trực tiếp.")
+                return []
+            for payload in imported_payloads:
+                sid_key = str(payload.get("student_id", "") or "").strip()
+                if mode_text == "Chỉ tính bài chưa có điểm" and sid_key and sid_key in prev_subject_scores:
+                    continue
+                if sid_key and bool(payload.get("manually_edited", False)):
+                    edited_student_ids.add(sid_key)
+                row_obj = self.scoring_engine.score_result_from_dict(dict(payload))
+                setattr(row_obj, "scoring_note", str(payload.get("note", "") or "Nhập điểm trực tiếp"))
+                setattr(row_obj, "exam_room", str(payload.get("exam_room", "") or ""))
+                rows.append(row_obj)
+            return self._finalize_scoring_rows(
+                subject,
+                rows,
+                prev_subject_scores,
+                edited_student_ids,
+                mode_text,
+                note or "essay_direct_import",
+                missing,
+                failed_scans,
+                smart_scored_scans,
+            )
 
         # Chấm điểm chỉ đọc từ DB; không lấy fallback từ grid/config/runtime snapshot.
         subject_scans = list(self._refresh_scan_results_from_db(subject) or [])
@@ -12803,16 +13357,6 @@ class MainWindow(QMainWindow):
             if any(str(k.exam_code or "").strip() == str(exam_code or "").strip() for k in all_subject_keys):
                 continue
             all_subject_keys.append(key_obj)
-
-        subject_cfg = self._subject_config_by_subject_key(subject) or {}
-        self._apply_subject_section_visibility(subject)
-        mode_text = (mode or "Tính lại toàn bộ").strip()
-        prev_subject_scores = self.scoring_results_by_subject.get(subject, {})
-        rows = []
-        missing = 0
-        failed_scans: list[dict[str, str]] = []
-        smart_scored_scans: list[dict[str, str]] = []
-        edited_student_ids: set[str] = set()
 
         for scan_row in (subject_scans or []):
             sid_key = str(getattr(scan_row, "student_id", "") or "").strip()
@@ -12964,132 +13508,25 @@ class MainWindow(QMainWindow):
                     "reason": err_msg,
                 })
 
-        self.score_rows = rows
-        rows.sort(key=lambda r: (0 if str(getattr(r, "scoring_note", "") or "").startswith("Lỗi") else 1, str(getattr(r, "student_id", "") or "")))
-        success_count = 0
-        error_count = 0
-        edited_count = 0
-        pending_count = 0
-        self.score_preview_table.setSortingEnabled(False)
-        self.score_preview_table.setUpdatesEnabled(False)
-        try:
-            self.score_preview_table.setRowCount(0)
-            for i, r in enumerate(rows):
-                sid_key = str(r.student_id or "").strip()
-                existing_payload = prev_subject_scores.get(sid_key, {}) if sid_key else {}
-                recheck_score = existing_payload.get("recheck_score", "") if isinstance(existing_payload, dict) else ""
-                final_score_display = recheck_score if recheck_score not in {"", None} else r.score
-                class_name = str(getattr(r, "class_name", "") or existing_payload.get("class_name", "") or "-") if isinstance(existing_payload, dict) else str(getattr(r, "class_name", "") or "-")
-                birth_date = str(getattr(r, "birth_date", "") or existing_payload.get("birth_date", "") or "-") if isinstance(existing_payload, dict) else str(getattr(r, "birth_date", "") or "-")
-                status_text = str(getattr(r, "scoring_note", "") or "OK")
-                if sid_key in edited_student_ids:
-                    status_text = "Đã sửa"
-                elif isinstance(existing_payload, dict) and existing_payload.get("status") == "Đã sửa":
-                    status_text = "Đã sửa"
-
-                self.score_preview_table.insertRow(i)
-                self.score_preview_table.setItem(i, 0, QTableWidgetItem(r.student_id or "-"))
-                self.score_preview_table.setItem(i, 1, QTableWidgetItem(r.name or "-"))
-                self.score_preview_table.setItem(i, 2, QTableWidgetItem(class_name))
-                self.score_preview_table.setItem(i, 3, QTableWidgetItem(birth_date))
-                self.score_preview_table.setItem(i, 4, QTableWidgetItem(r.exam_code))
-                self.score_preview_table.setItem(i, 5, QTableWidgetItem(str(getattr(r, "mcq_correct", 0))))
-                tf_statement_count = self._tf_statement_correct_count(str(getattr(r, "tf_compare", "") or ""))
-                self.score_preview_table.setItem(i, 6, QTableWidgetItem(str(tf_statement_count)))
-                self.score_preview_table.setItem(i, 7, QTableWidgetItem(str(getattr(r, "numeric_correct", 0))))
-                self.score_preview_table.setItem(i, 8, QTableWidgetItem(str(r.correct)))
-                self.score_preview_table.setItem(i, 9, QTableWidgetItem(str(r.wrong)))
-                self.score_preview_table.setItem(i, 10, QTableWidgetItem(str(r.blank)))
-                self.score_preview_table.setItem(i, 11, QTableWidgetItem(str(final_score_display)))
-                status_item = QTableWidgetItem(status_text)
-                if status_text != "OK":
-                    status_item.setForeground(QColor("red"))
-                category = "success"
-                if status_text.startswith("Lỗi"):
-                    category = "error"
-                elif status_text == "Đã sửa":
-                    category = "edited"
-                elif status_text in {"Chưa chấm", "Cần chấm lại"}:
-                    category = "pending"
-                status_item.setData(Qt.UserRole, category)
-                self.score_preview_table.setItem(i, 12, status_item)
-                if status_text.startswith("Lỗi"):
-                    for col in range(self.score_preview_table.columnCount()):
-                        item = self.score_preview_table.item(i, col)
-                        if item:
-                            item.setBackground(QColor(255, 225, 225))
-                    error_count += 1
-                else:
-                    success_count += 1
-                if status_text == "Đã sửa":
-                    edited_count += 1
-                if status_text in {"Chưa chấm", "Cần chấm lại"}:
-                    pending_count += 1
-        finally:
-            self.score_preview_table.setUpdatesEnabled(True)
-            self.score_preview_table.viewport().update()
-
-        phase = {
-            "timestamp": datetime.now().isoformat(timespec="seconds"),
-            "subject": subject,
-            "mode": mode_text,
-            "count": len(rows),
-            "missing": missing,
-            "failed_count": len(failed_scans),
-            "success_count": len(rows),
-            "failed_scans": list(failed_scans),
-            "smart_scoring_count": len(smart_scored_scans),
-            "smart_scored_scans": list(smart_scored_scans),
-            "note": note,
-        }
-        phase_marker = f"{phase['timestamp']}::{subject}::{mode_text}"
-
-        subject_scores = dict(prev_subject_scores)
-        for r in rows:
-            sid_key = (r.student_id or "").strip()
-            if sid_key:
-                old_payload = (prev_subject_scores.get(sid_key, {}) or {})
-                row_class_name = str(getattr(r, "class_name", "") or old_payload.get("class_name", "") or "-")
-                row_birth_date = str(getattr(r, "birth_date", "") or old_payload.get("birth_date", "") or "-")
-                row_status = "Đã sửa" if (sid_key in edited_student_ids or old_payload.get("status") == "Đã sửa") else str(getattr(r, "scoring_note", "") or "OK")
-                subject_scores[sid_key] = {
-                    "student_id": r.student_id,
-                    "name": r.name,
-                    "subject": r.subject,
-                    "class_name": row_class_name,
-                    "birth_date": row_birth_date,
-                    "exam_code": r.exam_code,
-                    "mcq_correct": getattr(r, "mcq_correct", 0),
-                    "tf_correct": getattr(r, "tf_correct", 0),
-                    "numeric_correct": getattr(r, "numeric_correct", 0),
-                    "tf_compare": getattr(r, "tf_compare", ""),
-                    "numeric_compare": getattr(r, "numeric_compare", ""),
-                    "correct": r.correct,
-                    "wrong": r.wrong,
-                    "blank": r.blank,
-                    "score": r.score,
-                    "recheck_score": (prev_subject_scores.get(sid_key, {}) or {}).get("recheck_score", ""),
-                    "baithiphuctra": (prev_subject_scores.get(sid_key, {}) or {}).get("baithiphuctra", ""),
-                    "phase": phase_marker,
-                    "phase_timestamp": phase["timestamp"],
-                    "phase_mode": mode_text,
-                    "note": str(getattr(r, "scoring_note", "") or ""),
-                    "status": row_status,
-                }
-
-        self.scoring_results_by_subject[subject] = subject_scores
-        self._persist_scoring_results(subject, phase=phase)
-        self._update_scoring_status_bar(success_count, error_count, edited_count, pending_count)
-        self._apply_scoring_filter()
-        self._current_scoring_subject = subject
-        self._scoring_dirty_subjects.discard(subject)
-        self._persist_runtime_session_state_quietly()
-        return rows
+        return self._finalize_scoring_rows(
+            subject,
+            rows,
+            prev_subject_scores,
+            edited_student_ids,
+            mode_text,
+            note,
+            missing,
+            failed_scans,
+            smart_scored_scans,
+        )
     def action_open_recheck(self) -> None:
         return open_recheck_dialog(self)
 
     def _export_student_subject_matrix_excel(self, output_path: Path) -> None:
         from openpyxl import Workbook
+
+        for _label, key in self._iter_export_subjects():
+            self._load_scoring_results_for_subject_from_storage(key)
 
         wb = Workbook()
         ws = wb.active

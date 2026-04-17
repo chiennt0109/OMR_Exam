@@ -562,6 +562,12 @@ class OMRProcessor:
                 for dx in (-2, -1, 0, 1, 2):
                     vals.append((dx, dy))
             return np.asarray(vals, dtype=np.float32)
+        if kind == "mcq":
+            vals = []
+            for dy in (-3, -2, -1, 0, 1, 2, 3):
+                for dx in (-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5):
+                    vals.append((dx, dy))
+            return np.asarray(vals, dtype=np.float32)
         return np.asarray([(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1)], dtype=np.float32)
 
     @staticmethod
@@ -642,6 +648,67 @@ class OMRProcessor:
             best_scores[mask] = scores[mask]
             best_centers[mask] = shifted[mask]
         return best_scores.astype(np.float32), best_centers.astype(np.float32)
+
+    @staticmethod
+    def _strong_score_mean(scores: np.ndarray) -> float:
+        arr = np.asarray(scores, dtype=np.float32).reshape(-1)
+        if arr.size == 0:
+            return -1e18
+        take = max(2, int(round(arr.size * 0.5)))
+        if take >= arr.size:
+            return float(np.mean(arr))
+        part = np.partition(arr, -take)[-take:]
+        return float(np.mean(part))
+
+    def _sample_mcq_with_axis_refine(
+        self,
+        integral: np.ndarray,
+        centers: np.ndarray,
+        radius: int,
+        shape: tuple[int, int],
+        rows: int,
+        cols: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if centers.size == 0:
+            return np.zeros((0,), dtype=np.float32), centers.astype(np.float32)
+        pts = centers.astype(np.float32).reshape(-1, 2)
+        if pts.shape[0] != int(rows) * int(cols):
+            return self._sample_with_local_recenter(integral, pts, radius, shape, kind="mcq")
+        grid = pts.reshape(rows, cols, 2).astype(np.float32).copy()
+
+        # Refine each answer column horizontally. This is especially important for
+        # right-side MCQ blocks where a tiny residual affine drift can confidently
+        # push sampling into the neighbouring bubble.
+        for c in range(cols):
+            base = grid[:, c, :].copy()
+            best_dx = 0.0
+            best_score = -1e18
+            for dx in (-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5):
+                probe = base.copy()
+                probe[:, 0] += float(dx)
+                score = self._strong_score_mean(self._sample_ring_score(integral, probe, radius, shape))
+                if score > best_score:
+                    best_score = score
+                    best_dx = float(dx)
+            grid[:, c, 0] += best_dx
+
+        # Refine each question row vertically so lower rows in the block do not
+        # inherit a stale y-position after the global affine fit.
+        for r in range(rows):
+            base = grid[r, :, :].copy()
+            best_dy = 0.0
+            best_score = -1e18
+            for dy in (-3, -2, -1, 0, 1, 2, 3):
+                probe = base.copy()
+                probe[:, 1] += float(dy)
+                score = self._strong_score_mean(self._sample_ring_score(integral, probe, radius, shape))
+                if score > best_score:
+                    best_score = score
+                    best_dy = float(dy)
+            grid[r, :, 1] += best_dy
+
+        flat = grid.reshape(-1, 2)
+        return self._sample_with_local_recenter(integral, flat, radius, shape, kind="mcq")
 
     def _find_anchor_in_roi(self, binary: np.ndarray, expected_xy: tuple[float, float], search_radius: int = 24) -> tuple[float, float] | None:
         h, w = binary.shape[:2]
@@ -739,7 +806,14 @@ class OMRProcessor:
             return 0.0, 0.0, 0.0
         sample_idx = np.linspace(0, len(centers) - 1, min(len(centers), 36)).astype(int)
         sample = centers[sample_idx].astype(np.float32)
-        kind = "header" if zone_type_name in {"STUDENT_ID_BLOCK", "EXAM_CODE_BLOCK"} else ("numeric" if zone_type_name == "NUMERIC_BLOCK" else "zone")
+        if zone_type_name in {"STUDENT_ID_BLOCK", "EXAM_CODE_BLOCK"}:
+            kind = "header"
+        elif zone_type_name == "NUMERIC_BLOCK":
+            kind = "numeric"
+        elif zone_type_name == "MCQ_BLOCK":
+            kind = "mcq"
+        else:
+            kind = "zone"
         offsets = self._small_offsets(kind)
         best_score = -1e18
         best_dx = 0.0
@@ -1248,14 +1322,21 @@ class OMRProcessor:
         shifted[:, 1] += dy
         rows, cols = zplan.rows, zplan.cols
         need = rows * cols
-        scores = self._sample_ring_score(dark_integral, shifted, zplan.radius, shape)
-        mat, mat_pts = self._reorder_sampled_matrix(shifted, scores, rows, cols, zplan.spatial_order_idx)
+        if ztype == "MCQ_BLOCK":
+            scores, best_pts = self._sample_mcq_with_axis_refine(dark_integral, shifted, zplan.radius, shape, rows, cols)
+            mat, mat_pts = self._reorder_sampled_matrix(best_pts, scores, rows, cols, zplan.spatial_order_idx)
+        else:
+            scores = self._sample_ring_score(dark_integral, shifted, zplan.radius, shape)
+            mat, mat_pts = self._reorder_sampled_matrix(shifted, scores, rows, cols, zplan.spatial_order_idx)
         need_fallback, weak_count, total_checks = self._zone_result_needs_fallback(mat, zplan.zone, ztype)
         fallback_used = False
         if need_fallback:
             fallback_used = True
-            kind = "numeric" if ztype == "NUMERIC_BLOCK" else "zone"
-            scores, best_pts = self._sample_with_local_recenter(dark_integral, shifted, zplan.radius, shape, kind=kind)
+            if ztype == "MCQ_BLOCK":
+                scores, best_pts = self._sample_mcq_with_axis_refine(dark_integral, shifted, zplan.radius, shape, rows, cols)
+            else:
+                kind = "numeric" if ztype == "NUMERIC_BLOCK" else "zone"
+                scores, best_pts = self._sample_with_local_recenter(dark_integral, shifted, zplan.radius, shape, kind=kind)
             mat, mat_pts = self._reorder_sampled_matrix(best_pts, scores, rows, cols, zplan.spatial_order_idx)
         if ztype == "MCQ_BLOCK":
             self._decode_mcq_zone(mat, zplan.zone, result)
