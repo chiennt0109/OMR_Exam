@@ -178,7 +178,7 @@ class ExportReportsDialog(QDialog):
         if not key:
             return []
         if key not in self._score_rows_cache:
-            self._score_rows_cache[key] = list(self.main_window._score_rows_for_subject(key) or [])
+            self._score_rows_cache[key] = list(self.main_window._ensure_export_score_rows_for_subject(key) or [])
         return list(self._score_rows_cache.get(key, []))
 
     def _collect_class_options(self) -> list[str]:
@@ -204,7 +204,7 @@ class ExportReportsDialog(QDialog):
                     continue
                 out[sid] = {
                     "name": str(getattr(st, "name", "") or ""),
-                    "birth_date": str(getattr(st, "birth_date", "") or ""),
+                    "birth_date": self.main_window._format_birth_date_for_export(getattr(st, "birth_date", "") or ""),
                     "class_name": str(getattr(st, "class_name", "") or ""),
                     "exam_room": str(getattr(st, "exam_room", "") or ""),
                 }
@@ -217,7 +217,7 @@ class ExportReportsDialog(QDialog):
                     sid,
                     {
                         "name": str(row.get("name", "") or ""),
-                        "birth_date": str(row.get("birth_date", "") or ""),
+                        "birth_date": self.main_window._format_birth_date_for_export(row.get("birth_date", "") or ""),
                         "class_name": str(row.get("class_name", "") or ""),
                         "exam_room": str(row.get("exam_room", "") or ""),
                     },
@@ -225,7 +225,7 @@ class ExportReportsDialog(QDialog):
                 if not rec.get("name"):
                     rec["name"] = str(row.get("name", "") or "")
                 if not rec.get("birth_date"):
-                    rec["birth_date"] = str(row.get("birth_date", "") or "")
+                    rec["birth_date"] = self.main_window._format_birth_date_for_export(row.get("birth_date", "") or "")
                 if not rec.get("class_name"):
                     rec["class_name"] = str(row.get("class_name", "") or "")
                 if not rec.get("exam_room"):
@@ -300,10 +300,10 @@ class ExportReportsDialog(QDialog):
             sid = str(row.get("student_id", "") or "").strip()
             if not sid:
                 continue
-            try:
-                out[sid] = float(row.get("score", "") or 0)
-            except Exception:
+            score_value = self.main_window._score_value_for_statistics(row)
+            if score_value is None:
                 continue
+            out[sid] = score_value
         self._subject_score_cache[key] = out
         return dict(out)
 
@@ -312,12 +312,12 @@ class ExportReportsDialog(QDialog):
         rows: list[list[object]] = []
         bins = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 7), (7, 8), (8, 9), (9, 10)]
         for label, key in self._collect_subject_pairs():
+            subject_rows = self._score_rows_for_subject_cached(key)
             scores: list[float] = []
-            for row in self._score_rows_for_subject_cached(key):
-                try:
-                    scores.append(float(row.get("score", "") or 0))
-                except Exception:
-                    pass
+            for row in subject_rows:
+                score_value = self.main_window._score_value_for_statistics(row)
+                if score_value is not None:
+                    scores.append(score_value)
             counts = [0] * len(bins)
             perfect = 0
             for score in scores:
@@ -340,10 +340,9 @@ class ExportReportsDialog(QDialog):
         for label, key in self._collect_subject_pairs():
             scores: list[float] = []
             for row in self._score_rows_for_subject_cached(key):
-                try:
-                    scores.append(float(row.get("score", "") or 0))
-                except Exception:
-                    pass
+                score_value = self.main_window._score_value_for_statistics(row)
+                if score_value is not None:
+                    scores.append(score_value)
             if scores:
                 rows.append([label, round(mean(scores), 4), round(median(scores), 4), max(scores), min(scores)])
             else:
@@ -512,6 +511,15 @@ class ExportReportsDialog(QDialog):
         if not path:
             return
         from openpyxl import Workbook
+        from openpyxl.styles import Alignment
+
+        def _apply_name_alignment(ws_obj, headers: list[str]) -> None:
+            if "Họ tên" not in headers:
+                return
+            name_col = headers.index("Họ tên") + 1
+            for row_idx in range(2, ws_obj.max_row + 1):
+                ws_obj.cell(row=row_idx, column=name_col).alignment = Alignment(horizontal="left", vertical="center")
+
         wb = Workbook()
         report_name = self.report_list.currentItem().text() if self.report_list.currentItem() else "report"
         if report_name == self.REPORT_CLASS_SUMMARY and self._last_report.grouped_rows:
@@ -522,12 +530,14 @@ class ExportReportsDialog(QDialog):
                 ws.append(self._last_report.headers)
                 for row in rows:
                     ws.append(row)
+                _apply_name_alignment(ws, self._last_report.headers)
         else:
             ws = wb.active
             ws.title = "report"
             ws.append(self._last_report.headers)
             for row in self._last_report.rows:
                 ws.append(row)
+            _apply_name_alignment(ws, self._last_report.headers)
         wb.save(Path(path))
         QMessageBox.information(self, "Báo cáo", f"Đã xuất Excel:\n{path}")
 
