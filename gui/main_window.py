@@ -3634,18 +3634,78 @@ class MainWindow(QMainWindow):
         rows.sort(key=lambda x: str(x.get("student_id", "") or ""))
         return rows
 
+    def _align_export_rows_with_session_students(self, rows: list[dict], subject_key: str) -> list[dict]:
+        subject = str(subject_key or "").strip()
+        if not subject:
+            return list(rows or [])
+
+        normalized_rows: list[dict] = [dict(item) for item in (rows or []) if isinstance(item, dict)]
+        if not self.session or not getattr(self.session, "students", None):
+            return normalized_rows
+
+        student_meta = self._student_meta_by_sid()
+        row_by_sid: dict[str, dict] = {}
+        for row in normalized_rows:
+            sid = str(row.get("student_id", "") or "").strip()
+            if sid and sid not in row_by_sid:
+                row_by_sid[sid] = row
+
+        ordered: list[dict] = []
+        seen: set[str] = set()
+        for st in (self.session.students or []):
+            sid = str(getattr(st, "student_id", "") or "").strip()
+            if not sid or sid in seen:
+                continue
+            seen.add(sid)
+            existing = row_by_sid.get(sid, {})
+            meta = student_meta.get(sid, {})
+            base = {
+                "student_id": sid,
+                "name": str(getattr(st, "name", "") or meta.get("name", "") or ""),
+                "subject": subject,
+                "class_name": str(getattr(st, "class_name", "") or meta.get("class_name", "") or ""),
+                "birth_date": str(getattr(st, "birth_date", "") or meta.get("birth_date", "") or ""),
+                "exam_room": str(getattr(st, "exam_room", "") or meta.get("exam_room", "") or ""),
+                "exam_code": "",
+                "mcq_correct": "",
+                "tf_correct": "",
+                "numeric_correct": "",
+                "tf_compare": "",
+                "numeric_compare": "",
+                "correct": "",
+                "wrong": "",
+                "blank": "",
+                "score": "",
+                "recheck_score": "",
+                "baithiphuctra": "",
+                "phase": "",
+                "phase_timestamp": "",
+                "phase_mode": "",
+                "note": "",
+                "status": "",
+            }
+            base.update(existing)
+            ordered.append(base)
+
+        for row in normalized_rows:
+            sid = str(row.get("student_id", "") or "").strip()
+            if not sid or sid in seen:
+                continue
+            ordered.append(row)
+        return ordered
+
     def _ensure_export_score_rows_for_subject(self, subject_key: str) -> list[dict]:
         subject = str(subject_key or "").strip()
         if not subject:
             return []
         rows = self._score_rows_for_subject(subject)
         if rows:
-            return rows
+            return self._align_export_rows_with_session_students(rows, subject)
         cfg = self._subject_config_by_subject_key(subject) or {}
         if self._subject_uses_direct_score_import(cfg) and self._direct_score_import_rows_for_subject(cfg):
             self.calculate_scores(subject_key=subject, mode="Nhập điểm trực tiếp", note="auto_prepare_export_essay")
             rows = self._score_rows_for_subject(subject)
-        return rows
+        return self._align_export_rows_with_session_students(rows, subject)
 
     def _scan_rows_for_subject(self, subject_key: str) -> list[OMRResult]:
         rows = list(self.scan_results_by_subject.get(self._batch_result_subject_key(subject_key), []) or [])
@@ -13721,7 +13781,6 @@ class MainWindow(QMainWindow):
                 "Trạng thái": status_text,
                 "Ghi chú": str(row.get("note", "") or ""),
             })
-        normalized.sort(key=lambda x: (0 if bool(x.get("_has_error")) else 1, str(x.get("SBD", ""))))
         for idx, row in enumerate(normalized, start=1):
             row["STT"] = idx
         return normalized
@@ -14014,9 +14073,9 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
             if scores:
-                ws_summary.append([key, label, len(scores), round(sum(scores) / len(scores), 4), min(scores), max(scores)])
+                ws_summary.append([key, label, len(rows), round(sum(scores) / len(scores), 4), min(scores), max(scores)])
             else:
-                ws_summary.append([key, label, 0, 0, 0, 0])
+                ws_summary.append([key, label, len(rows), 0, 0, 0])
         wb.save(path)
         QMessageBox.information(self, "Xuất điểm chi tiết các môn", f"Đã xuất dữ liệu:\n{path}")
 
