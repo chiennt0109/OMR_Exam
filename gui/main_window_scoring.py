@@ -404,6 +404,7 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
     if dlg.exec() != QDialog.Accepted:
         return
 
+    original_sid = str(getattr(result, "student_id", "") or "").strip()
     for r in range(grid.rowCount()):
         section = str(grid.item(r, 0).text() if grid.item(r, 0) else "").strip().upper()
         q_item = grid.item(r, 1)
@@ -437,12 +438,26 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
     result.student_id = sid_selected
     result.exam_code = str(inp_code.currentData() or inp_code.currentText() or "").strip()
 
+    image_path = str(getattr(result, "image_path", "") or "").strip()
+    row_idx = self._row_index_by_image_path(image_path)
+    if row_idx >= 0 and row_idx < len(self.scan_results):
+        self.scan_results[row_idx] = result
+    self._mark_result_manually_edited(result, row_idx if row_idx >= 0 else None)
+    edit_history = [str(x) for x in (getattr(result, "edit_history", []) or []) if str(x or "").strip()]
+    edit_history.append("(scoring_review_edit) Updated answers from scoring review dialog")
+    setattr(result, "edit_history", edit_history)
+    setattr(result, "last_adjustment", edit_history[-1])
+    setattr(result, "manually_edited", True)
+    setattr(result, "cached_forced_status", "Đã sửa")
+    setattr(result, "cached_status", "Đã sửa")
+
     self.database.update_scan_result_payload(
         self._batch_result_subject_key(subject_key),
-        str(getattr(result, "image_path", "") or ""),
+        image_path,
         self._serialize_omr_result(result),
         note="scoring_review_edit",
     )
+    self._refresh_scan_results_from_db(subject_key)
     self.database.log_change(
         "score_review_edit",
         f"{subject_key}::{str(getattr(result, 'student_id', '') or '')}",
@@ -450,6 +465,20 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
         "",
         "Updated answers from scoring review dialog",
         "scoring_review",
+    )
+    if row_idx >= 0 and row_idx < len(self.scan_results):
+        self._refresh_student_profile_for_result(result, row_idx)
+        scoped = self._scoped_result_copy(result)
+        self.scan_blank_summary[row_idx] = self._compute_blank_questions(scoped)
+        self._update_scan_row_from_result(row_idx, result)
+        if str(self._current_batch_subject_key() or "").strip() == str(subject_key or "").strip():
+            self._refresh_row_status(row_idx)
+            self._update_batch_scan_bottom_status_text()
+
+    self._invalidate_scoring_for_student_ids(
+        [original_sid, str(getattr(result, "student_id", "") or "").strip()],
+        subject_key=subject_key,
+        reason="scoring_review_edit",
     )
     sid_key = str(getattr(result, "student_id", "") or "").strip()
     subject_scores = self.scoring_results_by_subject.get(subject_key, {}) or {}

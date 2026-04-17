@@ -11531,6 +11531,19 @@ class MainWindow(QMainWindow):
         if changed <= 0:
             return 0
         self.scoring_results_by_subject[subject] = subject_scores
+        # Đồng bộ DB ngay khi invalidate để tránh resurrect dữ liệu chấm cũ
+        # khi chuyển màn hình hoặc tải lại phiên.
+        try:
+            current_mode = str((self._subject_config_by_subject_key(subject) or {}).get("scoring_last_mode", "") or "Tính lại toàn bộ")
+            self._persist_scoring_results_for_subject(
+                subject,
+                list(subject_scores.values()),
+                current_mode,
+                reason or "invalidate_scoring_records",
+                mark_saved=False,
+            )
+        except Exception:
+            pass
         try:
             self.database.log_change(
                 "scoring_results",
