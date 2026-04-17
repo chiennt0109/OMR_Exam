@@ -3582,6 +3582,9 @@ class MainWindow(QMainWindow):
                 return True
             if self._refresh_scan_results_from_db(key):
                 return True
+            cfg = self._subject_config_by_subject_key(key) or {}
+            if self._subject_uses_direct_score_import(cfg) and self._direct_score_import_rows_for_subject(cfg):
+                return True
         return False
 
     def _pick_subject_for_export(self, title: str, prompt: str) -> str:
@@ -3631,6 +3634,19 @@ class MainWindow(QMainWindow):
         rows.sort(key=lambda x: str(x.get("student_id", "") or ""))
         return rows
 
+    def _ensure_export_score_rows_for_subject(self, subject_key: str) -> list[dict]:
+        subject = str(subject_key or "").strip()
+        if not subject:
+            return []
+        rows = self._score_rows_for_subject(subject)
+        if rows:
+            return rows
+        cfg = self._subject_config_by_subject_key(subject) or {}
+        if self._subject_uses_direct_score_import(cfg) and self._direct_score_import_rows_for_subject(cfg):
+            self.calculate_scores(subject_key=subject, mode="Nhập điểm trực tiếp", note="auto_prepare_export_essay")
+            rows = self._score_rows_for_subject(subject)
+        return rows
+
     def _scan_rows_for_subject(self, subject_key: str) -> list[OMRResult]:
         rows = list(self.scan_results_by_subject.get(self._batch_result_subject_key(subject_key), []) or [])
         if rows:
@@ -3654,8 +3670,8 @@ class MainWindow(QMainWindow):
         for raw in raw_rows:
             if not isinstance(raw, dict):
                 continue
-            sid = str(raw.get("student_id", "") or "").strip()
-            score_text = str(raw.get("score", "") or "").strip()
+            sid = str(raw.get("student_id", "") or raw.get("sid", "") or raw.get("sbd", "") or "").strip()
+            score_text = str(raw.get("score", "") or raw.get("point", "") or raw.get("mark", "") or "").strip()
             if not sid or score_text == "":
                 continue
             normalized.append({
@@ -3691,7 +3707,7 @@ class MainWindow(QMainWindow):
             profile = self._student_profile_by_id(sid)
             room_text = (
                 str(row.get("exam_room", "") or "").strip()
-                or self._subject_room_for_student_id(cfg, sid)
+                or self._subject_room_for_student_id(sid, cfg)
                 or default_room
                 or str(profile.get("exam_room", "") or "").strip()
             )
@@ -13593,7 +13609,7 @@ class MainWindow(QMainWindow):
         subject = str(subject_key or "").strip()
         if not subject:
             return
-        rows = self._score_rows_for_subject(subject)
+        rows = self._ensure_export_score_rows_for_subject(subject)
         if not rows:
             QMessageBox.information(self, "Xuất điểm môn", "Môn này chưa có dữ liệu điểm.")
             return
@@ -13662,7 +13678,7 @@ class MainWindow(QMainWindow):
         ]
 
     def _build_subject_score_export_rows(self, subject: str) -> list[dict[str, object]]:
-        rows = self._score_rows_for_subject(subject)
+        rows = self._ensure_export_score_rows_for_subject(subject)
         student_meta = self._student_meta_by_sid()
         room_by_sid: dict[str, str] = {}
         for scan_item in self._scan_rows_for_subject(subject):
@@ -13962,7 +13978,7 @@ class MainWindow(QMainWindow):
         ws_summary.title = "summary"
         ws_summary.append(["subject_key", "subject_label", "student_count", "avg_score", "min_score", "max_score"])
         for idx, (label, key) in enumerate(subjects):
-            rows = self._score_rows_for_subject(key)
+            rows = self._ensure_export_score_rows_for_subject(key)
             sheet_name = self._safe_sheet_name(label, fallback=f"subject_{idx + 1}")
             ws = wb.create_sheet(sheet_name)
             headers = ["student_id", "name", "exam_code", "correct", "wrong", "blank", "score", "status", "note"]
@@ -13996,6 +14012,22 @@ class MainWindow(QMainWindow):
         if not subject:
             return
         rows = self._scan_rows_for_subject(subject)
+        if not rows:
+            cfg = self._subject_config_by_subject_key(subject) or {}
+            if self._subject_uses_direct_score_import(cfg):
+                for payload in self._build_direct_score_payloads_for_subject(subject):
+                    sid = str(payload.get("student_id", "") or "").strip()
+                    rows.append(OMRResult(
+                        image_path="",
+                        student_id=sid,
+                        exam_code=str(payload.get("exam_code", "") or ""),
+                        answer_string="",
+                    ))
+                    if rows:
+                        row_obj = rows[-1]
+                        setattr(row_obj, "full_name", str(payload.get("name", "") or ""))
+                        setattr(row_obj, "class_name", str(payload.get("class_name", "") or ""))
+                        setattr(row_obj, "exam_room", str(payload.get("exam_room", "") or ""))
         if not rows:
             QMessageBox.information(self, "Xuất API bài làm", "Môn này chưa có dữ liệu bài làm.")
             return
@@ -14116,7 +14148,7 @@ class MainWindow(QMainWindow):
         ws.append(["subject_key", "subject_label", "range", "count", "ratio_percent"])
         subjects = self._iter_export_subjects()
         for label, key in subjects:
-            rows = self._score_rows_for_subject(key)
+            rows = self._ensure_export_score_rows_for_subject(key)
             values = []
             for row in rows:
                 try:
@@ -14150,7 +14182,7 @@ class MainWindow(QMainWindow):
         subjects = self._iter_export_subjects()
         student_meta = self._student_meta_by_sid()
         for label, key in subjects:
-            rows = self._score_rows_for_subject(key)
+            rows = self._ensure_export_score_rows_for_subject(key)
             grouped: dict[str, list[float]] = {}
             for row in rows:
                 sid = str(row.get("student_id", "") or "").strip()
@@ -14187,7 +14219,7 @@ class MainWindow(QMainWindow):
         subjects = self._iter_export_subjects()
         student_meta = self._student_meta_by_sid()
         for label, key in subjects:
-            rows = self._score_rows_for_subject(key)
+            rows = self._ensure_export_score_rows_for_subject(key)
             scores: list[float] = []
             class_bucket: dict[str, list[float]] = {}
             for row in rows:
