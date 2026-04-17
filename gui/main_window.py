@@ -3670,8 +3670,8 @@ class MainWindow(QMainWindow):
         for raw in raw_rows:
             if not isinstance(raw, dict):
                 continue
-            sid = str(raw.get("student_id", "") or "").strip()
-            score_text = str(raw.get("score", "") or "").strip()
+            sid = str(raw.get("student_id", "") or raw.get("sid", "") or raw.get("sbd", "") or "").strip()
+            score_text = str(raw.get("score", "") or raw.get("point", "") or raw.get("mark", "") or "").strip()
             if not sid or score_text == "":
                 continue
             normalized.append({
