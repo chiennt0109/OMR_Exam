@@ -3707,6 +3707,24 @@ class MainWindow(QMainWindow):
             rows = self._score_rows_for_subject(subject)
         return self._align_export_rows_with_session_students(rows, subject)
 
+    @staticmethod
+    def _score_value_for_statistics(row: dict) -> float | None:
+        if not isinstance(row, dict):
+            return None
+        status_text = str(row.get("status", "") or "").strip()
+        status_fold = status_text.casefold()
+        if status_fold.startswith("lỗi"):
+            return None
+        if status_fold in {"chưa chấm", "cần chấm lại"}:
+            return None
+        score_raw = row.get("score", "")
+        if score_raw in {"", None}:
+            return None
+        try:
+            return float(score_raw)
+        except Exception:
+            return None
+
     def _scan_rows_for_subject(self, subject_key: str) -> list[OMRResult]:
         rows = list(self.scan_results_by_subject.get(self._batch_result_subject_key(subject_key), []) or [])
         if rows:
@@ -14068,10 +14086,9 @@ class MainWindow(QMainWindow):
                     str(row.get("status", "") or ""),
                     str(row.get("note", "") or ""),
                 ])
-                try:
-                    scores.append(float(row.get("score", 0) or 0))
-                except Exception:
-                    pass
+                score_value = self._score_value_for_statistics(row)
+                if score_value is not None:
+                    scores.append(score_value)
             if scores:
                 ws_summary.append([key, label, len(rows), round(sum(scores) / len(scores), 4), min(scores), max(scores)])
             else:
@@ -14223,10 +14240,10 @@ class MainWindow(QMainWindow):
             rows = self._ensure_export_score_rows_for_subject(key)
             values = []
             for row in rows:
-                try:
-                    values.append(float(row.get("score", 0) or 0))
-                except Exception:
+                score_value = self._score_value_for_statistics(row)
+                if score_value is None:
                     continue
+                values.append(score_value)
             total = len(values)
             if total <= 0:
                 for start, end in ranges:
@@ -14259,9 +14276,8 @@ class MainWindow(QMainWindow):
             for row in rows:
                 sid = str(row.get("student_id", "") or "").strip()
                 class_name = str(row.get("class_name", "") or "").strip() or str((student_meta.get(sid, {}) or {}).get("class_name", "") or "").strip() or "Chưa phân lớp"
-                try:
-                    score_value = float(row.get("score", 0) or 0)
-                except Exception:
+                score_value = self._score_value_for_statistics(row)
+                if score_value is None:
                     continue
                 grouped.setdefault(class_name, []).append(score_value)
             for class_name, values in sorted(grouped.items(), key=lambda x: x[0]):
@@ -14295,9 +14311,8 @@ class MainWindow(QMainWindow):
             scores: list[float] = []
             class_bucket: dict[str, list[float]] = {}
             for row in rows:
-                try:
-                    val = float(row.get("score", 0) or 0)
-                except Exception:
+                val = self._score_value_for_statistics(row)
+                if val is None:
                     continue
                 scores.append(val)
                 sid = str(row.get("student_id", "") or "").strip()

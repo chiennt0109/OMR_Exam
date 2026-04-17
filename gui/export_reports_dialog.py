@@ -300,10 +300,10 @@ class ExportReportsDialog(QDialog):
             sid = str(row.get("student_id", "") or "").strip()
             if not sid:
                 continue
-            try:
-                out[sid] = float(row.get("score", "") or 0)
-            except Exception:
+            score_value = self.main_window._score_value_for_statistics(row)
+            if score_value is None:
                 continue
+            out[sid] = score_value
         self._subject_score_cache[key] = out
         return dict(out)
 
@@ -315,10 +315,9 @@ class ExportReportsDialog(QDialog):
             subject_rows = self._score_rows_for_subject_cached(key)
             scores: list[float] = []
             for row in subject_rows:
-                try:
-                    scores.append(float(row.get("score", "") or 0))
-                except Exception:
-                    pass
+                score_value = self.main_window._score_value_for_statistics(row)
+                if score_value is not None:
+                    scores.append(score_value)
             counts = [0] * len(bins)
             perfect = 0
             for score in scores:
@@ -341,10 +340,9 @@ class ExportReportsDialog(QDialog):
         for label, key in self._collect_subject_pairs():
             scores: list[float] = []
             for row in self._score_rows_for_subject_cached(key):
-                try:
-                    scores.append(float(row.get("score", "") or 0))
-                except Exception:
-                    pass
+                score_value = self.main_window._score_value_for_statistics(row)
+                if score_value is not None:
+                    scores.append(score_value)
             if scores:
                 rows.append([label, round(mean(scores), 4), round(median(scores), 4), max(scores), min(scores)])
             else:
