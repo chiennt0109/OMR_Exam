@@ -3628,11 +3628,89 @@ class MainWindow(QMainWindow):
             raise ValueError("Không có khoảng điểm hợp lệ.")
         return ranges
 
+    @staticmethod
+    def _format_birth_date_for_export(value: object) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        candidates = [raw]
+        if "T" in raw:
+            candidates.append(raw.split("T", 1)[0].strip())
+        if " " in raw:
+            candidates.append(raw.split(" ", 1)[0].strip())
+        for text in candidates:
+            for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%Y/%m/%d", "%d.%m.%Y"):
+                try:
+                    return datetime.strptime(text, fmt).strftime("%d/%m/%Y")
+                except Exception:
+                    continue
+        return raw
+
     def _score_rows_for_subject(self, subject_key: str) -> list[dict]:
         payload = self._load_scoring_results_for_subject_from_storage(subject_key)
         rows = [dict(v) for v in payload.values() if isinstance(v, dict)]
         rows.sort(key=lambda x: str(x.get("student_id", "") or ""))
         return rows
+
+    def _align_export_rows_with_session_students(self, rows: list[dict], subject_key: str) -> list[dict]:
+        subject = str(subject_key or "").strip()
+        if not subject:
+            return list(rows or [])
+
+        normalized_rows: list[dict] = [dict(item) for item in (rows or []) if isinstance(item, dict)]
+        if not self.session or not getattr(self.session, "students", None):
+            return normalized_rows
+
+        student_meta = self._student_meta_by_sid()
+        row_by_sid: dict[str, dict] = {}
+        for row in normalized_rows:
+            sid = str(row.get("student_id", "") or "").strip()
+            if sid and sid not in row_by_sid:
+                row_by_sid[sid] = row
+
+        ordered: list[dict] = []
+        seen: set[str] = set()
+        for st in (self.session.students or []):
+            sid = str(getattr(st, "student_id", "") or "").strip()
+            if not sid or sid in seen:
+                continue
+            seen.add(sid)
+            existing = row_by_sid.get(sid, {})
+            meta = student_meta.get(sid, {})
+            base = {
+                "student_id": sid,
+                "name": str(getattr(st, "name", "") or meta.get("name", "") or ""),
+                "subject": subject,
+                "class_name": str(getattr(st, "class_name", "") or meta.get("class_name", "") or ""),
+                "birth_date": str(getattr(st, "birth_date", "") or meta.get("birth_date", "") or ""),
+                "exam_room": str(getattr(st, "exam_room", "") or meta.get("exam_room", "") or ""),
+                "exam_code": "",
+                "mcq_correct": "",
+                "tf_correct": "",
+                "numeric_correct": "",
+                "tf_compare": "",
+                "numeric_compare": "",
+                "correct": "",
+                "wrong": "",
+                "blank": "",
+                "score": "",
+                "recheck_score": "",
+                "baithiphuctra": "",
+                "phase": "",
+                "phase_timestamp": "",
+                "phase_mode": "",
+                "note": "",
+                "status": "",
+            }
+            base.update(existing)
+            ordered.append(base)
+
+        for row in normalized_rows:
+            sid = str(row.get("student_id", "") or "").strip()
+            if not sid or sid in seen:
+                continue
+            ordered.append(row)
+        return ordered
 
     def _ensure_export_score_rows_for_subject(self, subject_key: str) -> list[dict]:
         subject = str(subject_key or "").strip()
@@ -3640,12 +3718,30 @@ class MainWindow(QMainWindow):
             return []
         rows = self._score_rows_for_subject(subject)
         if rows:
-            return rows
+            return self._align_export_rows_with_session_students(rows, subject)
         cfg = self._subject_config_by_subject_key(subject) or {}
         if self._subject_uses_direct_score_import(cfg) and self._direct_score_import_rows_for_subject(cfg):
             self.calculate_scores(subject_key=subject, mode="Nhập điểm trực tiếp", note="auto_prepare_export_essay")
             rows = self._score_rows_for_subject(subject)
-        return rows
+        return self._align_export_rows_with_session_students(rows, subject)
+
+    @staticmethod
+    def _score_value_for_statistics(row: dict) -> float | None:
+        if not isinstance(row, dict):
+            return None
+        status_text = str(row.get("status", "") or "").strip()
+        status_fold = status_text.casefold()
+        if status_fold.startswith("lỗi"):
+            return None
+        if status_fold in {"chưa chấm", "cần chấm lại"}:
+            return None
+        score_raw = row.get("score", "")
+        if score_raw in {"", None}:
+            return None
+        try:
+            return float(score_raw)
+        except Exception:
+            return None
 
     def _scan_rows_for_subject(self, subject_key: str) -> list[OMRResult]:
         rows = list(self.scan_results_by_subject.get(self._batch_result_subject_key(subject_key), []) or [])
@@ -13664,6 +13760,10 @@ class MainWindow(QMainWindow):
             for cell in ws[1]:
                 cell.font = Font(name="Times New Roman", size=12, bold=True)
                 cell.alignment = Alignment(horizontal="center", vertical="center")
+            name_col = headers.index("Họ tên") + 1 if "Họ tên" in headers else -1
+            if name_col > 0:
+                for row_idx in range(2, ws.max_row + 1):
+                    ws.cell(row=row_idx, column=name_col).alignment = Alignment(horizontal="left", vertical="center")
             for col in ws.columns:
                 max_len = 0
                 col_letter = col[0].column_letter
@@ -13711,7 +13811,7 @@ class MainWindow(QMainWindow):
                 "SBD": sid,
                 "Phòng thi": str(row.get("exam_room", "") or room_by_sid.get(sid, "") or meta.get("exam_room", "")),
                 "Họ tên": str(row.get("name", "") or meta.get("name", "")),
-                "Ngày sinh": str(row.get("birth_date", "") or meta.get("birth_date", "")),
+                "Ngày sinh": self._format_birth_date_for_export(row.get("birth_date", "") or meta.get("birth_date", "")),
                 "Lớp": str(row.get("class_name", "") or meta.get("class_name", "")),
                 "Mã đề": str(row.get("exam_code", "") or ""),
                 "Đúng": row.get("correct", 0),
@@ -13721,7 +13821,6 @@ class MainWindow(QMainWindow):
                 "Trạng thái": status_text,
                 "Ghi chú": str(row.get("note", "") or ""),
             })
-        normalized.sort(key=lambda x: (0 if bool(x.get("_has_error")) else 1, str(x.get("SBD", ""))))
         for idx, row in enumerate(normalized, start=1):
             row["STT"] = idx
         return normalized
@@ -13766,13 +13865,13 @@ class MainWindow(QMainWindow):
                 rec = student_rows.setdefault(sid, {
                     "SBD": sid,
                     "Họ tên": row.get("Họ tên", ""),
-                    "Ngày sinh": row.get("Ngày sinh", ""),
+                    "Ngày sinh": self._format_birth_date_for_export(row.get("Ngày sinh", "")),
                     "Lớp": row.get("Lớp", ""),
                 })
                 if not rec.get("Họ tên") and row.get("Họ tên"):
                     rec["Họ tên"] = row.get("Họ tên", "")
                 if not rec.get("Ngày sinh") and row.get("Ngày sinh"):
-                    rec["Ngày sinh"] = row.get("Ngày sinh", "")
+                    rec["Ngày sinh"] = self._format_birth_date_for_export(row.get("Ngày sinh", ""))
                 if not rec.get("Lớp") and row.get("Lớp"):
                     rec["Lớp"] = row.get("Lớp", "")
                 rec[score_header] = row.get("Điểm", 0)
@@ -13804,6 +13903,10 @@ class MainWindow(QMainWindow):
                 cell.border = Border(left=border_side, right=border_side, top=border_side, bottom=border_side)
         for cell in ws[1]:
             cell.font = Font(name="Times New Roman", size=12, bold=True)
+        name_col = base_headers.index("Họ tên") + 1 if "Họ tên" in base_headers else -1
+        if name_col > 0:
+            for row_idx in range(2, ws.max_row + 1):
+                ws.cell(row=row_idx, column=name_col).alignment = Alignment(horizontal="left", vertical="center")
 
         score_col_width = 136 / 7
         score_col_indexes = set(range(len(base_headers) + 1, len(base_headers) + len(score_headers) + 1))
@@ -13858,7 +13961,7 @@ class MainWindow(QMainWindow):
                 rec: dict[str, object] = {
                     "SBD": sid,
                     "Họ tên": str(getattr(st, "name", "") or ""),
-                    "Ngày sinh": str(getattr(st, "birth_date", "") or ""),
+                    "Ngày sinh": self._format_birth_date_for_export(getattr(st, "birth_date", "") or ""),
                     "Lớp": st_class,
                 }
                 score_row = score_by_sid.get(sid, {})
@@ -13875,7 +13978,7 @@ class MainWindow(QMainWindow):
             rec = {
                 "SBD": sid,
                 "Họ tên": row.get("Họ tên", ""),
-                "Ngày sinh": row.get("Ngày sinh", ""),
+                "Ngày sinh": self._format_birth_date_for_export(row.get("Ngày sinh", "")),
                 "Lớp": st_class,
             }
             for header in score_headers:
@@ -14009,10 +14112,9 @@ class MainWindow(QMainWindow):
                     str(row.get("status", "") or ""),
                     str(row.get("note", "") or ""),
                 ])
-                try:
-                    scores.append(float(row.get("score", 0) or 0))
-                except Exception:
-                    pass
+                score_value = self._score_value_for_statistics(row)
+                if score_value is not None:
+                    scores.append(score_value)
             if scores:
                 ws_summary.append([key, label, len(scores), round(sum(scores) / len(scores), 4), min(scores), max(scores)])
             else:
@@ -14164,10 +14266,10 @@ class MainWindow(QMainWindow):
             rows = self._ensure_export_score_rows_for_subject(key)
             values = []
             for row in rows:
-                try:
-                    values.append(float(row.get("score", 0) or 0))
-                except Exception:
+                score_value = self._score_value_for_statistics(row)
+                if score_value is None:
                     continue
+                values.append(score_value)
             total = len(values)
             if total <= 0:
                 for start, end in ranges:
@@ -14200,9 +14302,8 @@ class MainWindow(QMainWindow):
             for row in rows:
                 sid = str(row.get("student_id", "") or "").strip()
                 class_name = str(row.get("class_name", "") or "").strip() or str((student_meta.get(sid, {}) or {}).get("class_name", "") or "").strip() or "Chưa phân lớp"
-                try:
-                    score_value = float(row.get("score", 0) or 0)
-                except Exception:
+                score_value = self._score_value_for_statistics(row)
+                if score_value is None:
                     continue
                 grouped.setdefault(class_name, []).append(score_value)
             for class_name, values in sorted(grouped.items(), key=lambda x: x[0]):
@@ -14236,9 +14337,8 @@ class MainWindow(QMainWindow):
             scores: list[float] = []
             class_bucket: dict[str, list[float]] = {}
             for row in rows:
-                try:
-                    val = float(row.get("score", 0) or 0)
-                except Exception:
+                val = self._score_value_for_statistics(row)
+                if val is None:
                     continue
                 scores.append(val)
                 sid = str(row.get("student_id", "") or "").strip()
