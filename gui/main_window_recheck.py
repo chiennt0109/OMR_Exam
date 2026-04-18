@@ -601,12 +601,46 @@ def open_recheck_dialog(self) -> None:
     image_panel = QWidget()
     image_l = QVBoxLayout(image_panel)
     image_l.addWidget(QLabel("Ảnh bài thi"))
+    zoom_controls = QHBoxLayout()
+    btn_zoom_out = QPushButton("Thu nhỏ")
+    btn_zoom_reset = QPushButton("Mặc định")
+    btn_zoom_in = QPushButton("Phóng to")
+    lbl_zoom = QLabel("100%")
+    zoom_controls.addWidget(btn_zoom_out)
+    zoom_controls.addWidget(btn_zoom_reset)
+    zoom_controls.addWidget(btn_zoom_in)
+    zoom_controls.addStretch(1)
+    zoom_controls.addWidget(lbl_zoom)
+    image_l.addLayout(zoom_controls)
     img_scroll = QScrollArea()
     img_scroll.setWidgetResizable(True)
     img_lbl = QLabel("-")
     img_lbl.setAlignment(Qt.AlignCenter)
     img_scroll.setWidget(img_lbl)
     image_l.addWidget(img_scroll, 1)
+    current_image_pixmap: dict[str, QPixmap] = {"pix": QPixmap()}
+    image_zoom_factor: dict[str, float] = {"value": 1.0}
+
+    def _render_current_image() -> None:
+        pix = current_image_pixmap.get("pix", QPixmap())
+        if pix.isNull():
+            lbl_zoom.setText("-")
+            return
+        base_width = max(200, int(img_scroll.viewport().width() * 0.9))
+        zoom_val = max(0.25, min(4.0, float(image_zoom_factor.get("value", 1.0) or 1.0)))
+        image_zoom_factor["value"] = zoom_val
+        target_width = max(80, int(base_width * zoom_val))
+        img_lbl.setText("")
+        img_lbl.setPixmap(pix.scaledToWidth(target_width, Qt.SmoothTransformation))
+        lbl_zoom.setText(f"{int(round(zoom_val * 100))}%")
+
+    def _set_zoom(next_zoom: float) -> None:
+        image_zoom_factor["value"] = max(0.25, min(4.0, float(next_zoom)))
+        _render_current_image()
+
+    btn_zoom_out.clicked.connect(lambda: _set_zoom(float(image_zoom_factor.get("value", 1.0)) - 0.1))
+    btn_zoom_in.clicked.connect(lambda: _set_zoom(float(image_zoom_factor.get("value", 1.0)) + 0.1))
+    btn_zoom_reset.clicked.connect(lambda: _set_zoom(1.0))
     right.addWidget(image_panel)
     history_panel = QWidget()
     history_l = QVBoxLayout(history_panel)
@@ -739,6 +773,33 @@ def open_recheck_dialog(self) -> None:
                 return "".join(out)
             return "".join("Đ" if ch in {"T", "Đ", "D", "1"} else "S" for ch in text if ch in {"T", "F", "Đ", "D", "S", "1", "0"})
 
+        def _normalize_numeric_token(value: object) -> str:
+            text = str(value or "").strip().replace(" ", "")
+            if not text:
+                return ""
+            if "," in text and "." in text:
+                last_comma = text.rfind(",")
+                last_dot = text.rfind(".")
+                if last_comma > last_dot:
+                    text = text.replace(".", "").replace(",", ".")
+                else:
+                    text = text.replace(",", "")
+            else:
+                text = text.replace(",", ".")
+            return text.lstrip("+")
+
+        def _answers_match(section: str, correct: str, student: str) -> bool:
+            if str(section or "").upper() == "NUMERIC":
+                c_val = _normalize_numeric_token(correct)
+                s_val = _normalize_numeric_token(student)
+                if c_val == s_val:
+                    return True
+                try:
+                    return abs(float(c_val) - float(s_val)) <= 1e-9
+                except Exception:
+                    return False
+            return str(correct or "").strip().upper() == str(student or "").strip().upper()
+
         def _add_row(section: str, q_display: int, q_no: int, correct: str, student: str) -> None:
             r = answer_tbl.rowCount()
             answer_tbl.insertRow(r)
@@ -749,7 +810,7 @@ def open_recheck_dialog(self) -> None:
             answer_tbl.setItem(r, 1, q_item)
             answer_tbl.setItem(r, 2, QTableWidgetItem(correct))
             student_item = QTableWidgetItem(student)
-            if str(correct or "").strip().upper() != str(student or "").strip().upper():
+            if not _answers_match(section, correct, student):
                 student_item.setBackground(QColor(255, 225, 225))
             answer_tbl.setItem(r, 3, student_item)
             row_map.append((section, int(q_no)))
@@ -780,13 +841,25 @@ def open_recheck_dialog(self) -> None:
         if item is None or item.column() != 3:
             return
         row_idx = item.row()
+        section_txt = str(answer_tbl.item(row_idx, 0).text() if answer_tbl.item(row_idx, 0) else "").strip().upper()
         correct_txt = str(answer_tbl.item(row_idx, 2).text() if answer_tbl.item(row_idx, 2) else "").strip().upper()
-        student_txt = str(item.text() or "").strip().upper()
-        if student_txt != str(item.text() or ""):
-            answer_tbl.blockSignals(True)
-            item.setText(student_txt)
-            answer_tbl.blockSignals(False)
-        if correct_txt != student_txt:
+        raw_student_txt = str(item.text() or "").strip()
+        if section_txt != "NUMERIC":
+            student_txt = raw_student_txt.upper()
+            if student_txt != str(item.text() or ""):
+                answer_tbl.blockSignals(True)
+                item.setText(student_txt)
+                answer_tbl.blockSignals(False)
+        else:
+            student_txt = raw_student_txt
+        is_match = (
+            abs(float(str(correct_txt).replace(",", ".").strip()) - float(str(student_txt).replace(",", ".").strip())) <= 1e-9
+            if section_txt == "NUMERIC"
+            and str(correct_txt).replace(",", ".").strip() not in {"", "G"}
+            and str(student_txt).replace(",", ".").strip() not in {"", "G"}
+            else correct_txt == str(student_txt).strip().upper() if section_txt != "NUMERIC" else str(correct_txt).replace(",", ".").strip() == str(student_txt).replace(",", ".").strip()
+        )
+        if not is_match:
             item.setBackground(QColor(255, 225, 225))
         else:
             item.setBackground(QColor(255, 255, 255, 0))
@@ -881,6 +954,9 @@ def open_recheck_dialog(self) -> None:
             _refresh_history_for_sid(sid_text)
             img_lbl.setText("Không tìm thấy bài thi")
             img_lbl.setPixmap(QPixmap())
+            current_image_pixmap["pix"] = QPixmap()
+            image_zoom_factor["value"] = 1.0
+            lbl_zoom.setText("-")
             updating_form["busy"] = False
             return
         sid = str(getattr(res, "student_id", "") or "").strip()
@@ -905,9 +981,13 @@ def open_recheck_dialog(self) -> None:
         if pix.isNull():
             img_lbl.setText(f"Không đọc được ảnh: {Path(img_path).name}")
             img_lbl.setPixmap(QPixmap())
+            current_image_pixmap["pix"] = QPixmap()
+            image_zoom_factor["value"] = 1.0
+            lbl_zoom.setText("-")
         else:
-            img_lbl.setText("")
-            img_lbl.setPixmap(pix.scaledToWidth(max(200, int(img_scroll.viewport().width() * 0.9)), Qt.SmoothTransformation))
+            current_image_pixmap["pix"] = pix
+            image_zoom_factor["value"] = 1.0
+            _render_current_image()
         updating_form["busy"] = False
 
     def _selected_sid_value() -> str:
