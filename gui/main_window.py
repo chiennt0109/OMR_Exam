@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import copy
 import csv
+import gc
 import json
 import re
 import sys
+from collections import deque
 from datetime import date, datetime
 from pathlib import Path
 import time
@@ -1186,8 +1188,8 @@ class NewExamDialog(QDialog):
         lay.addLayout(form)
 
         lay.addWidget(QLabel("Các môn trong kỳ thi"))
-        self.subject_table = QTableWidget(0, 9)
-        self.subject_table.setHorizontalHeaderLabels(["Môn", "Khối", "Key", "Mã đề", "Chế độ điểm", "Tổng điểm", "Template", "Trạng thái", "Thao tác"])
+        self.subject_table = QTableWidget(0, 10)
+        self.subject_table.setHorizontalHeaderLabels(["Môn", "Khối", "Key", "Mã đề", "Chế độ điểm", "Tổng điểm", "Template", "Cơ chế", "Trạng thái", "Thao tác"])
         self.subject_table.verticalHeader().setVisible(False)
         self.subject_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.subject_table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -1206,6 +1208,7 @@ class NewExamDialog(QDialog):
         hdr.setSectionResizeMode(6, QHeaderView.Stretch)
         hdr.setSectionResizeMode(7, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(8, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(9, QHeaderView.ResizeToContents)
         lay.addWidget(self.subject_table)
 
         row = QHBoxLayout()
@@ -1422,8 +1425,10 @@ class NewExamDialog(QDialog):
             self.subject_table.setItem(row_idx, 4, QTableWidgetItem(str(mode or "-")))
             self.subject_table.setItem(row_idx, 5, QTableWidgetItem(str(total or "-")))
             self.subject_table.setItem(row_idx, 6, QTableWidgetItem(str(tpl or "-")))
+            auto_mode = "Nhận dạng tự động" if bool(cfg.get("auto_recognize", False)) else "Thủ công"
+            self.subject_table.setItem(row_idx, 7, QTableWidgetItem(auto_mode))
             status_text = "Đã nhận dạng" if bool(cfg.get("batch_saved")) else "-"
-            self.subject_table.setItem(row_idx, 7, QTableWidgetItem(status_text))
+            self.subject_table.setItem(row_idx, 8, QTableWidgetItem(status_text))
 
             btn_batch_scan = QPushButton("Nhận dạng")
             btn_batch_scan.setIcon(style.standardIcon(QStyle.SP_MediaPlay))
@@ -1434,7 +1439,7 @@ class NewExamDialog(QDialog):
             wrap_l = QHBoxLayout(wrap)
             wrap_l.setContentsMargins(0, 0, 0, 0)
             wrap_l.addWidget(btn_batch_scan)
-            self.subject_table.setCellWidget(row_idx, 8, wrap)
+            self.subject_table.setCellWidget(row_idx, 9, wrap)
         self.subject_table.resizeRowsToContents()
 
     def _current_subject_index(self) -> int:
@@ -1765,6 +1770,11 @@ class MainWindow(QMainWindow):
         self._batch_cancel_requested = False
         self._batch_loaded_runtime_key: str = ""
         self._auto_recognition_busy = False
+        self._auto_recognition_queue: deque[str] = deque()
+        self._auto_recognition_enqueued: set[str] = set()
+        self._auto_recognition_last_seen: dict[str, tuple[int, float]] = {}
+        self._auto_recognition_pause_requested = False
+        self._auto_recognition_active_subject: str = ""
         self.preview_drag_active = False
         self.preview_last_pos = None
         self.setCentralWidget(self.stack)
@@ -1790,41 +1800,183 @@ class MainWindow(QMainWindow):
         self._setup_auto_recognition_timer()
 
     def _setup_auto_recognition_timer(self) -> None:
-        self.auto_recognition_timer = QTimer(self)
-        self.auto_recognition_timer.setInterval(3500)
-        self.auto_recognition_timer.timeout.connect(self._poll_auto_recognition)
-        self.auto_recognition_timer.start()
+        self.auto_recognition_discovery_timer = QTimer(self)
+        self.auto_recognition_discovery_timer.setInterval(4000)
+        self.auto_recognition_discovery_timer.timeout.connect(self._poll_auto_recognition)
+        self.auto_recognition_discovery_timer.start()
+
+        self.auto_recognition_worker_timer = QTimer(self)
+        self.auto_recognition_worker_timer.setInterval(600)
+        self.auto_recognition_worker_timer.timeout.connect(self._process_auto_recognition_queue)
+        self.auto_recognition_worker_timer.start()
+
+    @staticmethod
+    def _scan_folder_signature(cfg: dict | None) -> tuple[int, float]:
+        if not isinstance(cfg, dict):
+            return (0, 0.0)
+        scan_folder = str(cfg.get("scan_folder", "") or "").strip()
+        if not scan_folder or scan_folder == "-":
+            return (0, 0.0)
+        scan_dir = Path(scan_folder)
+        if not scan_dir.exists() or not scan_dir.is_dir():
+            return (0, 0.0)
+        mode = str(cfg.get("scan_mode", "") or "").strip().lower()
+        use_subfolders = ("thư mục con" in mode) or ("sub" in mode)
+        image_exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
+        count = 0
+        latest_mtime = 0.0
+        iterator = scan_dir.rglob("*") if use_subfolders else scan_dir.iterdir()
+        for p in iterator:
+            if not p.is_file() or p.suffix.lower() not in image_exts:
+                continue
+            count += 1
+            try:
+                latest_mtime = max(latest_mtime, float(p.stat().st_mtime))
+            except Exception:
+                continue
+        return (count, latest_mtime)
+
+    def _enqueue_auto_recognition_subject(self, subject_key: str) -> None:
+        key = str(subject_key or "").strip()
+        if not key or key in self._auto_recognition_enqueued:
+            return
+        self._auto_recognition_queue.append(key)
+        self._auto_recognition_enqueued.add(key)
+        self._update_auto_recognition_progress()
+
+    def _pop_auto_recognition_subject(self) -> str:
+        if not self._auto_recognition_queue:
+            return ""
+        key = self._auto_recognition_queue.popleft()
+        self._auto_recognition_enqueued.discard(key)
+        self._update_auto_recognition_progress()
+        return key
 
     def _poll_auto_recognition(self) -> None:
-        if self._auto_recognition_busy or self._batch_scan_running or not self.session:
+        if not self.session or self._auto_recognition_pause_requested:
             return
-        if not hasattr(self, "batch_subject_combo") or self.batch_subject_combo.currentIndex() <= 0:
+        for cfg in self._effective_subject_configs_for_batch():
+            if not isinstance(cfg, dict):
+                continue
+            if not bool(cfg.get("auto_recognize", False)):
+                continue
+            if self._subject_uses_direct_score_import(cfg):
+                continue
+            subject_key = self._subject_instance_key_from_cfg(cfg)
+            if not subject_key:
+                continue
+            new_signature = self._scan_folder_signature(cfg)
+            old_signature = self._auto_recognition_last_seen.get(subject_key)
+            self._auto_recognition_last_seen[subject_key] = new_signature
+            if old_signature is None:
+                continue
+            if new_signature == old_signature:
+                continue
+            self._enqueue_auto_recognition_subject(subject_key)
+
+    def _process_auto_recognition_queue(self) -> None:
+        if self._auto_recognition_pause_requested or self._auto_recognition_busy or self._batch_scan_running:
             return
-        subject_cfg = self._selected_batch_subject_config()
-        if not isinstance(subject_cfg, dict):
+        if not self._auto_recognition_queue:
+            self._auto_recognition_active_subject = ""
+            self._update_auto_recognition_progress()
             return
-        if not bool(subject_cfg.get("auto_recognize", False)):
+        subject_key = self._pop_auto_recognition_subject()
+        if not subject_key:
             return
-        if self._subject_uses_direct_score_import(subject_cfg):
-            return
-        scan_paths = self._configured_scan_file_paths(subject_cfg)
-        if not scan_paths:
-            return
-        subject_key = self._subject_key_from_cfg(subject_cfg)
-        recognized = self._recognized_image_paths_for_subject(subject_key)
-        pending_paths = [path for path in scan_paths if str(path).strip() not in recognized]
-        if not pending_paths:
-            return
-        if hasattr(self, "batch_file_scope_combo"):
-            for i in range(self.batch_file_scope_combo.count()):
-                if str(self.batch_file_scope_combo.itemData(i) or "") == "new_only":
-                    self.batch_file_scope_combo.setCurrentIndex(i)
-                    break
+        self._auto_recognition_active_subject = subject_key
         self._auto_recognition_busy = True
         try:
-            self.run_batch_scan()
+            self._run_auto_recognition_for_subject(subject_key)
         finally:
             self._auto_recognition_busy = False
+            self._auto_recognition_active_subject = ""
+            gc.collect()
+            self._update_auto_recognition_progress()
+
+    def _run_auto_recognition_for_subject(self, subject_key: str) -> None:
+        if not hasattr(self, "batch_subject_combo") or self.batch_subject_combo.count() <= 1:
+            return
+        previous_subject_index = self.batch_subject_combo.currentIndex()
+        previous_scope_index = self.batch_file_scope_combo.currentIndex() if hasattr(self, "batch_file_scope_combo") else -1
+
+        target_index = -1
+        for i in range(1, self.batch_subject_combo.count()):
+            if str(self.batch_subject_combo.itemData(i) or "").strip() == str(subject_key or "").strip():
+                target_index = i
+                break
+        if target_index <= 0:
+            return
+
+        try:
+            self.batch_subject_combo.setCurrentIndex(target_index)
+            cfg = self._selected_batch_subject_config()
+            if not isinstance(cfg, dict):
+                return
+
+            scan_paths = self._configured_scan_file_paths(cfg)
+            if not scan_paths:
+                return
+            recognized = self._recognized_image_paths_for_subject(self._subject_key_from_cfg(cfg))
+            if not any(str(path).strip() not in recognized for path in scan_paths):
+                return
+
+            if hasattr(self, "batch_file_scope_combo"):
+                for i in range(self.batch_file_scope_combo.count()):
+                    if str(self.batch_file_scope_combo.itemData(i) or "") == "new_only":
+                        self.batch_file_scope_combo.setCurrentIndex(i)
+                        break
+            self._update_auto_recognition_progress()
+            self.run_batch_scan()
+        finally:
+            if previous_scope_index >= 0 and hasattr(self, "batch_file_scope_combo"):
+                self.batch_file_scope_combo.setCurrentIndex(previous_scope_index)
+            if previous_subject_index >= 0 and previous_subject_index < self.batch_subject_combo.count():
+                self.batch_subject_combo.setCurrentIndex(previous_subject_index)
+
+    def _update_auto_recognition_progress(self) -> None:
+        active_key = str(self._auto_recognition_active_subject or "").strip()
+        queue_count = len(self._auto_recognition_queue)
+        has_work = bool(active_key or queue_count > 0)
+        if not has_work:
+            if hasattr(self, "auto_recognition_progress_dialog") and self.auto_recognition_progress_dialog is not None:
+                self.auto_recognition_progress_dialog.hide()
+            return
+
+        if not hasattr(self, "auto_recognition_progress_dialog") or self.auto_recognition_progress_dialog is None:
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Tiến trình nhận dạng tự động")
+            dlg.setModal(False)
+            lay = QVBoxLayout(dlg)
+            self.auto_recognition_progress_label = QLabel("Đang khởi tạo cơ chế nhận dạng tự động...")
+            self.auto_recognition_progress_label.setWordWrap(True)
+            self.auto_recognition_progress_bar = QProgressBar()
+            self.auto_recognition_progress_bar.setRange(0, 0)
+            self.auto_recognition_progress_bar.setTextVisible(False)
+            btn_pause = QPushButton("Tạm dừng")
+            btn_pause.clicked.connect(self._toggle_auto_recognition_pause)
+            lay.addWidget(self.auto_recognition_progress_label)
+            lay.addWidget(self.auto_recognition_progress_bar)
+            lay.addWidget(btn_pause)
+            self.auto_recognition_progress_dialog = dlg
+        else:
+            dlg = self.auto_recognition_progress_dialog
+
+        active_label = active_key or "-"
+        paused = " (Tạm dừng)" if self._auto_recognition_pause_requested else ""
+        text = (
+            f"Cơ chế: Nhận dạng tự động{paused}\n"
+            f"Đang xử lý: {active_label}\n"
+            f"Hàng đợi còn: {queue_count} môn"
+        )
+        self.auto_recognition_progress_label.setText(text)
+        if not dlg.isVisible():
+            dlg.show()
+            dlg.raise_()
+
+    def _toggle_auto_recognition_pause(self) -> None:
+        self._auto_recognition_pause_requested = not self._auto_recognition_pause_requested
+        self._update_auto_recognition_progress()
 
     def _build_template_management_page(self) -> QWidget:
         w = QWidget()
