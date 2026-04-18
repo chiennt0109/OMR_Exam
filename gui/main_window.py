@@ -311,6 +311,8 @@ class SubjectConfigDialog(QDialog):
         self.block_name.setCurrentText(str(data.get("block", block_options[0] if block_options else "10")))
         self.is_essay_subject = QCheckBox("Môn tự luận")
         self.is_essay_subject.setChecked(bool(data.get("is_essay_subject", False)))
+        self.auto_recognize = QCheckBox("Tự động nhận dạng")
+        self.auto_recognize.setChecked(bool(data.get("auto_recognize", False)))
 
         self.template_path = QLineEdit(str(data.get("template_path", "")))
         self.scan_folder = QLineEdit(str(data.get("scan_folder", "")))
@@ -440,6 +442,7 @@ class SubjectConfigDialog(QDialog):
         standard_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         standard_form.addRow("Giấy thi riêng (tùy chọn)", row_tpl)
         standard_form.addRow("Thư mục bài thi môn", row_scan)
+        standard_form.addRow("", self.auto_recognize)
         standard_form.addRow("Đáp án môn", row_key)
         standard_form.addRow("Mã đáp án môn_khối", self.answer_key_key)
         standard_form.addRow("Danh sách SBD phòng thi", room_map_wrap)
@@ -1106,6 +1109,7 @@ class SubjectConfigDialog(QDialog):
             "is_essay_subject": bool(self.is_essay_subject.isChecked()),
             "template_path": self.template_path.text().strip(),
             "scan_folder": self.scan_folder.text().strip(),
+            "auto_recognize": bool(self.auto_recognize.isChecked()),
             "answer_key_path": self.answer_key.text().strip(),
             "answer_key_key": self.answer_key_key.text().strip(),
             "exam_room_name": str(self.exam_room_mapping_selector.currentData() or self.exam_room_name.currentText() or "").strip(),
@@ -1760,6 +1764,7 @@ class MainWindow(QMainWindow):
         self._batch_scan_running = False
         self._batch_cancel_requested = False
         self._batch_loaded_runtime_key: str = ""
+        self._auto_recognition_busy = False
         self.preview_drag_active = False
         self.preview_last_pos = None
         self.setCentralWidget(self.stack)
@@ -1782,6 +1787,44 @@ class MainWindow(QMainWindow):
         self._refresh_batch_subject_controls()
         self._handle_stack_changed(self.stack.currentIndex())
         self.stack.setCurrentIndex(0)
+        self._setup_auto_recognition_timer()
+
+    def _setup_auto_recognition_timer(self) -> None:
+        self.auto_recognition_timer = QTimer(self)
+        self.auto_recognition_timer.setInterval(3500)
+        self.auto_recognition_timer.timeout.connect(self._poll_auto_recognition)
+        self.auto_recognition_timer.start()
+
+    def _poll_auto_recognition(self) -> None:
+        if self._auto_recognition_busy or self._batch_scan_running or not self.session:
+            return
+        if not hasattr(self, "batch_subject_combo") or self.batch_subject_combo.currentIndex() <= 0:
+            return
+        subject_cfg = self._selected_batch_subject_config()
+        if not isinstance(subject_cfg, dict):
+            return
+        if not bool(subject_cfg.get("auto_recognize", False)):
+            return
+        if self._subject_uses_direct_score_import(subject_cfg):
+            return
+        scan_paths = self._configured_scan_file_paths(subject_cfg)
+        if not scan_paths:
+            return
+        subject_key = self._subject_key_from_cfg(subject_cfg)
+        recognized = self._recognized_image_paths_for_subject(subject_key)
+        pending_paths = [path for path in scan_paths if str(path).strip() not in recognized]
+        if not pending_paths:
+            return
+        if hasattr(self, "batch_file_scope_combo"):
+            for i in range(self.batch_file_scope_combo.count()):
+                if str(self.batch_file_scope_combo.itemData(i) or "") == "new_only":
+                    self.batch_file_scope_combo.setCurrentIndex(i)
+                    break
+        self._auto_recognition_busy = True
+        try:
+            self.run_batch_scan()
+        finally:
+            self._auto_recognition_busy = False
 
     def _build_template_management_page(self) -> QWidget:
         w = QWidget()
