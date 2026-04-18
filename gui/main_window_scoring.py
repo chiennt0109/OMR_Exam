@@ -216,40 +216,78 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
         subject_cfg_local = self._subject_config_by_subject_key(subject_key) or {}
         mode = self.scoring_engine._score_mode(subject_cfg_local)
         sec_scores = (subject_cfg_local.get("section_scores", {}) or {}) if isinstance(subject_cfg_local, dict) else {}
-        if mode == "Điểm theo phần":
-            if section == "MCQ":
-                mcq_total = self.scoring_engine._to_float(((sec_scores.get("MCQ") or {}).get("total_points")), 0.0)
-                mcq_count = len(
-                    [
-                        q for q in set(list((key.answers or {}).keys()) + list((invalid_rows.get("MCQ", {}) or {}).keys()))
-                        if str(q).strip().lstrip("-").isdigit()
-                    ]
-                )
-                mcq_limit = int(section_limits.get("MCQ", 0) or 0)
-                if mcq_limit > 0:
-                    mcq_count = min(mcq_count, mcq_limit)
-                return float(mcq_total / float(mcq_count or 1))
-            if section == "NUMERIC":
-                numeric_total = self.scoring_engine._to_float(((sec_scores.get("NUMERIC") or {}).get("total_points")), 0.0)
-                numeric_count = len(
-                    [
-                        q for q in set(list((key.numeric_answers or {}).keys()) + list((invalid_rows.get("NUMERIC", {}) or {}).keys()))
-                        if str(q).strip().lstrip("-").isdigit()
-                    ]
-                )
-                numeric_limit = int(section_limits.get("NUMERIC", 0) or 0)
-                if numeric_limit > 0:
-                    numeric_count = min(numeric_count, numeric_limit)
-                return float(numeric_total / float(numeric_count or 1))
+        answer_text = str(answer or "").strip().upper()
+        student_text = str(student or "").strip().upper()
+
+        def _max_points_for_question() -> float:
+            if mode == "Điểm theo phần":
+                if section == "MCQ":
+                    mcq_total = self.scoring_engine._to_float(((sec_scores.get("MCQ") or {}).get("total_points")), 0.0)
+                    mcq_count = len(
+                        [
+                            q for q in set(list((key.answers or {}).keys()) + list((invalid_rows.get("MCQ", {}) or {}).keys()))
+                            if str(q).strip().lstrip("-").isdigit()
+                        ]
+                    )
+                    mcq_limit = int(section_limits.get("MCQ", 0) or 0)
+                    if mcq_limit > 0:
+                        mcq_count = min(mcq_count, mcq_limit)
+                    return float(mcq_total / float(mcq_count or 1))
+                if section == "NUMERIC":
+                    numeric_total = self.scoring_engine._to_float(((sec_scores.get("NUMERIC") or {}).get("total_points")), 0.0)
+                    numeric_count = len(
+                        [
+                            q for q in set(list((key.numeric_answers or {}).keys()) + list((invalid_rows.get("NUMERIC", {}) or {}).keys()))
+                            if str(q).strip().lstrip("-").isdigit()
+                        ]
+                    )
+                    numeric_limit = int(section_limits.get("NUMERIC", 0) or 0)
+                    if numeric_limit > 0:
+                        numeric_count = min(numeric_count, numeric_limit)
+                    return float(numeric_total / float(numeric_count or 1))
+                if section == "TF":
+                    tf_rule_cfg = ((sec_scores.get("TF") or {}).get("rule_per_question") or {})
+                    tf_full = self.scoring_engine._to_float(((sec_scores.get("TF") or {}).get("total_points")), 0.0)
+                    return float(max(0.0, self.scoring_engine._to_float(tf_rule_cfg.get("4"), tf_full)))
             if section == "TF":
-                tf_rule_cfg = ((sec_scores.get("TF") or {}).get("rule_per_question") or {})
-                tf_full = self.scoring_engine._to_float(((sec_scores.get("TF") or {}).get("total_points")), 0.0)
-                return float(max(0.0, self.scoring_engine._to_float(tf_rule_cfg.get("4"), tf_full)))
+                tf_rule_cfg = ((subject_cfg_local.get("question_scores", {}) or {}).get("TF", {}) if isinstance(subject_cfg_local, dict) else {}) or {}
+                tf_default = self.scoring_engine._question_score(section, q_actual, key, subject_cfg_local)
+                return float(max(0.0, self.scoring_engine._to_float(tf_rule_cfg.get("4"), tf_default)))
+            return float(self.scoring_engine._question_score(section, q_actual, key, subject_cfg_local))
+
+        if answer_text == "G":
+            return _max_points_for_question()
+
+        if section == "MCQ":
+            return _max_points_for_question() if (student_text and student_text == answer_text) else 0.0
+
+        if section == "NUMERIC":
+            answer_norm = self.scoring_engine._normalize_numeric_text(answer_text)
+            student_norm = self.scoring_engine._normalize_numeric_text(student_text)
+            return _max_points_for_question() if (answer_norm and student_norm and answer_norm == student_norm) else 0.0
+
         if section == "TF":
-            tf_rule_cfg = ((subject_cfg_local.get("question_scores", {}) or {}).get("TF", {}) if isinstance(subject_cfg_local, dict) else {}) or {}
-            tf_default = self.scoring_engine._question_score(section, q_actual, key, subject_cfg_local)
-            return float(max(0.0, self.scoring_engine._to_float(tf_rule_cfg.get("4"), tf_default)))
-        return float(self.scoring_engine._question_score(section, q_actual, key, subject_cfg_local))
+            width = max(1, min(len(answer_text), 4))
+            matched = 0
+            for expected, actual in zip(answer_text[:width], student_text[:width]):
+                if expected == actual or expected == "G":
+                    matched += 1
+            if mode == "Điểm theo phần":
+                tf_rule_cfg = ((sec_scores.get("TF") or {}).get("rule_per_question") or {})
+                tf_full_points = self.scoring_engine._to_float(((sec_scores.get("TF") or {}).get("total_points")), 0.0)
+            else:
+                tf_rule_cfg = ((subject_cfg_local.get("question_scores", {}) or {}).get("TF", {}) if isinstance(subject_cfg_local, dict) else {}) or {}
+                tf_full_points = self.scoring_engine._question_score(section, q_actual, key, subject_cfg_local)
+            tf_rule_points = {
+                0: 0.0,
+                1: max(0.0, self.scoring_engine._to_float(tf_rule_cfg.get("1"), 0.1)),
+                2: max(0.0, self.scoring_engine._to_float(tf_rule_cfg.get("2"), 0.25)),
+                3: max(0.0, self.scoring_engine._to_float(tf_rule_cfg.get("3"), 0.5)),
+                4: max(0.0, self.scoring_engine._to_float(tf_rule_cfg.get("4"), tf_full_points)),
+            }
+            return float(tf_rule_points.get(matched, 0.0))
+
+        return 0.0
 
     def _is_answer_match_for_row(section: str, answer: str, student: str) -> bool:
         answer_text = str(answer or "").strip().upper()
