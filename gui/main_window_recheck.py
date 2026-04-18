@@ -739,6 +739,33 @@ def open_recheck_dialog(self) -> None:
                 return "".join(out)
             return "".join("Đ" if ch in {"T", "Đ", "D", "1"} else "S" for ch in text if ch in {"T", "F", "Đ", "D", "S", "1", "0"})
 
+        def _normalize_numeric_token(value: object) -> str:
+            text = str(value or "").strip().replace(" ", "")
+            if not text:
+                return ""
+            if "," in text and "." in text:
+                last_comma = text.rfind(",")
+                last_dot = text.rfind(".")
+                if last_comma > last_dot:
+                    text = text.replace(".", "").replace(",", ".")
+                else:
+                    text = text.replace(",", "")
+            else:
+                text = text.replace(",", ".")
+            return text.lstrip("+")
+
+        def _answers_match(section: str, correct: str, student: str) -> bool:
+            if str(section or "").upper() == "NUMERIC":
+                c_val = _normalize_numeric_token(correct)
+                s_val = _normalize_numeric_token(student)
+                if c_val == s_val:
+                    return True
+                try:
+                    return abs(float(c_val) - float(s_val)) <= 1e-9
+                except Exception:
+                    return False
+            return str(correct or "").strip().upper() == str(student or "").strip().upper()
+
         def _add_row(section: str, q_display: int, q_no: int, correct: str, student: str) -> None:
             r = answer_tbl.rowCount()
             answer_tbl.insertRow(r)
@@ -749,7 +776,7 @@ def open_recheck_dialog(self) -> None:
             answer_tbl.setItem(r, 1, q_item)
             answer_tbl.setItem(r, 2, QTableWidgetItem(correct))
             student_item = QTableWidgetItem(student)
-            if str(correct or "").strip().upper() != str(student or "").strip().upper():
+            if not _answers_match(section, correct, student):
                 student_item.setBackground(QColor(255, 225, 225))
             answer_tbl.setItem(r, 3, student_item)
             row_map.append((section, int(q_no)))
@@ -780,13 +807,25 @@ def open_recheck_dialog(self) -> None:
         if item is None or item.column() != 3:
             return
         row_idx = item.row()
+        section_txt = str(answer_tbl.item(row_idx, 0).text() if answer_tbl.item(row_idx, 0) else "").strip().upper()
         correct_txt = str(answer_tbl.item(row_idx, 2).text() if answer_tbl.item(row_idx, 2) else "").strip().upper()
-        student_txt = str(item.text() or "").strip().upper()
-        if student_txt != str(item.text() or ""):
-            answer_tbl.blockSignals(True)
-            item.setText(student_txt)
-            answer_tbl.blockSignals(False)
-        if correct_txt != student_txt:
+        raw_student_txt = str(item.text() or "").strip()
+        if section_txt != "NUMERIC":
+            student_txt = raw_student_txt.upper()
+            if student_txt != str(item.text() or ""):
+                answer_tbl.blockSignals(True)
+                item.setText(student_txt)
+                answer_tbl.blockSignals(False)
+        else:
+            student_txt = raw_student_txt
+        is_match = (
+            abs(float(str(correct_txt).replace(",", ".").strip()) - float(str(student_txt).replace(",", ".").strip())) <= 1e-9
+            if section_txt == "NUMERIC"
+            and str(correct_txt).replace(",", ".").strip() not in {"", "G"}
+            and str(student_txt).replace(",", ".").strip() not in {"", "G"}
+            else correct_txt == str(student_txt).strip().upper() if section_txt != "NUMERIC" else str(correct_txt).replace(",", ".").strip() == str(student_txt).replace(",", ".").strip()
+        )
+        if not is_match:
             item.setBackground(QColor(255, 225, 225))
         else:
             item.setBackground(QColor(255, 255, 255, 0))
