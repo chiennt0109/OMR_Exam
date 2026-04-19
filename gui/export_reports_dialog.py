@@ -428,8 +428,10 @@ class ExportReportsDialog(QDialog):
         for sid, profile in profiles.items():
             if not sid:
                 continue
-            vals = [score_maps[i].get(sid, "") for i in range(3)]
-            total = round(sum(float(v) for v in vals), 4) if all(isinstance(v, (int, float)) for v in vals) else ""
+            vals = [score_maps[i].get(sid, None) for i in range(3)]
+            if not all(isinstance(v, (int, float)) for v in vals):
+                continue
+            total = round(sum(float(v) for v in vals), 4)
             full_name = str(profile.get("name", "") or "").strip()
             parts = full_name.split()
             ho_dem = " ".join(parts[:-1]) if len(parts) > 1 else ""
@@ -444,16 +446,10 @@ class ExportReportsDialog(QDialog):
                 total,
                 "",
             ])
-        sortable = [(idx, row) for idx, row in enumerate(rows) if isinstance(row[8], (int, float))]
-        sortable.sort(key=lambda item: float(item[1][8]), reverse=True)
-        rank_by_idx = {idx: rank + 1 for rank, (idx, _row) in enumerate(sortable)}
-        for idx, row in enumerate(rows, start=1):
-            row[0] = idx
-            row[9] = rank_by_idx.get(idx - 1, "")
         rows.sort(key=lambda item: float(item[8]) if isinstance(item[8], (int, float)) else -1.0, reverse=True)
         for idx, row in enumerate(rows, start=1):
             row[0] = idx
-            row[9] = idx if isinstance(row[8], (int, float)) else ""
+            row[9] = idx
         return rows
 
     def build_combo_ranking_report(self) -> ReportTable:
