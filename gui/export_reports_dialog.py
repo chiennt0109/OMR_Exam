@@ -203,15 +203,29 @@ class ExportReportsDialog(QDialog):
 
     def _collect_class_options(self) -> list[str]:
         vals = ["Tất cả"]
-        classes = sorted(
+        classes = self._session_class_order()
+        extra_classes = sorted(
             set(
                 str(profile.get("class_name", "") or "").strip()
                 for profile in self._student_profile_map().values()
-                if str(profile.get("class_name", "") or "").strip()
+                if str(profile.get("class_name", "") or "").strip() and str(profile.get("class_name", "") or "").strip() not in classes
             )
         )
+        classes.extend(extra_classes)
         vals.extend(classes)
         return vals
+
+    def _session_class_order(self) -> list[str]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+        if self.main_window.session:
+            for st in (self.main_window.session.students or []):
+                cls = str(getattr(st, "class_name", "") or "").strip()
+                if not cls or cls in seen:
+                    continue
+                seen.add(cls)
+                ordered.append(cls)
+        return ordered
 
     def _student_profile_map(self) -> dict[str, dict[str, str]]:
         if self._student_profile_cache is not None:
@@ -528,8 +542,11 @@ class ExportReportsDialog(QDialog):
         if selected_class and selected_class != "Tất cả":
             grouped = {selected_class: grouped.get(selected_class, [])}
 
+        class_order = self._session_class_order()
+        ordered_classes = [cls for cls in class_order if cls in grouped]
+        ordered_classes.extend(sorted(cls for cls in grouped if cls not in class_order))
         all_rows: list[list[object]] = []
-        for cls in sorted(grouped):
+        for cls in ordered_classes:
             rows = grouped[cls]
             rows.sort(key=lambda item: str(item[1]))
             for idx, row in enumerate(rows, start=1):
@@ -542,6 +559,21 @@ class ExportReportsDialog(QDialog):
                 rows.append(avg_row)
             all_rows.extend(rows)
         return ReportTable(headers, all_rows, grouped)
+
+    @staticmethod
+    def _compact_columns_for_rows(headers: list[str], rows: list[list[object]], fixed_cols: int = 6) -> tuple[list[str], list[list[object]]]:
+        if not headers:
+            return headers, rows
+        keep_indices = list(range(min(fixed_cols, len(headers))))
+        for col_idx in range(fixed_cols, len(headers)):
+            has_score = any(isinstance((row[col_idx] if col_idx < len(row) else ""), (int, float)) for row in rows)
+            if has_score:
+                keep_indices.append(col_idx)
+        compact_headers = [headers[i] for i in keep_indices]
+        compact_rows: list[list[object]] = []
+        for row in rows:
+            compact_rows.append([row[i] if i < len(row) else "" for i in keep_indices])
+        return compact_headers, compact_rows
 
     def _build_report(self) -> ReportTable:
         name = self.report_list.currentItem().text() if self.report_list.currentItem() else self.REPORT_SUBJECT_DIST
@@ -585,6 +617,7 @@ class ExportReportsDialog(QDialog):
             return
         from openpyxl import Workbook
         from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+        from openpyxl.utils import get_column_letter
 
         def _apply_name_alignment(ws_obj, headers: list[str]) -> None:
             if "Họ tên" not in headers:
@@ -635,19 +668,66 @@ class ExportReportsDialog(QDialog):
                         cell.font = bold_body_font if c_idx == 9 else body_font
                 widths = [8, 26, 16, 16, 14, 10, 10, 10, 16, 14]
                 for idx, width in enumerate(widths, start=1):
-                    ws.column_dimensions[chr(64 + idx)].width = width
+                    ws.column_dimensions[get_column_letter(idx)].width = width
             wb.save(Path(path))
             QMessageBox.information(self, "Báo cáo", f"Đã xuất Excel:\n{path}")
             return
         if report_name == self.REPORT_CLASS_SUMMARY and self._last_report.grouped_rows:
             if wb.active:
                 wb.remove(wb.active)
+            title_font = Font(bold=True, size=15, color="0B4EA2")
+            header_font = Font(bold=True, color="FFFFFF")
+            body_font = Font(size=11, color="1F2D3D")
+            title_fill = PatternFill(fill_type="solid", fgColor="FFFFFF")
+            header_fill = PatternFill(fill_type="solid", fgColor="1677E5")
+            body_fill = PatternFill(fill_type="solid", fgColor="EFEFEF")
+            thin = Side(border_style="thin", color="D0D0D0")
+            border = Border(left=thin, right=thin, top=thin, bottom=thin)
             for cls, rows in self._last_report.grouped_rows.items():
+                class_headers, class_rows = self._compact_columns_for_rows(self._last_report.headers, rows, fixed_cols=6)
                 ws = wb.create_sheet(self.main_window._safe_sheet_name(cls, fallback="class"))
-                ws.append(self._last_report.headers)
-                for row in rows:
-                    ws.append(row)
-                _apply_name_alignment(ws, self._last_report.headers)
+                ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max(1, len(class_headers)))
+                title_cell = ws.cell(row=1, column=1, value=f"TỔNG HỢP THEO LỚP: {cls.upper()}")
+                title_cell.font = title_font
+                title_cell.alignment = Alignment(horizontal="center", vertical="center")
+                title_cell.fill = title_fill
+                ws.row_dimensions[1].height = 30
+                for c_idx, header in enumerate(class_headers, start=1):
+                    cell = ws.cell(row=3, column=c_idx, value=header.upper())
+                    cell.font = header_font
+                    cell.fill = header_fill
+                    cell.alignment = Alignment(horizontal="left", vertical="center")
+                    cell.border = border
+                for r_offset, row in enumerate(class_rows, start=4):
+                    for c_idx, value in enumerate(row, start=1):
+                        cell = ws.cell(row=r_offset, column=c_idx, value=value)
+                        cell.fill = body_fill
+                        cell.border = border
+                        cell.alignment = Alignment(horizontal="center", vertical="center")
+                        cell.font = body_font
+                for col_idx in range(1, len(class_headers) + 1):
+                    ws.column_dimensions[get_column_letter(col_idx)].width = 14
+                if len(class_headers) >= 3:
+                    ws.column_dimensions["C"].width = 28
+                if len(class_headers) >= 4:
+                    ws.column_dimensions["D"].width = 16
+                if len(class_headers) >= 5:
+                    ws.column_dimensions["E"].width = 14
+                if len(class_headers) >= 6:
+                    ws.column_dimensions["F"].width = 14
+                _apply_name_alignment(ws, class_headers)
+                avg_row = ["", "", "", "", "Trung bình lớp", ""]
+                for col_idx in range(6, len(class_headers)):
+                    vals = [float(r[col_idx]) for r in class_rows if col_idx < len(r) and isinstance(r[col_idx], (int, float))]
+                    avg_row.append(round(mean(vals), 4) if vals else "")
+                ws.append(avg_row)
+                for c_idx in range(1, len(class_headers) + 1):
+                    cell = ws.cell(row=ws.max_row, column=c_idx)
+                    cell.fill = body_fill
+                    cell.border = border
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                    cell.font = Font(size=11, color="1F2D3D", bold=True)
+                _apply_name_alignment(ws, class_headers)
         else:
             ws = wb.active
             ws.title = "report"
@@ -726,6 +806,67 @@ class ExportReportsDialog(QDialog):
                         x += col_w[idx]
                     y += row_h
                 y += 20
+            painter.end()
+            QMessageBox.information(self, "Báo cáo", f"Đã xuất PDF:\n{path}")
+            return
+        if report_name == self.REPORT_CLASS_SUMMARY and self._last_report.grouped_rows:
+            page_w = writer.width()
+            page_h = writer.height()
+            margin = 36
+            y = margin
+            title_font = QFont("Arial", 16, QFont.Bold)
+            header_font = QFont("Arial", 10, QFont.Bold)
+            body_font = QFont("Arial", 9)
+            blue = QColor("#1677E5")
+            white = QColor("#FFFFFF")
+            text_blue = QColor("#0B4EA2")
+            gray = QColor("#EFEFEF")
+            line_color = QColor("#D0D0D0")
+            for cls, rows in self._last_report.grouped_rows.items():
+                class_headers, class_rows = self._compact_columns_for_rows(self._last_report.headers, rows, fixed_cols=6)
+                if not class_headers:
+                    continue
+                col_count = len(class_headers)
+                table_w = page_w - margin * 2
+                col_w = [table_w / col_count] * col_count
+                row_h = 22
+                avg_row = ["", "", "", "", "Trung bình lớp", ""]
+                for col_idx in range(6, len(class_headers)):
+                    vals = [float(r[col_idx]) for r in class_rows if col_idx < len(r) and isinstance(r[col_idx], (int, float))]
+                    avg_row.append(round(mean(vals), 4) if vals else "")
+                display_rows = class_rows + [avg_row]
+                required_h = 60 + row_h + max(1, len(display_rows)) * row_h + 20
+                if y + required_h > page_h - margin:
+                    writer.newPage()
+                    y = margin
+                painter.setFont(title_font)
+                painter.setPen(QPen(text_blue))
+                painter.drawText(QRectF(margin, y, table_w, 30), int(Qt.AlignCenter), f"TỔNG HỢP THEO LỚP: {cls.upper()}")
+                y += 34
+                painter.setFont(header_font)
+                x = margin
+                for idx, head in enumerate(class_headers):
+                    rect = QRectF(x, y, col_w[idx], row_h)
+                    painter.fillRect(rect, blue)
+                    painter.setPen(QPen(white))
+                    painter.drawText(rect.adjusted(6, 0, -2, 0), int(Qt.AlignVCenter | Qt.AlignLeft), str(head).upper())
+                    painter.setPen(QPen(line_color))
+                    painter.drawRect(rect)
+                    x += col_w[idx]
+                y += row_h
+                for row_idx, row in enumerate(display_rows):
+                    x = margin
+                    for idx, value in enumerate(row):
+                        rect = QRectF(x, y, col_w[idx], row_h)
+                        painter.fillRect(rect, gray)
+                        painter.setPen(QPen(line_color))
+                        painter.drawRect(rect)
+                        painter.setPen(QPen(QColor("#1F2D3D")))
+                        painter.setFont(QFont("Arial", 9, QFont.Bold) if row_idx == len(display_rows) - 1 else body_font)
+                        painter.drawText(rect, int(Qt.AlignCenter), "" if value is None else str(value))
+                        x += col_w[idx]
+                    y += row_h
+                y += 16
             painter.end()
             QMessageBox.information(self, "Báo cáo", f"Đã xuất PDF:\n{path}")
             return
