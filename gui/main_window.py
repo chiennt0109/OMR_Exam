@@ -5218,6 +5218,7 @@ class MainWindow(QMainWindow):
         try:
             self.score_preview_table.setRowCount(0)
             for row in loaded_rows:
+                row = self._hydrate_scoring_row_with_student_profile(subject, row)
                 r = self.score_preview_table.rowCount()
                 self.score_preview_table.insertRow(r)
                 status_text = str((row or {}).get("status", "") or (row or {}).get("note", "") or "OK")
@@ -5273,6 +5274,24 @@ class MainWindow(QMainWindow):
         self._refresh_scoring_state_label(subject)
         self._update_scoring_status_bar(success_count, error_count, edited_count, pending_count)
         self._apply_scoring_filter()
+
+    def _hydrate_scoring_row_with_student_profile(self, subject_key: str, row: dict) -> dict:
+        payload = dict(row or {})
+        sid = str(payload.get("student_id", "") or "").strip()
+        if not sid:
+            return payload
+        cfg = self._subject_config_by_subject_key(subject_key) or {}
+        profile = self._student_profile_by_id(sid)
+        room_text = (
+            self._subject_room_for_student_id(sid, cfg)
+            or str(profile.get("exam_room", "") or "").strip()
+            or str(payload.get("exam_room", "") or "").strip()
+        )
+        payload["name"] = str(profile.get("name", "") or payload.get("name", "") or "").strip()
+        payload["class_name"] = str(profile.get("class_name", "") or payload.get("class_name", "") or "").strip()
+        payload["birth_date"] = str(profile.get("birth_date", "") or payload.get("birth_date", "") or "").strip()
+        payload["exam_room"] = room_text
+        return payload
 
     @staticmethod
     def _scoring_filter_column_from_combo_index(combo_index: int) -> int | None:
@@ -13769,18 +13788,21 @@ class MainWindow(QMainWindow):
             sid_key = (r.student_id or "").strip()
             if sid_key:
                 old_payload = (prev_subject_scores.get(sid_key, {}) or {})
-                row_class_name = str(getattr(r, "class_name", "") or old_payload.get("class_name", "") or "-")
-                row_birth_date = str(getattr(r, "birth_date", "") or old_payload.get("birth_date", "") or "-")
+                profile = self._student_profile_by_id(sid_key)
+                row_name = str(profile.get("name", "") or getattr(r, "name", "") or old_payload.get("name", "") or "")
+                row_class_name = str(profile.get("class_name", "") or getattr(r, "class_name", "") or old_payload.get("class_name", "") or "-")
+                row_birth_date = str(profile.get("birth_date", "") or getattr(r, "birth_date", "") or old_payload.get("birth_date", "") or "-")
                 row_exam_room = str(
-                    getattr(r, "exam_room", "")
+                    self._subject_room_for_student_id(sid_key, self._subject_config_by_subject_key(subject) or {})
+                    or getattr(r, "exam_room", "")
                     or old_payload.get("exam_room", "")
-                    or self._student_profile_by_id(sid_key).get("exam_room", "")
+                    or profile.get("exam_room", "")
                     or ""
                 )
                 row_status = "Đã sửa" if (sid_key in edited_student_ids or old_payload.get("status") == "Đã sửa") else str(getattr(r, "scoring_note", "") or "OK")
                 subject_scores[sid_key] = {
                     "student_id": r.student_id,
-                    "name": r.name,
+                    "name": row_name,
                     "subject": r.subject,
                     "class_name": row_class_name,
                     "birth_date": row_birth_date,
@@ -13806,6 +13828,12 @@ class MainWindow(QMainWindow):
 
         self.scoring_results_by_subject[subject] = subject_scores
         self._persist_scoring_results(subject, phase=phase)
+        # DB is canonical source: reload full payload (especially after "Chỉ tính bài chưa có điểm")
+        # so the grid always shows newest complete data from storage.
+        self.scoring_results_by_subject.pop(subject, None)
+        self._load_cached_scoring_results_for_subject(subject)
+        refreshed_map = self._load_scoring_results_for_subject_from_storage(subject)
+        self.score_rows = [self.scoring_engine.score_result_from_dict(dict(x)) for x in refreshed_map.values() if isinstance(x, dict)]
         self._update_scoring_status_bar(success_count, error_count, edited_count, pending_count)
         self._apply_scoring_filter()
         self._current_scoring_subject = subject
