@@ -2282,7 +2282,6 @@ class MainWindow(QMainWindow):
             or self._auto_recognition_busy
             or self._auto_recognition_queue
             or self._auto_recognition_active_subject
-            or (not self._auto_recognition_pause_requested and self._has_subject_auto_recognition_enabled())
         )
 
     def _interrupt_active_workflows(self) -> None:
