@@ -3415,7 +3415,7 @@ class MainWindow(QMainWindow):
         # self.ribbon_delete_exam_action = toolbar.addAction(style.standardIcon(QStyle.SP_TrashIcon), "Xoá", self._delete_selected_registry_session)
         toolbar.addSeparator()
         # Workflow actions
-        self.ribbon_subject_list_action = toolbar.addAction(style.standardIcon(QStyle.SP_DirIcon), "Danh sách môn thi", self.manage_subjects)
+        self.ribbon_subject_list_action = toolbar.addAction(style.standardIcon(QStyle.SP_DirIcon), "Danh sách môn thi", self.action_open_current_exam_subjects)
         self.ribbon_batch_scan_action = toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Nhận dạng", self.action_run_batch_scan)
         self.ribbon_scoring_action = toolbar.addAction(style.standardIcon(QStyle.SP_CommandLink), "Tính điểm", self.action_calculate_scores)
         self.ribbon_recheck_action = toolbar.addAction(style.standardIcon(QStyle.SP_BrowserReload), "Phúc tra", self.action_open_recheck)
@@ -3701,6 +3701,17 @@ class MainWindow(QMainWindow):
         self._set_subject_management_mode("subjects")
         self._navigate_to("subject_management", context={"session_id": self.current_session_id}, push_current=True, require_confirm=False, reason="manage_subjects")
 
+    def action_open_current_exam_subjects(self) -> None:
+        if not self._confirm_interrupt_active_workflows("Danh sách môn thi"):
+            return
+        if self._open_current_session_in_exam_editor():
+            return
+        QMessageBox.information(
+            self,
+            "Danh sách môn thi",
+            "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.",
+        )
+
     def action_create_session(self) -> None:
         if not self._confirm_before_switching_work("kỳ thi mới"):
             return
@@ -3870,7 +3881,7 @@ class MainWindow(QMainWindow):
         if getattr(self, "ribbon_view_exam_action", None) is not None:
             self.ribbon_view_exam_action.setEnabled(True)
         if getattr(self, "ribbon_subject_list_action", None) is not None:
-            self.ribbon_subject_list_action.setEnabled(True)
+            self.ribbon_subject_list_action.setEnabled(bool(self.current_session_id))
         if getattr(self, "ribbon_batch_scan_action", None) is not None:
             self.ribbon_batch_scan_action.setEnabled(has_session and has_subject_cfg)
         if getattr(self, "ribbon_scoring_action", None) is not None:
