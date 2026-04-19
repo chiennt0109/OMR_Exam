@@ -5167,34 +5167,8 @@ class MainWindow(QMainWindow):
             return
         result = self._find_scoring_scan_result(subject, sid, exam_code)
         if result is None:
-            if self.session and any(str(getattr(st, "student_id", "") or "").strip() == sid for st in (self.session.students or [])):
-                scan_candidates = list(self._refresh_scan_results_from_db(subject) or [])
-                if not scan_candidates:
-                    QMessageBox.warning(self, "Tính điểm", "Không có bài scan nào để chọn làm nguồn chỉnh sửa.")
-                    return
-                options: list[str] = []
-                option_map: dict[str, OMRResult] = {}
-                for idx, candidate in enumerate(scan_candidates, start=1):
-                    c_sid = str(getattr(candidate, "student_id", "") or "").strip() or "-"
-                    c_code = str(getattr(candidate, "exam_code", "") or "").strip() or "-"
-                    c_file = Path(str(getattr(candidate, "image_path", "") or "-")).name or "-"
-                    label = f"#{idx} | SBD:{c_sid} | Mã đề:{c_code} | File:{c_file}"
-                    options.append(label)
-                    option_map[label] = candidate
-                picked, ok = QInputDialog.getItem(
-                    self,
-                    "Chọn bài scan nguồn",
-                    f"SBD {sid} chưa có bài scan trực tiếp. Hãy chọn bài scan nguồn để gán/chỉnh lại SBD:",
-                    options,
-                    0,
-                    False,
-                )
-                if not ok or not picked:
-                    return
-                result = option_map.get(str(picked), None)
-            if result is None:
-                QMessageBox.warning(self, "Tính điểm", "Không tìm thấy bài scan gốc để mở màn hình sửa.")
-                return
+            QMessageBox.warning(self, "Tính điểm", "Không tìm thấy bài scan gốc để mở màn hình sửa.")
+            return
         self._open_scoring_review_editor(subject, result)
 
     def _update_direct_score_import_row(self, subject_key: str, student_id: str, score_text: str, exam_room: str = "") -> bool:
@@ -13853,38 +13827,6 @@ class MainWindow(QMainWindow):
                     "file": str(getattr(scan, "image_path", "") or "-"),
                     "reason": err_msg,
                 })
-
-        row_sid_norms: set[str] = set()
-        for row_obj in rows:
-            sid_row = str(getattr(row_obj, "student_id", "") or "").strip()
-            sid_norm = self._normalized_student_id_for_match(sid_row)
-            if sid_norm:
-                row_sid_norms.add(sid_norm)
-
-        for st in (self.session.students or []) if self.session else []:
-            sid_cfg = str(getattr(st, "student_id", "") or "").strip()
-            sid_norm = self._normalized_student_id_for_match(sid_cfg)
-            if not sid_cfg or not sid_norm or sid_norm in row_sid_norms:
-                continue
-            profile = self._student_profile_by_id(sid_cfg)
-            missing_row = self.scoring_engine.score_result_from_dict({
-                "student_id": sid_cfg,
-                "name": str(getattr(st, "name", "") or profile.get("name", "") or "-"),
-                "subject": subject,
-                "exam_code": "",
-                "mcq_correct": 0,
-                "tf_correct": 0,
-                "numeric_correct": 0,
-                "correct": 0,
-                "wrong": 0,
-                "blank": 0,
-                "score": 0.0,
-                "class_name": str(profile.get("class_name", "") or "-"),
-                "birth_date": str(profile.get("birth_date", "") or "-"),
-            })
-            setattr(missing_row, "scoring_note", "Không có bài thi")
-            rows.append(missing_row)
-            row_sid_norms.add(sid_norm)
 
         return self._finalize_scoring_rows(
             subject,
