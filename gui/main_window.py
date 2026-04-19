@@ -4113,6 +4113,27 @@ class MainWindow(QMainWindow):
             return rows
         return self._refresh_scan_results_from_db(subject_key) or []
 
+    def _scoring_source_student_ids(self, subject_key: str) -> tuple[set[str], int]:
+        subject = str(subject_key or "").strip()
+        if not subject:
+            return set(), 0
+        cfg = self._subject_config_by_subject_key(subject) or {}
+        if self._subject_uses_direct_score_import(cfg):
+            import_rows = self._direct_score_import_rows_for_subject(cfg)
+            student_ids = {
+                str((row or {}).get("student_id", "") or "").strip()
+                for row in import_rows
+                if str((row or {}).get("student_id", "") or "").strip()
+            }
+            return student_ids, len(import_rows)
+        scan_rows = self._scan_rows_for_subject(subject)
+        student_ids = {
+            str(getattr(scan, "student_id", "") or "").strip()
+            for scan in scan_rows
+            if str(getattr(scan, "student_id", "") or "").strip()
+        }
+        return student_ids, len(scan_rows)
+
     def _subject_uses_direct_score_import(self, subject_or_cfg: str | dict | None) -> bool:
         cfg = subject_or_cfg if isinstance(subject_or_cfg, dict) else self._subject_config_by_subject_key(str(subject_or_cfg or "").strip())
         if not isinstance(cfg, dict):
@@ -5171,6 +5192,18 @@ class MainWindow(QMainWindow):
         for _, payload in (stored_rows or {}).items():
             if isinstance(payload, dict):
                 loaded_rows.append(dict(payload))
+        source_student_ids, source_row_count = self._scoring_source_student_ids(subject)
+        if source_row_count > 0:
+            filtered_rows: list[dict] = []
+            for row in loaded_rows:
+                sid = str((row or {}).get("student_id", "") or "").strip()
+                status_text = str((row or {}).get("status", "") or (row or {}).get("note", "") or "").strip()
+                if sid and sid in source_student_ids:
+                    filtered_rows.append(row)
+                    continue
+                if not sid and status_text.startswith("Lỗi"):
+                    filtered_rows.append(row)
+            loaded_rows = filtered_rows
         loaded_rows.sort(key=lambda row: (
             0 if str((row or {}).get("status", "") or "").startswith("Lỗi") else 1,
             str((row or {}).get("student_id", "") or ""),
@@ -5188,13 +5221,17 @@ class MainWindow(QMainWindow):
                 r = self.score_preview_table.rowCount()
                 self.score_preview_table.insertRow(r)
                 status_text = str((row or {}).get("status", "") or (row or {}).get("note", "") or "OK")
+                score_raw = (row or {}).get("score", "")
+                score_display = str(score_raw) if score_raw not in {"", None} else ""
+                if status_text == "OK" and score_display == "":
+                    status_text = "Chưa có điểm"
                 if status_text.startswith("Lỗi"):
                     error_count += 1
                 else:
                     success_count += 1
                 if status_text == "Đã sửa":
                     edited_count += 1
-                if status_text in {"Chưa chấm", "Cần chấm lại"}:
+                if status_text in {"Chưa chấm", "Cần chấm lại", "Chưa có điểm"}:
                     pending_count += 1
                 values = [
                     str((row or {}).get("student_id", "") or "-"),
@@ -5208,7 +5245,7 @@ class MainWindow(QMainWindow):
                     str((row or {}).get("correct", 0)),
                     str((row or {}).get("wrong", 0)),
                     str((row or {}).get("blank", 0)),
-                    str((row or {}).get("recheck_score", "") if (row or {}).get("recheck_score", "") not in {"", None} else (row or {}).get("score", 0)),
+                    str((row or {}).get("recheck_score", "") if (row or {}).get("recheck_score", "") not in {"", None} else score_display),
                     status_text,
                 ]
                 for col, value in enumerate(values):
@@ -5220,7 +5257,7 @@ class MainWindow(QMainWindow):
                             category = "error"
                         elif status_text == "Đã sửa":
                             category = "edited"
-                        elif status_text in {"Chưa chấm", "Cần chấm lại"}:
+                        elif status_text in {"Chưa chấm", "Cần chấm lại", "Chưa có điểm"}:
                             category = "pending"
                         item.setData(Qt.UserRole, category)
                     self.score_preview_table.setItem(r, col, item)
