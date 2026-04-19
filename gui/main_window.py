@@ -3942,7 +3942,7 @@ class MainWindow(QMainWindow):
 
     def _has_exportable_data(self) -> bool:
         for _label, key in self._iter_export_subjects():
-            if self._load_scoring_results_for_subject_from_storage(key):
+            if self._load_scoring_results_for_subject_from_storage(key, force_db=True):
                 return True
             if self._refresh_scan_results_from_db(key):
                 return True
@@ -4010,8 +4010,8 @@ class MainWindow(QMainWindow):
                     continue
         return raw
 
-    def _score_rows_for_subject(self, subject_key: str) -> list[dict]:
-        payload = self._load_scoring_results_for_subject_from_storage(subject_key)
+    def _score_rows_for_subject(self, subject_key: str, *, force_db: bool = False) -> list[dict]:
+        payload = self._load_scoring_results_for_subject_from_storage(subject_key, force_db=force_db)
         rows = [dict(v) for v in payload.values() if isinstance(v, dict)]
         rows.sort(key=lambda x: str(x.get("student_id", "") or ""))
         return rows
@@ -4080,14 +4080,14 @@ class MainWindow(QMainWindow):
         subject = str(subject_key or "").strip()
         if not subject:
             return []
-        rows = self._score_rows_for_subject(subject)
+        rows = self._score_rows_for_subject(subject, force_db=True)
         if rows:
-            return self._align_export_rows_with_session_students(rows, subject)
+            return rows
         cfg = self._subject_config_by_subject_key(subject) or {}
         if self._subject_uses_direct_score_import(cfg) and self._direct_score_import_rows_for_subject(cfg):
             self.calculate_scores(subject_key=subject, mode="Nhập điểm trực tiếp", note="auto_prepare_export_essay")
-            rows = self._score_rows_for_subject(subject)
-        return self._align_export_rows_with_session_students(rows, subject)
+            rows = self._score_rows_for_subject(subject, force_db=True)
+        return rows
 
     @staticmethod
     def _score_value_for_statistics(row: dict) -> float | None:
@@ -4097,7 +4097,7 @@ class MainWindow(QMainWindow):
         status_fold = status_text.casefold()
         if status_fold.startswith("lỗi"):
             return None
-        if status_fold in {"chưa chấm", "cần chấm lại"}:
+        if status_fold in {"chưa chấm", "cần chấm lại", "chưa có điểm"}:
             return None
         score_raw = row.get("score", "")
         if score_raw in {"", None}:
@@ -5162,13 +5162,13 @@ class MainWindow(QMainWindow):
         note = str(phase.get("note", "") or "")
         self._persist_scoring_results_for_subject(subject, payloads, mode, note, mark_saved=True)
 
-    def _load_scoring_results_for_subject_from_storage(self, subject_key: str) -> dict[str, dict]:
+    def _load_scoring_results_for_subject_from_storage(self, subject_key: str, *, force_db: bool = False) -> dict[str, dict]:
         # DB là nguồn chuẩn cho scoring; chỉ dùng runtime cache đã có nếu cùng subject trong phiên hiện tại.
         subject = str(subject_key or "").strip()
         if not subject:
             return {}
         cached = self.scoring_results_by_subject.get(subject)
-        if isinstance(cached, dict) and cached:
+        if (not force_db) and isinstance(cached, dict) and cached:
             return dict(cached)
         db_rows = self.database.fetch_scores_for_subject(subject) or []
         loaded: dict[str, dict] = {}
@@ -14080,7 +14080,7 @@ class MainWindow(QMainWindow):
         from openpyxl import Workbook
 
         for _label, key in self._iter_export_subjects():
-            self._load_scoring_results_for_subject_from_storage(key)
+            self._load_scoring_results_for_subject_from_storage(key, force_db=True)
 
         wb = Workbook()
         ws = wb.active
@@ -14235,6 +14235,9 @@ class MainWindow(QMainWindow):
             status_text = str(row.get("status", "") or "").strip()
             status_fold = status_text.casefold()
             has_error = bool(status_fold) and status_fold not in {"ok", "đã sửa"}
+            score_value = row.get("recheck_score", "")
+            if score_value in {"", None}:
+                score_value = row.get("score", "")
             normalized.append({
                 "_has_error": has_error,
                 "SBD": sid,
@@ -14246,7 +14249,7 @@ class MainWindow(QMainWindow):
                 "Đúng": row.get("correct", 0),
                 "Sai": row.get("wrong", 0),
                 "Bỏ trống": row.get("blank", 0),
-                "Điểm": row.get("score", 0),
+                "Điểm": "" if score_value in {"", None} else score_value,
                 "Trạng thái": status_text,
                 "Ghi chú": str(row.get("note", "") or ""),
             })
@@ -14303,7 +14306,7 @@ class MainWindow(QMainWindow):
                     rec["Ngày sinh"] = self._format_birth_date_for_export(row.get("Ngày sinh", ""))
                 if not rec.get("Lớp") and row.get("Lớp"):
                     rec["Lớp"] = row.get("Lớp", "")
-                rec[score_header] = row.get("Điểm", 0)
+                rec[score_header] = row.get("Điểm", "")
         sorted_rows = sorted(student_rows.values(), key=lambda x: str(x.get("SBD", "")))
         return base_headers, score_headers, sorted_rows
 
