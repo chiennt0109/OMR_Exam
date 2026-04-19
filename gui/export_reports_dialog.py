@@ -178,7 +178,26 @@ class ExportReportsDialog(QDialog):
         if not key:
             return []
         if key not in self._score_rows_cache:
-            self._score_rows_cache[key] = list(self.main_window._ensure_export_score_rows_for_subject(key) or [])
+            rows = list(self.main_window._ensure_export_score_rows_for_subject(key) or [])
+            source_ids: set[str] = set()
+            source_count = 0
+            if hasattr(self.main_window, "_scoring_source_student_ids"):
+                try:
+                    source_ids, source_count = self.main_window._scoring_source_student_ids(key)
+                except Exception:
+                    source_ids, source_count = set(), 0
+            if source_count > 0:
+                filtered: list[dict] = []
+                for row in rows:
+                    sid = str((row or {}).get("student_id", "") or "").strip()
+                    status_text = str((row or {}).get("status", "") or (row or {}).get("note", "") or "").strip()
+                    if sid and sid in source_ids:
+                        filtered.append(dict(row))
+                        continue
+                    if not sid and status_text.startswith("Lỗi"):
+                        filtered.append(dict(row))
+                rows = filtered
+            self._score_rows_cache[key] = rows
         return list(self._score_rows_cache.get(key, []))
 
     def _collect_class_options(self) -> list[str]:
