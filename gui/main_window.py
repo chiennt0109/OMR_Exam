@@ -1175,9 +1175,13 @@ class NewExamDialog(QDialog):
         btn_scan.clicked.connect(self._browse_scan_root)
         row_students = QHBoxLayout(); row_students.addWidget(self.student_list_path)
         btn_students = QPushButton("Import Excel...")
+        self.btn_view_students = QPushButton("Xem danh sách")
         row_students.addWidget(btn_students)
+        row_students.addWidget(self.btn_view_students)
         row_students.addWidget(self.student_count_label)
         btn_students.clicked.connect(self._import_student_list)
+        self.btn_view_students.clicked.connect(self._open_student_list_preview)
+        self.btn_view_students.setEnabled(bool(self.student_rows))
 
         form.addRow("Tên kỳ thi", self.exam_name)
         form.addRow("Giấy thi dùng chung", row_tpl)
@@ -1400,14 +1404,48 @@ class NewExamDialog(QDialog):
                 return
         else:
             self.student_rows = out
+        duplicate_sids = self._duplicate_student_ids(self.student_rows)
         self.student_list_path_value = path
         self.student_list_path.setText(path)
         self.student_count_label.setText(f"{len(self.student_rows)} học sinh")
+        self.btn_view_students.setEnabled(bool(self.student_rows))
         QMessageBox.information(
             self,
             "Danh sách học sinh",
             f"Đã {action_text} danh sách học sinh. Tổng hiện tại: {len(self.student_rows)} học sinh.",
         )
+        if duplicate_sids:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle("Danh sách học sinh")
+            msg.setText(
+                f"Phát hiện {len(duplicate_sids)} SBD bị trùng trong danh sách vừa import.\n"
+                "Bạn có muốn mở màn hình \"Xem danh sách\" để kiểm tra và xoá bản ghi không?"
+            )
+            msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+            msg.setDefaultButton(QMessageBox.Yes)
+            if msg.exec() == QMessageBox.Yes:
+                self._open_student_list_preview()
+
+    @staticmethod
+    def _duplicate_student_ids(rows: list[dict]) -> set[str]:
+        counts: dict[str, int] = {}
+        for row in rows or []:
+            sid = str((row or {}).get("student_id", "") or "").strip()
+            if sid:
+                counts[sid] = counts.get(sid, 0) + 1
+        return {sid for sid, count in counts.items() if count > 1}
+
+    def _open_student_list_preview(self) -> None:
+        if not self.student_rows:
+            QMessageBox.information(self, "Danh sách học sinh", "Chưa có dữ liệu học sinh để xem.")
+            return
+        dlg = StudentListPreviewDialog(self.student_rows, self)
+        if dlg.exec() == QDialog.Accepted:
+            self.student_rows = dlg.rows()
+            self.student_count_label.setText(f"{len(self.student_rows)} học sinh")
+            self.btn_view_students.setEnabled(bool(self.student_rows))
+
 
     def _refresh_subject_list(self) -> None:
         self.subject_table.setRowCount(len(self.subject_configs))
@@ -1671,6 +1709,84 @@ class NewExamDialog(QDialog):
             "paper_part_count": int(self.paper_part_count.currentText()),
             "subject_configs": self.subject_configs,
         }
+
+class StudentListPreviewDialog(QDialog):
+    def __init__(self, rows: list[dict], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Xem danh sách học sinh")
+        self.resize(980, 640)
+        self._rows: list[dict] = [dict(r or {}) for r in (rows or [])]
+
+        lay = QVBoxLayout(self)
+        note = QLabel("Các dòng trùng SBD được tô đỏ. Có thể chọn nhiều dòng và bấm Xoá.")
+        note.setWordWrap(True)
+        lay.addWidget(note)
+
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["STT", "SBD", "Họ tên", "Ngày sinh", "Lớp", "Phòng thi"])
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        hdr = self.table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        lay.addWidget(self.table)
+
+        action_row = QHBoxLayout()
+        self.delete_btn = QPushButton("Xoá bản ghi đã chọn")
+        self.delete_btn.clicked.connect(self._delete_selected_rows)
+        action_row.addWidget(self.delete_btn)
+        action_row.addStretch(1)
+        lay.addLayout(action_row)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Save).setText("Lưu danh sách")
+        bb.button(QDialogButtonBox.Cancel).setText("Đóng")
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+        self._reload_table()
+
+    def rows(self) -> list[dict]:
+        return [dict(r or {}) for r in self._rows]
+
+    def _reload_table(self) -> None:
+        duplicate_sids = NewExamDialog._duplicate_student_ids(self._rows)
+        self.table.setRowCount(len(self._rows))
+        for idx, row in enumerate(self._rows):
+            sid = str((row or {}).get("student_id", "") or "").strip()
+            values = [
+                str(idx + 1),
+                sid,
+                str((row or {}).get("name", "") or ""),
+                str((row or {}).get("birth_date", "") or ""),
+                str((row or {}).get("class_name", "") or ""),
+                str((row or {}).get("exam_room", "") or ""),
+            ]
+            for col, text in enumerate(values):
+                item = QTableWidgetItem(text)
+                if sid and sid in duplicate_sids:
+                    item.setBackground(QColor(255, 220, 220))
+                    item.setForeground(QColor(180, 0, 0))
+                self.table.setItem(idx, col, item)
+        self.table.resizeRowsToContents()
+
+    def _delete_selected_rows(self) -> None:
+        selected_indexes = self.table.selectionModel().selectedRows() if self.table.selectionModel() else []
+        if not selected_indexes:
+            QMessageBox.information(self, "Xem danh sách học sinh", "Vui lòng chọn bản ghi cần xoá.")
+            return
+        target_rows = sorted({int(index.row()) for index in selected_indexes}, reverse=True)
+        for row_idx in target_rows:
+            if 0 <= row_idx < len(self._rows):
+                self._rows.pop(row_idx)
+        self._reload_table()
 
 
 class MainWindow(QMainWindow):
@@ -2159,6 +2275,41 @@ class MainWindow(QMainWindow):
         if not self._has_pending_unsaved_work():
             return True
         return self._handle_pending_changes_before_switch(target_text)
+
+    def _has_active_workflows(self) -> bool:
+        return bool(
+            self._batch_scan_running
+            or self._auto_recognition_busy
+            or self._auto_recognition_queue
+            or self._auto_recognition_active_subject
+            or (not self._auto_recognition_pause_requested and self._has_subject_auto_recognition_enabled())
+        )
+
+    def _interrupt_active_workflows(self) -> None:
+        self._batch_cancel_requested = True
+        self._auto_recognition_pause_requested = True
+        self._auto_recognition_queue.clear()
+        self._auto_recognition_enqueued.clear()
+        self._auto_recognition_active_subject = ""
+        self._update_auto_recognition_progress()
+
+    def _confirm_interrupt_active_workflows(self, destination_text: str) -> bool:
+        if not self._has_active_workflows():
+            return True
+        answer = QMessageBox.question(
+            self,
+            "Xác nhận chuyển màn hình",
+            (
+                f"Chuyển sang \"{destination_text}\" có thể ảnh hưởng đến luồng đang chạy.\n"
+                "Bạn có đồng ý ngắt tất cả tiến trình nhận dạng đang chạy không?"
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return False
+        self._interrupt_active_workflows()
+        return True
 
     def _prompt_save_changes_word_style(self, title: str, message: str) -> str:
         msg = QMessageBox(self)
@@ -3261,10 +3412,11 @@ class MainWindow(QMainWindow):
         style = self.style()
         # Session actions
         self.ribbon_new_exam_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileIcon), "Tạo mới", self.action_create_session)
-        self.ribbon_view_exam_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Danh sách", self._edit_selected_registry_session)
+        self.ribbon_view_exam_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogListView), "Danh sách kỳ thi", self.action_open_session)
         # self.ribbon_delete_exam_action = toolbar.addAction(style.standardIcon(QStyle.SP_TrashIcon), "Xoá", self._delete_selected_registry_session)
         toolbar.addSeparator()
         # Workflow actions
+        self.ribbon_subject_list_action = toolbar.addAction(style.standardIcon(QStyle.SP_DirIcon), "Danh sách môn thi", self.manage_subjects)
         self.ribbon_batch_scan_action = toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Nhận dạng", self.action_run_batch_scan)
         self.ribbon_scoring_action = toolbar.addAction(style.standardIcon(QStyle.SP_CommandLink), "Tính điểm", self.action_calculate_scores)
         self.ribbon_recheck_action = toolbar.addAction(style.standardIcon(QStyle.SP_BrowserReload), "Phúc tra", self.action_open_recheck)
@@ -3544,6 +3696,8 @@ class MainWindow(QMainWindow):
                 setattr(self, attr, None)
 
     def manage_subjects(self) -> None:
+        if not self._confirm_interrupt_active_workflows("Danh sách môn thi"):
+            return
         self._refresh_subject_management_tables()
         self._set_subject_management_mode("subjects")
         self._navigate_to("subject_management", context={"session_id": self.current_session_id}, push_current=True, require_confirm=False, reason="manage_subjects")
@@ -3584,6 +3738,8 @@ class MainWindow(QMainWindow):
         self._open_embedded_exam_editor(session_id, draft, payload, is_new=True)
 
     def action_open_session(self) -> None:
+        if not self._confirm_interrupt_active_workflows("Danh sách kỳ thi"):
+            return
         self._navigate_to("exam_list", context={}, push_current=True, require_confirm=False, reason="open_exam_list")
 
     def action_save_session(self) -> None:
@@ -3654,6 +3810,7 @@ class MainWindow(QMainWindow):
         for action in [
             getattr(self, "ribbon_new_exam_action", None),
             getattr(self, "ribbon_view_exam_action", None),
+            getattr(self, "ribbon_subject_list_action", None),
             getattr(self, "ribbon_delete_exam_action", None),
             getattr(self, "ribbon_batch_scan_action", None),
             getattr(self, "ribbon_scoring_action", None),
@@ -3712,7 +3869,9 @@ class MainWindow(QMainWindow):
         if getattr(self, "ribbon_new_exam_action", None) is not None:
             self.ribbon_new_exam_action.setEnabled(True)
         if getattr(self, "ribbon_view_exam_action", None) is not None:
-            self.ribbon_view_exam_action.setEnabled(has_exam_selection)
+            self.ribbon_view_exam_action.setEnabled(True)
+        if getattr(self, "ribbon_subject_list_action", None) is not None:
+            self.ribbon_subject_list_action.setEnabled(True)
         if getattr(self, "ribbon_batch_scan_action", None) is not None:
             self.ribbon_batch_scan_action.setEnabled(has_session and has_subject_cfg)
         if getattr(self, "ribbon_scoring_action", None) is not None:
