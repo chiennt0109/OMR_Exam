@@ -220,12 +220,36 @@ class ExportReportsDialog(QDialog):
         seen: set[str] = set()
         if self.main_window.session:
             for st in (self.main_window.session.students or []):
-                cls = str(getattr(st, "class_name", "") or "").strip()
+                cls = self._student_extra_text(st, ["class_name", "class", "Lớp", "lop", "Mã lớp", "ma_lop"])
                 if not cls or cls in seen:
                     continue
                 seen.add(cls)
                 ordered.append(cls)
         return ordered
+
+    @staticmethod
+    def _student_extra_text(student: object, keys: list[str]) -> str:
+        if not keys:
+            return ""
+        meta = getattr(student, "extra", {}) or {}
+        if not isinstance(meta, dict):
+            meta = {}
+        lowered = {str(k).strip().lower(): v for k, v in meta.items()}
+        for key in keys:
+            key_text = str(key or "").strip()
+            if not key_text:
+                continue
+            if hasattr(student, key_text):
+                raw = getattr(student, key_text, "")
+                if str(raw or "").strip():
+                    return str(raw).strip()
+            raw = meta.get(key_text, None)
+            if str(raw or "").strip():
+                return str(raw).strip()
+            raw = lowered.get(key_text.lower(), None)
+            if str(raw or "").strip():
+                return str(raw).strip()
+        return ""
 
     def _student_profile_map(self) -> dict[str, dict[str, str]]:
         if self._student_profile_cache is not None:
@@ -240,9 +264,11 @@ class ExportReportsDialog(QDialog):
                 has_session_students = True
                 out[sid] = {
                     "name": str(getattr(st, "name", "") or ""),
-                    "birth_date": self.main_window._format_birth_date_for_export(getattr(st, "birth_date", "") or ""),
-                    "class_name": str(getattr(st, "class_name", "") or ""),
-                    "exam_room": str(getattr(st, "exam_room", "") or ""),
+                    "birth_date": self.main_window._format_birth_date_for_export(
+                        self._student_extra_text(st, ["birth_date", "dob", "Ngày sinh", "ngay_sinh"])
+                    ),
+                    "class_name": self._student_extra_text(st, ["class_name", "class", "Lớp", "lop", "Mã lớp", "ma_lop"]),
+                    "exam_room": self._student_extra_text(st, ["exam_room", "room", "Phòng thi", "phong_thi"]),
                 }
         for _label, key in self._collect_subject_pairs():
             for row in self._score_rows_for_subject_cached(key):
