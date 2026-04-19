@@ -231,11 +231,13 @@ class ExportReportsDialog(QDialog):
         if self._student_profile_cache is not None:
             return dict(self._student_profile_cache)
         out: dict[str, dict[str, str]] = {}
+        has_session_students = False
         if self.main_window.session:
             for st in (self.main_window.session.students or []):
                 sid = str(getattr(st, "student_id", "") or "").strip()
                 if not sid:
                     continue
+                has_session_students = True
                 out[sid] = {
                     "name": str(getattr(st, "name", "") or ""),
                     "birth_date": self.main_window._format_birth_date_for_export(getattr(st, "birth_date", "") or ""),
@@ -246,6 +248,9 @@ class ExportReportsDialog(QDialog):
             for row in self._score_rows_for_subject_cached(key):
                 sid = str(row.get("student_id", "") or "").strip()
                 if not sid:
+                    continue
+                if has_session_students and sid not in out:
+                    # Lớp phải theo danh sách import ban đầu của kỳ thi; không tạo mới từ dữ liệu phát sinh.
                     continue
                 rec = out.setdefault(
                     sid,
