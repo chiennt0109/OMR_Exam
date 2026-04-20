@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QProgressDialog,
@@ -1192,14 +1193,16 @@ class NewExamDialog(QDialog):
         lay.addLayout(form)
 
         lay.addWidget(QLabel("Các môn trong kỳ thi"))
-        self.subject_table = QTableWidget(0, 10)
-        self.subject_table.setHorizontalHeaderLabels(["Môn", "Khối", "Key", "Mã đề", "Chế độ điểm", "Tổng điểm", "Template", "Cơ chế", "Trạng thái", "Thao tác"])
+        self.subject_table = QTableWidget(0, 11)
+        self.subject_table.setHorizontalHeaderLabels(["STT", "Môn", "Khối", "Key", "Mã đề", "Chế độ điểm", "Tổng điểm", "Template", "Cơ chế", "Trạng thái", "Thao tác"])
         self.subject_table.verticalHeader().setVisible(False)
         self.subject_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.subject_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.subject_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.subject_table.setShowGrid(True)
         self.subject_table.setGridStyle(Qt.SolidLine)
+        self.subject_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.subject_table.customContextMenuRequested.connect(self._open_subject_row_context_menu)
         # double click navigation: open subject editor directly from row.
         self.subject_table.cellDoubleClicked.connect(self._handle_subject_table_double_click)
         hdr = self.subject_table.horizontalHeader()
@@ -1213,25 +1216,8 @@ class NewExamDialog(QDialog):
         hdr.setSectionResizeMode(7, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(8, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(9, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(10, QHeaderView.ResizeToContents)
         lay.addWidget(self.subject_table)
-
-        row = QHBoxLayout()
-        b_add = QPushButton("Thêm môn")
-        b_edit = QPushButton("Sửa môn")
-        b_del = QPushButton("Xoá môn")
-        b_add.clicked.connect(self._add_subject)
-        b_edit.clicked.connect(self._edit_subject)
-        b_del.clicked.connect(self._delete_subject)
-        row.addWidget(b_add); row.addWidget(b_edit); row.addWidget(b_del)
-        lay.addLayout(row)
-
-        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        cancel_btn = bb.button(QDialogButtonBox.Cancel)
-        if cancel_btn is not None:
-            cancel_btn.setText("Đóng")
-        bb.accepted.connect(self._validate_and_accept)
-        bb.rejected.connect(self.reject)
-        lay.addWidget(bb)
 
         self._refresh_subject_list()
 
@@ -1456,17 +1442,17 @@ class NewExamDialog(QDialog):
             mode = cfg.get("score_mode", "Điểm theo phần")
             total = cfg.get("total_exam_points", "-")
             codes = ",".join(sorted((cfg.get("imported_answer_keys") or {}).keys()))
-            self.subject_table.setItem(row_idx, 0, QTableWidgetItem(str(cfg.get("name", "") or "-")))
-            self.subject_table.setItem(row_idx, 1, QTableWidgetItem(str(cfg.get("block", "") or "-")))
-            self.subject_table.setItem(row_idx, 2, QTableWidgetItem(str(key or "-")))
-            self.subject_table.setItem(row_idx, 3, QTableWidgetItem(codes or "-"))
-            self.subject_table.setItem(row_idx, 4, QTableWidgetItem(str(mode or "-")))
-            self.subject_table.setItem(row_idx, 5, QTableWidgetItem(str(total or "-")))
-            self.subject_table.setItem(row_idx, 6, QTableWidgetItem(str(tpl or "-")))
+            self.subject_table.setItem(row_idx, 0, QTableWidgetItem(str(row_idx + 1)))
+            self.subject_table.setItem(row_idx, 1, QTableWidgetItem(str(cfg.get("name", "") or "-")))
+            self.subject_table.setItem(row_idx, 2, QTableWidgetItem(str(cfg.get("block", "") or "-")))
+            self.subject_table.setItem(row_idx, 3, QTableWidgetItem(str(key or "-")))
+            self.subject_table.setItem(row_idx, 4, QTableWidgetItem(codes or "-"))
+            self.subject_table.setItem(row_idx, 5, QTableWidgetItem(str(mode or "-")))
+            self.subject_table.setItem(row_idx, 6, QTableWidgetItem(str(total or "-")))
+            self.subject_table.setItem(row_idx, 7, QTableWidgetItem(str(tpl or "-")))
             auto_mode = "Nhận dạng tự động" if bool(cfg.get("auto_recognize", False)) else "Thủ công"
-            self.subject_table.setItem(row_idx, 7, QTableWidgetItem(auto_mode))
-            status_text = "Đã nhận dạng" if bool(cfg.get("batch_saved")) else "-"
-            self.subject_table.setItem(row_idx, 8, QTableWidgetItem(status_text))
+            self.subject_table.setItem(row_idx, 8, QTableWidgetItem(auto_mode))
+            self.subject_table.setItem(row_idx, 9, QTableWidgetItem(self._subject_status_text(cfg)))
 
             btn_batch_scan = QPushButton("Nhận dạng")
             btn_batch_scan.setIcon(style.standardIcon(QStyle.SP_MediaPlay))
@@ -1477,8 +1463,27 @@ class NewExamDialog(QDialog):
             wrap_l = QHBoxLayout(wrap)
             wrap_l.setContentsMargins(0, 0, 0, 0)
             wrap_l.addWidget(btn_batch_scan)
-            self.subject_table.setCellWidget(row_idx, 9, wrap)
+            self.subject_table.setCellWidget(row_idx, 10, wrap)
         self.subject_table.resizeRowsToContents()
+
+    def _subject_status_text(self, cfg: dict) -> str:
+        if not isinstance(cfg, dict):
+            return "-"
+        count = int(cfg.get("batch_result_count", 0) or 0)
+        if count > 0 or bool(cfg.get("batch_saved")):
+            return "Đã nhận dạng"
+        for key in ("batch_saved_rows", "batch_saved_preview", "batch_saved_results"):
+            payload = cfg.get(key, [])
+            if isinstance(payload, list) and payload:
+                return "Đã nhận dạng"
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "_is_subject_marked_batched"):
+            try:
+                if bool(parent._is_subject_marked_batched(cfg)):
+                    return "Đã nhận dạng"
+            except Exception:
+                pass
+        return "-"
 
     def _current_subject_index(self) -> int:
         idx = self.subject_table.currentRow()
@@ -1489,6 +1494,25 @@ class NewExamDialog(QDialog):
             return
         self.subject_table.selectRow(row)
         self._edit_subject()
+
+    def _open_subject_row_context_menu(self, pos) -> None:
+        row = self.subject_table.rowAt(pos.y())
+        if row < 0 or row >= len(self.subject_configs):
+            return
+        self.subject_table.selectRow(row)
+        menu = QMenu(self)
+        act_scan = menu.addAction("Nhận dạng")
+        act_edit = menu.addAction("Sửa cấu hình môn")
+        act_delete = menu.addAction("Xoá")
+        chosen = menu.exec(self.subject_table.viewport().mapToGlobal(pos))
+        if chosen == act_scan:
+            self._trigger_subject_batch_scan(row)
+            return
+        if chosen == act_edit:
+            self._edit_subject()
+            return
+        if chosen == act_delete:
+            self._delete_subject()
 
     def _trigger_subject_batch_scan(self, idx: int) -> None:
         if idx < 0 or idx >= len(self.subject_configs):
@@ -1672,6 +1696,15 @@ class NewExamDialog(QDialog):
     def _delete_subject(self) -> None:
         idx = self._current_subject_index()
         if idx < 0:
+            return
+        name = str((self.subject_configs[idx] or {}).get("name", "") or "").strip() or "môn đã chọn"
+        if QMessageBox.question(
+            self,
+            "Xoá môn",
+            f"Bạn có chắc muốn xoá {name} khỏi kỳ thi?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        ) != QMessageBox.Yes:
             return
         del self.subject_configs[idx]
         self._refresh_subject_list()
@@ -3011,6 +3044,18 @@ class MainWindow(QMainWindow):
             if w:
                 w.deleteLater()
 
+        if session_id:
+            self.current_session_id = session_id
+            self.current_session_path = self._session_path_from_id(session_id)
+        if session is not None:
+            self.session = session
+            if not is_new:
+                self.session_dirty = False
+            self._refresh_session_info()
+            self._refresh_batch_subject_controls()
+            self._refresh_scoring_phase_table()
+            self._refresh_ribbon_action_states()
+
         self.embedded_exam_session_id = session_id
         self.embedded_exam_session = session
         self.embedded_exam_original_payload = dict(payload)
@@ -3424,6 +3469,12 @@ class MainWindow(QMainWindow):
         self.ribbon_export_action.setMenu(self.export_menu)
         toolbar.addAction(self.ribbon_export_action)
         toolbar.addSeparator()
+        self.ribbon_exam_editor_add_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogNewFolder), "Thêm môn", self._exam_editor_add_subject)
+        self.ribbon_exam_editor_edit_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Sửa môn", self._exam_editor_edit_subject)
+        self.ribbon_exam_editor_delete_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_TrashIcon), "Xoá môn", self._exam_editor_delete_subject)
+        self.ribbon_exam_editor_save_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Save", self._exam_editor_save)
+        self.ribbon_exam_editor_close_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogCloseButton), "Đóng", self._exam_editor_close)
+        toolbar.addSeparator()
         self.ribbon_add_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogNewFolder), "Add Subject", self._subject_management_add)
         self.ribbon_edit_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Edit", self._subject_management_edit)
         self.ribbon_delete_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_TrashIcon), "Delete Subject", self._subject_management_delete)
@@ -3816,6 +3867,7 @@ class MainWindow(QMainWindow):
         subject_management_visible = index == 2
         template_library_visible = index == 3
         template_editor_visible = index == 4
+        exam_editor_visible = index == 5
         template_visible = template_library_visible or template_editor_visible
         for action in [
             getattr(self, "ribbon_new_exam_action", None),
@@ -3824,10 +3876,20 @@ class MainWindow(QMainWindow):
             getattr(self, "ribbon_delete_exam_action", None),
             getattr(self, "ribbon_batch_scan_action", None),
             getattr(self, "ribbon_scoring_action", None),
+            getattr(self, "ribbon_recheck_action", None),
             getattr(self, "ribbon_export_action", None),
         ]:
             if action is not None:
                 action.setVisible(not subject_management_visible and not template_visible)
+        for action in [
+            getattr(self, "ribbon_exam_editor_add_subject_action", None),
+            getattr(self, "ribbon_exam_editor_edit_subject_action", None),
+            getattr(self, "ribbon_exam_editor_delete_subject_action", None),
+            getattr(self, "ribbon_exam_editor_save_action", None),
+            getattr(self, "ribbon_exam_editor_close_action", None),
+        ]:
+            if action is not None:
+                action.setVisible(exam_editor_visible)
         for action in [
             getattr(self, "ribbon_add_subject_action", None),
             getattr(self, "ribbon_edit_subject_action", None),
@@ -3872,10 +3934,6 @@ class MainWindow(QMainWindow):
     def _refresh_ribbon_action_states(self) -> None:
         has_session = self._has_session_context_for_export()
         has_subject_cfg = bool(self._effective_subject_configs_for_batch())
-        has_batch_rows = bool(hasattr(self, "scan_list") and self.scan_list.rowCount() > 0)
-        has_subject_selection = bool(hasattr(self, "batch_subject_combo") and self.batch_subject_combo.currentIndex() > 0)
-        has_exam_selection = bool(hasattr(self, "exam_list_table") and self.exam_list_table.currentRow() >= 0)
-        has_scoring_subjects = bool(self._eligible_scoring_subject_keys()) if has_session else False
         if getattr(self, "ribbon_new_exam_action", None) is not None:
             self.ribbon_new_exam_action.setEnabled(True)
         if getattr(self, "ribbon_view_exam_action", None) is not None:
@@ -3885,13 +3943,49 @@ class MainWindow(QMainWindow):
         if getattr(self, "ribbon_batch_scan_action", None) is not None:
             self.ribbon_batch_scan_action.setEnabled(has_session and has_subject_cfg)
         if getattr(self, "ribbon_scoring_action", None) is not None:
-            self.ribbon_scoring_action.setEnabled(has_session and has_scoring_subjects)
+            self.ribbon_scoring_action.setEnabled(has_session)
         if getattr(self, "ribbon_recheck_action", None) is not None:
-            self.ribbon_recheck_action.setEnabled(has_session and has_batch_rows)
+            self.ribbon_recheck_action.setEnabled(has_session)
+        has_embedded_exam_editor = bool(self.embedded_exam_dialog is not None)
+        for attr_name in [
+            "ribbon_exam_editor_add_subject_action",
+            "ribbon_exam_editor_edit_subject_action",
+            "ribbon_exam_editor_delete_subject_action",
+            "ribbon_exam_editor_save_action",
+            "ribbon_exam_editor_close_action",
+        ]:
+            action = getattr(self, attr_name, None)
+            if action is not None:
+                action.setEnabled(has_embedded_exam_editor)
         has_export_data = self._has_exportable_data()
         if getattr(self, "ribbon_export_action", None) is not None:
             self.ribbon_export_action.setEnabled(has_session)
         self._refresh_export_action_states(has_session=has_session, has_export_data=has_export_data)
+
+    def _exam_editor_add_subject(self) -> None:
+        if self.embedded_exam_dialog is not None:
+            self.embedded_exam_dialog._add_subject()
+            self._refresh_ribbon_action_states()
+
+    def _exam_editor_edit_subject(self) -> None:
+        if self.embedded_exam_dialog is not None:
+            self.embedded_exam_dialog._edit_subject()
+            self._refresh_ribbon_action_states()
+
+    def _exam_editor_delete_subject(self) -> None:
+        if self.embedded_exam_dialog is not None:
+            self.embedded_exam_dialog._delete_subject()
+            self._refresh_ribbon_action_states()
+
+    def _exam_editor_save(self) -> None:
+        if self.embedded_exam_dialog is not None:
+            self.embedded_exam_dialog._validate_and_accept()
+            self._refresh_ribbon_action_states()
+
+    def _exam_editor_close(self) -> None:
+        if self.embedded_exam_dialog is not None:
+            self.embedded_exam_dialog.reject()
+            self._refresh_ribbon_action_states()
 
     def _has_session_context_for_export(self) -> bool:
         if bool(str(getattr(self, "current_session_id", "") or "").strip()):
@@ -3905,6 +3999,22 @@ class MainWindow(QMainWindow):
             if row >= 0 and bool(str(self._session_id_for_row(row) or "").strip()):
                 return True
         return False
+
+    def _ensure_current_session_loaded(self) -> bool:
+        if self.session is not None:
+            return True
+        sid = str(getattr(self, "current_session_id", "") or "").strip()
+        if not sid:
+            return False
+        payload = self.database.fetch_exam_session(sid) or {}
+        if not payload:
+            return False
+        try:
+            self.session = ExamSession.from_dict(payload)
+            self.current_session_path = self._session_path_from_id(sid)
+        except Exception:
+            return False
+        return self.session is not None
 
     def _refresh_export_action_states(self, *, has_session: bool | None = None, has_export_data: bool | None = None) -> None:
         if has_session is None:
@@ -4356,7 +4466,7 @@ class MainWindow(QMainWindow):
             self.export_answer_key_sample()
 
     def _start_batch_scan_from_ui(self) -> None:
-        if not self.session:
+        if not self._ensure_current_session_loaded():
             QMessageBox.warning(self, "Batch Scan", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
             return
         cfgs = self._effective_subject_configs_for_batch()
@@ -5923,7 +6033,7 @@ class MainWindow(QMainWindow):
         self.scoring_subject_combo.blockSignals(False)
 
     def _open_scoring_view(self) -> None:
-        if not self.session:
+        if not self._ensure_current_session_loaded():
             QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
             return
 
