@@ -3011,6 +3011,18 @@ class MainWindow(QMainWindow):
             if w:
                 w.deleteLater()
 
+        if session_id:
+            self.current_session_id = session_id
+            self.current_session_path = self._session_path_from_id(session_id)
+        if session is not None:
+            self.session = session
+            if not is_new:
+                self.session_dirty = False
+            self._refresh_session_info()
+            self._refresh_batch_subject_controls()
+            self._refresh_scoring_phase_table()
+            self._refresh_ribbon_action_states()
+
         self.embedded_exam_session_id = session_id
         self.embedded_exam_session = session
         self.embedded_exam_original_payload = dict(payload)
@@ -3872,10 +3884,6 @@ class MainWindow(QMainWindow):
     def _refresh_ribbon_action_states(self) -> None:
         has_session = self._has_session_context_for_export()
         has_subject_cfg = bool(self._effective_subject_configs_for_batch())
-        has_batch_rows = bool(hasattr(self, "scan_list") and self.scan_list.rowCount() > 0)
-        has_subject_selection = bool(hasattr(self, "batch_subject_combo") and self.batch_subject_combo.currentIndex() > 0)
-        has_exam_selection = bool(hasattr(self, "exam_list_table") and self.exam_list_table.currentRow() >= 0)
-        has_scoring_subjects = bool(self._eligible_scoring_subject_keys()) if has_session else False
         if getattr(self, "ribbon_new_exam_action", None) is not None:
             self.ribbon_new_exam_action.setEnabled(True)
         if getattr(self, "ribbon_view_exam_action", None) is not None:
@@ -3885,9 +3893,9 @@ class MainWindow(QMainWindow):
         if getattr(self, "ribbon_batch_scan_action", None) is not None:
             self.ribbon_batch_scan_action.setEnabled(has_session and has_subject_cfg)
         if getattr(self, "ribbon_scoring_action", None) is not None:
-            self.ribbon_scoring_action.setEnabled(has_session and has_scoring_subjects)
+            self.ribbon_scoring_action.setEnabled(has_session)
         if getattr(self, "ribbon_recheck_action", None) is not None:
-            self.ribbon_recheck_action.setEnabled(has_session and has_batch_rows)
+            self.ribbon_recheck_action.setEnabled(has_session)
         has_export_data = self._has_exportable_data()
         if getattr(self, "ribbon_export_action", None) is not None:
             self.ribbon_export_action.setEnabled(has_session)
@@ -3905,6 +3913,22 @@ class MainWindow(QMainWindow):
             if row >= 0 and bool(str(self._session_id_for_row(row) or "").strip()):
                 return True
         return False
+
+    def _ensure_current_session_loaded(self) -> bool:
+        if self.session is not None:
+            return True
+        sid = str(getattr(self, "current_session_id", "") or "").strip()
+        if not sid:
+            return False
+        payload = self.database.fetch_exam_session(sid) or {}
+        if not payload:
+            return False
+        try:
+            self.session = ExamSession.from_dict(payload)
+            self.current_session_path = self._session_path_from_id(sid)
+        except Exception:
+            return False
+        return self.session is not None
 
     def _refresh_export_action_states(self, *, has_session: bool | None = None, has_export_data: bool | None = None) -> None:
         if has_session is None:
@@ -4356,7 +4380,7 @@ class MainWindow(QMainWindow):
             self.export_answer_key_sample()
 
     def _start_batch_scan_from_ui(self) -> None:
-        if not self.session:
+        if not self._ensure_current_session_loaded():
             QMessageBox.warning(self, "Batch Scan", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
             return
         cfgs = self._effective_subject_configs_for_batch()
@@ -5923,7 +5947,7 @@ class MainWindow(QMainWindow):
         self.scoring_subject_combo.blockSignals(False)
 
     def _open_scoring_view(self) -> None:
-        if not self.session:
+        if not self._ensure_current_session_loaded():
             QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
             return
 
