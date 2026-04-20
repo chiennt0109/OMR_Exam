@@ -5,7 +5,9 @@ import csv
 import gc
 import json
 import re
+import shutil
 import sys
+import unicodedata
 from collections import deque
 from datetime import date, datetime
 from pathlib import Path
@@ -3430,6 +3432,8 @@ class MainWindow(QMainWindow):
         self.act_export_all_classes_subject_scores.triggered.connect(self.action_export_all_classes_subject_scores)
         self.act_export_all_scores = self.export_menu.addAction("Xuất điểm chi tiết các môn...")
         self.act_export_all_scores.triggered.connect(self.action_export_all_subject_scores)
+        self.act_export_return_by_class = self.export_menu.addAction("Trả bài theo lớp...")
+        self.act_export_return_by_class.triggered.connect(self.action_export_return_by_class)
         self.export_menu.addSeparator()
         self.act_export_subject_api = self.export_menu.addAction("Xuất API bài làm theo môn (;)")
         self.act_export_subject_api.triggered.connect(self.action_export_subject_api_payload)
@@ -4033,6 +4037,7 @@ class MainWindow(QMainWindow):
             "act_export_class_subject_scores",
             "act_export_all_classes_subject_scores",
             "act_export_all_scores",
+            "act_export_return_by_class",
             "act_export_subject_api",
             "act_export_reports_center",
             "act_export_range_report",
@@ -4551,6 +4556,9 @@ class MainWindow(QMainWindow):
 
     def action_export_all_subject_scores(self) -> None:
         self._export_all_subject_scores()
+
+    def action_export_return_by_class(self) -> None:
+        self._export_return_by_class()
 
     def action_export_subject_api_payload(self) -> None:
         subject_key = self._pick_subject_for_export("Xuất API bài làm", "Chọn môn cần xuất API bài làm:")
@@ -14669,6 +14677,82 @@ class MainWindow(QMainWindow):
                 ws_summary.append([key, label, 0, 0, 0, 0])
         wb.save(path)
         QMessageBox.information(self, "Xuất điểm chi tiết các môn", f"Đã xuất dữ liệu:\n{path}")
+
+    @staticmethod
+    def _safe_file_component(value: str, fallback: str = "unknown") -> str:
+        text = str(value or "").strip()
+        if not text:
+            return fallback
+        normalized = unicodedata.normalize("NFKD", text)
+        normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+        normalized = re.sub(r"[\\/:*?\"<>|]+", "_", normalized)
+        normalized = re.sub(r"\s+", "_", normalized).strip("._ ")
+        return normalized or fallback
+
+    def _export_return_by_class(self) -> None:
+        if not self.session:
+            QMessageBox.information(self, "Trả bài theo lớp", "Chưa có kỳ thi hiện tại.")
+            return
+        class_options = self._class_options_for_export()
+        if not class_options:
+            QMessageBox.information(self, "Trả bài theo lớp", "Chưa có dữ liệu lớp.")
+            return
+        picked_class, ok = QInputDialog.getItem(self, "Trả bài theo lớp", "Chọn lớp cần trả bài:", class_options, 0, False)
+        if not ok:
+            return
+        class_name = str(picked_class or "").strip()
+        if not class_name:
+            return
+        output_root = QFileDialog.getExistingDirectory(self, "Chọn thư mục lưu trả bài theo lớp")
+        if not output_root:
+            return
+
+        student_meta = self._student_meta_by_sid()
+        target_class_fold = class_name.casefold()
+        class_dir = Path(output_root) / self._safe_file_component(class_name, fallback="class")
+        class_dir.mkdir(parents=True, exist_ok=True)
+
+        copied_count = 0
+        missing_image_count = 0
+        skipped_count = 0
+        for subject_label, subject_key in self._iter_export_subjects():
+            rows = self._scan_rows_for_subject(subject_key)
+            if not rows:
+                continue
+            subject_dir = class_dir / self._safe_file_component(subject_label, fallback=self._safe_sheet_name(subject_key, fallback="subject"))
+            subject_dir.mkdir(parents=True, exist_ok=True)
+            used_names: set[str] = set()
+            for row in rows:
+                image_path = str(getattr(row, "image_path", "") or "").strip()
+                sid = str(getattr(row, "student_id", "") or "").strip()
+                meta = student_meta.get(sid, {})
+                row_class = str(getattr(row, "class_name", "") or meta.get("class_name", "") or "").strip()
+                if row_class.casefold() != target_class_fold:
+                    continue
+                if not image_path:
+                    skipped_count += 1
+                    continue
+                source_path = Path(image_path)
+                if not source_path.exists() or not source_path.is_file():
+                    missing_image_count += 1
+                    continue
+                student_name = str(getattr(row, "full_name", "") or meta.get("name", "") or "").strip()
+                base_name = f"{self._safe_file_component(sid, fallback='SBD')}_{self._safe_file_component(student_name, fallback='ho_ten')}"
+                final_name = base_name
+                ext = source_path.suffix
+                dup_idx = 2
+                while final_name in used_names or (subject_dir / f"{final_name}{ext}").exists():
+                    final_name = f"{base_name}_{dup_idx}"
+                    dup_idx += 1
+                used_names.add(final_name)
+                shutil.copy2(source_path, subject_dir / f"{final_name}{ext}")
+                copied_count += 1
+
+        QMessageBox.information(
+            self,
+            "Trả bài theo lớp",
+            f"Đã xử lý xong.\n- Lớp: {class_name}\n- File đã copy: {copied_count}\n- File thiếu/không tồn tại: {missing_image_count}\n- Bản ghi bỏ qua (không có đường dẫn ảnh): {skipped_count}\n- Thư mục đích: {class_dir}",
+        )
 
     def _export_subject_api_payload(self, subject_key: str) -> None:
         subject = str(subject_key or "").strip()
