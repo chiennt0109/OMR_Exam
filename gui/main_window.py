@@ -10567,18 +10567,51 @@ class MainWindow(QMainWindow):
                     template_expected["NUMERIC"].extend(rng)
             template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
 
-        expected_by_section = {sec: list(vals) for sec, vals in template_expected.items()}
-        subject_key_name = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+        subject_cfg = self._selected_batch_subject_config() or self._resolve_subject_config_for_batch()
+        current_subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+        answer_subject_key = str(self._answer_key_subject_key(current_subject_key, subject_cfg) or "").strip()
+        exam_code = str(getattr(result, "exam_code", "") or "").strip()
+        normalized_exam_code = self._normalize_exam_code_text(exam_code)
         key_payload: Any = None
-        if subject_key_name:
-            configured = self._fetch_answer_keys_for_subject_scoped(subject_key_name) or {}
+        has_configured_keys = False
+
+        imported_answer_keys = self._subject_imported_answer_keys_for_main(subject_cfg or {})
+        if imported_answer_keys:
+            has_configured_keys = True
+            key_payload = self._match_answer_key_payload_by_exam_code(imported_answer_keys, exam_code)
+
+        if key_payload is None and current_subject_key:
+            configured = self._fetch_answer_keys_for_subject_scoped(current_subject_key, subject_cfg) or {}
             if configured:
-                first_code = next(iter(configured.keys()))
-                key_payload = configured.get(first_code)
-            elif self.answer_keys is not None:
-                subject_candidates = [x for x in self.answer_keys.keys.values() if str(getattr(x, "subject", "") or "") == subject_key_name]
-                if subject_candidates:
-                    key_payload = sorted(subject_candidates, key=lambda x: str(getattr(x, "exam_code", "") or ""))[0]
+                has_configured_keys = True
+                key_payload = self._match_answer_key_payload_by_exam_code(configured, exam_code)
+
+        if key_payload is None and self.answer_keys is not None:
+            subject_candidates: list[str] = []
+            for candidate in [current_subject_key, answer_subject_key]:
+                candidate_text = str(candidate or "").strip()
+                if candidate_text and candidate_text not in subject_candidates:
+                    subject_candidates.append(candidate_text)
+            for candidate_subject in subject_candidates:
+                rows = [
+                    row for row in self.answer_keys.keys.values()
+                    if str(getattr(row, "subject", "") or "").strip() == candidate_subject
+                ]
+                if rows:
+                    has_configured_keys = True
+                for row in rows:
+                    row_exam_code = str(getattr(row, "exam_code", "") or "").strip()
+                    if exam_code and row_exam_code == exam_code:
+                        key_payload = row
+                        break
+                    if normalized_exam_code and self._normalize_exam_code_text(row_exam_code) == normalized_exam_code:
+                        key_payload = row
+                        break
+                if key_payload is not None:
+                    break
+
+        scoped_by_counts = self._question_scope_from_subject_counts(template_expected, subject_cfg, current_subject_key)
+
         if key_payload is not None:
             full_credit = (key_payload.get("full_credit_questions", {}) if isinstance(key_payload, dict) else getattr(key_payload, "full_credit_questions", {})) or {}
             invalid_rows = (key_payload.get("invalid_answer_rows", {}) if isinstance(key_payload, dict) else getattr(key_payload, "invalid_answer_rows", {})) or {}
@@ -10597,21 +10630,42 @@ class MainWindow(QMainWindow):
                         continue
                 return extra
 
+            def _sorted_question_keys(payload: object) -> list[int]:
+                out: set[int] = set()
+                for q in dict(payload or {}).keys():
+                    try:
+                        out.add(int(q))
+                    except Exception:
+                        continue
+                return sorted(out)
+
             mcq_map = (key_payload.get("mcq_answers", {}) if isinstance(key_payload, dict) else getattr(key_payload, "answers", {})) or {}
             tf_map = (key_payload.get("true_false_answers", {}) if isinstance(key_payload, dict) else getattr(key_payload, "true_false_answers", {})) or {}
             numeric_map = (key_payload.get("numeric_answers", {}) if isinstance(key_payload, dict) else getattr(key_payload, "numeric_answers", {})) or {}
-            key_sections = {
-                "MCQ": sorted(set(int(q) for q in mcq_map.keys()) | _extra_for_section("MCQ")),
-                "TF": sorted(set(int(q) for q in tf_map.keys()) | _extra_for_section("TF")),
-                "NUMERIC": sorted(set(int(q) for q in numeric_map.keys()) | _extra_for_section("NUMERIC")),
+            key_scope = {
+                "MCQ": sorted(set(_sorted_question_keys(mcq_map)) | _extra_for_section("MCQ")),
+                "TF": sorted(set(_sorted_question_keys(tf_map)) | _extra_for_section("TF")),
+                "NUMERIC": sorted(set(_sorted_question_keys(numeric_map)) | _extra_for_section("NUMERIC")),
             }
-            for sec in ["MCQ", "TF", "NUMERIC"]:
-                # Always follow answer-key scope if key exists.
-                expected_by_section[sec] = key_sections[sec]
 
-        if not any(expected_by_section.get(sec, []) for sec in ["MCQ", "TF", "NUMERIC"]):
-            return {sec: list(vals) for sec, vals in template_expected.items()}
-        return expected_by_section
+            if any(scoped_by_counts.get(sec, []) for sec in ["MCQ", "TF", "NUMERIC"]):
+                merged_scope: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    allowed = [int(q) for q in (scoped_by_counts.get(sec, []) or [])]
+                    if not allowed:
+                        merged_scope[sec] = []
+                        continue
+                    allowed_set = set(allowed)
+                    filtered = [int(q) for q in (key_scope.get(sec, []) or []) if int(q) in allowed_set]
+                    merged_scope[sec] = filtered or list(allowed)
+                return merged_scope
+            return key_scope
+
+        if any(scoped_by_counts.get(sec, []) for sec in ["MCQ", "TF", "NUMERIC"]):
+            return scoped_by_counts
+        if has_configured_keys:
+            return {"MCQ": [], "TF": [], "NUMERIC": []}
+        return {sec: list(vals) for sec, vals in template_expected.items()}
 
     @staticmethod
     def _format_mcq_answers(answers: dict[int, str]) -> str:
