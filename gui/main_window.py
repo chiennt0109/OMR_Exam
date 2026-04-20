@@ -4983,7 +4983,6 @@ class MainWindow(QMainWindow):
         return w
 
     def _close_batch_scan_view(self) -> None:
-        route_ctx = dict(self._current_route_context or {})
         if self._has_batch_unsaved_changes():
             choice = self._prompt_save_changes_word_style(
                 "Batch Scan chưa lưu",
@@ -4997,12 +4996,23 @@ class MainWindow(QMainWindow):
                 refresh_exam_list=False,
             ):
                 return
+        if self.current_session_id:
+            self._refresh_subject_management_tables()
+            self._set_subject_management_mode("subjects")
+            self._navigate_to(
+                "subject_management",
+                context={"session_id": self.current_session_id},
+                push_current=False,
+                require_confirm=False,
+                reason="close_batch_scan_to_subject_list",
+            )
+            return
         self._navigate_to(
-            "session_dashboard",
-            context=route_ctx,
+            "exam_list",
+            context={},
             push_current=False,
             require_confirm=False,
-            reason="close_batch_scan",
+            reason="close_batch_scan_to_exam_list",
         )
     def _clear_batch_display_caches(self) -> None:
         for result in list(getattr(self, "scan_results", []) or []):
@@ -11115,9 +11125,20 @@ class MainWindow(QMainWindow):
             available_exam_codes=available_exam_codes,
         )
         has_edit_history = bool([str(x) for x in (getattr(result, "edit_history", []) or []) if str(x or "").strip()])
-        manual_override_status = "Đã sửa" if (bool(getattr(result, "manually_edited", False)) or has_edit_history) else ""
-        effective_forced_status = str(forced_status or manual_override_status or "").strip()
-        status_text = effective_forced_status or (", ".join(status_parts) if status_parts else "OK")
+        is_manual_edited = bool(getattr(result, "manually_edited", False)) or has_edit_history
+        forced_status_text = str(forced_status or "").strip()
+        status_parts_text = ", ".join(status_parts) if status_parts else ""
+        if is_manual_edited:
+            if status_parts_text:
+                status_text = f"Đã sửa ({status_parts_text})"
+            elif forced_status_text and forced_status_text not in {"Đã sửa", "OK"}:
+                status_text = f"Đã sửa ({forced_status_text})"
+            else:
+                status_text = "Đã sửa"
+            effective_forced_status = "Đã sửa"
+        else:
+            effective_forced_status = forced_status_text
+            status_text = effective_forced_status or status_parts_text or "OK"
         manual_content_override = str(getattr(result, "manual_content_override", "") or "").strip()
         content_text = self._build_recognition_content_text(scoped_result, blank_map, expected_by_section)
         recognized_short = self._short_recognition_text_for_result(scoped_result)
@@ -11152,6 +11173,9 @@ class MainWindow(QMainWindow):
             "status": status_text,
             "recognized_short": recognized_short,
             "forced_status": effective_forced_status,
+            "manually_edited": is_manual_edited,
+            "edit_history": [str(x) for x in (getattr(result, "edit_history", []) or []) if str(x or "").strip()],
+            "last_adjustment": str(getattr(result, "last_adjustment", "") or ""),
             "blank_map": dict(blank_map),
             "serialized_result": self._serialize_omr_result(result),
             "recognized_template_path": str(getattr(result, "recognized_template_path", "") or ""),
@@ -12422,8 +12446,8 @@ class MainWindow(QMainWindow):
     def _on_scan_cell_clicked(self, row: int, col: int) -> None:
         if row < 0:
             return
-        # Only show edit history when clicking the Status column.
-        if col != self.SCAN_COL_STATUS:
+        # Show edit history from Status / Actions columns for quick access in all status scenarios.
+        if col not in {self.SCAN_COL_STATUS, self.SCAN_COL_ACTIONS}:
             return
         image_key = self._row_image_key(row)
         history = list(self.scan_edit_history.get(image_key, []) or [])
@@ -12433,6 +12457,13 @@ class MainWindow(QMainWindow):
             if history:
                 self.scan_edit_history[image_key] = list(history)
                 self.scan_last_adjustment[image_key] = str(getattr(result, "last_adjustment", "") or history[-1])
+        if not history:
+            sid_item = self.scan_list.item(row, self.SCAN_COL_STUDENT_ID)
+            row_payload = dict(sid_item.data(Qt.UserRole + 12) or {}) if sid_item is not None else {}
+            history = [str(x) for x in (row_payload.get("edit_history", []) or []) if str(x or "").strip()]
+            if history and image_key:
+                self.scan_edit_history[image_key] = list(history)
+                self.scan_last_adjustment[image_key] = str(row_payload.get("last_adjustment", "") or history[-1])
         if not history:
             QMessageBox.information(self, "Lịch sử sửa", "Chưa có lịch sử điều chỉnh trong Status cho bài thi này.")
             return
@@ -12448,6 +12479,10 @@ class MainWindow(QMainWindow):
 
     def _status_text_for_saved_table_row(self, row_idx: int) -> str:
         sid_item = self.scan_list.item(row_idx, self.SCAN_COL_STUDENT_ID)
+        payload = dict(sid_item.data(Qt.UserRole + 12) or {}) if sid_item is not None else {}
+        payload_status = str(payload.get("status", "") or "").strip()
+        payload_history = [str(x) for x in (payload.get("edit_history", []) or []) if str(x or "").strip()]
+        payload_is_edited = bool(payload.get("manually_edited", False)) or bool(payload_history) or ("đã sửa" in payload_status.lower())
         sid = (sid_item.text().strip() if sid_item else "")
         exam_code_text = str(sid_item.data(Qt.UserRole + 1) if sid_item else "").strip()
         dup = 0
@@ -12460,7 +12495,12 @@ class MainWindow(QMainWindow):
                     unique_pairs.add((img_val, sid_val))
             dup = sum(1 for _img, sid_val in unique_pairs if sid_val == sid)
         status_parts = self._status_parts_for_row("" if self._student_id_has_recognition_error(sid) else sid, exam_code_text, dup)
-        return ", ".join(status_parts) if status_parts else "OK"
+        status_parts_text = ", ".join(status_parts) if status_parts else ""
+        if payload_is_edited:
+            if status_parts_text:
+                return f"Đã sửa ({status_parts_text})"
+            return "Đã sửa"
+        return status_parts_text or "OK"
 
     @staticmethod
     def _compact_status_text(status_text: str, max_len: int = 150) -> str:
