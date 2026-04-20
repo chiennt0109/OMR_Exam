@@ -5711,6 +5711,11 @@ class MainWindow(QMainWindow):
         if hasattr(self, "scoring_panel"):
             self.scoring_panel.setVisible(False)
         self._current_route_name = "workspace_batch_scan"
+        for action_name in ["ribbon_batch_execute_action", "ribbon_batch_save_action", "ribbon_batch_close_action"]:
+            action = getattr(self, action_name, None)
+            if action is not None:
+                action.setVisible(True)
+        self._refresh_ribbon_action_states()
         if hasattr(self, "batch_subject_combo") and self.batch_subject_combo.count() > 0:
             cfg = self._selected_batch_subject_config()
             if cfg:
@@ -5729,6 +5734,11 @@ class MainWindow(QMainWindow):
         if hasattr(self, "scoring_panel"):
             self.scoring_panel.setVisible(True)
         self._current_route_name = "workspace_scoring"
+        for action_name in ["ribbon_batch_execute_action", "ribbon_batch_save_action", "ribbon_batch_close_action"]:
+            action = getattr(self, action_name, None)
+            if action is not None:
+                action.setVisible(False)
+        self._refresh_ribbon_action_states()
         selected_subject = str(self.scoring_subject_combo.currentData() or "").strip() if hasattr(self, "scoring_subject_combo") else ""
         if selected_subject:
             self._ensure_scoring_preview_current(selected_subject, reason="auto_refresh_open_scoring", force=False)
