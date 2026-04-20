@@ -5,7 +5,9 @@ import csv
 import gc
 import json
 import re
+import shutil
 import sys
+import unicodedata
 from collections import deque
 from datetime import date, datetime
 from pathlib import Path
@@ -37,6 +39,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QProgressDialog,
@@ -1192,14 +1195,16 @@ class NewExamDialog(QDialog):
         lay.addLayout(form)
 
         lay.addWidget(QLabel("Các môn trong kỳ thi"))
-        self.subject_table = QTableWidget(0, 10)
-        self.subject_table.setHorizontalHeaderLabels(["Môn", "Khối", "Key", "Mã đề", "Chế độ điểm", "Tổng điểm", "Template", "Cơ chế", "Trạng thái", "Thao tác"])
+        self.subject_table = QTableWidget(0, 11)
+        self.subject_table.setHorizontalHeaderLabels(["STT", "Môn", "Khối", "Key", "Mã đề", "Chế độ điểm", "Tổng điểm", "Template", "Cơ chế", "Trạng thái", "Thao tác"])
         self.subject_table.verticalHeader().setVisible(False)
         self.subject_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.subject_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.subject_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.subject_table.setShowGrid(True)
         self.subject_table.setGridStyle(Qt.SolidLine)
+        self.subject_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.subject_table.customContextMenuRequested.connect(self._open_subject_row_context_menu)
         # double click navigation: open subject editor directly from row.
         self.subject_table.cellDoubleClicked.connect(self._handle_subject_table_double_click)
         hdr = self.subject_table.horizontalHeader()
@@ -1213,25 +1218,8 @@ class NewExamDialog(QDialog):
         hdr.setSectionResizeMode(7, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(8, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(9, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(10, QHeaderView.ResizeToContents)
         lay.addWidget(self.subject_table)
-
-        row = QHBoxLayout()
-        b_add = QPushButton("Thêm môn")
-        b_edit = QPushButton("Sửa môn")
-        b_del = QPushButton("Xoá môn")
-        b_add.clicked.connect(self._add_subject)
-        b_edit.clicked.connect(self._edit_subject)
-        b_del.clicked.connect(self._delete_subject)
-        row.addWidget(b_add); row.addWidget(b_edit); row.addWidget(b_del)
-        lay.addLayout(row)
-
-        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        cancel_btn = bb.button(QDialogButtonBox.Cancel)
-        if cancel_btn is not None:
-            cancel_btn.setText("Đóng")
-        bb.accepted.connect(self._validate_and_accept)
-        bb.rejected.connect(self.reject)
-        lay.addWidget(bb)
 
         self._refresh_subject_list()
 
@@ -1456,17 +1444,17 @@ class NewExamDialog(QDialog):
             mode = cfg.get("score_mode", "Điểm theo phần")
             total = cfg.get("total_exam_points", "-")
             codes = ",".join(sorted((cfg.get("imported_answer_keys") or {}).keys()))
-            self.subject_table.setItem(row_idx, 0, QTableWidgetItem(str(cfg.get("name", "") or "-")))
-            self.subject_table.setItem(row_idx, 1, QTableWidgetItem(str(cfg.get("block", "") or "-")))
-            self.subject_table.setItem(row_idx, 2, QTableWidgetItem(str(key or "-")))
-            self.subject_table.setItem(row_idx, 3, QTableWidgetItem(codes or "-"))
-            self.subject_table.setItem(row_idx, 4, QTableWidgetItem(str(mode or "-")))
-            self.subject_table.setItem(row_idx, 5, QTableWidgetItem(str(total or "-")))
-            self.subject_table.setItem(row_idx, 6, QTableWidgetItem(str(tpl or "-")))
+            self.subject_table.setItem(row_idx, 0, QTableWidgetItem(str(row_idx + 1)))
+            self.subject_table.setItem(row_idx, 1, QTableWidgetItem(str(cfg.get("name", "") or "-")))
+            self.subject_table.setItem(row_idx, 2, QTableWidgetItem(str(cfg.get("block", "") or "-")))
+            self.subject_table.setItem(row_idx, 3, QTableWidgetItem(str(key or "-")))
+            self.subject_table.setItem(row_idx, 4, QTableWidgetItem(codes or "-"))
+            self.subject_table.setItem(row_idx, 5, QTableWidgetItem(str(mode or "-")))
+            self.subject_table.setItem(row_idx, 6, QTableWidgetItem(str(total or "-")))
+            self.subject_table.setItem(row_idx, 7, QTableWidgetItem(str(tpl or "-")))
             auto_mode = "Nhận dạng tự động" if bool(cfg.get("auto_recognize", False)) else "Thủ công"
-            self.subject_table.setItem(row_idx, 7, QTableWidgetItem(auto_mode))
-            status_text = "Đã nhận dạng" if bool(cfg.get("batch_saved")) else "-"
-            self.subject_table.setItem(row_idx, 8, QTableWidgetItem(status_text))
+            self.subject_table.setItem(row_idx, 8, QTableWidgetItem(auto_mode))
+            self.subject_table.setItem(row_idx, 9, QTableWidgetItem(self._subject_status_text(cfg)))
 
             btn_batch_scan = QPushButton("Nhận dạng")
             btn_batch_scan.setIcon(style.standardIcon(QStyle.SP_MediaPlay))
@@ -1477,8 +1465,27 @@ class NewExamDialog(QDialog):
             wrap_l = QHBoxLayout(wrap)
             wrap_l.setContentsMargins(0, 0, 0, 0)
             wrap_l.addWidget(btn_batch_scan)
-            self.subject_table.setCellWidget(row_idx, 9, wrap)
+            self.subject_table.setCellWidget(row_idx, 10, wrap)
         self.subject_table.resizeRowsToContents()
+
+    def _subject_status_text(self, cfg: dict) -> str:
+        if not isinstance(cfg, dict):
+            return "-"
+        count = int(cfg.get("batch_result_count", 0) or 0)
+        if count > 0 or bool(cfg.get("batch_saved")):
+            return "Đã nhận dạng"
+        for key in ("batch_saved_rows", "batch_saved_preview", "batch_saved_results"):
+            payload = cfg.get(key, [])
+            if isinstance(payload, list) and payload:
+                return "Đã nhận dạng"
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "_is_subject_marked_batched"):
+            try:
+                if bool(parent._is_subject_marked_batched(cfg)):
+                    return "Đã nhận dạng"
+            except Exception:
+                pass
+        return "-"
 
     def _current_subject_index(self) -> int:
         idx = self.subject_table.currentRow()
@@ -1489,6 +1496,25 @@ class NewExamDialog(QDialog):
             return
         self.subject_table.selectRow(row)
         self._edit_subject()
+
+    def _open_subject_row_context_menu(self, pos) -> None:
+        row = self.subject_table.rowAt(pos.y())
+        if row < 0 or row >= len(self.subject_configs):
+            return
+        self.subject_table.selectRow(row)
+        menu = QMenu(self)
+        act_scan = menu.addAction("Nhận dạng")
+        act_edit = menu.addAction("Sửa cấu hình môn")
+        act_delete = menu.addAction("Xoá")
+        chosen = menu.exec(self.subject_table.viewport().mapToGlobal(pos))
+        if chosen == act_scan:
+            self._trigger_subject_batch_scan(row)
+            return
+        if chosen == act_edit:
+            self._edit_subject()
+            return
+        if chosen == act_delete:
+            self._delete_subject()
 
     def _trigger_subject_batch_scan(self, idx: int) -> None:
         if idx < 0 or idx >= len(self.subject_configs):
@@ -1672,6 +1698,15 @@ class NewExamDialog(QDialog):
     def _delete_subject(self) -> None:
         idx = self._current_subject_index()
         if idx < 0:
+            return
+        name = str((self.subject_configs[idx] or {}).get("name", "") or "").strip() or "môn đã chọn"
+        if QMessageBox.question(
+            self,
+            "Xoá môn",
+            f"Bạn có chắc muốn xoá {name} khỏi kỳ thi?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        ) != QMessageBox.Yes:
             return
         del self.subject_configs[idx]
         self._refresh_subject_list()
@@ -1927,17 +1962,23 @@ class MainWindow(QMainWindow):
         self.auto_recognition_worker_timer.start()
 
     @staticmethod
-    def _scan_folder_signature(cfg: dict | None) -> tuple[int, float]:
+    def _is_subfolder_scan_mode(mode_text: str) -> bool:
+        mode = str(mode_text or "").strip().lower()
+        if not mode:
+            return False
+        return any(token in mode for token in ["thư mục con", "folder con", "sub", "phòng thi", "room"])
+
+    def _scan_folder_signature(self, cfg: dict | None) -> tuple[int, float]:
         if not isinstance(cfg, dict):
             return (0, 0.0)
-        scan_folder = str(cfg.get("scan_folder", "") or "").strip()
+        scan_folder = str(cfg.get("scan_folder", "") or ((self.session.config or {}).get("scan_root", "") if self.session else "") or "").strip()
         if not scan_folder or scan_folder == "-":
             return (0, 0.0)
         scan_dir = Path(scan_folder)
         if not scan_dir.exists() or not scan_dir.is_dir():
             return (0, 0.0)
-        mode = str(cfg.get("scan_mode", "") or "").strip().lower()
-        use_subfolders = ("thư mục con" in mode) or ("sub" in mode)
+        mode = str(cfg.get("scan_mode", "") or ((self.session.config or {}).get("scan_mode", "") if self.session else "") or "")
+        use_subfolders = self._is_subfolder_scan_mode(mode)
         image_exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
         count = 0
         latest_mtime = 0.0
@@ -3011,6 +3052,18 @@ class MainWindow(QMainWindow):
             if w:
                 w.deleteLater()
 
+        if session_id:
+            self.current_session_id = session_id
+            self.current_session_path = self._session_path_from_id(session_id)
+        if session is not None:
+            self.session = session
+            if not is_new:
+                self.session_dirty = False
+            self._refresh_session_info()
+            self._refresh_batch_subject_controls()
+            self._refresh_scoring_phase_table()
+            self._refresh_ribbon_action_states()
+
         self.embedded_exam_session_id = session_id
         self.embedded_exam_session = session
         self.embedded_exam_original_payload = dict(payload)
@@ -3379,6 +3432,8 @@ class MainWindow(QMainWindow):
         self.act_export_all_classes_subject_scores.triggered.connect(self.action_export_all_classes_subject_scores)
         self.act_export_all_scores = self.export_menu.addAction("Xuất điểm chi tiết các môn...")
         self.act_export_all_scores.triggered.connect(self.action_export_all_subject_scores)
+        self.act_export_return_by_class = self.export_menu.addAction("Trả bài theo lớp...")
+        self.act_export_return_by_class.triggered.connect(self.action_export_return_by_class)
         self.export_menu.addSeparator()
         self.act_export_subject_api = self.export_menu.addAction("Xuất API bài làm theo môn (;)")
         self.act_export_subject_api.triggered.connect(self.action_export_subject_api_payload)
@@ -3423,6 +3478,12 @@ class MainWindow(QMainWindow):
         self.ribbon_export_action.triggered.connect(self.action_open_export_reports_center)
         self.ribbon_export_action.setMenu(self.export_menu)
         toolbar.addAction(self.ribbon_export_action)
+        toolbar.addSeparator()
+        self.ribbon_exam_editor_add_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogNewFolder), "Thêm môn", self._exam_editor_add_subject)
+        self.ribbon_exam_editor_edit_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Sửa môn", self._exam_editor_edit_subject)
+        self.ribbon_exam_editor_delete_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_TrashIcon), "Xoá môn", self._exam_editor_delete_subject)
+        self.ribbon_exam_editor_save_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Save", self._exam_editor_save)
+        self.ribbon_exam_editor_close_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogCloseButton), "Đóng", self._exam_editor_close)
         toolbar.addSeparator()
         self.ribbon_add_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogNewFolder), "Add Subject", self._subject_management_add)
         self.ribbon_edit_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Edit", self._subject_management_edit)
@@ -3816,6 +3877,7 @@ class MainWindow(QMainWindow):
         subject_management_visible = index == 2
         template_library_visible = index == 3
         template_editor_visible = index == 4
+        exam_editor_visible = index == 5
         template_visible = template_library_visible or template_editor_visible
         for action in [
             getattr(self, "ribbon_new_exam_action", None),
@@ -3824,10 +3886,20 @@ class MainWindow(QMainWindow):
             getattr(self, "ribbon_delete_exam_action", None),
             getattr(self, "ribbon_batch_scan_action", None),
             getattr(self, "ribbon_scoring_action", None),
+            getattr(self, "ribbon_recheck_action", None),
             getattr(self, "ribbon_export_action", None),
         ]:
             if action is not None:
                 action.setVisible(not subject_management_visible and not template_visible)
+        for action in [
+            getattr(self, "ribbon_exam_editor_add_subject_action", None),
+            getattr(self, "ribbon_exam_editor_edit_subject_action", None),
+            getattr(self, "ribbon_exam_editor_delete_subject_action", None),
+            getattr(self, "ribbon_exam_editor_save_action", None),
+            getattr(self, "ribbon_exam_editor_close_action", None),
+        ]:
+            if action is not None:
+                action.setVisible(exam_editor_visible)
         for action in [
             getattr(self, "ribbon_add_subject_action", None),
             getattr(self, "ribbon_edit_subject_action", None),
@@ -3872,10 +3944,6 @@ class MainWindow(QMainWindow):
     def _refresh_ribbon_action_states(self) -> None:
         has_session = self._has_session_context_for_export()
         has_subject_cfg = bool(self._effective_subject_configs_for_batch())
-        has_batch_rows = bool(hasattr(self, "scan_list") and self.scan_list.rowCount() > 0)
-        has_subject_selection = bool(hasattr(self, "batch_subject_combo") and self.batch_subject_combo.currentIndex() > 0)
-        has_exam_selection = bool(hasattr(self, "exam_list_table") and self.exam_list_table.currentRow() >= 0)
-        has_scoring_subjects = bool(self._eligible_scoring_subject_keys()) if has_session else False
         if getattr(self, "ribbon_new_exam_action", None) is not None:
             self.ribbon_new_exam_action.setEnabled(True)
         if getattr(self, "ribbon_view_exam_action", None) is not None:
@@ -3885,13 +3953,49 @@ class MainWindow(QMainWindow):
         if getattr(self, "ribbon_batch_scan_action", None) is not None:
             self.ribbon_batch_scan_action.setEnabled(has_session and has_subject_cfg)
         if getattr(self, "ribbon_scoring_action", None) is not None:
-            self.ribbon_scoring_action.setEnabled(has_session and has_scoring_subjects)
+            self.ribbon_scoring_action.setEnabled(has_session)
         if getattr(self, "ribbon_recheck_action", None) is not None:
-            self.ribbon_recheck_action.setEnabled(has_session and has_batch_rows)
+            self.ribbon_recheck_action.setEnabled(has_session)
+        has_embedded_exam_editor = bool(self.embedded_exam_dialog is not None)
+        for attr_name in [
+            "ribbon_exam_editor_add_subject_action",
+            "ribbon_exam_editor_edit_subject_action",
+            "ribbon_exam_editor_delete_subject_action",
+            "ribbon_exam_editor_save_action",
+            "ribbon_exam_editor_close_action",
+        ]:
+            action = getattr(self, attr_name, None)
+            if action is not None:
+                action.setEnabled(has_embedded_exam_editor)
         has_export_data = self._has_exportable_data()
         if getattr(self, "ribbon_export_action", None) is not None:
             self.ribbon_export_action.setEnabled(has_session)
         self._refresh_export_action_states(has_session=has_session, has_export_data=has_export_data)
+
+    def _exam_editor_add_subject(self) -> None:
+        if self.embedded_exam_dialog is not None:
+            self.embedded_exam_dialog._add_subject()
+            self._refresh_ribbon_action_states()
+
+    def _exam_editor_edit_subject(self) -> None:
+        if self.embedded_exam_dialog is not None:
+            self.embedded_exam_dialog._edit_subject()
+            self._refresh_ribbon_action_states()
+
+    def _exam_editor_delete_subject(self) -> None:
+        if self.embedded_exam_dialog is not None:
+            self.embedded_exam_dialog._delete_subject()
+            self._refresh_ribbon_action_states()
+
+    def _exam_editor_save(self) -> None:
+        if self.embedded_exam_dialog is not None:
+            self.embedded_exam_dialog._validate_and_accept()
+            self._refresh_ribbon_action_states()
+
+    def _exam_editor_close(self) -> None:
+        if self.embedded_exam_dialog is not None:
+            self.embedded_exam_dialog.reject()
+            self._refresh_ribbon_action_states()
 
     def _has_session_context_for_export(self) -> bool:
         if bool(str(getattr(self, "current_session_id", "") or "").strip()):
@@ -3906,6 +4010,22 @@ class MainWindow(QMainWindow):
                 return True
         return False
 
+    def _ensure_current_session_loaded(self) -> bool:
+        if self.session is not None:
+            return True
+        sid = str(getattr(self, "current_session_id", "") or "").strip()
+        if not sid:
+            return False
+        payload = self.database.fetch_exam_session(sid) or {}
+        if not payload:
+            return False
+        try:
+            self.session = ExamSession.from_dict(payload)
+            self.current_session_path = self._session_path_from_id(sid)
+        except Exception:
+            return False
+        return self.session is not None
+
     def _refresh_export_action_states(self, *, has_session: bool | None = None, has_export_data: bool | None = None) -> None:
         if has_session is None:
             has_session = self._has_session_context_for_export()
@@ -3917,6 +4037,7 @@ class MainWindow(QMainWindow):
             "act_export_class_subject_scores",
             "act_export_all_classes_subject_scores",
             "act_export_all_scores",
+            "act_export_return_by_class",
             "act_export_subject_api",
             "act_export_reports_center",
             "act_export_range_report",
@@ -4356,7 +4477,7 @@ class MainWindow(QMainWindow):
             self.export_answer_key_sample()
 
     def _start_batch_scan_from_ui(self) -> None:
-        if not self.session:
+        if not self._ensure_current_session_loaded():
             QMessageBox.warning(self, "Batch Scan", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
             return
         cfgs = self._effective_subject_configs_for_batch()
@@ -4435,6 +4556,9 @@ class MainWindow(QMainWindow):
 
     def action_export_all_subject_scores(self) -> None:
         self._export_all_subject_scores()
+
+    def action_export_return_by_class(self) -> None:
+        self._export_return_by_class()
 
     def action_export_subject_api_payload(self) -> None:
         subject_key = self._pick_subject_for_export("Xuất API bài làm", "Chọn môn cần xuất API bài làm:")
@@ -5923,7 +6047,7 @@ class MainWindow(QMainWindow):
         self.scoring_subject_combo.blockSignals(False)
 
     def _open_scoring_view(self) -> None:
-        if not self.session:
+        if not self._ensure_current_session_loaded():
             QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
             return
 
@@ -7017,7 +7141,7 @@ class MainWindow(QMainWindow):
             return []
         scan_mode = str(cfg.get("scan_mode", "") or (self.session.config or {}).get("scan_mode", "") if self.session else "")
         image_exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
-        if "thư mục con" in scan_mode.lower() or "sub" in scan_mode.lower():
+        if self._is_subfolder_scan_mode(scan_mode):
             return [str(p) for p in sorted(scan_dir.rglob("*")) if p.is_file() and p.suffix.lower() in image_exts]
         return [str(p) for p in sorted(scan_dir.iterdir()) if p.is_file() and p.suffix.lower() in image_exts]
 
@@ -14553,6 +14677,82 @@ class MainWindow(QMainWindow):
                 ws_summary.append([key, label, 0, 0, 0, 0])
         wb.save(path)
         QMessageBox.information(self, "Xuất điểm chi tiết các môn", f"Đã xuất dữ liệu:\n{path}")
+
+    @staticmethod
+    def _safe_file_component(value: str, fallback: str = "unknown") -> str:
+        text = str(value or "").strip()
+        if not text:
+            return fallback
+        normalized = unicodedata.normalize("NFKD", text)
+        normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+        normalized = re.sub(r"[\\/:*?\"<>|]+", "_", normalized)
+        normalized = re.sub(r"\s+", "_", normalized).strip("._ ")
+        return normalized or fallback
+
+    def _export_return_by_class(self) -> None:
+        if not self.session:
+            QMessageBox.information(self, "Trả bài theo lớp", "Chưa có kỳ thi hiện tại.")
+            return
+        class_options = self._class_options_for_export()
+        if not class_options:
+            QMessageBox.information(self, "Trả bài theo lớp", "Chưa có dữ liệu lớp.")
+            return
+        picked_class, ok = QInputDialog.getItem(self, "Trả bài theo lớp", "Chọn lớp cần trả bài:", class_options, 0, False)
+        if not ok:
+            return
+        class_name = str(picked_class or "").strip()
+        if not class_name:
+            return
+        output_root = QFileDialog.getExistingDirectory(self, "Chọn thư mục lưu trả bài theo lớp")
+        if not output_root:
+            return
+
+        student_meta = self._student_meta_by_sid()
+        target_class_fold = class_name.casefold()
+        class_dir = Path(output_root) / self._safe_file_component(class_name, fallback="class")
+        class_dir.mkdir(parents=True, exist_ok=True)
+
+        copied_count = 0
+        missing_image_count = 0
+        skipped_count = 0
+        for subject_label, subject_key in self._iter_export_subjects():
+            rows = self._scan_rows_for_subject(subject_key)
+            if not rows:
+                continue
+            subject_dir = class_dir / self._safe_file_component(subject_label, fallback=self._safe_sheet_name(subject_key, fallback="subject"))
+            subject_dir.mkdir(parents=True, exist_ok=True)
+            used_names: set[str] = set()
+            for row in rows:
+                image_path = str(getattr(row, "image_path", "") or "").strip()
+                sid = str(getattr(row, "student_id", "") or "").strip()
+                meta = student_meta.get(sid, {})
+                row_class = str(getattr(row, "class_name", "") or meta.get("class_name", "") or "").strip()
+                if row_class.casefold() != target_class_fold:
+                    continue
+                if not image_path:
+                    skipped_count += 1
+                    continue
+                source_path = Path(image_path)
+                if not source_path.exists() or not source_path.is_file():
+                    missing_image_count += 1
+                    continue
+                student_name = str(getattr(row, "full_name", "") or meta.get("name", "") or "").strip()
+                base_name = f"{self._safe_file_component(sid, fallback='SBD')}_{self._safe_file_component(student_name, fallback='ho_ten')}"
+                final_name = base_name
+                ext = source_path.suffix
+                dup_idx = 2
+                while final_name in used_names or (subject_dir / f"{final_name}{ext}").exists():
+                    final_name = f"{base_name}_{dup_idx}"
+                    dup_idx += 1
+                used_names.add(final_name)
+                shutil.copy2(source_path, subject_dir / f"{final_name}{ext}")
+                copied_count += 1
+
+        QMessageBox.information(
+            self,
+            "Trả bài theo lớp",
+            f"Đã xử lý xong.\n- Lớp: {class_name}\n- File đã copy: {copied_count}\n- File thiếu/không tồn tại: {missing_image_count}\n- Bản ghi bỏ qua (không có đường dẫn ảnh): {skipped_count}\n- Thư mục đích: {class_dir}",
+        )
 
     def _export_subject_api_payload(self, subject_key: str) -> None:
         subject = str(subject_key or "").strip()
