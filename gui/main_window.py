@@ -1960,17 +1960,23 @@ class MainWindow(QMainWindow):
         self.auto_recognition_worker_timer.start()
 
     @staticmethod
-    def _scan_folder_signature(cfg: dict | None) -> tuple[int, float]:
+    def _is_subfolder_scan_mode(mode_text: str) -> bool:
+        mode = str(mode_text or "").strip().lower()
+        if not mode:
+            return False
+        return any(token in mode for token in ["thư mục con", "folder con", "sub", "phòng thi", "room"])
+
+    def _scan_folder_signature(self, cfg: dict | None) -> tuple[int, float]:
         if not isinstance(cfg, dict):
             return (0, 0.0)
-        scan_folder = str(cfg.get("scan_folder", "") or "").strip()
+        scan_folder = str(cfg.get("scan_folder", "") or ((self.session.config or {}).get("scan_root", "") if self.session else "") or "").strip()
         if not scan_folder or scan_folder == "-":
             return (0, 0.0)
         scan_dir = Path(scan_folder)
         if not scan_dir.exists() or not scan_dir.is_dir():
             return (0, 0.0)
-        mode = str(cfg.get("scan_mode", "") or "").strip().lower()
-        use_subfolders = ("thư mục con" in mode) or ("sub" in mode)
+        mode = str(cfg.get("scan_mode", "") or ((self.session.config or {}).get("scan_mode", "") if self.session else "") or "")
+        use_subfolders = self._is_subfolder_scan_mode(mode)
         image_exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
         count = 0
         latest_mtime = 0.0
@@ -7127,7 +7133,7 @@ class MainWindow(QMainWindow):
             return []
         scan_mode = str(cfg.get("scan_mode", "") or (self.session.config or {}).get("scan_mode", "") if self.session else "")
         image_exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
-        if "thư mục con" in scan_mode.lower() or "sub" in scan_mode.lower():
+        if self._is_subfolder_scan_mode(scan_mode):
             return [str(p) for p in sorted(scan_dir.rglob("*")) if p.is_file() and p.suffix.lower() in image_exts]
         return [str(p) for p in sorted(scan_dir.iterdir()) if p.is_file() and p.suffix.lower() in image_exts]
 
