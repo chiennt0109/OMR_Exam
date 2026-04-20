@@ -1825,13 +1825,15 @@ class StudentListPreviewDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-    SCAN_COL_IMAGE = 0
+    SCAN_COL_STT = 0
     SCAN_COL_STUDENT_ID = 1
-    SCAN_COL_EXAM_CODE = 2
-    SCAN_COL_FULL_NAME = 3
-    SCAN_COL_EXAM_ROOM = 4
-    SCAN_COL_CONTENT = 5
-    SCAN_COL_STATUS = 6
+    SCAN_COL_EXAM_ROOM = 2
+    SCAN_COL_EXAM_CODE = 3
+    SCAN_COL_FULL_NAME = 4
+    SCAN_COL_BIRTH_DATE = 5
+    SCAN_COL_CONTENT = 6
+    SCAN_COL_STATUS = 7
+    SCAN_COL_ACTIONS = 8
 
     def __init__(self):
         super().__init__()
@@ -2861,14 +2863,45 @@ class MainWindow(QMainWindow):
         btn_delete = self._make_row_icon_button(style.standardIcon(QStyle.SP_TrashIcon), "Xoá bài thi", lambda _=False, r=row: self._delete_scan_row_by_index(r))
         lay.addWidget(btn_edit)
         lay.addWidget(btn_delete)
-        self.scan_list.setCellWidget(row, 7, holder)
+        self.scan_list.setCellWidget(row, self.SCAN_COL_ACTIONS, holder)
 
     def _ensure_scan_action_widget(self, row: int) -> None:
         if row < 0 or row >= self.scan_list.rowCount():
             return
-        if self.scan_list.cellWidget(row, 7) is not None:
+        if self.scan_list.cellWidget(row, self.SCAN_COL_ACTIONS) is not None:
             return
         self._set_scan_action_widget(row)
+
+    def _open_scan_row_context_menu(self, pos) -> None:
+        if not hasattr(self, "scan_list"):
+            return
+        row = self.scan_list.rowAt(pos.y())
+        if row < 0 or row >= self.scan_list.rowCount():
+            return
+        self.scan_list.selectRow(row)
+        menu = QMenu(self)
+        act_edit = menu.addAction("Sửa bài thi")
+        act_delete = menu.addAction("Xoá bài thi")
+        act_rerecognize = menu.addAction("Nhận dạng lại bài thi")
+        chosen = menu.exec(self.scan_list.viewport().mapToGlobal(pos))
+        if chosen == act_edit:
+            self._edit_scan_row_by_index(row)
+            return
+        if chosen == act_delete:
+            self._delete_scan_row_by_index(row, require_confirm=True)
+            return
+        if chosen == act_rerecognize:
+            if QMessageBox.question(
+                self,
+                "Nhận dạng lại bài thi",
+                "Bạn có chắc muốn nhận dạng lại bài thi đã chọn?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            ) != QMessageBox.Yes:
+                return
+            self.scan_list.selectRow(row)
+            self._on_scan_selected()
+            self._rerecognize_selected_scan()
 
     def _edit_scan_row_by_index(self, row: int) -> None:
         if row < 0 or row >= self.scan_list.rowCount():
@@ -2877,17 +2910,26 @@ class MainWindow(QMainWindow):
         self._on_scan_selected()
         self._open_edit_selected_scan()
 
-    def _delete_scan_row_by_index(self, row: int) -> None:
+    def _delete_scan_row_by_index(self, row: int, require_confirm: bool = False) -> None:
         self._ensure_correction_state()
         if row < 0 or row >= self.scan_list.rowCount():
             return
         self.scan_list.selectRow(row)
+        if require_confirm:
+            if QMessageBox.question(
+                self,
+                "Xoá bài thi",
+                "Bạn có chắc muốn xoá bài thi đã chọn?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            ) != QMessageBox.Yes:
+                return
         if self.correction_save_timer.isActive():
             self.correction_save_timer.stop()
             self._flush_pending_correction_updates()
 
         idx = self.scan_list.currentRow()
-        sid_item = self.scan_list.item(idx, 0) if 0 <= idx < self.scan_list.rowCount() else None
+        sid_item = self.scan_list.item(idx, self.SCAN_COL_STUDENT_ID) if 0 <= idx < self.scan_list.rowCount() else None
         image_path = str(sid_item.data(Qt.UserRole) if sid_item else "").strip()
         if not image_path:
             result = self.scan_results[idx] if 0 <= idx < len(self.scan_results) else self._build_result_from_saved_table_row(idx)
@@ -3471,13 +3513,17 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         # Workflow actions
         self.ribbon_subject_list_action = toolbar.addAction(style.standardIcon(QStyle.SP_DirIcon), "Danh sách môn thi", self.action_open_current_exam_subjects)
-        self.ribbon_batch_scan_action = toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Nhận dạng", self.action_run_batch_scan)
+        self.ribbon_batch_scan_action = toolbar.addAction(style.standardIcon(QStyle.SP_ComputerIcon), "Xử lý ảnh", self.action_run_batch_scan)
         self.ribbon_scoring_action = toolbar.addAction(style.standardIcon(QStyle.SP_CommandLink), "Tính điểm", self.action_calculate_scores)
         self.ribbon_recheck_action = toolbar.addAction(style.standardIcon(QStyle.SP_BrowserReload), "Phúc tra", self.action_open_recheck)
         self.ribbon_export_action = QAction(style.standardIcon(QStyle.SP_DriveNetIcon), "Export", self)
         self.ribbon_export_action.triggered.connect(self.action_open_export_reports_center)
         self.ribbon_export_action.setMenu(self.export_menu)
         toolbar.addAction(self.ribbon_export_action)
+        toolbar.addSeparator()
+        self.ribbon_batch_execute_action = toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Nhận dạng", self.action_execute_batch_scan)
+        self.ribbon_batch_save_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Lưu", self._save_batch_for_selected_subject)
+        self.ribbon_batch_close_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogCloseButton), "Đóng", self._close_batch_scan_view)
         toolbar.addSeparator()
         self.ribbon_exam_editor_add_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogNewFolder), "Thêm môn", self._exam_editor_add_subject)
         self.ribbon_exam_editor_edit_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Sửa môn", self._exam_editor_edit_subject)
@@ -3878,6 +3924,7 @@ class MainWindow(QMainWindow):
         template_library_visible = index == 3
         template_editor_visible = index == 4
         exam_editor_visible = index == 5
+        batch_scan_visible = route_name == "workspace_batch_scan"
         template_visible = template_library_visible or template_editor_visible
         for action in [
             getattr(self, "ribbon_new_exam_action", None),
@@ -3900,6 +3947,13 @@ class MainWindow(QMainWindow):
         ]:
             if action is not None:
                 action.setVisible(exam_editor_visible)
+        for action in [
+            getattr(self, "ribbon_batch_execute_action", None),
+            getattr(self, "ribbon_batch_save_action", None),
+            getattr(self, "ribbon_batch_close_action", None),
+        ]:
+            if action is not None:
+                action.setVisible(batch_scan_visible)
         for action in [
             getattr(self, "ribbon_add_subject_action", None),
             getattr(self, "ribbon_edit_subject_action", None),
@@ -3967,6 +4021,13 @@ class MainWindow(QMainWindow):
             action = getattr(self, attr_name, None)
             if action is not None:
                 action.setEnabled(has_embedded_exam_editor)
+        if getattr(self, "ribbon_batch_execute_action", None) is not None:
+            self.ribbon_batch_execute_action.setEnabled(bool(has_session))
+        if getattr(self, "ribbon_batch_save_action", None) is not None:
+            save_enabled = bool(hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled())
+            self.ribbon_batch_save_action.setEnabled(save_enabled)
+        if getattr(self, "ribbon_batch_close_action", None) is not None:
+            self.ribbon_batch_close_action.setEnabled(True)
         has_export_data = self._has_exportable_data()
         if getattr(self, "ribbon_export_action", None) is not None:
             self.ribbon_export_action.setEnabled(has_session)
@@ -4780,12 +4841,7 @@ class MainWindow(QMainWindow):
         self.btn_close_batch_view.clicked.connect(self._close_batch_scan_view)
         for b in [self.btn_batch_recognize, self.btn_save_batch_subject, self.btn_close_batch_view]:
             b.setMaximumWidth(140)
-
-        action_row = QHBoxLayout()
-        action_row.addWidget(self.btn_batch_recognize)
-        action_row.addWidget(self.btn_save_batch_subject)
-        action_row.addWidget(self.btn_close_batch_view)
-        action_row.addStretch()
+            b.setVisible(False)
 
         batch_form.addRow("Môn", self.batch_subject_combo)
         batch_form.addRow("Phạm vi", self.batch_file_scope_combo)
@@ -4793,10 +4849,9 @@ class MainWindow(QMainWindow):
         batch_form.addRow("Mẫu giấy dùng", self.batch_template_value)
         batch_form.addRow("Mã đề", self.batch_answer_codes_value)
         batch_form.addRow("Thư mục quét", self.batch_scan_folder_value)
-        batch_form.addRow("", action_row)
 
         self.filter_column = QComboBox()
-        self.filter_column.addItems(["Tất cả", "STUDENT ID", "Phòng thi", "Mã đề", "Họ tên", "Ngày sinh", "Nội dung", "Status"])
+        self.filter_column.addItems(["Tất cả", "STT", "STUDENT ID", "Phòng thi", "Mã đề", "Họ tên", "Ngày sinh", "Nội dung", "Status"])
         self.filter_column.currentTextChanged.connect(self._apply_scan_filter)
         self.search_value = QLineEdit()
         self.search_value.setPlaceholderText("Tìm trong cột đã chọn hoặc toàn bảng")
@@ -4806,19 +4861,22 @@ class MainWindow(QMainWindow):
         search_row.addWidget(self.filter_column)
         search_row.addWidget(self.search_value)
 
-        self.scan_list = QTableWidget(0, 8)
-        self.scan_list.setHorizontalHeaderLabels(["STUDENT ID", "Phòng thi", "Mã đề", "Họ tên", "Ngày sinh", "Nội dung", "Status", "Chức năng"])
+        self.scan_list = QTableWidget(0, 9)
+        self.scan_list.setHorizontalHeaderLabels(["STT", "STUDENT ID", "Phòng thi", "Mã đề", "Họ tên", "Ngày sinh", "Nội dung", "Status", "Chức năng"])
         self.scan_list.verticalHeader().setVisible(False)
         self.scan_list.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.scan_list.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.scan_list.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.scan_list.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.scan_list.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.scan_list.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.scan_list.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        self.scan_list.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
-        self.scan_list.horizontalHeader().setSectionResizeMode(6, QHeaderView.Stretch)
-        self.scan_list.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeToContents)
+        self.scan_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.scan_list.customContextMenuRequested.connect(self._open_scan_row_context_menu)
+        self.scan_list.horizontalHeader().setSectionResizeMode(self.SCAN_COL_STT, QHeaderView.ResizeToContents)
+        self.scan_list.horizontalHeader().setSectionResizeMode(self.SCAN_COL_STUDENT_ID, QHeaderView.ResizeToContents)
+        self.scan_list.horizontalHeader().setSectionResizeMode(self.SCAN_COL_EXAM_ROOM, QHeaderView.ResizeToContents)
+        self.scan_list.horizontalHeader().setSectionResizeMode(self.SCAN_COL_EXAM_CODE, QHeaderView.ResizeToContents)
+        self.scan_list.horizontalHeader().setSectionResizeMode(self.SCAN_COL_FULL_NAME, QHeaderView.ResizeToContents)
+        self.scan_list.horizontalHeader().setSectionResizeMode(self.SCAN_COL_BIRTH_DATE, QHeaderView.ResizeToContents)
+        self.scan_list.horizontalHeader().setSectionResizeMode(self.SCAN_COL_CONTENT, QHeaderView.Stretch)
+        self.scan_list.horizontalHeader().setSectionResizeMode(self.SCAN_COL_STATUS, QHeaderView.Stretch)
+        self.scan_list.horizontalHeader().setSectionResizeMode(self.SCAN_COL_ACTIONS, QHeaderView.ResizeToContents)
         self.scan_list.horizontalHeader().sectionClicked.connect(self._on_scan_header_clicked)
         self.scan_list.itemSelectionChanged.connect(self._on_scan_selected)
         # double click navigation: open selected scan directly.
@@ -5121,7 +5179,7 @@ class MainWindow(QMainWindow):
         return self._deserialize_omr_result(self._serialize_omr_result(result))
 
     def _collect_current_subject_results_for_save(self, subject_key: str) -> list[OMRResult]:
-        # scan_list columns: 0 sid, 1 room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
+        # scan_list columns: 0 stt, 1 sid, 2 room, 3 exam_code, 4 full_name, 5 birth_date, 6 content, 7 status, 8 actions
         key = str(subject_key or "").strip()
         base_results = list(self.scan_results_by_subject.get(self._batch_result_subject_key(key)) or self.scan_results or [])
         row_count = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
@@ -5136,7 +5194,7 @@ class MainWindow(QMainWindow):
 
         out: list[OMRResult] = []
         for r in range(row_count):
-            sid_item = self.scan_list.item(r, 0)
+            sid_item = self.scan_list.item(r, self.SCAN_COL_STUDENT_ID)
             image_path = str(sid_item.data(Qt.UserRole) if sid_item else "")
             exam_code = str(sid_item.data(Qt.UserRole + 1) if sid_item else "")
             sid_text = str(sid_item.text() if sid_item else "-")
@@ -6579,7 +6637,7 @@ class MainWindow(QMainWindow):
             5,
             QTableWidgetItem(self._build_recognition_content_text(result, self.scan_blank_summary[idx], expected)),
         )
-        sid_item = self.scan_list.item(idx, 0)
+        sid_item = self.scan_list.item(idx, self.SCAN_COL_STUDENT_ID)
         if sid_item:
             sid_item.setText((result.student_id or "").strip() or "-")
             sid_item.setData(Qt.UserRole + 1, result.exam_code or "")
@@ -10652,7 +10710,7 @@ class MainWindow(QMainWindow):
             self.scan_blank_questions[idx] = blank_map.get("MCQ", [])
             if idx < self.scan_list.rowCount():
                 self.scan_list.setItem(idx, self.SCAN_COL_CONTENT, QTableWidgetItem(self._build_recognition_content_text(scoped, blank_map, expected)))
-                sid_item = self.scan_list.item(idx, 0)
+                sid_item = self.scan_list.item(idx, self.SCAN_COL_STUDENT_ID)
                 if sid_item:
                     sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(scoped))
         self._refresh_all_statuses()
@@ -10684,7 +10742,7 @@ class MainWindow(QMainWindow):
                 continue
             if col is None:
                 searchable = []
-                for j in range(0, 7):
+                for j in range(0, self.SCAN_COL_STATUS + 1):
                     item = self.scan_list.item(i, j)
                     searchable.append(_normalize(item.text() if item else ""))
                 cell = " | ".join(searchable)
@@ -10710,26 +10768,28 @@ class MainWindow(QMainWindow):
     def _scan_filter_column_from_combo_index(combo_index: int) -> int | None:
         mapping = {
             0: None,  # Tất cả
-            1: 0,     # STUDENT ID
-            2: 1,     # Phòng thi
-            3: 2,     # Mã đề
-            4: 3,     # Họ tên
-            5: 4,     # Ngày sinh
-            6: 5,     # Nội dung
-            7: 6,     # Status
+            1: 0,     # STT
+            2: 1,     # STUDENT ID
+            3: 2,     # Phòng thi
+            4: 3,     # Mã đề
+            5: 4,     # Họ tên
+            6: 5,     # Ngày sinh
+            7: 6,     # Nội dung
+            8: 7,     # Status
         }
         return mapping.get(int(combo_index), None)
 
     @staticmethod
     def _scan_filter_combo_index_from_header_section(section: int) -> int | None:
         mapping = {
-            0: 1,  # STUDENT ID
-            1: 2,  # Phòng thi
-            2: 3,  # Mã đề
-            3: 4,  # Họ tên
-            4: 5,  # Ngày sinh
-            5: 6,  # Nội dung
-            6: 7,  # Status
+            0: 1,  # STT
+            1: 2,  # STUDENT ID
+            2: 3,  # Phòng thi
+            3: 4,  # Mã đề
+            4: 5,  # Họ tên
+            5: 6,  # Ngày sinh
+            6: 7,  # Nội dung
+            7: 8,  # Status
         }
         return mapping.get(int(section), None)
 
@@ -10821,7 +10881,7 @@ class MainWindow(QMainWindow):
         refresh_statuses: bool = False,
         rebuild_error_list: bool = False,
     ) -> None:
-        # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
+        # scan_list columns: 0 stt, 1 sid, 2 exam_room, 3 exam_code, 4 full_name, 5 birth_date, 6 content, 7 status, 8 actions
         forced_status_by_image = forced_status_by_image or {}
         duplicate_ids: dict[str, int] = {}
         subject_scope: tuple[set[str], set[str]] | None = None
@@ -10911,7 +10971,7 @@ class MainWindow(QMainWindow):
         scan_list = self.scan_list
         selected_image = str(preserve_selection_image_path or "").strip()
         if not selected_image and 0 <= scan_list.currentRow() < scan_list.rowCount():
-            current_item = scan_list.item(scan_list.currentRow(), 0)
+            current_item = scan_list.item(scan_list.currentRow(), self.SCAN_COL_STUDENT_ID)
             selected_image = str(current_item.data(Qt.UserRole) if current_item else "").strip()
 
         self._begin_scan_grid_update()
@@ -10932,7 +10992,7 @@ class MainWindow(QMainWindow):
                 }
                 self._apply_scan_row_payload_to_grid(idx, payload, skip_actions=skip_expensive_checks)
             scan_list.resizeRowsToContents()
-            for fit_col in [0, 1, 2, 3, 4, 7]:
+            for fit_col in [self.SCAN_COL_STT, self.SCAN_COL_STUDENT_ID, self.SCAN_COL_EXAM_ROOM, self.SCAN_COL_EXAM_CODE, self.SCAN_COL_FULL_NAME, self.SCAN_COL_BIRTH_DATE, self.SCAN_COL_ACTIONS]:
                 scan_list.resizeColumnToContents(fit_col)
         finally:
             self._end_scan_grid_update()
@@ -10944,9 +11004,9 @@ class MainWindow(QMainWindow):
 
         if selected_image:
             for row in range(scan_list.rowCount()):
-                cell = scan_list.item(row, 0)
+                cell = scan_list.item(row, self.SCAN_COL_STUDENT_ID)
                 if str(cell.data(Qt.UserRole) if cell else "").strip() == selected_image:
-                    scan_list.setCurrentCell(row, 0)
+                    scan_list.setCurrentCell(row, self.SCAN_COL_STUDENT_ID)
                     scan_list.selectRow(row)
                     break
 
@@ -10972,7 +11032,7 @@ class MainWindow(QMainWindow):
                 break
         if target_row < 0:
             target_row = 0
-        self.scan_list.setCurrentCell(target_row, 0)
+        self.scan_list.setCurrentCell(target_row, self.SCAN_COL_STUDENT_ID)
         self.scan_list.selectRow(target_row)
         self._on_scan_selected()
         self._refresh_ribbon_action_states()
@@ -11057,6 +11117,7 @@ class MainWindow(QMainWindow):
             return
         if row_idx >= self.scan_list.rowCount():
             self.scan_list.setRowCount(row_idx + 1)
+        self.scan_list.setItem(row_idx, self.SCAN_COL_STT, QTableWidgetItem(str(row_idx + 1)))
         sid_item = QTableWidgetItem(str(payload.get("student_id", "") or "-"))
         sid_item.setData(Qt.UserRole, str(payload.get("image_path", "") or ""))
         sid_item.setData(Qt.UserRole + 1, str(payload.get("exam_code", "") or ""))
@@ -11064,15 +11125,15 @@ class MainWindow(QMainWindow):
         sid_item.setData(Qt.UserRole + 10, dict(payload.get("serialized_result", {}) or {}))
         sid_item.setData(Qt.UserRole + 11, str(payload.get("manual_content_override", "") or ""))
         sid_item.setData(Qt.UserRole + 12, dict(payload or {}))
-        self.scan_list.setItem(row_idx, 0, sid_item)
-        self.scan_list.setItem(row_idx, 1, QTableWidgetItem(str(payload.get("exam_room", "") or "-")))
-        self.scan_list.setItem(row_idx, 2, QTableWidgetItem(str(payload.get("exam_code", "") or "-")))
-        self.scan_list.setItem(row_idx, 3, QTableWidgetItem(str(payload.get("full_name", "") or "-")))
-        self.scan_list.setItem(row_idx, 4, QTableWidgetItem(str(payload.get("birth_date", "") or "-")))
+        self.scan_list.setItem(row_idx, self.SCAN_COL_STUDENT_ID, sid_item)
+        self.scan_list.setItem(row_idx, self.SCAN_COL_EXAM_ROOM, QTableWidgetItem(str(payload.get("exam_room", "") or "-")))
+        self.scan_list.setItem(row_idx, self.SCAN_COL_EXAM_CODE, QTableWidgetItem(str(payload.get("exam_code", "") or "-")))
+        self.scan_list.setItem(row_idx, self.SCAN_COL_FULL_NAME, QTableWidgetItem(str(payload.get("full_name", "") or "-")))
+        self.scan_list.setItem(row_idx, self.SCAN_COL_BIRTH_DATE, QTableWidgetItem(str(payload.get("birth_date", "") or "-")))
         content_text = str(payload.get("content", "") or "")
         content_item = QTableWidgetItem(content_text)
         content_item.setToolTip(content_text)
-        self.scan_list.setItem(row_idx, 5, content_item)
+        self.scan_list.setItem(row_idx, self.SCAN_COL_CONTENT, content_item)
         full_status = str(payload.get("status", "") or "OK")
         status_item = QTableWidgetItem(self._compact_status_text(full_status, max_len=150))
         status_item.setToolTip(full_status)
@@ -11080,12 +11141,12 @@ class MainWindow(QMainWindow):
             status_item.setForeground(Qt.red)
         self.scan_list.setItem(row_idx, self.SCAN_COL_STATUS, status_item)
         if skip_actions:
-            self.scan_list.setItem(row_idx, 7, QTableWidgetItem("..."))
+            self.scan_list.setItem(row_idx, self.SCAN_COL_ACTIONS, QTableWidgetItem("..."))
         else:
             self._set_scan_action_widget(row_idx)
 
     def _update_scan_row_from_result(self, idx: int, result) -> None:
-        # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
+        # scan_list columns: 0 stt, 1 sid, 2 exam_room, 3 exam_code, 4 full_name, 5 birth_date, 6 content, 7 status, 8 actions
         target_idx = int(idx)
         image_key = self._result_identity_key(getattr(result, "image_path", ""))
         if image_key:
@@ -11099,7 +11160,7 @@ class MainWindow(QMainWindow):
         self._apply_scan_row_payload_to_grid(target_idx, payload)
 
     def _current_scan_results_snapshot(self) -> list[OMRResult]:
-        # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
+        # scan_list columns: 0 stt, 1 sid, 2 exam_room, 3 exam_code, 4 full_name, 5 birth_date, 6 content, 7 status, 8 actions
         base = list(self.scan_results or [])
         if not hasattr(self, "scan_list"):
             return base
@@ -11116,7 +11177,7 @@ class MainWindow(QMainWindow):
 
         out: list[OMRResult] = []
         for idx in range(row_count):
-            sid_item = self.scan_list.item(idx, 0)
+            sid_item = self.scan_list.item(idx, self.SCAN_COL_STUDENT_ID)
             sid_text = str(sid_item.text() if sid_item else "").strip()
             image_path = str(sid_item.data(Qt.UserRole) if sid_item else "").strip()
             serialized_payload = sid_item.data(Qt.UserRole + 10) if sid_item else None
@@ -11146,9 +11207,9 @@ class MainWindow(QMainWindow):
             result.exam_code = str(sid_item.data(Qt.UserRole + 1) if sid_item else "").strip()
             if image_path:
                 result.image_path = image_path
-            setattr(result, "exam_room", str(self.scan_list.item(idx, 1).text() if self.scan_list.item(idx, 1) else ""))
-            setattr(result, "full_name", str(self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else ""))
-            setattr(result, "birth_date", str(self.scan_list.item(idx, 4).text() if self.scan_list.item(idx, 4) else ""))
+            setattr(result, "exam_room", str(self.scan_list.item(idx, self.SCAN_COL_EXAM_ROOM).text() if self.scan_list.item(idx, self.SCAN_COL_EXAM_ROOM) else ""))
+            setattr(result, "full_name", str(self.scan_list.item(idx, self.SCAN_COL_FULL_NAME).text() if self.scan_list.item(idx, self.SCAN_COL_FULL_NAME) else ""))
+            setattr(result, "birth_date", str(self.scan_list.item(idx, self.SCAN_COL_BIRTH_DATE).text() if self.scan_list.item(idx, self.SCAN_COL_BIRTH_DATE) else ""))
             setattr(result, "manual_content_override", str(sid_item.data(Qt.UserRole + 11) if sid_item else "").strip())
             result.answer_string = self._normalize_non_api_answer_string(result)
             payload = self._build_scan_row_payload_from_result(result, row_idx=idx)
@@ -11178,7 +11239,7 @@ class MainWindow(QMainWindow):
     def _restore_full_result_for_row(self, row_idx: int) -> OMRResult | None:
         if row_idx < 0 or row_idx >= self.scan_list.rowCount():
             return None
-        sid_item = self.scan_list.item(row_idx, 0)
+        sid_item = self.scan_list.item(row_idx, self.SCAN_COL_STUDENT_ID)
         image_path = str(sid_item.data(Qt.UserRole) if sid_item else "")
         sid_text = str(sid_item.text() if sid_item else "").strip()
         exam_code = str(sid_item.data(Qt.UserRole + 1) if sid_item else "").strip()
@@ -11223,10 +11284,10 @@ class MainWindow(QMainWindow):
 
         return self._build_result_from_saved_table_row(row_idx)
     def _build_result_from_saved_table_row(self, idx: int) -> OMRResult | None:
-        # scan_list columns: 0 sid, 1 exam_room, 2 exam_code, 3 full_name, 4 birth_date, 5 content, 6 status, 7 actions
+        # scan_list columns: 0 stt, 1 sid, 2 exam_room, 3 exam_code, 4 full_name, 5 birth_date, 6 content, 7 status, 8 actions
         if idx < 0 or idx >= self.scan_list.rowCount():
             return None
-        sid_item = self.scan_list.item(idx, 0)
+        sid_item = self.scan_list.item(idx, self.SCAN_COL_STUDENT_ID)
         image_path = str(sid_item.data(Qt.UserRole) if sid_item else "")
         if not image_path:
             return None
@@ -11247,12 +11308,12 @@ class MainWindow(QMainWindow):
         result.image_path = image_path or str(getattr(result, "image_path", "") or "")
         result.student_id = student_id
         result.exam_code = exam_code
-        room_text = str(self.scan_list.item(idx, 1).text() if self.scan_list.item(idx, 1) else "").strip()
+        room_text = str(self.scan_list.item(idx, self.SCAN_COL_EXAM_ROOM).text() if self.scan_list.item(idx, self.SCAN_COL_EXAM_ROOM) else "").strip()
         if not room_text and student_id:
             room_text = str(self._subject_room_for_student_id(student_id) or "").strip()
         result.exam_room = room_text
-        result.full_name = str(self.scan_list.item(idx, 3).text() if self.scan_list.item(idx, 3) else "")
-        result.birth_date = str(self.scan_list.item(idx, 4).text() if self.scan_list.item(idx, 4) else "")
+        result.full_name = str(self.scan_list.item(idx, self.SCAN_COL_FULL_NAME).text() if self.scan_list.item(idx, self.SCAN_COL_FULL_NAME) else "")
+        result.birth_date = str(self.scan_list.item(idx, self.SCAN_COL_BIRTH_DATE).text() if self.scan_list.item(idx, self.SCAN_COL_BIRTH_DATE) else "")
         manual_content_override = str(sid_item.data(Qt.UserRole + 11) if sid_item else "").strip()
         setattr(result, "manual_content_override", manual_content_override)
         result.answer_string = self._normalize_non_api_answer_string(result)
@@ -11653,13 +11714,13 @@ class MainWindow(QMainWindow):
         return text if len(text) <= limit else text[:limit] + "..."
 
     def _update_scan_preview_from_saved_row(self, row: int) -> None:
-        sid = self.scan_list.item(row, 0).text() if self.scan_list.item(row, 0) else "-"
+        sid = self.scan_list.item(row, self.SCAN_COL_STUDENT_ID).text() if self.scan_list.item(row, self.SCAN_COL_STUDENT_ID) else "-"
         exam_code_cell = self.scan_list.item(row, 2).text() if self.scan_list.item(row, 2) else "-"
         content = self.scan_list.item(row, 5).text() if self.scan_list.item(row, 5) else "-"
         status = self.scan_list.item(row, self.SCAN_COL_STATUS).text() if self.scan_list.item(row, self.SCAN_COL_STATUS) else "-"
         img_path = ""
         exam_code = ""
-        item0 = self.scan_list.item(row, 0)
+        item0 = self.scan_list.item(row, self.SCAN_COL_STUDENT_ID)
         if item0:
             img_path = str(item0.data(Qt.UserRole) or "")
             exam_code = str(item0.data(Qt.UserRole + 1) or "")
@@ -12232,7 +12293,7 @@ class MainWindow(QMainWindow):
     def _row_image_key(self, row_idx: int) -> str:
         if row_idx < 0 or (not hasattr(self, "scan_list")) or row_idx >= self.scan_list.rowCount():
             return ""
-        sid_item = self.scan_list.item(row_idx, 0)
+        sid_item = self.scan_list.item(row_idx, self.SCAN_COL_STUDENT_ID)
         return self._result_identity_key(str(sid_item.data(Qt.UserRole) if sid_item else ""))
 
     def _row_index_by_image_path(self, image_path: str) -> int:
@@ -12240,7 +12301,7 @@ class MainWindow(QMainWindow):
         if not key or not hasattr(self, "scan_list"):
             return -1
         for row in range(self.scan_list.rowCount()):
-            sid_item = self.scan_list.item(row, 0)
+            sid_item = self.scan_list.item(row, self.SCAN_COL_STUDENT_ID)
             row_image = self._result_identity_key(str(sid_item.data(Qt.UserRole) if sid_item else ""))
             if row_image == key:
                 return row
@@ -12449,7 +12510,7 @@ class MainWindow(QMainWindow):
         if row < 0:
             return
         # Only show edit history when clicking the Status column.
-        if col != 6:
+        if col != self.SCAN_COL_STATUS:
             return
         image_key = self._row_image_key(row)
         history = list(self.scan_edit_history.get(image_key, []) or [])
@@ -12473,7 +12534,7 @@ class MainWindow(QMainWindow):
         )
 
     def _status_text_for_saved_table_row(self, row_idx: int) -> str:
-        sid_item = self.scan_list.item(row_idx, 0)
+        sid_item = self.scan_list.item(row_idx, self.SCAN_COL_STUDENT_ID)
         sid = (sid_item.text().strip() if sid_item else "")
         exam_code_text = str(sid_item.data(Qt.UserRole + 1) if sid_item else "").strip()
         dup = 0
@@ -12529,7 +12590,7 @@ class MainWindow(QMainWindow):
                 available_exam_codes=available_exam_codes,
                 forced_status=forced_status,
             )
-            sid_item = self.scan_list.item(idx, 0)
+            sid_item = self.scan_list.item(idx, self.SCAN_COL_STUDENT_ID)
             if sid_item is not None:
                 sid_item.setData(Qt.UserRole + 1, str(payload.get("exam_code", "") or ""))
                 sid_item.setData(Qt.UserRole + 2, str(payload.get("recognized_short", "") or ""))
@@ -12548,7 +12609,7 @@ class MainWindow(QMainWindow):
         status_item.setToolTip(full_status)
         if full_status != "OK":
             status_item.setForeground(Qt.red)
-        self.scan_list.setItem(idx, 6, status_item)
+        self.scan_list.setItem(idx, self.SCAN_COL_STATUS, status_item)
 
     def _update_scan_preview(self, index: int) -> None:
         if index < 0 or index >= len(self.scan_results):
@@ -12695,7 +12756,7 @@ class MainWindow(QMainWindow):
         if restored_for_edit is not None and idx >= len(self.scan_results):
             self._set_scan_result_at_row(idx, restored_for_edit)
         if idx >= len(self.scan_results):
-            sid_item_existing = self.scan_list.item(idx, 0)
+            sid_item_existing = self.scan_list.item(idx, self.SCAN_COL_STUDENT_ID)
             sid = sid_item_existing.text() if sid_item_existing else "-"
             content = ""
             if restored_for_edit is not None:
@@ -12767,7 +12828,7 @@ class MainWindow(QMainWindow):
             lay.addWidget(buttons)
             if dlg.exec() != QDialog.Accepted:
                 return
-            old_item = self.scan_list.item(idx, 0)
+            old_item = self.scan_list.item(idx, self.SCAN_COL_STUDENT_ID)
             old_sid = old_item.text().strip() if old_item else ""
             old_img = str(old_item.data(Qt.UserRole) if old_item else "")
             old_exam_code = str(old_item.data(Qt.UserRole + 1) if old_item else "").strip()
@@ -13616,7 +13677,7 @@ class MainWindow(QMainWindow):
                 return
             dialog_state["loading"] = True
             dialog_state["index"] = new_index
-            self.scan_list.setCurrentCell(new_index, 0)
+            self.scan_list.setCurrentCell(new_index, self.SCAN_COL_STUDENT_ID)
             result = self.scan_results[new_index]
             image_key = self._result_identity_key(getattr(result, "image_path", ""))
             dlg.setWindowTitle(f"Sửa bài thi: {Path(result.image_path).name}")
@@ -13722,7 +13783,7 @@ class MainWindow(QMainWindow):
                 self._update_batch_scan_bottom_status_text()
                 current_idx = dialog_state["index"]
                 if 0 <= current_idx < len(self.scan_results):
-                    self.scan_list.setCurrentCell(current_idx, 0)
+                    self.scan_list.setCurrentCell(current_idx, self.SCAN_COL_STUDENT_ID)
                     self._update_scan_preview(current_idx)
                     self._sync_correction_detail_panel(self.scan_results[current_idx], rebuild_editor=False)
             dlg.accept()
