@@ -4996,24 +4996,8 @@ class MainWindow(QMainWindow):
                 refresh_exam_list=False,
             ):
                 return
-        if self.current_session_id:
-            self._refresh_subject_management_tables()
-            self._set_subject_management_mode("subjects")
-            self._navigate_to(
-                "subject_management",
-                context={"session_id": self.current_session_id},
-                push_current=False,
-                require_confirm=False,
-                reason="close_batch_scan_to_subject_list",
-            )
-            return
-        self._navigate_to(
-            "exam_list",
-            context={},
-            push_current=False,
-            require_confirm=False,
-            reason="close_batch_scan_to_exam_list",
-        )
+        # On close, always route back to the current exam subject list view.
+        self._return_to_current_exam_from_batch_scan()
     def _clear_batch_display_caches(self) -> None:
         for result in list(getattr(self, "scan_results", []) or []):
             for attr in ["cached_status", "cached_content", "cached_recognized_short", "cached_blank_summary", "cached_forced_status"]:
