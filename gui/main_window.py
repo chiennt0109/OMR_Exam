@@ -1925,7 +1925,7 @@ class MainWindow(QMainWindow):
         self._auto_recognition_busy = False
         self._auto_recognition_queue: deque[str] = deque()
         self._auto_recognition_enqueued: set[str] = set()
-        self._auto_recognition_last_seen: dict[str, tuple[int, float]] = {}
+        self._auto_recognition_last_seen: dict[str, tuple[int, float, int]] = {}
         self._auto_recognition_pause_requested = False
         self._auto_recognition_active_subject: str = ""
         self.preview_drag_active = False
@@ -1970,30 +1970,40 @@ class MainWindow(QMainWindow):
             return False
         return any(token in mode for token in ["thư mục con", "folder con", "sub", "phòng thi", "room"])
 
-    def _scan_folder_signature(self, cfg: dict | None) -> tuple[int, float]:
+    def _scan_folder_signature(self, cfg: dict | None) -> tuple[int, float, int]:
         if not isinstance(cfg, dict):
-            return (0, 0.0)
+            return (0, 0.0, 0)
         scan_folder = str(cfg.get("scan_folder", "") or ((self.session.config or {}).get("scan_root", "") if self.session else "") or "").strip()
         if not scan_folder or scan_folder == "-":
-            return (0, 0.0)
+            return (0, 0.0, 0)
         scan_dir = Path(scan_folder)
         if not scan_dir.exists() or not scan_dir.is_dir():
-            return (0, 0.0)
+            return (0, 0.0, 0)
         mode = str(cfg.get("scan_mode", "") or ((self.session.config or {}).get("scan_mode", "") if self.session else "") or "")
         use_subfolders = self._is_subfolder_scan_mode(mode)
         image_exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
         count = 0
         latest_mtime = 0.0
+        fingerprint = 0
         iterator = scan_dir.rglob("*") if use_subfolders else scan_dir.iterdir()
         for p in iterator:
             if not p.is_file() or p.suffix.lower() not in image_exts:
                 continue
             count += 1
             try:
-                latest_mtime = max(latest_mtime, float(p.stat().st_mtime))
+                stat = p.stat()
+                latest_mtime = max(latest_mtime, float(stat.st_mtime))
+                # Include path + size + mtime into a rolling fingerprint so
+                # replacing a whole folder with same file count still triggers.
+                item_sig = hash((str(p.relative_to(scan_dir)).lower(), int(stat.st_size), int(stat.st_mtime_ns)))
+                fingerprint ^= int(item_sig)
             except Exception:
                 continue
-        return (count, latest_mtime)
+        return (count, latest_mtime, fingerprint)
+
+    @staticmethod
+    def _scan_signature_has_files(signature: tuple[int, float, int]) -> bool:
+        return int((signature or (0, 0.0, 0))[0] or 0) > 0
 
     def _enqueue_auto_recognition_subject(self, subject_key: str) -> None:
         key = str(subject_key or "").strip()
@@ -2028,6 +2038,8 @@ class MainWindow(QMainWindow):
             old_signature = self._auto_recognition_last_seen.get(subject_key)
             self._auto_recognition_last_seen[subject_key] = new_signature
             if old_signature is None:
+                if self._scan_signature_has_files(new_signature):
+                    self._enqueue_auto_recognition_subject(subject_key)
                 continue
             if new_signature == old_signature:
                 continue
