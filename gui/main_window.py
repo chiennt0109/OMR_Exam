@@ -8804,7 +8804,7 @@ class MainWindow(QMainWindow):
     def _build_recognition_content_text(
         self,
         result,
-        blank_map: dict[str, list[int]],
+        blank_map: dict[str, list],
         expected_by_section: dict[str, list[int]] | None = None,
     ) -> str:
         parts: list[str] = []
@@ -8910,7 +8910,7 @@ class MainWindow(QMainWindow):
         )
         result.sync_legacy_aliases()
 
-    def _compute_blank_questions(self, result) -> dict[str, list[int]]:
+    def _compute_blank_questions(self, result) -> dict[str, list]:
         expected_by_section = self._expected_questions_by_section(result)
         mcq_payload = {int(q): str(a) for q, a in (dict(getattr(result, "mcq_answers", {}) or {})).items()}
         tf_payload = {int(q): dict(v or {}) for q, v in (dict(getattr(result, "true_false_answers", {}) or {})).items()}
@@ -8920,23 +8920,34 @@ class MainWindow(QMainWindow):
         tf_expected = sorted(set(int(q) for q in (expected_by_section.get("TF", []) or [])))
         numeric_expected = sorted(set(int(q) for q in (expected_by_section.get("NUMERIC", []) or [])))
 
-        blanks: dict[str, list[int]] = {
-            "MCQ": [int(q) for q in mcq_expected if not str(mcq_payload.get(int(q), "") or "").strip()],
-            "TF": [],
-            "NUMERIC": [int(q) for q in numeric_expected if not str(numeric_payload.get(int(q), "") or "").strip()],
-        }
-
+        blanks: dict[str, list[int] | list[str]] = {}
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            if sec == "MCQ":
+                blanks[sec] = [int(q) for q in mcq_expected if not str(mcq_payload.get(int(q), "") or "").strip()]
+            elif sec == "NUMERIC":
+                blanks[sec] = [int(q) for q in numeric_expected if not str(numeric_payload.get(int(q), "") or "").strip()]
+            else:
+                blanks[sec] = []
         tf_blank_detail: dict[int, int] = {}
-        for q in tf_expected:
-            flags = tf_payload.get(int(q), {})
+        missing_tf_statements: list[str] = []
+        for display_q in tf_expected:
+            flags = tf_payload.get(int(display_q), {})
             flags = flags if isinstance(flags, dict) else {}
             missing_count = sum(1 for key in ["a", "b", "c", "d"] if key not in flags)
             if missing_count > 0:
-                tf_blank_detail[int(q)] = int(missing_count)
-                blanks["TF"].append(int(q))
+                tf_blank_detail[int(display_q)] = int(missing_count)
+                for key in ["a", "b", "c", "d"]:
+                    if key not in flags:
+                        missing_tf_statements.append(f"{int(display_q)}{key}")
+        sec = "TF"
+        blanks[sec] = missing_tf_statements
 
         setattr(result, "tf_blank_detail", tf_blank_detail)
-        return blanks
+        return {
+            "MCQ": list(blanks.get("MCQ", []) or []),
+            "TF": list(blanks.get("TF", []) or []),
+            "NUMERIC": list(blanks.get("NUMERIC", []) or []),
+        }
         messages: list[str] = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             expected_set = set(expected.get(sec, []))
@@ -10556,18 +10567,51 @@ class MainWindow(QMainWindow):
                     template_expected["NUMERIC"].extend(rng)
             template_expected = {sec: sorted(set(vals)) for sec, vals in template_expected.items()}
 
-        expected_by_section = {sec: list(vals) for sec, vals in template_expected.items()}
-        subject_key_name = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+        subject_cfg = self._selected_batch_subject_config() or self._resolve_subject_config_for_batch()
+        current_subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
+        answer_subject_key = str(self._answer_key_subject_key(current_subject_key, subject_cfg) or "").strip()
+        exam_code = str(getattr(result, "exam_code", "") or "").strip()
+        normalized_exam_code = self._normalize_exam_code_text(exam_code)
         key_payload: Any = None
-        if subject_key_name:
-            configured = self._fetch_answer_keys_for_subject_scoped(subject_key_name) or {}
+        has_configured_keys = False
+
+        imported_answer_keys = self._subject_imported_answer_keys_for_main(subject_cfg or {})
+        if imported_answer_keys:
+            has_configured_keys = True
+            key_payload = self._match_answer_key_payload_by_exam_code(imported_answer_keys, exam_code)
+
+        if key_payload is None and current_subject_key:
+            configured = self._fetch_answer_keys_for_subject_scoped(current_subject_key, subject_cfg) or {}
             if configured:
-                first_code = next(iter(configured.keys()))
-                key_payload = configured.get(first_code)
-            elif self.answer_keys is not None:
-                subject_candidates = [x for x in self.answer_keys.keys.values() if str(getattr(x, "subject", "") or "") == subject_key_name]
-                if subject_candidates:
-                    key_payload = sorted(subject_candidates, key=lambda x: str(getattr(x, "exam_code", "") or ""))[0]
+                has_configured_keys = True
+                key_payload = self._match_answer_key_payload_by_exam_code(configured, exam_code)
+
+        if key_payload is None and self.answer_keys is not None:
+            subject_candidates: list[str] = []
+            for candidate in [current_subject_key, answer_subject_key]:
+                candidate_text = str(candidate or "").strip()
+                if candidate_text and candidate_text not in subject_candidates:
+                    subject_candidates.append(candidate_text)
+            for candidate_subject in subject_candidates:
+                rows = [
+                    row for row in self.answer_keys.keys.values()
+                    if str(getattr(row, "subject", "") or "").strip() == candidate_subject
+                ]
+                if rows:
+                    has_configured_keys = True
+                for row in rows:
+                    row_exam_code = str(getattr(row, "exam_code", "") or "").strip()
+                    if exam_code and row_exam_code == exam_code:
+                        key_payload = row
+                        break
+                    if normalized_exam_code and self._normalize_exam_code_text(row_exam_code) == normalized_exam_code:
+                        key_payload = row
+                        break
+                if key_payload is not None:
+                    break
+
+        scoped_by_counts = self._question_scope_from_subject_counts(template_expected, subject_cfg, current_subject_key)
+
         if key_payload is not None:
             full_credit = (key_payload.get("full_credit_questions", {}) if isinstance(key_payload, dict) else getattr(key_payload, "full_credit_questions", {})) or {}
             invalid_rows = (key_payload.get("invalid_answer_rows", {}) if isinstance(key_payload, dict) else getattr(key_payload, "invalid_answer_rows", {})) or {}
@@ -10586,21 +10630,42 @@ class MainWindow(QMainWindow):
                         continue
                 return extra
 
+            def _sorted_question_keys(payload: object) -> list[int]:
+                out: set[int] = set()
+                for q in dict(payload or {}).keys():
+                    try:
+                        out.add(int(q))
+                    except Exception:
+                        continue
+                return sorted(out)
+
             mcq_map = (key_payload.get("mcq_answers", {}) if isinstance(key_payload, dict) else getattr(key_payload, "answers", {})) or {}
             tf_map = (key_payload.get("true_false_answers", {}) if isinstance(key_payload, dict) else getattr(key_payload, "true_false_answers", {})) or {}
             numeric_map = (key_payload.get("numeric_answers", {}) if isinstance(key_payload, dict) else getattr(key_payload, "numeric_answers", {})) or {}
-            key_sections = {
-                "MCQ": sorted(set(int(q) for q in mcq_map.keys()) | _extra_for_section("MCQ")),
-                "TF": sorted(set(int(q) for q in tf_map.keys()) | _extra_for_section("TF")),
-                "NUMERIC": sorted(set(int(q) for q in numeric_map.keys()) | _extra_for_section("NUMERIC")),
+            key_scope = {
+                "MCQ": sorted(set(_sorted_question_keys(mcq_map)) | _extra_for_section("MCQ")),
+                "TF": sorted(set(_sorted_question_keys(tf_map)) | _extra_for_section("TF")),
+                "NUMERIC": sorted(set(_sorted_question_keys(numeric_map)) | _extra_for_section("NUMERIC")),
             }
-            for sec in ["MCQ", "TF", "NUMERIC"]:
-                # Always follow answer-key scope if key exists.
-                expected_by_section[sec] = key_sections[sec]
 
-        if not any(expected_by_section.get(sec, []) for sec in ["MCQ", "TF", "NUMERIC"]):
-            return {sec: list(vals) for sec, vals in template_expected.items()}
-        return expected_by_section
+            if any(scoped_by_counts.get(sec, []) for sec in ["MCQ", "TF", "NUMERIC"]):
+                merged_scope: dict[str, list[int]] = {"MCQ": [], "TF": [], "NUMERIC": []}
+                for sec in ["MCQ", "TF", "NUMERIC"]:
+                    allowed = [int(q) for q in (scoped_by_counts.get(sec, []) or [])]
+                    if not allowed:
+                        merged_scope[sec] = []
+                        continue
+                    allowed_set = set(allowed)
+                    filtered = [int(q) for q in (key_scope.get(sec, []) or []) if int(q) in allowed_set]
+                    merged_scope[sec] = filtered or list(allowed)
+                return merged_scope
+            return key_scope
+
+        if any(scoped_by_counts.get(sec, []) for sec in ["MCQ", "TF", "NUMERIC"]):
+            return scoped_by_counts
+        if has_configured_keys:
+            return {"MCQ": [], "TF": [], "NUMERIC": []}
+        return {sec: list(vals) for sec, vals in template_expected.items()}
 
     @staticmethod
     def _format_mcq_answers(answers: dict[int, str]) -> str:
@@ -10634,26 +10699,47 @@ class MainWindow(QMainWindow):
         blank_map: dict[str, list[int]],
         expected_by_section: dict[str, list[int]] | None = None,
     ) -> str:
+        expected = expected_by_section or self._expected_questions_by_section(result)
         lines: list[str] = []
 
-        mcq_blank = [int(v) for v in list((blank_map or {}).get("MCQ", []) or []) if str(v).strip()]
+        mcq_expected = set(int(q) for q in (expected.get("MCQ", []) or []) if str(q).strip())
+        mcq_blank = [
+            int(v)
+            for v in list((blank_map or {}).get("MCQ", []) or [])
+            if str(v).strip() and int(v) in mcq_expected
+        ]
         if mcq_blank:
             lines.append(f"MCQ trống: {', '.join(str(v) for v in mcq_blank)}")
 
-        tf_blank = [int(v) for v in list((blank_map or {}).get("TF", []) or []) if str(v).strip()]
-        tf_blank_detail = {
-            int(q): int(v or 0)
-            for q, v in (dict(getattr(result, "tf_blank_detail", {}) or {})).items()
+        tf_expected = sorted(int(q) for q in (expected.get("TF", []) or []) if str(q).strip())
+        tf_blank_tokens = [str(v).strip().lower() for v in list((blank_map or {}).get("TF", []) or []) if str(v).strip()]
+        tf_blank_set = {
+            int(token[:-1])
+            for token in tf_blank_tokens
+            if len(token) >= 2 and token[:-1].lstrip("-").isdigit() and token[-1] in {"a", "b", "c", "d"}
+        }
+        tf_answers = {
+            int(q): dict(v or {})
+            for q, v in (dict(getattr(result, "true_false_answers", {}) or {})).items()
             if str(q).strip()
         }
-        if tf_blank:
-            tf_chunks: list[str] = []
-            for q in tf_blank:
-                missing_count = int(tf_blank_detail.get(int(q), 0) or 0)
-                tf_chunks.append(f"{missing_count if missing_count > 0 else 4} ý/câu {int(q)}")
-            lines.append("TF trống: " + "; ".join(tf_chunks))
+        missing_tf_statements: list[str] = []
+        for display_q in tf_expected:
+            if display_q not in tf_blank_set:
+                continue
+            flags = tf_answers.get(int(display_q), {}) if isinstance(tf_answers.get(int(display_q), {}), dict) else {}
+            for key in ["a", "b", "c", "d"]:
+                if key not in flags:
+                    missing_tf_statements.append(f"{int(display_q)}{key}")
+        if missing_tf_statements:
+            lines.append("TF trống: " + ", ".join(missing_tf_statements))
 
-        numeric_blank = [int(v) for v in list((blank_map or {}).get("NUMERIC", []) or []) if str(v).strip()]
+        numeric_expected = set(int(q) for q in (expected.get("NUMERIC", []) or []) if str(q).strip())
+        numeric_blank = [
+            int(v)
+            for v in list((blank_map or {}).get("NUMERIC", []) or [])
+            if str(v).strip() and int(v) in numeric_expected
+        ]
         if numeric_blank:
             lines.append(f"Num trống: {', '.join(str(v) for v in numeric_blank)}")
 
@@ -12826,12 +12912,9 @@ class MainWindow(QMainWindow):
                     inp_code.setCurrentIndex(idx_code)
                 else:
                     inp_code.setEditText(exam_code)
-            txt_content = QTextEdit(content)
             form.addRow("Student ID", inp_sid)
             form.addRow("Exam Code", inp_code)
             lay.addLayout(form)
-            lay.addWidget(QLabel("Nội dung"))
-            lay.addWidget(txt_content)
             buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
             buttons.accepted.connect(dlg.accept)
             buttons.rejected.connect(dlg.reject)
@@ -12851,19 +12934,14 @@ class MainWindow(QMainWindow):
             sid_item.setData(Qt.UserRole + 2, old_recognized_short)
             self.scan_list.setItem(idx, 0, sid_item)
             self.scan_list.setItem(idx, 2, QTableWidgetItem(new_exam_code or "-"))
-            manual_content_text = txt_content.toPlainText().strip()
-            self.scan_list.setItem(idx, self.SCAN_COL_CONTENT, QTableWidgetItem(manual_content_text or "-"))
             changes: list[str] = []
             if new_sid_text != old_sid:
                 changes.append(f"student_id: '{old_sid}' -> '{new_sid_text}'")
             if new_exam_code != old_exam_code:
                 changes.append(f"exam_code: '{old_exam_code}' -> '{new_exam_code}'")
-            old_content_text = str(content or "").strip()
-            if manual_content_text != old_content_text:
-                changes.append(f"manual_content: '{old_content_text}' -> '{manual_content_text}'")
             rebuilt = self._build_result_from_saved_table_row(idx)
             if rebuilt is not None:
-                setattr(rebuilt, "manual_content_override", manual_content_text)
+                setattr(rebuilt, "manual_content_override", "")
                 if changes:
                     self._mark_result_manually_edited(rebuilt, idx)
                 self._refresh_student_profile_for_result(rebuilt, idx)
