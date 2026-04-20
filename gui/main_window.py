@@ -8804,7 +8804,7 @@ class MainWindow(QMainWindow):
     def _build_recognition_content_text(
         self,
         result,
-        blank_map: dict[str, list[int]],
+        blank_map: dict[str, list],
         expected_by_section: dict[str, list[int]] | None = None,
     ) -> str:
         parts: list[str] = []
@@ -8910,7 +8910,7 @@ class MainWindow(QMainWindow):
         )
         result.sync_legacy_aliases()
 
-    def _compute_blank_questions(self, result) -> dict[str, list[int]]:
+    def _compute_blank_questions(self, result) -> dict[str, list]:
         expected_by_section = self._expected_questions_by_section(result)
         mcq_payload = {int(q): str(a) for q, a in (dict(getattr(result, "mcq_answers", {}) or {})).items()}
         tf_payload = {int(q): dict(v or {}) for q, v in (dict(getattr(result, "true_false_answers", {}) or {})).items()}
@@ -8920,23 +8920,34 @@ class MainWindow(QMainWindow):
         tf_expected = sorted(set(int(q) for q in (expected_by_section.get("TF", []) or [])))
         numeric_expected = sorted(set(int(q) for q in (expected_by_section.get("NUMERIC", []) or [])))
 
-        blanks: dict[str, list[int]] = {
-            "MCQ": [int(q) for q in mcq_expected if not str(mcq_payload.get(int(q), "") or "").strip()],
-            "TF": [],
-            "NUMERIC": [int(q) for q in numeric_expected if not str(numeric_payload.get(int(q), "") or "").strip()],
-        }
-
+        blanks: dict[str, list[int] | list[str]] = {}
+        for sec in ["MCQ", "TF", "NUMERIC"]:
+            if sec == "MCQ":
+                blanks[sec] = [int(q) for q in mcq_expected if not str(mcq_payload.get(int(q), "") or "").strip()]
+            elif sec == "NUMERIC":
+                blanks[sec] = [int(q) for q in numeric_expected if not str(numeric_payload.get(int(q), "") or "").strip()]
+            else:
+                blanks[sec] = []
         tf_blank_detail: dict[int, int] = {}
-        for q in tf_expected:
-            flags = tf_payload.get(int(q), {})
+        missing_tf_statements: list[str] = []
+        for display_q in tf_expected:
+            flags = tf_payload.get(int(display_q), {})
             flags = flags if isinstance(flags, dict) else {}
             missing_count = sum(1 for key in ["a", "b", "c", "d"] if key not in flags)
             if missing_count > 0:
-                tf_blank_detail[int(q)] = int(missing_count)
-                blanks["TF"].append(int(q))
+                tf_blank_detail[int(display_q)] = int(missing_count)
+                for key in ["a", "b", "c", "d"]:
+                    if key not in flags:
+                        missing_tf_statements.append(f"{int(display_q)}{key}")
+        sec = "TF"
+        blanks[sec] = missing_tf_statements
 
         setattr(result, "tf_blank_detail", tf_blank_detail)
-        return blanks
+        return {
+            "MCQ": list(blanks.get("MCQ", []) or []),
+            "TF": list(blanks.get("TF", []) or []),
+            "NUMERIC": list(blanks.get("NUMERIC", []) or []),
+        }
         messages: list[str] = []
         for sec in ["MCQ", "TF", "NUMERIC"]:
             expected_set = set(expected.get(sec, []))
@@ -10634,26 +10645,47 @@ class MainWindow(QMainWindow):
         blank_map: dict[str, list[int]],
         expected_by_section: dict[str, list[int]] | None = None,
     ) -> str:
+        expected = expected_by_section or self._expected_questions_by_section(result)
         lines: list[str] = []
 
-        mcq_blank = [int(v) for v in list((blank_map or {}).get("MCQ", []) or []) if str(v).strip()]
+        mcq_expected = set(int(q) for q in (expected.get("MCQ", []) or []) if str(q).strip())
+        mcq_blank = [
+            int(v)
+            for v in list((blank_map or {}).get("MCQ", []) or [])
+            if str(v).strip() and int(v) in mcq_expected
+        ]
         if mcq_blank:
             lines.append(f"MCQ trống: {', '.join(str(v) for v in mcq_blank)}")
 
-        tf_blank = [int(v) for v in list((blank_map or {}).get("TF", []) or []) if str(v).strip()]
-        tf_blank_detail = {
-            int(q): int(v or 0)
-            for q, v in (dict(getattr(result, "tf_blank_detail", {}) or {})).items()
+        tf_expected = sorted(int(q) for q in (expected.get("TF", []) or []) if str(q).strip())
+        tf_blank_tokens = [str(v).strip().lower() for v in list((blank_map or {}).get("TF", []) or []) if str(v).strip()]
+        tf_blank_set = {
+            int(token[:-1])
+            for token in tf_blank_tokens
+            if len(token) >= 2 and token[:-1].lstrip("-").isdigit() and token[-1] in {"a", "b", "c", "d"}
+        }
+        tf_answers = {
+            int(q): dict(v or {})
+            for q, v in (dict(getattr(result, "true_false_answers", {}) or {})).items()
             if str(q).strip()
         }
-        if tf_blank:
-            tf_chunks: list[str] = []
-            for q in tf_blank:
-                missing_count = int(tf_blank_detail.get(int(q), 0) or 0)
-                tf_chunks.append(f"{missing_count if missing_count > 0 else 4} ý/câu {int(q)}")
-            lines.append("TF trống: " + "; ".join(tf_chunks))
+        missing_tf_statements: list[str] = []
+        for display_q in tf_expected:
+            if display_q not in tf_blank_set:
+                continue
+            flags = tf_answers.get(int(display_q), {}) if isinstance(tf_answers.get(int(display_q), {}), dict) else {}
+            for key in ["a", "b", "c", "d"]:
+                if key not in flags:
+                    missing_tf_statements.append(f"{int(display_q)}{key}")
+        if missing_tf_statements:
+            lines.append("TF trống: " + ", ".join(missing_tf_statements))
 
-        numeric_blank = [int(v) for v in list((blank_map or {}).get("NUMERIC", []) or []) if str(v).strip()]
+        numeric_expected = set(int(q) for q in (expected.get("NUMERIC", []) or []) if str(q).strip())
+        numeric_blank = [
+            int(v)
+            for v in list((blank_map or {}).get("NUMERIC", []) or [])
+            if str(v).strip() and int(v) in numeric_expected
+        ]
         if numeric_blank:
             lines.append(f"Num trống: {', '.join(str(v) for v in numeric_blank)}")
 
@@ -12826,12 +12858,9 @@ class MainWindow(QMainWindow):
                     inp_code.setCurrentIndex(idx_code)
                 else:
                     inp_code.setEditText(exam_code)
-            txt_content = QTextEdit(content)
             form.addRow("Student ID", inp_sid)
             form.addRow("Exam Code", inp_code)
             lay.addLayout(form)
-            lay.addWidget(QLabel("Nội dung"))
-            lay.addWidget(txt_content)
             buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
             buttons.accepted.connect(dlg.accept)
             buttons.rejected.connect(dlg.reject)
@@ -12851,19 +12880,14 @@ class MainWindow(QMainWindow):
             sid_item.setData(Qt.UserRole + 2, old_recognized_short)
             self.scan_list.setItem(idx, 0, sid_item)
             self.scan_list.setItem(idx, 2, QTableWidgetItem(new_exam_code or "-"))
-            manual_content_text = txt_content.toPlainText().strip()
-            self.scan_list.setItem(idx, self.SCAN_COL_CONTENT, QTableWidgetItem(manual_content_text or "-"))
             changes: list[str] = []
             if new_sid_text != old_sid:
                 changes.append(f"student_id: '{old_sid}' -> '{new_sid_text}'")
             if new_exam_code != old_exam_code:
                 changes.append(f"exam_code: '{old_exam_code}' -> '{new_exam_code}'")
-            old_content_text = str(content or "").strip()
-            if manual_content_text != old_content_text:
-                changes.append(f"manual_content: '{old_content_text}' -> '{manual_content_text}'")
             rebuilt = self._build_result_from_saved_table_row(idx)
             if rebuilt is not None:
-                setattr(rebuilt, "manual_content_override", manual_content_text)
+                setattr(rebuilt, "manual_content_override", "")
                 if changes:
                     self._mark_result_manually_edited(rebuilt, idx)
                 self._refresh_student_profile_for_result(rebuilt, idx)
