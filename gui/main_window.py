@@ -1865,6 +1865,7 @@ class MainWindow(QMainWindow):
         self._batch_scan_running = False
         self._batch_cancel_requested = False
         self._batch_loaded_runtime_key: str = ""
+        self._batch_loaded_subject_signature: str = ""
         self._auto_recognition_busy = False
         self._auto_recognition_queue: deque[str] = deque()
         self._auto_recognition_enqueued: set[str] = set()
@@ -3757,6 +3758,7 @@ class MainWindow(QMainWindow):
         self.batch_editor_return_session_id = None
         self.active_batch_subject_key = None
         self._batch_loaded_runtime_key = ""
+        self._batch_loaded_subject_signature = ""
         self._current_batch_data_source = "empty"
         self.batch_status_filter_mode = "all"
         self.scoring_status_filter_mode = "all"
@@ -7100,9 +7102,16 @@ class MainWindow(QMainWindow):
         self.batch_subject_combo.setCurrentIndex(target_index)
         self.batch_subject_combo.blockSignals(False)
         selected_key = str(self.batch_subject_combo.currentData() or "").strip() if self.batch_subject_combo.currentIndex() > 0 else ""
-        should_load = bool(selected_key) and (selected_key != previous_active_key or self.scan_list.rowCount() <= 0)
+        selected_cfg = self._selected_batch_subject_config() if selected_key else None
+        selected_sig = self._batch_subject_refresh_signature(selected_cfg) if isinstance(selected_cfg, dict) else ""
+        has_signature_change = bool(selected_key) and bool(selected_sig) and selected_sig != str(getattr(self, "_batch_loaded_subject_signature", "") or "")
+        should_load = bool(selected_key) and (
+            selected_key != previous_active_key
+            or self.scan_list.rowCount() <= 0
+            or has_signature_change
+        )
         if should_load:
-            self._on_batch_subject_changed(self.batch_subject_combo.currentIndex(), force_reload=False)
+            self._on_batch_subject_changed(self.batch_subject_combo.currentIndex(), force_reload=has_signature_change)
         self._handle_stack_changed(self.stack.currentIndex())
 
     def _selected_batch_subject_config(self) -> dict | None:
@@ -7268,6 +7277,35 @@ class MainWindow(QMainWindow):
             if key in merged:
                 merged[key] = []
         return merged
+
+    def _batch_subject_refresh_signature(self, cfg: dict | None) -> str:
+        if not isinstance(cfg, dict):
+            return ""
+        subject_key = self._subject_key_from_cfg(cfg)
+        imported_codes = sorted(str(k).strip() for k in (cfg.get("imported_answer_keys", {}) or {}).keys() if str(k).strip())
+        fetched_codes = sorted(str(k).strip() for k in (self._fetch_answer_keys_for_subject_scoped(subject_key, cfg) or {}).keys() if str(k).strip())
+        student_rows = []
+        for st in (self.session.students or []) if self.session else []:
+            extra = dict(getattr(st, "extra", {}) or {})
+            student_rows.append(
+                (
+                    str(getattr(st, "student_id", "") or "").strip(),
+                    str(getattr(st, "name", "") or "").strip(),
+                    str(extra.get("birth_date", "") or "").strip(),
+                    str(extra.get("class_name", "") or "").strip(),
+                    str(extra.get("exam_room", "") or "").strip(),
+                )
+            )
+        signature_payload = {
+            "subject_key": str(subject_key or ""),
+            "template_path": self._normalize_template_path(str(cfg.get("template_path", "") or "")),
+            "scan_folder": str(cfg.get("scan_folder", "") or "").strip(),
+            "answer_key_key": str(cfg.get("answer_key_key", "") or "").strip(),
+            "imported_codes": imported_codes,
+            "fetched_codes": fetched_codes,
+            "students": student_rows,
+        }
+        return json.dumps(signature_payload, ensure_ascii=False, sort_keys=True)
     def _on_batch_subject_changed(self, _index: int, force_reload: bool = False) -> None:
         if self._switching_batch_subject:
             return
@@ -7307,6 +7345,7 @@ class MainWindow(QMainWindow):
                 self.batch_context_value.setText("-")
             self._current_batch_data_source = "empty"
             self._batch_loaded_runtime_key = ""
+            self._batch_loaded_subject_signature = ""
             self._close_wait_progress(wait_dlg)
             return False
 
@@ -7314,14 +7353,21 @@ class MainWindow(QMainWindow):
         runtime_key = self._batch_runtime_key(subject_key)
 
         # Không clear/reload lại khi vẫn là đúng môn đang mở và không có yêu cầu ép reload.
+        cfg_signature = self._batch_subject_refresh_signature(cfg)
+
         if (
             not force_reload
             and subject_key
             and runtime_key
             and str(getattr(self, "_batch_loaded_runtime_key", "") or "").strip() == runtime_key
+            and str(getattr(self, "_batch_loaded_subject_signature", "") or "").strip() == cfg_signature
             and str(getattr(self, "_current_batch_data_source", "") or "").strip() == "database"
             and bool(self.scan_results or self.scan_list.rowCount() > 0)
         ):
+            fetched_codes = sorted(str(k).strip() for k in (self._fetch_answer_keys_for_subject_scoped(subject_key, cfg) or {}).keys() if str(k).strip())
+            imported_codes = sorted(str(k).strip() for k in (cfg.get("imported_answer_keys", {}) or {}).keys() if str(k).strip())
+            codes = ", ".join(sorted(set(imported_codes) | set(fetched_codes))) or "-"
+            self.batch_answer_codes_value.setText(codes)
             self._update_batch_scan_scope_summary()
             return True
 
@@ -7334,7 +7380,9 @@ class MainWindow(QMainWindow):
 
         template_path = self._normalize_template_path(str(cfg.get("template_path", "") or "")) or self._normalize_template_path(str(self.session.template_path if self.session else "")) or "-"
         scan_folder = str(cfg.get("scan_folder", "") or ((self.session.config or {}).get("scan_root", "") if self.session else "") or "-")
-        codes = ", ".join(sorted((cfg.get("imported_answer_keys") or {}).keys())) or "-"
+        imported_codes = sorted(str(k).strip() for k in (cfg.get("imported_answer_keys", {}) or {}).keys() if str(k).strip())
+        fetched_codes = sorted(str(k).strip() for k in (self._fetch_answer_keys_for_subject_scoped(subject_key, cfg) or {}).keys() if str(k).strip())
+        codes = ", ".join(sorted(set(imported_codes) | set(fetched_codes))) or "-"
         self.batch_template_path_value = template_path
         template_display = Path(template_path).stem if template_path and template_path != "-" else "-"
         self.batch_template_value.setText(template_display)
@@ -7367,6 +7415,7 @@ class MainWindow(QMainWindow):
             self.batch_scan_state_value.setText("Môn tự luận - dùng import điểm trực tiếp")
             self._current_batch_data_source = "essay_direct_import"
             self._batch_loaded_runtime_key = runtime_key
+            self._batch_loaded_subject_signature = cfg_signature
             self._clear_batch_preview_panels()
             self._update_batch_scan_scope_summary()
             self._close_wait_progress(wait_dlg)
@@ -7388,6 +7437,7 @@ class MainWindow(QMainWindow):
         self.btn_save_batch_subject.setEnabled(False)
         self._current_batch_data_source = source
         self._batch_loaded_runtime_key = runtime_key if source != "empty" else ""
+        self._batch_loaded_subject_signature = cfg_signature if source != "empty" else ""
         self._update_batch_scan_scope_summary()
         if self.scan_results:
             self._debug_scan_result_state("restore_subject_loaded_first_row", self.scan_results[0])
@@ -7608,6 +7658,7 @@ class MainWindow(QMainWindow):
         self.scan_last_adjustment.clear()
         self.scan_forced_status_by_index.clear()
         self.preview_rotation_by_index.clear()
+        self._batch_loaded_subject_signature = ""
         self.batch_status_filter_mode = "all"
         if hasattr(self, "scan_list"):
             self.scan_list.clearSelection()
