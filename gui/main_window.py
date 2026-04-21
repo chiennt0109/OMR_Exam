@@ -2871,15 +2871,6 @@ class MainWindow(QMainWindow):
         if row < 0 or row >= self.scan_list.rowCount():
             return
         self.scan_list.selectRow(row)
-        if require_confirm:
-            if QMessageBox.question(
-                self,
-                "Xoá bài thi",
-                "Bạn có chắc muốn xoá bài thi đã chọn?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            ) != QMessageBox.Yes:
-                return
         if self.correction_save_timer.isActive():
             self.correction_save_timer.stop()
             self._flush_pending_correction_updates()
@@ -2894,10 +2885,16 @@ class MainWindow(QMainWindow):
             image_path = str(getattr(result, "image_path", "") or "").strip()
         if not image_path:
             return
+        confirm_message = f"Bạn có chắc muốn xoá bản ghi này?\n\nẢnh: {Path(image_path).name}"
+        if require_confirm:
+            confirm_message = (
+                "Bạn có chắc muốn xoá bài thi đã chọn?\n\n"
+                f"Ảnh: {Path(image_path).name}"
+            )
         confirm = QMessageBox.question(
             self,
             "Xoá bài thi",
-            f"Bạn có chắc muốn xoá bản ghi này?\n\nẢnh: {Path(image_path).name}",
+            confirm_message,
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
