@@ -3113,19 +3113,7 @@ class MainWindow(QMainWindow):
                 if str(x.get("name", "")).strip()
             ] or session.subjects
             incoming_students = edited.get("students", []) if isinstance(edited.get("students", []), list) else []
-            session.students = [
-                Student(
-                    student_id=str(x.get("student_id", "") or "").strip(),
-                    name=str(x.get("name", "") or "").strip(),
-                    extra={
-                        "birth_date": str(x.get("birth_date", "") or ""),
-                        "class_name": str(x.get("class_name", "") or ""),
-                        "exam_room": str(x.get("exam_room", "") or ""),
-                    },
-                )
-                for x in incoming_students
-                if str(x.get("student_id", "") or "").strip() and str(x.get("name", "") or "").strip()
-            ]
+            session.students = self._students_from_editor_rows(incoming_students)
             session.config = {
                 **(session.config or {}),
                 "scan_mode": edited.get("scan_mode", "Ảnh trong thư mục gốc"),
@@ -3160,6 +3148,51 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Sửa kỳ thi", f"Không thể sửa kỳ thi\n{exc}")
             return False
+
+    @staticmethod
+    def _students_from_editor_rows(rows: list[dict] | None) -> list[Student]:
+        """
+        Convert student rows from exam-editor payload into canonical Student objects
+        without dropping valid SID-only records.
+        """
+        normalized: dict[str, Student] = {}
+        ordered_keys: list[str] = []
+        for raw in rows or []:
+            if not isinstance(raw, dict):
+                continue
+            sid = str(raw.get("student_id", "") or "").strip()
+            if not sid:
+                continue
+            key = sid.casefold()
+            name = str(raw.get("name", "") or "").strip()
+            birth_date = str(raw.get("birth_date", "") or "")
+            class_name = str(raw.get("class_name", "") or "")
+            exam_room = str(raw.get("exam_room", "") or "")
+            existing = normalized.get(key)
+            if existing is None:
+                normalized[key] = Student(
+                    student_id=sid,
+                    name=name,
+                    extra={
+                        "birth_date": birth_date,
+                        "class_name": class_name,
+                        "exam_room": exam_room,
+                    },
+                )
+                ordered_keys.append(key)
+                continue
+            # Merge duplicates by SID: prefer non-empty values from the newest row.
+            if name:
+                existing.name = name
+            merged_extra = dict(getattr(existing, "extra", {}) or {})
+            if birth_date:
+                merged_extra["birth_date"] = birth_date
+            if class_name:
+                merged_extra["class_name"] = class_name
+            if exam_room:
+                merged_extra["exam_room"] = exam_room
+            existing.extra = merged_extra
+        return [normalized[k] for k in ordered_keys if k in normalized]
 
     def _close_embedded_exam_editor(self) -> None:
         self.embedded_exam_dialog = None
@@ -6818,19 +6851,9 @@ class MainWindow(QMainWindow):
             subjects=subjects,
             template_path=common_template,
             answer_key_path="",
-            students=[
-                Student(
-                    student_id=str(x.get("student_id", "") or "").strip(),
-                    name=str(x.get("name", "") or "").strip(),
-                    extra={
-                        "birth_date": str(x.get("birth_date", "") or ""),
-                        "class_name": str(x.get("class_name", "") or ""),
-                        "exam_room": str(x.get("exam_room", "") or ""),
-                    },
-                )
-                for x in (payload.get("students", []) if isinstance(payload.get("students", []), list) else [])
-                if str(x.get("student_id", "") or "").strip() and str(x.get("name", "") or "").strip()
-            ],
+            students=self._students_from_editor_rows(
+                payload.get("students", []) if isinstance(payload.get("students", []), list) else []
+            ),
             config={
                 "scan_mode": payload.get("scan_mode", "Ảnh trong thư mục gốc"),
                 "scan_root": payload.get("scan_root", ""),
