@@ -4,6 +4,7 @@ import copy
 import csv
 import gc
 import json
+import os
 import re
 import shutil
 import sys
@@ -1805,6 +1806,7 @@ class MainWindow(QMainWindow):
         self.block_catalog: list[str] = ["10", "11", "12"]
         self.subjects: list[str] = list(self.subject_catalog)
         self.grades: list[str] = list(self.block_catalog)
+        self.subject_configs: list[dict] = []
         self.subject_management_mode = "subjects"
         self.subject_edit_index: int | None = None
         self.batch_editor_return_payload: dict | None = None
@@ -1948,6 +1950,25 @@ class MainWindow(QMainWindow):
     def _scan_signature_has_files(signature: tuple[int, float, int]) -> bool:
         return int((signature or (0, 0.0, 0))[0] or 0) > 0
 
+    def _pending_auto_recognition_paths_for_cfg(self, cfg: dict) -> list[str]:
+        if not isinstance(cfg, dict):
+            return []
+        subject_key = self._subject_instance_key_from_cfg(cfg)
+        if not subject_key:
+            return []
+        scan_paths = self._configured_scan_file_paths(cfg)
+        if not scan_paths:
+            return []
+        recognized = self._recognized_image_paths_for_subject(subject_key)
+        deleted = self._deleted_scan_images_for_subject(subject_key)
+        return [
+            path
+            for path in scan_paths
+            if (path_key := self._result_identity_key(str(path)))
+            and path_key not in recognized
+            and path_key not in deleted
+        ]
+
     def _enqueue_auto_recognition_subject(self, subject_key: str) -> None:
         key = str(subject_key or "").strip()
         if not key or key in self._auto_recognition_enqueued:
@@ -1981,12 +2002,13 @@ class MainWindow(QMainWindow):
             old_signature = self._auto_recognition_last_seen.get(subject_key)
             self._auto_recognition_last_seen[subject_key] = new_signature
             if old_signature is None:
-                if self._scan_signature_has_files(new_signature):
+                if self._scan_signature_has_files(new_signature) and self._pending_auto_recognition_paths_for_cfg(cfg):
                     self._enqueue_auto_recognition_subject(subject_key)
                 continue
             if new_signature == old_signature:
                 continue
-            self._enqueue_auto_recognition_subject(subject_key)
+            if self._pending_auto_recognition_paths_for_cfg(cfg):
+                self._enqueue_auto_recognition_subject(subject_key)
 
     def _process_auto_recognition_queue(self) -> None:
         if self._auto_recognition_pause_requested or self._auto_recognition_busy or self._batch_scan_running:
@@ -2031,8 +2053,8 @@ class MainWindow(QMainWindow):
             scan_paths = self._configured_scan_file_paths(cfg)
             if not scan_paths:
                 return
-            recognized = self._recognized_image_paths_for_subject(self._subject_key_from_cfg(cfg))
-            if not any(str(path).strip() not in recognized for path in scan_paths):
+            pending_auto_paths = self._pending_auto_recognition_paths_for_cfg(cfg)
+            if not pending_auto_paths:
                 return
 
             if hasattr(self, "batch_file_scope_combo"):
@@ -5755,6 +5777,36 @@ class MainWindow(QMainWindow):
             return logical_matches[0]
         return None
 
+    def _session_subject_config_ref_by_subject_key(self, subject_key: str) -> dict | None:
+        """Return the mutable subject config stored inside session.config.
+
+        Do not use `_effective_subject_configs_for_batch()` here because that path
+        intentionally returns copied configs with merged defaults for UI/runtime
+        consumption. For persistence-sensitive fields such as deleted scan images,
+        we must mutate the live object inside `session.config["subject_configs"]`.
+        """
+        key_norm = str(subject_key or "").strip()
+        if not key_norm:
+            return None
+        exact_match: dict | None = None
+        logical_matches: list[dict] = []
+        for idx, cfg in enumerate(self._subject_configs_in_session()):
+            if not isinstance(cfg, dict):
+                continue
+            self._ensure_subject_instance_key(cfg, idx)
+            canonical = self._subject_instance_key_from_cfg(cfg)
+            logical = self._logical_subject_key_from_cfg(cfg)
+            if key_norm == canonical:
+                exact_match = cfg
+                break
+            if key_norm == logical:
+                logical_matches.append(cfg)
+        if exact_match is not None:
+            return exact_match
+        if len(logical_matches) == 1:
+            return logical_matches[0]
+        return None
+
     @staticmethod
     def _serialize_omr_result(result: OMRResult) -> dict:
         return {
@@ -7168,9 +7220,9 @@ class MainWindow(QMainWindow):
         if not rows and key:
             rows = list(self._refresh_scan_results_from_db(key) or [])
         recognized = {
-            str(getattr(item, "image_path", "") or "").strip()
+            self._result_identity_key(str(getattr(item, "image_path", "") or ""))
             for item in rows
-            if str(getattr(item, "image_path", "") or "").strip()
+            if self._result_identity_key(str(getattr(item, "image_path", "") or ""))
         }
         recognized |= self._deleted_scan_images_for_subject(key)
         return recognized
@@ -7181,7 +7233,9 @@ class MainWindow(QMainWindow):
             return set()
         scoped_key = self._batch_result_subject_key(subject)
         runtime_set = set(self.deleted_scan_images_by_subject.get(scoped_key, set()) or set())
-        cfg = self._subject_config_by_subject_key(subject)
+        cfg = self._session_subject_config_ref_by_subject_key(subject)
+        if not isinstance(cfg, dict):
+            cfg = self._subject_config_by_subject_key(subject)
         cfg_list = set()
         if isinstance(cfg, dict):
             cfg_list = {self._result_identity_key(str(x)) for x in (cfg.get("deleted_scan_images", []) or []) if str(x).strip()}
@@ -7194,10 +7248,13 @@ class MainWindow(QMainWindow):
         normalized = {self._result_identity_key(x) for x in (images or set()) if self._result_identity_key(x)}
         scoped_key = self._batch_result_subject_key(subject)
         self.deleted_scan_images_by_subject[scoped_key] = set(normalized)
-        cfg = self._subject_config_by_subject_key(subject)
+        cfg = self._session_subject_config_ref_by_subject_key(subject)
         if isinstance(cfg, dict):
             cfg["deleted_scan_images"] = sorted(normalized)
             self.session_dirty = True
+            # Persist trực tiếp session.config vì đây mới là nguồn dữ liệu thật
+            # mà auto-recognition đọc lại sau khi khởi động ứng dụng.
+            self._persist_runtime_session_state_quietly()
 
     def _mark_deleted_scan_image(self, subject_key: str, image_path: str) -> None:
         subject = str(subject_key or "").strip()
@@ -7244,11 +7301,16 @@ class MainWindow(QMainWindow):
         instance_key = self._subject_instance_key_from_cfg(cfg) if cfg else ""
         runtime_key = self._batch_runtime_key(instance_key) if instance_key else ""
         recognized = self._recognized_image_paths_for_subject(instance_key)
-        recognized_count = sum(1 for path in all_paths if path in recognized)
-        pending_count = max(0, len(all_paths) - recognized_count)
+        deleted = self._deleted_scan_images_for_subject(instance_key)
+        recognized_live = recognized - deleted
+        recognized_count = sum(1 for path in all_paths if self._result_identity_key(str(path)) in recognized_live)
+        deleted_count = sum(1 for path in all_paths if self._result_identity_key(str(path)) in deleted)
+        pending_count = max(0, len(all_paths) - recognized_count - deleted_count)
         mode = str(self.batch_file_scope_combo.currentData() or "new_only") if hasattr(self, "batch_file_scope_combo") else "new_only"
         mode_label = "File mới" if mode == "new_only" else "Toàn bộ"
-        self.batch_scan_state_value.setText(f"{mode_label} | Đã nhận diện: {recognized_count} | Chưa nhận diện: {pending_count}")
+        self.batch_scan_state_value.setText(
+            f"{mode_label} | Đã nhận diện: {recognized_count} | Đã xoá trong Batch Scan: {deleted_count} | Chưa nhận diện: {pending_count}"
+        )
         self._update_batch_scan_bottom_status_text()
         if hasattr(self, "batch_context_value"):
             self.batch_context_value.setText(
@@ -8078,12 +8140,12 @@ class MainWindow(QMainWindow):
         subject_db_key = self._batch_result_subject_key(subject_key_for_results)
         existing_results = list(self._refresh_scan_results_from_db(subject_key_for_results) or [])
         recognized_paths = {
-            str(getattr(item, "image_path", "") or "").strip()
+            self._result_identity_key(str(getattr(item, "image_path", "") or ""))
             for item in existing_results
-            if str(getattr(item, "image_path", "") or "").strip()
+            if self._result_identity_key(str(getattr(item, "image_path", "") or ""))
         }
         if file_scope_mode == "new_only":
-            file_paths = [path for path in file_paths if str(path).strip() not in recognized_paths]
+            file_paths = [path for path in file_paths if self._result_identity_key(str(path)) not in recognized_paths]
             if auto_triggered and subject_key_for_results:
                 deleted_set = self._deleted_scan_images_for_subject(subject_key_for_results)
                 if deleted_set:
@@ -12357,7 +12419,12 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _result_identity_key(image_path: str) -> str:
-        return str(image_path or "").strip()
+        raw = str(image_path or "").strip()
+        if not raw:
+            return ""
+        normalized = os.path.normpath(raw)
+        normalized = os.path.normcase(normalized)
+        return str(normalized or "").strip()
 
     def _row_image_key(self, row_idx: int) -> str:
         if row_idx < 0 or (not hasattr(self, "scan_list")) or row_idx >= self.scan_list.rowCount():
