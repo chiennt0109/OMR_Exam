@@ -27,7 +27,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFileDialog,
     QFrame,
     QFormLayout,
@@ -37,7 +36,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
-    QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -61,7 +59,7 @@ from PySide6.QtWidgets import (
 
 from core.answer_key_importer import ImportedAnswerKey, ImportedAnswerKeyPackage, import_answer_key
 from core.omr_engine import OMRProcessor, OMRResult, RecognitionContext
-from core.scoring_engine import ScoreResult, ScoringEngine
+from core.scoring_engine import ScoringEngine
 from editor.template_editor import TemplateEditorWindow
 from gui.import_answer_key_dialog import ImportAnswerKeyDialog
 from gui.export_reports_dialog import ExportReportsDialog
