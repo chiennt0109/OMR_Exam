@@ -1852,6 +1852,7 @@ class MainWindow(QMainWindow):
         self.preview_source_pixmap = QPixmap()
         self.preview_rotation_by_index: dict[int, int] = {}
         self.scan_forced_status_by_index: dict[str, str] = {}
+        self.deleted_scan_images_by_subject: dict[str, set[str]] = {}
         self._student_option_cache_session_id: str = ""
         self._student_option_labels_cache: list[str] = []
         self._student_option_sid_map: dict[str, str] = {}
@@ -2042,7 +2043,7 @@ class MainWindow(QMainWindow):
                         self.batch_file_scope_combo.setCurrentIndex(i)
                         break
             self._update_auto_recognition_progress()
-            self.run_batch_scan()
+            self.run_batch_scan(auto_triggered=True)
         finally:
             if previous_scope_index >= 0 and hasattr(self, "batch_file_scope_combo"):
                 self.batch_file_scope_combo.setCurrentIndex(previous_scope_index)
@@ -2870,11 +2871,13 @@ class MainWindow(QMainWindow):
         idx = self.scan_list.currentRow()
         sid_item = self.scan_list.item(idx, self.SCAN_COL_STUDENT_ID) if 0 <= idx < self.scan_list.rowCount() else None
         image_path = str(sid_item.data(Qt.UserRole) if sid_item else "").strip()
+        sid_for_score = str(sid_item.text() if sid_item else "").strip()
         if not image_path:
             result = self.scan_results[idx] if 0 <= idx < len(self.scan_results) else self._build_result_from_saved_table_row(idx)
             if result is None:
                 return
             image_path = str(getattr(result, "image_path", "") or "").strip()
+            sid_for_score = str(getattr(result, "student_id", "") or sid_for_score).strip()
         if not image_path:
             return
         confirm_message = f"Bạn có chắc muốn xoá bản ghi này?\n\nẢnh: {Path(image_path).name}"
@@ -2895,6 +2898,9 @@ class MainWindow(QMainWindow):
 
         wait_dlg = self._open_wait_progress("Đang xoá bản ghi và cập nhật danh sách...")
         subject_key = self._current_batch_subject_key()
+        self._mark_deleted_scan_image(subject_key, image_path)
+        if sid_for_score and sid_for_score != "-":
+            self._invalidate_scoring_for_student_ids([sid_for_score], subject_key=subject_key, reason="delete_scan_row")
         scoped_subject = self._batch_result_subject_key(subject_key)
         candidate_subject_keys: list[str] = [scoped_subject]
         sid = str(self.current_session_id or "").strip()
@@ -3738,6 +3744,7 @@ class MainWindow(QMainWindow):
         self.imported_exam_codes = []
         self.preview_rotation_by_index = {}
         self.scan_forced_status_by_index = {}
+        self.deleted_scan_images_by_subject = {}
         self.scan_blank_questions = {}
         self.scan_blank_summary = {}
         self.scan_manual_adjustments = {}
@@ -7162,11 +7169,35 @@ class MainWindow(QMainWindow):
         rows = list(self.scan_results_by_subject.get(scoped_key) or [])
         if not rows and key:
             rows = list(self._refresh_scan_results_from_db(key) or [])
-        return {
+        recognized = {
             str(getattr(item, "image_path", "") or "").strip()
             for item in rows
             if str(getattr(item, "image_path", "") or "").strip()
         }
+        recognized |= set(self.deleted_scan_images_by_subject.get(scoped_key, set()) or set())
+        return recognized
+
+    def _mark_deleted_scan_image(self, subject_key: str, image_path: str) -> None:
+        subject = str(subject_key or "").strip()
+        image_key = self._result_identity_key(image_path)
+        if not subject or not image_key:
+            return
+        scoped_key = self._batch_result_subject_key(subject)
+        deleted_set = self.deleted_scan_images_by_subject.setdefault(scoped_key, set())
+        deleted_set.add(image_key)
+
+    def _unmark_deleted_scan_images(self, subject_key: str, image_paths: list[str]) -> None:
+        subject = str(subject_key or "").strip()
+        if not subject:
+            return
+        scoped_key = self._batch_result_subject_key(subject)
+        deleted_set = self.deleted_scan_images_by_subject.get(scoped_key)
+        if not deleted_set:
+            return
+        for path in image_paths or []:
+            image_key = self._result_identity_key(path)
+            if image_key:
+                deleted_set.discard(image_key)
     def _configured_scan_file_paths(self, cfg: dict | None) -> list[str]:
         if not cfg:
             return []
@@ -7859,7 +7890,7 @@ class MainWindow(QMainWindow):
         setattr(result, "recognized_certainty_margin", float(getattr(self.omr_processor, "certainty_margin", md.get("certainty_margin", 0.08)) or 0.08))
         return result
 
-    def run_batch_scan(self) -> None:
+    def run_batch_scan(self, auto_triggered: bool = False) -> None:
         if self._batch_scan_running:
             confirm_cancel = QMessageBox.question(
                 self,
@@ -8033,6 +8064,10 @@ class MainWindow(QMainWindow):
         }
         if file_scope_mode == "new_only":
             file_paths = [path for path in file_paths if str(path).strip() not in recognized_paths]
+            if auto_triggered and subject_key_for_results:
+                deleted_set = set(self.deleted_scan_images_by_subject.get(subject_db_key, set()) or set())
+                if deleted_set:
+                    file_paths = [path for path in file_paths if self._result_identity_key(str(path)) not in deleted_set]
             if not file_paths:
                 self.scan_results = list(existing_results)
                 self._populate_scan_grid_from_results(self.scan_results)
@@ -8138,6 +8173,7 @@ class MainWindow(QMainWindow):
             self._close_batch_progress_screen(batch_progress_dialog)
 
         self.scan_results_by_subject[subject_db_key] = list(self.scan_results)
+        self._unmark_deleted_scan_images(subject_key_for_results, [str(getattr(x, "image_path", "") or "") for x in new_results])
         self.database.replace_scan_results_for_subject(
             subject_db_key,
             [self._serialize_omr_result(x) for x in self.scan_results],
@@ -11610,6 +11646,29 @@ class MainWindow(QMainWindow):
         scoped_new = self._scoped_result_copy(new_result)
         blank_map = self._compute_blank_questions(scoped_new)
         rec_errors = list(getattr(new_result, "recognition_errors", [])) or list(getattr(new_result, "errors", []))
+        old_sid_for_score = str(getattr(old_result, "student_id", "") or "").strip()
+        new_sid_for_score = str(getattr(new_result, "student_id", "") or "").strip()
+
+        if rec_errors:
+            # Failed/partial re-recognition must restart workflow like a newly recognized file:
+            # clear manual-edit traces and reset forced-status cache.
+            setattr(new_result, "manually_edited", False)
+            setattr(new_result, "cached_forced_status", "")
+            setattr(new_result, "cached_status", "")
+            setattr(new_result, "edit_history", [])
+            setattr(new_result, "manual_adjustments", [])
+            setattr(new_result, "last_adjustment", "")
+            if image_key:
+                self.scan_edit_history.pop(image_key, None)
+                self.scan_manual_adjustments.pop(image_key, None)
+                self.scan_last_adjustment.pop(image_key, None)
+                self.scan_forced_status_by_index.pop(image_key, None)
+            # If re-recognition has errors, scoring must be reset and follow full scoring flow again.
+            self._invalidate_scoring_for_student_ids(
+                [sid for sid in [old_sid_for_score, new_sid_for_score] if sid],
+                subject_key=subject_key,
+                reason="rerecognize_with_errors_reset",
+            )
 
         self._set_scan_result_at_row(idx, new_result)
         subject_key = self._current_batch_subject_key()
@@ -11622,7 +11681,7 @@ class MainWindow(QMainWindow):
         self._rebuild_error_list()
         self._update_scan_preview(idx)
         self._sync_correction_detail_panel(new_result, rebuild_editor=False)
-        if prior_history:
+        if prior_history and not rec_errors:
             old_sid = str(getattr(old_result, "student_id", "") or "").strip() or "-"
             old_code = str(getattr(old_result, "exam_code", "") or "").strip() or "-"
             new_sid = str(getattr(new_result, "student_id", "") or "").strip() or "-"
