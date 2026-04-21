@@ -5187,8 +5187,8 @@ class MainWindow(QMainWindow):
             res.student_id = "" if sid_text == "-" else sid_text
             res.exam_code = exam_code
             if hasattr(self, "scan_list"):
-                res.full_name = str(self.scan_list.item(r, 3).text() if self.scan_list.item(r, 3) else "")
-                res.birth_date = str(self.scan_list.item(r, 4).text() if self.scan_list.item(r, 4) else "")
+                res.full_name = str(self.scan_list.item(r, self.SCAN_COL_FULL_NAME).text() if self.scan_list.item(r, self.SCAN_COL_FULL_NAME) else "")
+                res.birth_date = str(self.scan_list.item(r, self.SCAN_COL_BIRTH_DATE).text() if self.scan_list.item(r, self.SCAN_COL_BIRTH_DATE) else "")
             res.sync_legacy_aliases()
             out.append(res)
 
@@ -6625,7 +6625,7 @@ class MainWindow(QMainWindow):
         expected = self._expected_questions_by_section(scoped)
         self.scan_list.setItem(
             idx,
-            5,
+            self.SCAN_COL_CONTENT,
             QTableWidgetItem(self._build_recognition_content_text(result, self.scan_blank_summary[idx], expected)),
         )
         sid_item = self.scan_list.item(idx, self.SCAN_COL_STUDENT_ID)
@@ -6994,9 +6994,9 @@ class MainWindow(QMainWindow):
             exam_room = str(profile.get("exam_room", "") or "").strip()
         setattr(result, "exam_room", exam_room)
         if row_idx is not None and 0 <= row_idx < self.scan_list.rowCount():
-            self.scan_list.setItem(row_idx, 1, QTableWidgetItem(str(getattr(result, "exam_room", "") or "-")))
-            self.scan_list.setItem(row_idx, 3, QTableWidgetItem(str(getattr(result, "full_name", "") or "-")))
-            self.scan_list.setItem(row_idx, 4, QTableWidgetItem(str(getattr(result, "birth_date", "") or "-")))
+            self.scan_list.setItem(row_idx, self.SCAN_COL_EXAM_ROOM, QTableWidgetItem(str(getattr(result, "exam_room", "") or "-")))
+            self.scan_list.setItem(row_idx, self.SCAN_COL_FULL_NAME, QTableWidgetItem(str(getattr(result, "full_name", "") or "-")))
+            self.scan_list.setItem(row_idx, self.SCAN_COL_BIRTH_DATE, QTableWidgetItem(str(getattr(result, "birth_date", "") or "-")))
 
     @staticmethod
     def _normalized_student_id_for_match(student_id: str) -> str:
@@ -11660,8 +11660,8 @@ class MainWindow(QMainWindow):
 
     def _update_scan_preview_from_saved_row(self, row: int) -> None:
         sid = self.scan_list.item(row, self.SCAN_COL_STUDENT_ID).text() if self.scan_list.item(row, self.SCAN_COL_STUDENT_ID) else "-"
-        exam_code_cell = self.scan_list.item(row, 2).text() if self.scan_list.item(row, 2) else "-"
-        content = self.scan_list.item(row, 5).text() if self.scan_list.item(row, 5) else "-"
+        exam_code_cell = self.scan_list.item(row, self.SCAN_COL_EXAM_CODE).text() if self.scan_list.item(row, self.SCAN_COL_EXAM_CODE) else "-"
+        content = self.scan_list.item(row, self.SCAN_COL_CONTENT).text() if self.scan_list.item(row, self.SCAN_COL_CONTENT) else "-"
         status = self.scan_list.item(row, self.SCAN_COL_STATUS).text() if self.scan_list.item(row, self.SCAN_COL_STATUS) else "-"
         img_path = ""
         exam_code = ""
@@ -12269,10 +12269,10 @@ class MainWindow(QMainWindow):
         if image_key:
             self.scan_forced_status_by_index[image_key] = "Đã sửa"
         if resolved_row is not None and resolved_row >= 0 and hasattr(self, "scan_list") and resolved_row < self.scan_list.rowCount():
-            status_item = self.scan_list.item(resolved_row, 6)
+            status_item = self.scan_list.item(resolved_row, self.SCAN_COL_STATUS)
             if status_item is None:
                 status_item = QTableWidgetItem("Đã sửa")
-                self.scan_list.setItem(resolved_row, 6, status_item)
+                self.scan_list.setItem(resolved_row, self.SCAN_COL_STATUS, status_item)
             else:
                 status_item.setText("Đã sửa")
             status_item.setToolTip("Đã sửa")
@@ -12795,8 +12795,8 @@ class MainWindow(QMainWindow):
             sid_item.setData(Qt.UserRole, old_img)
             sid_item.setData(Qt.UserRole + 1, new_exam_code)
             sid_item.setData(Qt.UserRole + 2, old_recognized_short)
-            self.scan_list.setItem(idx, 0, sid_item)
-            self.scan_list.setItem(idx, 2, QTableWidgetItem(new_exam_code or "-"))
+            self.scan_list.setItem(idx, self.SCAN_COL_STUDENT_ID, sid_item)
+            self.scan_list.setItem(idx, self.SCAN_COL_EXAM_CODE, QTableWidgetItem(new_exam_code or "-"))
             changes: list[str] = []
             if new_sid_text != old_sid:
                 changes.append(f"student_id: '{old_sid}' -> '{new_sid_text}'")
@@ -13802,7 +13802,7 @@ class MainWindow(QMainWindow):
         sid_item.setData(Qt.UserRole, str(res.image_path))
         sid_item.setData(Qt.UserRole + 1, res.exam_code or "")
         sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(res))
-        self.scan_list.setItem(idx, 0, sid_item)
+        self.scan_list.setItem(idx, self.SCAN_COL_STUDENT_ID, sid_item)
         if changes:
             self._mark_result_manually_edited(res, idx)
             self._refresh_student_profile_for_result(res)
