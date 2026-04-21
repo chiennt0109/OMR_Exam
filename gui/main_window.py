@@ -2847,14 +2847,6 @@ class MainWindow(QMainWindow):
             self._delete_scan_row_by_index(row, require_confirm=True)
             return
         if chosen == act_rerecognize:
-            if QMessageBox.question(
-                self,
-                "Nhận dạng lại bài thi",
-                "Bạn có chắc muốn nhận dạng lại bài thi đã chọn?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            ) != QMessageBox.Yes:
-                return
             self.scan_list.selectRow(row)
             self._on_scan_selected()
             self._rerecognize_selected_scan()
@@ -11546,16 +11538,22 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Nhận dạng lại", "Không tìm thấy dữ liệu dòng đang chọn để nhận dạng lại.")
             return
         subject_key = self._current_batch_subject_key()
-        if subject_key and self._scan_has_existing_score(subject_key, old_result):
-            confirm_rerun = QMessageBox.question(
-                self,
-                "Nhận dạng lại ảnh chọn",
-                "Bài thi này đã có điểm. Nhận dạng lại ảnh đã chọn có thể làm thay đổi điểm đã tính.\n\nBạn có muốn tiếp tục không?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
+        has_existing_score = bool(subject_key and self._scan_has_existing_score(subject_key, old_result))
+        confirm_message = "Bạn có chắc muốn nhận dạng lại bài thi đã chọn?"
+        if has_existing_score:
+            confirm_message = (
+                "Bài thi này đã có điểm. Nhận dạng lại ảnh đã chọn có thể làm thay đổi điểm đã tính.\n\n"
+                "Bạn có muốn tiếp tục không?"
             )
-            if confirm_rerun != QMessageBox.Yes:
-                return
+        confirm_rerun = QMessageBox.question(
+            self,
+            "Nhận dạng lại ảnh chọn",
+            confirm_message,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm_rerun != QMessageBox.Yes:
+            return
         image_path = str(old_result.image_path or "").strip()
         if not image_path or not Path(image_path).exists():
             QMessageBox.warning(self, "Nhận dạng lại", f"Không tìm thấy ảnh để nhận dạng lại:\n{image_path or '-'}")
