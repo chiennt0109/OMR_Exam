@@ -7174,30 +7174,52 @@ class MainWindow(QMainWindow):
             for item in rows
             if str(getattr(item, "image_path", "") or "").strip()
         }
-        recognized |= set(self.deleted_scan_images_by_subject.get(scoped_key, set()) or set())
+        recognized |= self._deleted_scan_images_for_subject(key)
         return recognized
+
+    def _deleted_scan_images_for_subject(self, subject_key: str) -> set[str]:
+        subject = str(subject_key or "").strip()
+        if not subject:
+            return set()
+        scoped_key = self._batch_result_subject_key(subject)
+        runtime_set = set(self.deleted_scan_images_by_subject.get(scoped_key, set()) or set())
+        cfg = self._subject_config_by_subject_key(subject)
+        cfg_list = set()
+        if isinstance(cfg, dict):
+            cfg_list = {self._result_identity_key(str(x)) for x in (cfg.get("deleted_scan_images", []) or []) if str(x).strip()}
+        return {x for x in (runtime_set | cfg_list) if x}
+
+    def _set_deleted_scan_images_for_subject(self, subject_key: str, images: set[str]) -> None:
+        subject = str(subject_key or "").strip()
+        if not subject:
+            return
+        normalized = {self._result_identity_key(x) for x in (images or set()) if self._result_identity_key(x)}
+        scoped_key = self._batch_result_subject_key(subject)
+        self.deleted_scan_images_by_subject[scoped_key] = set(normalized)
+        cfg = self._subject_config_by_subject_key(subject)
+        if isinstance(cfg, dict):
+            cfg["deleted_scan_images"] = sorted(normalized)
+            self.session_dirty = True
 
     def _mark_deleted_scan_image(self, subject_key: str, image_path: str) -> None:
         subject = str(subject_key or "").strip()
         image_key = self._result_identity_key(image_path)
         if not subject or not image_key:
             return
-        scoped_key = self._batch_result_subject_key(subject)
-        deleted_set = self.deleted_scan_images_by_subject.setdefault(scoped_key, set())
+        deleted_set = self._deleted_scan_images_for_subject(subject)
         deleted_set.add(image_key)
+        self._set_deleted_scan_images_for_subject(subject, deleted_set)
 
     def _unmark_deleted_scan_images(self, subject_key: str, image_paths: list[str]) -> None:
         subject = str(subject_key or "").strip()
         if not subject:
             return
-        scoped_key = self._batch_result_subject_key(subject)
-        deleted_set = self.deleted_scan_images_by_subject.get(scoped_key)
-        if not deleted_set:
-            return
+        deleted_set = self._deleted_scan_images_for_subject(subject)
         for path in image_paths or []:
             image_key = self._result_identity_key(path)
             if image_key:
                 deleted_set.discard(image_key)
+        self._set_deleted_scan_images_for_subject(subject, deleted_set)
     def _configured_scan_file_paths(self, cfg: dict | None) -> list[str]:
         if not cfg:
             return []
@@ -8065,7 +8087,7 @@ class MainWindow(QMainWindow):
         if file_scope_mode == "new_only":
             file_paths = [path for path in file_paths if str(path).strip() not in recognized_paths]
             if auto_triggered and subject_key_for_results:
-                deleted_set = set(self.deleted_scan_images_by_subject.get(subject_db_key, set()) or set())
+                deleted_set = self._deleted_scan_images_for_subject(subject_key_for_results)
                 if deleted_set:
                     file_paths = [path for path in file_paths if self._result_identity_key(str(path)) not in deleted_set]
             if not file_paths:
