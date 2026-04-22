@@ -144,6 +144,7 @@ class ExportReportsDialog(QDialog):
         layout.setColumnStretch(2, 3)
 
         self.report_list.currentTextChanged.connect(self._on_report_changed)
+        self.report_list.itemDoubleClicked.connect(lambda _item: self.preview_report())
         self.btn_add_combo.clicked.connect(self._add_combo)
         self.btn_remove_combo.clicked.connect(self._remove_combo)
         self.absent_group_combo.currentTextChanged.connect(lambda _text: self.preview_report())
