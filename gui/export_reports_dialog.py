@@ -38,6 +38,9 @@ class ExportReportsDialog(QDialog):
     REPORT_COMBO_RANK = "Bảng điểm theo tổ hợp"
     REPORT_COMBO_DIST = "Phổ điểm tổ hợp"
     REPORT_CLASS_SUMMARY = "Tổng hợp theo lớp"
+    REPORT_ABSENT_EXAM = "Thống kê học sinh vắng thi"
+    ABSENT_GROUP_BY_CLASS = "Theo lớp"
+    ABSENT_GROUP_BY_SUBJECT = "Theo môn"
 
     def __init__(self, parent_window) -> None:
         super().__init__(parent_window)
@@ -61,6 +64,7 @@ class ExportReportsDialog(QDialog):
             self.REPORT_COMBO_RANK,
             self.REPORT_COMBO_DIST,
             self.REPORT_CLASS_SUMMARY,
+            self.REPORT_ABSENT_EXAM,
         ]:
             self.report_list.addItem(name)
 
@@ -73,6 +77,8 @@ class ExportReportsDialog(QDialog):
 
         self.class_combo = QComboBox()
         self.class_combo.addItems(self._collect_class_options())
+        self.absent_group_combo = QComboBox()
+        self.absent_group_combo.addItems([self.ABSENT_GROUP_BY_CLASS, self.ABSENT_GROUP_BY_SUBJECT])
 
         self.combo_name_edit = QLineEdit()
         self.combo_name_edit.setPlaceholderText("Tên tổ hợp (VD: A00)")
@@ -90,6 +96,10 @@ class ExportReportsDialog(QDialog):
         row_class_layout = QVBoxLayout(self.row_class)
         row_class_layout.setContentsMargins(0, 0, 0, 0)
         row_class_layout.addWidget(self.class_combo)
+        self.row_absent_group = QWidget()
+        row_absent_group_layout = QVBoxLayout(self.row_absent_group)
+        row_absent_group_layout.setContentsMargins(0, 0, 0, 0)
+        row_absent_group_layout.addWidget(self.absent_group_combo)
         self.row_combo = QWidget()
         combo_layout = QVBoxLayout(self.row_combo)
         combo_layout.setContentsMargins(0, 0, 0, 0)
@@ -105,6 +115,7 @@ class ExportReportsDialog(QDialog):
 
         self.right_form.addRow("Kỳ thi hiện tại", self.exam_label)
         self.right_form.addRow("Lớp", self.row_class)
+        self.right_form.addRow("Nhóm vắng thi", self.row_absent_group)
         self.right_form.addRow("Chọn tổ hợp", self.row_combo)
 
         center = QWidget()
@@ -135,6 +146,7 @@ class ExportReportsDialog(QDialog):
         self.report_list.currentTextChanged.connect(self._on_report_changed)
         self.btn_add_combo.clicked.connect(self._add_combo)
         self.btn_remove_combo.clicked.connect(self._remove_combo)
+        self.absent_group_combo.currentTextChanged.connect(lambda _text: self.preview_report())
         self.btn_preview.clicked.connect(self.preview_report)
         self.btn_export_excel.clicked.connect(self.export_excel)
         self.btn_export_pdf.clicked.connect(self.export_pdf)
@@ -397,10 +409,145 @@ class ExportReportsDialog(QDialog):
 
     def _on_report_changed(self, text: str) -> None:
         self.title_label.setText(text or "Báo cáo thống kê")
-        needs_filters = text in {self.REPORT_COMBO_RANK, self.REPORT_COMBO_DIST, self.REPORT_CLASS_SUMMARY}
+        needs_filters = text in {self.REPORT_COMBO_RANK, self.REPORT_COMBO_DIST, self.REPORT_CLASS_SUMMARY, self.REPORT_ABSENT_EXAM}
         self.right_widget.setVisible(needs_filters)
         self.row_class.setVisible(text == self.REPORT_CLASS_SUMMARY)
+        self.row_absent_group.setVisible(text == self.REPORT_ABSENT_EXAM)
         self.row_combo.setVisible(text in {self.REPORT_COMBO_RANK, self.REPORT_COMBO_DIST, self.REPORT_CLASS_SUMMARY})
+
+    @staticmethod
+    def _is_missing_room_text(room_text: str) -> bool:
+        normalized = str(room_text or "").strip().casefold()
+        return normalized in {"", "-", "không rõ phòng", "[không rõ phòng]"}
+
+    def _subject_mapping_room_by_sid(self, subject_cfg: dict, profiles: dict[str, dict[str, str]]) -> dict[str, str]:
+        cfg = subject_cfg if isinstance(subject_cfg, dict) else {}
+        room_by_sid: dict[str, str] = {}
+        normalized_to_sid: dict[str, str] = {}
+
+        normalize_sid = getattr(self.main_window, "_normalized_student_id_for_match", None)
+        if callable(normalize_sid):
+            for sid in profiles.keys():
+                sid_text = str(sid or "").strip()
+                sid_norm = str(normalize_sid(sid_text) or "").strip()
+                if sid_text and sid_norm and sid_norm not in normalized_to_sid:
+                    normalized_to_sid[sid_norm] = sid_text
+        else:
+            for sid in profiles.keys():
+                sid_text = str(sid or "").strip()
+                if sid_text and sid_text not in normalized_to_sid:
+                    normalized_to_sid[sid_text] = sid_text
+
+        preferred_room = str(cfg.get("exam_room_name", "") or "").strip()
+        normalize_room = getattr(self.main_window, "_normalized_room_for_match", None)
+        preferred_room_norm = str(normalize_room(preferred_room) or "").strip() if callable(normalize_room) else preferred_room.casefold()
+
+        mapping_by_room_func = getattr(self.main_window, "_normalized_exam_room_mapping_by_room", None)
+        mapping_by_room = mapping_by_room_func(cfg) if callable(mapping_by_room_func) else {}
+        if isinstance(mapping_by_room, dict) and mapping_by_room:
+            for room_name, sid_set in mapping_by_room.items():
+                room_text = str(room_name or "").strip()
+                if not room_text or not isinstance(sid_set, set):
+                    continue
+                for sid_norm in sid_set:
+                    sid_key = normalized_to_sid.get(str(sid_norm or "").strip(), "")
+                    if not sid_key:
+                        continue
+                    current = room_by_sid.get(sid_key, "")
+                    if not current:
+                        room_by_sid[sid_key] = room_text
+                        continue
+                    current_norm = str(normalize_room(current) or "").strip() if callable(normalize_room) else current.casefold()
+                    next_norm = str(normalize_room(room_text) or "").strip() if callable(normalize_room) else room_text.casefold()
+                    if preferred_room_norm and next_norm == preferred_room_norm and current_norm != preferred_room_norm:
+                        room_by_sid[sid_key] = room_text
+            return room_by_sid
+
+        mapping_text = str(cfg.get("exam_room_sbd_mapping", "") or "").strip()
+        if preferred_room and mapping_text:
+            chunks = [x.strip() for x in mapping_text.replace(";", ",").replace("\n", ",").split(",") if x.strip()]
+            for token in chunks:
+                sid_norm = str(normalize_sid(token) or "").strip() if callable(normalize_sid) else token
+                sid_key = normalized_to_sid.get(sid_norm, "")
+                if sid_key:
+                    room_by_sid[sid_key] = preferred_room
+        return room_by_sid
+
+    def build_absent_exam_report(self) -> ReportTable:
+        subjects = self._collect_subject_pairs()
+        profiles = self._student_profile_map()
+        absent_items: list[dict[str, str]] = []
+        for subject_label, subject_key in subjects:
+            cfg = self.main_window._subject_config_by_subject_key(subject_key) or {}
+            mapped_room_by_sid = self._subject_mapping_room_by_sid(cfg, profiles)
+            if not mapped_room_by_sid:
+                continue
+            source_ids: set[str] = set()
+            if hasattr(self.main_window, "_scoring_source_student_ids"):
+                try:
+                    source_ids, _count = self.main_window._scoring_source_student_ids(subject_key)
+                except Exception:
+                    source_ids = set()
+            normalize_sid = getattr(self.main_window, "_normalized_student_id_for_match", None)
+            source_sid_normalized = {
+                str(normalize_sid(sid) or "").strip() if callable(normalize_sid) else str(sid or "").strip()
+                for sid in source_ids
+                if str(sid or "").strip()
+            }
+            for sid_text, room_text in mapped_room_by_sid.items():
+                profile = profiles.get(sid_text, {})
+                missing_room = self._is_missing_room_text(room_text)
+                if hasattr(self.main_window, "_is_missing_room_for_status"):
+                    try:
+                        missing_room = bool(self.main_window._is_missing_room_for_status(room_text))
+                    except Exception:
+                        missing_room = self._is_missing_room_text(room_text)
+                if missing_room:
+                    continue
+                sid_norm = str(normalize_sid(sid_text) or "").strip() if callable(normalize_sid) else sid_text
+                if sid_norm in source_sid_normalized:
+                    continue
+                absent_items.append({
+                    "student_id": sid_text,
+                    "name": str(profile.get("name", "") or "").strip(),
+                    "class_name": str(profile.get("class_name", "") or "").strip() or "(Không lớp)",
+                    "subject_name": subject_label,
+                    "exam_room": room_text,
+                })
+
+        group_mode = self.absent_group_combo.currentText().strip()
+        group_by_class = group_mode != self.ABSENT_GROUP_BY_SUBJECT
+        headers = ["Nhóm", "STT", "SBD", "Họ tên", "Lớp", "Môn", "Phòng thi"]
+        grouped: dict[str, list[list[object]]] = {}
+        for item in absent_items:
+            key = item["class_name"] if group_by_class else item["subject_name"]
+            grouped.setdefault(key, []).append([
+                key,
+                0,
+                item["student_id"],
+                item["name"],
+                item["class_name"],
+                item["subject_name"],
+                item["exam_room"],
+            ])
+
+        if group_by_class:
+            class_order = self._session_class_order()
+            ordered_groups = [cls for cls in class_order if cls in grouped]
+            ordered_groups.extend(sorted(cls for cls in grouped if cls not in class_order))
+        else:
+            subject_order = [label for label, _ in subjects]
+            ordered_groups = [subject for subject in subject_order if subject in grouped]
+            ordered_groups.extend(sorted(subject for subject in grouped if subject not in subject_order))
+
+        all_rows: list[list[object]] = []
+        for key in ordered_groups:
+            rows = grouped.get(key, [])
+            rows.sort(key=lambda row: (str(row[2]), str(row[5])))
+            for idx, row in enumerate(rows, start=1):
+                row[1] = idx
+            all_rows.extend(rows)
+        return ReportTable(headers, all_rows, grouped_rows=grouped)
 
     def _subject_score_by_sid(self, subject_key: str) -> dict[str, float]:
         key = str(subject_key or "").strip()
@@ -616,6 +763,8 @@ class ExportReportsDialog(QDialog):
             return self.build_combo_ranking_report()
         if name == self.REPORT_COMBO_DIST:
             return self.build_combo_distribution_report()
+        if name == self.REPORT_ABSENT_EXAM:
+            return self.build_absent_exam_report()
         return self.build_class_summary_report()
 
     def _render_table(self, table: ReportTable) -> None:
