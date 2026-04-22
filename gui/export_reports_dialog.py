@@ -852,6 +852,69 @@ class ExportReportsDialog(QDialog):
             wb.save(Path(path))
             QMessageBox.information(self, "Báo cáo", f"Đã xuất Excel:\n{path}")
             return
+        if report_name == self.REPORT_ABSENT_EXAM and self._last_report.grouped_rows:
+            if wb.active:
+                wb.remove(wb.active)
+            from openpyxl.styles import Alignment
+
+            group_mode = self.absent_group_combo.currentText().strip()
+            if group_mode == self.ABSENT_GROUP_BY_SUBJECT:
+                subject_order = [label for label, _ in self._collect_subject_pairs()]
+                ordered_subjects = [name for name in subject_order if name in self._last_report.grouped_rows]
+                ordered_subjects.extend(sorted(name for name in self._last_report.grouped_rows if name not in subject_order))
+                for subject_name in ordered_subjects:
+                    rows = list(self._last_report.grouped_rows.get(subject_name, []))
+                    ws = wb.create_sheet(self.main_window._safe_sheet_name(subject_name, fallback="subject"))
+                    headers = ["STT", "SBD", "Họ tên", "Lớp", "Phòng thi"]
+                    ws.append(headers)
+                    for row in rows:
+                        ws.append([row[1], row[2], row[3], row[4], row[6]])
+                    for col_idx in range(1, len(headers) + 1):
+                        ws.column_dimensions[get_column_letter(col_idx)].width = 18
+                    ws.column_dimensions["C"].width = 28
+                    for row_idx in range(2, ws.max_row + 1):
+                        ws.cell(row=row_idx, column=3).alignment = Alignment(horizontal="left", vertical="center")
+            else:
+                subjects = [label for label, _ in self._collect_subject_pairs()]
+                class_order = self._session_class_order()
+                ordered_classes = [cls for cls in class_order if cls in self._last_report.grouped_rows]
+                ordered_classes.extend(sorted(cls for cls in self._last_report.grouped_rows if cls not in class_order))
+                for class_name in ordered_classes:
+                    rows = list(self._last_report.grouped_rows.get(class_name, []))
+                    ws = wb.create_sheet(self.main_window._safe_sheet_name(class_name, fallback="class"))
+                    headers = ["STT", "SBD", "Họ tên"] + subjects
+                    ws.append(headers)
+                    by_sid: dict[str, dict[str, object]] = {}
+                    for row in rows:
+                        sid = str(row[2] or "").strip()
+                        if not sid:
+                            continue
+                        rec = by_sid.setdefault(sid, {"name": str(row[3] or ""), "absent_subjects": set()})
+                        rec["name"] = str(rec.get("name", "") or row[3] or "")
+                        absent_subjects = rec.get("absent_subjects", set())
+                        if isinstance(absent_subjects, set):
+                            absent_subjects.add(str(row[5] or ""))
+                    sorted_sids = sorted(by_sid.keys())
+                    for idx, sid in enumerate(sorted_sids, start=1):
+                        rec = by_sid[sid]
+                        absent_subjects = rec.get("absent_subjects", set())
+                        absent_set = absent_subjects if isinstance(absent_subjects, set) else set()
+                        out_row = [idx, sid, str(rec.get("name", "") or "")]
+                        out_row.extend("X" if subject in absent_set else "" for subject in subjects)
+                        ws.append(out_row)
+                    ws.column_dimensions["A"].width = 8
+                    ws.column_dimensions["B"].width = 16
+                    ws.column_dimensions["C"].width = 28
+                    for col_idx in range(4, len(headers) + 1):
+                        ws.column_dimensions[get_column_letter(col_idx)].width = 14
+                    for row_idx in range(2, ws.max_row + 1):
+                        ws.cell(row=row_idx, column=3).alignment = Alignment(horizontal="left", vertical="center")
+                    for row_idx in range(2, ws.max_row + 1):
+                        for col_idx in range(4, len(headers) + 1):
+                            ws.cell(row=row_idx, column=col_idx).alignment = Alignment(horizontal="center", vertical="center")
+            wb.save(Path(path))
+            QMessageBox.information(self, "Báo cáo", f"Đã xuất Excel:\n{path}")
+            return
         if report_name == self.REPORT_CLASS_SUMMARY and self._last_report.grouped_rows:
             if wb.active:
                 wb.remove(wb.active)
