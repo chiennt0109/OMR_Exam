@@ -640,12 +640,14 @@ class ExportReportsDialog(QDialog):
                 before_text = "" if score_before is None else score_before
                 after_text = score_after if score_after is not None else before_text
                 change_parts: list[str] = []
-                if before_text != "" or after_text != "":
-                    change_parts.append(f"Điểm: {before_text if before_text != '' else 'N/A'} -> {after_text if after_text != '' else 'N/A'}")
                 if note_text:
-                    change_parts.append(f"Ghi chú: {note_text}")
-                if status_text and status_text != "OK":
-                    change_parts.append(f"Trạng thái: {status_text}")
+                    change_parts.append(note_text)
+                if row.get("baithiphuctra", "") not in {"", None, False, 0, "0"}:
+                    change_parts.append("Đã cập nhật dữ liệu phúc tra bài thi.")
+                if row.get("phase", "") not in {"", None}:
+                    change_parts.append(f"Điều chỉnh ở bước xử lý: {row.get('phase')}.")
+                if not change_parts:
+                    change_parts.append("Đã chỉnh sửa dữ liệu bài thi (không có log chi tiết nội dung thay đổi).")
                 change_note = " | ".join(dict.fromkeys(change_parts))
                 rows.append([
                     "",
@@ -1039,18 +1041,21 @@ class ExportReportsDialog(QDialog):
             ws.cell(row=1, column=1).alignment = Alignment(horizontal="center", vertical="center")
             ws.row_dimensions[1].height = 28
             ws.append([])
-            ws.append(self._last_report.headers)
-            header_row_idx = 3
-            for col_idx in range(1, len(self._last_report.headers) + 1):
-                cell = ws.cell(row=header_row_idx, column=col_idx)
-                cell.font = Font(bold=True, color="FFFFFF")
-                cell.fill = PatternFill(fill_type="solid", fgColor="1677E5")
-                cell.alignment = Alignment(horizontal="center", vertical="center")
             for row in self._last_report.rows:
                 ws.append(row)
-            for row_idx in range(header_row_idx + 1, ws.max_row + 1):
+            data_start_row = 3
+            for row_idx in range(data_start_row, ws.max_row + 1):
                 first_col = str(ws.cell(row=row_idx, column=1).value or "").strip()
                 is_section = first_col.startswith(("I.", "II.", "III."))
+                second_col = str(ws.cell(row=row_idx, column=2).value or "").strip()
+                third_col = str(ws.cell(row=row_idx, column=3).value or "").strip()
+                is_section_subheader = (
+                    first_col == ""
+                    and (
+                        (second_col == "Môn" and third_col == "Tổng HS")
+                        or (second_col == "Môn" and third_col == "SBD")
+                    )
+                )
                 for col_idx in range(1, len(self._last_report.headers) + 1):
                     cell = ws.cell(row=row_idx, column=col_idx)
                     cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -1060,6 +1065,11 @@ class ExportReportsDialog(QDialog):
                         cell.alignment = Alignment(horizontal="left", vertical="center")
                     if is_section:
                         cell.font = Font(bold=True)
+                        cell.fill = PatternFill(fill_type="solid", fgColor="1677E5")
+                        cell.font = Font(bold=True, color="FFFFFF")
+                    elif is_section_subheader:
+                        cell.font = Font(bold=True, color="1F2D3D")
+                        cell.fill = PatternFill(fill_type="solid", fgColor="E8EEF7")
             widths = [26, 28, 18, 14, 28, 16, 36]
             for idx, width in enumerate(widths, start=1):
                 ws.column_dimensions[get_column_letter(idx)].width = width
