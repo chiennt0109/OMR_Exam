@@ -5225,14 +5225,16 @@ class MainWindow(QMainWindow):
             legacy_scoped = f"{sid}::{subject}" if sid else ""
             if legacy_scoped and legacy_scoped != scoped_subject:
                 rows = self.database.fetch_scan_results_for_subject(legacy_scoped)
-        # Never fallback to unscoped key when current session exists to avoid cross-exam result bleed.
         if not rows and (not has_session_scope) and scoped_subject != subject:
-            # Legacy fallback (older sessions saved by raw subject key).
             rows = self.database.fetch_scan_results_for_subject(subject)
         refreshed: list[OMRResult] = []
         for item in rows:
             try:
-                refreshed.append(self._deserialize_omr_result(item))
+                result = self._deserialize_omr_result(item)
+                if result is None:
+                    continue
+                self._apply_persisted_result_edit_metadata(subject, result)
+                refreshed.append(result)
             except Exception:
                 continue
         self.scan_results_by_subject[scoped_subject] = list(refreshed)
@@ -6366,7 +6368,8 @@ class MainWindow(QMainWindow):
 
         if subject_key:
             try:
-                self.database.replace_scan_results_for_subject(subject_key, saved_results, note="save_batch_subject")
+                subject_db_key = self._batch_result_subject_key(subject_key)
+                self.database.replace_scan_results_for_subject(subject_db_key, saved_results, note="save_batch_subject")
                 self._mark_subject_batch_saved(subject_key, len(saved_results), saved_at)
             except Exception as exc:
                 QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu dữ liệu Batch Scan vào CSDL: {exc}")
@@ -6667,6 +6670,7 @@ class MainWindow(QMainWindow):
         if idx is None or result is None or not self.correction_pending_payload:
             return
         changes = [f"{field}: '{payload['old']}' -> '{payload['new']}'" for field, payload in self.correction_pending_payload.items()]
+        self._mark_result_manually_edited(result, idx)
         self._refresh_student_profile_for_result(result, idx)
         scoped = self._scoped_result_copy(result)
         self.scan_blank_summary[idx] = self._compute_blank_questions(scoped)
@@ -6683,6 +6687,7 @@ class MainWindow(QMainWindow):
             sid_item.setData(Qt.UserRole + 2, self._short_recognition_text_for_result(scoped))
         self._record_adjustment(idx, changes, "visual_correction")
         self._persist_single_scan_result_to_db(result, note="visual_correction")
+        self._sync_subject_batch_snapshot_after_inline_edit(persist_full_subject_rows=False)
         image_key = str(getattr(result, "image_path", "") or idx)
         for field_name, payload in self.correction_pending_payload.items():
             self.database.log_change("scan_results", image_key, field_name, payload["old"], payload["new"], "visual_correction")
@@ -7290,16 +7295,12 @@ class MainWindow(QMainWindow):
             return [str(p) for p in sorted(scan_dir.rglob("*")) if p.is_file() and p.suffix.lower() in image_exts]
         return [str(p) for p in sorted(scan_dir.iterdir()) if p.is_file() and p.suffix.lower() in image_exts]
 
-    def _update_batch_scan_scope_summary(self) -> None:
-        if not hasattr(self, "batch_scan_state_value"):
-            return
+    def _current_batch_file_scope_text(self) -> str:
         cfg = self._selected_batch_subject_config()
         if cfg:
             cfg = self._merge_saved_batch_snapshot(cfg)
         all_paths = self._configured_scan_file_paths(cfg)
-        logical_key = self._logical_subject_key_from_cfg(cfg) if cfg else ""
         instance_key = self._subject_instance_key_from_cfg(cfg) if cfg else ""
-        runtime_key = self._batch_runtime_key(instance_key) if instance_key else ""
         recognized = self._recognized_image_paths_for_subject(instance_key)
         deleted = self._deleted_scan_images_for_subject(instance_key)
         recognized_live = recognized - deleted
@@ -7308,9 +7309,18 @@ class MainWindow(QMainWindow):
         pending_count = max(0, len(all_paths) - recognized_count - deleted_count)
         mode = str(self.batch_file_scope_combo.currentData() or "new_only") if hasattr(self, "batch_file_scope_combo") else "new_only"
         mode_label = "File mới" if mode == "new_only" else "Toàn bộ"
-        self.batch_scan_state_value.setText(
-            f"{mode_label} | Đã nhận diện: {recognized_count} | Đã xoá trong Batch Scan: {deleted_count} | Chưa nhận diện: {pending_count}"
-        )
+        return f"{mode_label} | Đã nhận diện: {recognized_count} | Đã xoá trong Batch Scan: {deleted_count} | Chưa nhận diện: {pending_count}"
+
+    def _update_batch_scan_scope_summary(self) -> None:
+        if not hasattr(self, "batch_scan_state_value"):
+            return
+        cfg = self._selected_batch_subject_config()
+        if cfg:
+            cfg = self._merge_saved_batch_snapshot(cfg)
+        logical_key = self._logical_subject_key_from_cfg(cfg) if cfg else ""
+        instance_key = self._subject_instance_key_from_cfg(cfg) if cfg else ""
+        runtime_key = self._batch_runtime_key(instance_key) if instance_key else ""
+        self.batch_scan_state_value.setText(self._current_batch_file_scope_text())
         self._update_batch_scan_bottom_status_text()
         if hasattr(self, "batch_context_value"):
             self.batch_context_value.setText(
@@ -7319,46 +7329,146 @@ class MainWindow(QMainWindow):
                 f"Nguồn: {self._current_batch_data_source}"
             )
 
+    def _current_batch_scan_status_metrics(self) -> dict[str, int]:
+        metrics = {
+            "total": 0,
+            "visible": 0,
+            "ok": 0,
+            "error": 0,
+            "duplicate": 0,
+            "wrong_code": 0,
+            "edited": 0,
+            "edited_clean": 0,
+            "edited_error": 0,
+        }
+        if hasattr(self, "scan_list"):
+            total_rows = self.scan_list.rowCount()
+            metrics["visible"] = sum(1 for row in range(total_rows) if not self.scan_list.isRowHidden(row))
+
+        current_subject = str(self._current_batch_subject_key() or "").strip()
+        subject_edit_registry = self._subject_edit_registry(current_subject) if current_subject else {}
+
+        canonical_results: list[OMRResult] = []
+        seen_images: set[str] = set()
+        for res in list(self.scan_results or []):
+            image_key = self._result_identity_key(getattr(res, "image_path", ""))
+            if image_key and image_key in seen_images:
+                continue
+            if image_key:
+                seen_images.add(image_key)
+            if current_subject:
+                self._apply_persisted_result_edit_metadata(current_subject, res)
+            canonical_results.append(res)
+
+        if not canonical_results and hasattr(self, "scan_list"):
+            metrics["total"] = self.scan_list.rowCount()
+            for row in range(self.scan_list.rowCount()):
+                sid_item = self.scan_list.item(row, self.SCAN_COL_STUDENT_ID)
+                payload = dict(sid_item.data(Qt.UserRole + 12) or {}) if sid_item is not None else {}
+                flags = dict(payload.get("status_flags", {}) or {})
+                status_text = str(payload.get("status", "") or "").strip().lower()
+                image_key = self._row_image_key(row)
+                row_history = self._ordered_unique_text_list(self.scan_edit_history.get(image_key, [])) if image_key else []
+                if not row_history and image_key and current_subject:
+                    row_history = self._ordered_unique_text_list((subject_edit_registry.get(image_key, {}) or {}).get("history", []))
+                is_edited = bool(flags.get("edited", False)) or ("đã sửa" in status_text) or bool(row_history)
+                has_error = bool(flags.get("has_error", False))
+                has_duplicate = bool(flags.get("duplicate", False)) or ("trùng sbd" in status_text)
+                has_wrong_code = bool(flags.get("wrong_code", False)) or ("mã đề không hợp lệ" in status_text)
+                if is_edited:
+                    metrics["edited"] += 1
+                    if has_error:
+                        metrics["edited_error"] += 1
+                    else:
+                        metrics["edited_clean"] += 1
+                elif not has_error:
+                    metrics["ok"] += 1
+                if has_error:
+                    metrics["error"] += 1
+                if has_duplicate:
+                    metrics["duplicate"] += 1
+                if has_wrong_code:
+                    metrics["wrong_code"] += 1
+            return metrics
+
+        duplicate_count_map: dict[str, int] = {}
+        subject_scope = self._subject_student_room_scope()
+        available_exam_codes = self._available_exam_codes()
+        for res in canonical_results:
+            sid = str(getattr(res, "student_id", "") or "").strip()
+            if not self._student_id_has_recognition_error(sid):
+                duplicate_count_map[sid] = duplicate_count_map.get(sid, 0) + 1
+
+        metrics["total"] = len(canonical_results)
+        for res in canonical_results:
+            sid = str(getattr(res, "student_id", "") or "").strip()
+            image_key = self._result_identity_key(getattr(res, "image_path", ""))
+            duplicate_count = 0 if self._student_id_has_recognition_error(sid) else int(duplicate_count_map.get(sid, 0) or 0)
+            analysis = self._analyze_scan_status(
+                res,
+                duplicate_count=duplicate_count,
+                subject_scope=subject_scope,
+                available_exam_codes=available_exam_codes,
+                forced_status=str(getattr(res, "cached_forced_status", "") or ""),
+            )
+            row_history = self._ordered_unique_text_list(self.scan_edit_history.get(image_key, [])) if image_key else []
+            if not row_history and image_key and current_subject:
+                row_history = self._ordered_unique_text_list((subject_edit_registry.get(image_key, {}) or {}).get("history", []))
+            is_edited = bool(analysis.get("is_manual_edited", False) or row_history)
+            if is_edited:
+                metrics["edited"] += 1
+                if analysis["has_error"]:
+                    metrics["edited_error"] += 1
+                else:
+                    metrics["edited_clean"] += 1
+            elif analysis["is_clean_ok"]:
+                metrics["ok"] += 1
+            if analysis["has_error"]:
+                metrics["error"] += 1
+            if analysis["has_duplicate"]:
+                metrics["duplicate"] += 1
+            if analysis["has_wrong_code"]:
+                metrics["wrong_code"] += 1
+        return metrics
+
     def _update_batch_scan_bottom_status_text(self) -> None:
         if not hasattr(self, "batch_scan_status_bottom"):
             return
-        total_rows = self.scan_list.rowCount() if hasattr(self, "scan_list") else 0
-        visible_rows = total_rows
-        if hasattr(self, "scan_list"):
-            visible_rows = sum(1 for r in range(total_rows) if not self.scan_list.isRowHidden(r))
-        file_status = str(self.batch_scan_state_value.text() if hasattr(self, "batch_scan_state_value") else "-").strip() or "-"
-        error_count = duplicate_count = wrong_code_count = edited_count = 0
-        if hasattr(self, "scan_list"):
-            for r in range(total_rows):
-                status_item = self.scan_list.item(r, self.SCAN_COL_STATUS)
-                status_txt = str(status_item.text() if status_item else "").strip()
-                low = status_txt.lower()
-                is_edited = "đã sửa" in low
-                if is_edited:
-                    edited_count += 1
-                    continue
-                if status_txt and status_txt != "OK":
-                    error_count += 1
-                if "trùng sbd" in low or "duplicate" in low:
-                    duplicate_count += 1
-                if "mã đề" in low and ("sai" in low or "không" in low or "?" in status_txt):
-                    wrong_code_count += 1
-        issue_total = error_count + edited_count
+        file_status = str(self._current_batch_file_scope_text() or "-").strip() or "-"
+        if hasattr(self, "batch_scan_state_value"):
+            self.batch_scan_state_value.setText(file_status)
+        metrics = self._current_batch_scan_status_metrics()
+        total_rows = int(metrics.get("total", 0) or 0)
+        visible_rows = int(metrics.get("visible", 0) or 0)
+        ok_count = int(metrics.get("ok", 0) or 0)
+        error_count = int(metrics.get("error", 0) or 0)
+        duplicate_count = int(metrics.get("duplicate", 0) or 0)
+        wrong_code_count = int(metrics.get("wrong_code", 0) or 0)
+        edited_count = int(metrics.get("edited", 0) or 0)
+        edited_clean_count = int(metrics.get("edited_clean", 0) or 0)
+        edited_error_count = int(metrics.get("edited_error", 0) or 0)
         bar_text = f"Trạng thái file: {file_status} | Lọc: {visible_rows}/{total_rows}"
-        if issue_total > 0:
-            bar_text += (
-                " | "
-                f"<a href='all'><b>Tất cả</b></a> | "
-                f"<a href='error' style='color:#c62828;font-weight:600'>Lỗi nhận dạng: {error_count}</a> | "
-                f"<a href='duplicate' style='color:#6a1b9a;font-weight:600'>Trùng SBD: {duplicate_count}</a> | "
-                f"<a href='wrong_code' style='color:#ef6c00;font-weight:600'>Sai mã đề: {wrong_code_count}</a> | "
-                f"<a href='edited' style='color:#1565c0;font-weight:600'>Đã sửa: {edited_count}</a>"
-            )
-            self.batch_scan_status_bottom.setTextFormat(Qt.RichText)
-        else:
-            self.batch_scan_status_bottom.setTextFormat(Qt.PlainText)
+        bar_text += (
+            " | "
+            f"<a href='all'><b>Tất cả</b></a> | "
+            f"<a href='error' style='color:#c62828;font-weight:600'>Lỗi hiện tại: {error_count}</a> | "
+            f"<a href='duplicate' style='color:#6a1b9a;font-weight:600'>Trùng SBD: {duplicate_count}</a> | "
+            f"<a href='wrong_code' style='color:#ef6c00;font-weight:600'>Sai mã đề: {wrong_code_count}</a> | "
+            f"<a href='edited' style='color:#1565c0;font-weight:600'>Đã sửa: {edited_count}</a> "
+            f"(hết lỗi: {edited_clean_count}, còn lỗi: {edited_error_count}) | "
+            f"OK: {ok_count}"
+        )
+        self.batch_scan_status_bottom.setTextFormat(Qt.RichText)
         self.batch_scan_status_bottom.setText(bar_text)
-        self.batch_scan_status_bottom.setToolTip(bar_text)
+        self.batch_scan_status_bottom.setToolTip(
+            f"OK: {ok_count}\n"
+            f"Lỗi hiện tại: {error_count}\n"
+            f"Trùng SBD: {duplicate_count}\n"
+            f"Sai mã đề: {wrong_code_count}\n"
+            f"Đã sửa tổng: {edited_count}\n"
+            f"- Đã sửa hết lỗi: {edited_clean_count}\n"
+            f"- Đã sửa còn lỗi: {edited_error_count}"
+        )
 
     @staticmethod
     def _recommended_batch_timeout_sec(template: Template | None) -> float:
@@ -10950,15 +11060,21 @@ class MainWindow(QMainWindow):
         value = _normalize(self.search_value.text())
         col = self._scan_filter_column_from_combo_index(self.filter_column.currentIndex())
         for i in range(self.scan_list.rowCount()):
-            status_text = str(self.scan_list.item(i, self.SCAN_COL_STATUS).text() if self.scan_list.item(i, self.SCAN_COL_STATUS) else "").strip().lower()
-            is_edited = "đã sửa" in status_text
+            sid_item = self.scan_list.item(i, self.SCAN_COL_STUDENT_ID)
+            payload = dict(sid_item.data(Qt.UserRole + 12) or {}) if sid_item is not None else {}
+            flags = dict(payload.get("status_flags", {}) or {})
+            status_text = str(payload.get("status", "") or (self.scan_list.item(i, self.SCAN_COL_STATUS).text() if self.scan_list.item(i, self.SCAN_COL_STATUS) else "")).strip().lower()
+            is_edited = bool(flags.get("edited", False)) or ("đã sửa" in status_text)
+            has_error = bool(flags.get("has_error", False))
+            has_duplicate = bool(flags.get("duplicate", False)) or ("trùng sbd" in status_text or "duplicate" in status_text)
+            has_wrong_code = bool(flags.get("wrong_code", False)) or ("mã đề không hợp lệ" in status_text)
             status_ok = True
             if self.batch_status_filter_mode == "error":
-                status_ok = (not is_edited) and bool(status_text and status_text != "ok")
+                status_ok = has_error
             elif self.batch_status_filter_mode == "duplicate":
-                status_ok = (not is_edited) and ("trùng sbd" in status_text or "duplicate" in status_text)
+                status_ok = has_duplicate
             elif self.batch_status_filter_mode == "wrong_code":
-                status_ok = (not is_edited) and (("mã đề" in status_text) and ("sai" in status_text or "không" in status_text or "?" in status_text))
+                status_ok = has_wrong_code
             elif self.batch_status_filter_mode == "edited":
                 status_ok = is_edited
             if not value:
@@ -11202,18 +11318,7 @@ class MainWindow(QMainWindow):
         try:
             scan_list.setRowCount(len(row_views))
             for idx, item in enumerate(row_views):
-                payload = {
-                    "student_id": item.get("student_id", ""),
-                    "exam_room": item.get("exam_room", ""),
-                    "exam_code": item.get("exam_code", ""),
-                    "full_name": item.get("full_name", "-"),
-                    "birth_date": item.get("birth_date", "-"),
-                    "content": item.get("content", ""),
-                    "status": item.get("status", "OK"),
-                    "recognized_short": item.get("recognized_short", ""),
-                    "image_path": item.get("image_path", ""),
-                    "serialized_result": item.get("serialized_result", {}),
-                }
+                payload = dict(item)
                 self._apply_scan_row_payload_to_grid(idx, payload, skip_actions=skip_expensive_checks)
             scan_list.resizeRowsToContents()
             for fit_col in [self.SCAN_COL_STT, self.SCAN_COL_STUDENT_ID, self.SCAN_COL_EXAM_ROOM, self.SCAN_COL_EXAM_CODE, self.SCAN_COL_FULL_NAME, self.SCAN_COL_BIRTH_DATE, self.SCAN_COL_ACTIONS]:
@@ -11261,6 +11366,54 @@ class MainWindow(QMainWindow):
         self._on_scan_selected()
         self._refresh_ribbon_action_states()
 
+    def _analyze_scan_status(
+        self,
+        result,
+        duplicate_count: int,
+        subject_scope: tuple[set[str], set[str]] | None = None,
+        available_exam_codes: set[str] | None = None,
+        forced_status: str = "",
+    ) -> dict:
+        status_parts = self._status_parts_for_result(
+            result,
+            duplicate_count,
+            subject_scope=subject_scope,
+            available_exam_codes=available_exam_codes,
+        )
+        status_parts_text = ", ".join(status_parts) if status_parts else ""
+        has_edit_history = bool([str(x) for x in (getattr(result, "edit_history", []) or []) if str(x or "").strip()])
+        is_manual_edited = bool(getattr(result, "manually_edited", False)) or has_edit_history
+        forced_status_text = str(forced_status or "").strip()
+        has_duplicate = "Trùng SBD" in status_parts
+        has_wrong_code = "Mã đề không hợp lệ" in status_parts
+        has_error = bool(status_parts)
+        if is_manual_edited:
+            if status_parts_text:
+                status_text = f"Đã sửa ({status_parts_text})"
+            elif forced_status_text and forced_status_text not in {"Đã sửa", "OK"}:
+                status_text = f"Đã sửa ({forced_status_text})"
+            else:
+                status_text = "Đã sửa"
+            effective_forced_status = "Đã sửa"
+        else:
+            effective_forced_status = forced_status_text
+            status_text = effective_forced_status or status_parts_text or "OK"
+        return {
+            "status_parts": list(status_parts),
+            "status_parts_text": status_parts_text,
+            "status_text": status_text,
+            "forced_status_text": forced_status_text,
+            "effective_forced_status": effective_forced_status,
+            "has_edit_history": has_edit_history,
+            "is_manual_edited": is_manual_edited,
+            "has_error": has_error,
+            "has_duplicate": has_duplicate,
+            "has_wrong_code": has_wrong_code,
+            "is_clean_ok": (not is_manual_edited) and (not has_error),
+            "is_edited_clean": bool(is_manual_edited and (not has_error)),
+            "is_edited_with_error": bool(is_manual_edited and has_error),
+        }
+
     def _build_scan_row_payload_from_result(
         self,
         result,
@@ -11283,27 +11436,20 @@ class MainWindow(QMainWindow):
             room_text = str((profile or {}).get("exam_room", "") or "").strip()
         setattr(result, "exam_room", room_text)
 
-        status_parts = self._status_parts_for_result(
+        analysis = self._analyze_scan_status(
             result,
-            duplicate_count,
+            duplicate_count=duplicate_count,
             subject_scope=subject_scope,
             available_exam_codes=available_exam_codes,
+            forced_status=forced_status,
         )
-        has_edit_history = bool([str(x) for x in (getattr(result, "edit_history", []) or []) if str(x or "").strip()])
-        is_manual_edited = bool(getattr(result, "manually_edited", False)) or has_edit_history
-        forced_status_text = str(forced_status or "").strip()
-        status_parts_text = ", ".join(status_parts) if status_parts else ""
-        if is_manual_edited:
-            if status_parts_text:
-                status_text = f"Đã sửa ({status_parts_text})"
-            elif forced_status_text and forced_status_text not in {"Đã sửa", "OK"}:
-                status_text = f"Đã sửa ({forced_status_text})"
-            else:
-                status_text = "Đã sửa"
-            effective_forced_status = "Đã sửa"
-        else:
-            effective_forced_status = forced_status_text
-            status_text = effective_forced_status or status_parts_text or "OK"
+        status_parts = list(analysis["status_parts"])
+        has_edit_history = bool(analysis["has_edit_history"])
+        is_manual_edited = bool(analysis["is_manual_edited"])
+        forced_status_text = str(analysis["forced_status_text"])
+        status_parts_text = str(analysis["status_parts_text"])
+        status_text = str(analysis["status_text"])
+        effective_forced_status = str(analysis["effective_forced_status"])
         manual_content_override = str(getattr(result, "manual_content_override", "") or "").strip()
         content_text = self._build_recognition_content_text(scoped_result, blank_map, expected_by_section)
         recognized_short = self._short_recognition_text_for_result(scoped_result)
@@ -11341,7 +11487,18 @@ class MainWindow(QMainWindow):
             "manually_edited": is_manual_edited,
             "edit_history": [str(x) for x in (getattr(result, "edit_history", []) or []) if str(x or "").strip()],
             "last_adjustment": str(getattr(result, "last_adjustment", "") or ""),
+            "manual_adjustments": [str(x) for x in (getattr(result, "manual_adjustments", []) or []) if str(x or "").strip()],
             "blank_map": dict(blank_map),
+            "expected_by_section": dict(expected_by_section),
+            "status_flags": {
+                "edited": bool(is_manual_edited),
+                "has_error": bool(analysis["has_error"]),
+                "duplicate": bool(analysis["has_duplicate"]),
+                "wrong_code": bool(analysis["has_wrong_code"]),
+                "ok": bool(analysis["is_clean_ok"]),
+                "edited_clean": bool(analysis["is_edited_clean"]),
+                "edited_error": bool(analysis["is_edited_with_error"]),
+            },
             "serialized_result": self._serialize_omr_result(result),
             "recognized_template_path": str(getattr(result, "recognized_template_path", "") or ""),
             "recognized_alignment_profile": str(getattr(result, "recognized_alignment_profile", "") or ""),
@@ -12345,6 +12502,169 @@ class MainWindow(QMainWindow):
             return self._subject_key_from_cfg(cfg)
         return str(self.active_batch_subject_key or "").strip() or self._resolve_preferred_scoring_subject()
 
+    @staticmethod
+    def _ordered_unique_text_list(values) -> list[str]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for value in list(values or []):
+            text = str(value or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            ordered.append(text)
+        return ordered
+
+    def _subject_edit_registry(self, subject_key: str) -> dict[str, dict]:
+        subject = str(subject_key or "").strip()
+        if not subject:
+            return {}
+        cfg = self._subject_config_by_subject_key(subject)
+        if not isinstance(cfg, dict):
+            return {}
+        registry = cfg.get("scan_edit_registry", {})
+        return dict(registry) if isinstance(registry, dict) else {}
+
+    def _store_subject_edit_registry(self, subject_key: str, registry: dict[str, dict], *, persist_session: bool = True) -> None:
+        subject = str(subject_key or "").strip()
+        if not subject:
+            return
+        cfg = self._subject_config_by_subject_key(subject)
+        if not isinstance(cfg, dict):
+            return
+
+        normalized_registry: dict[str, dict] = {}
+        for image_path, meta in dict(registry or {}).items():
+            if not isinstance(meta, dict):
+                continue
+            image_key = self._result_identity_key(image_path)
+            if not image_key:
+                continue
+            history = self._ordered_unique_text_list(meta.get("history", meta.get("edit_history", [])))
+            manual_adjustments = self._ordered_unique_text_list(meta.get("manual_adjustments", []))
+            last_adjustment = str(meta.get("last_adjustment", "") or (history[-1] if history else "")).strip()
+            manually_edited = bool(meta.get("manually_edited", False) or history or manual_adjustments or last_adjustment)
+            if not manually_edited:
+                continue
+            normalized_registry[image_key] = {
+                "manually_edited": True,
+                "history": history,
+                "last_adjustment": last_adjustment,
+                "manual_adjustments": manual_adjustments,
+            }
+
+        current_registry = cfg.get("scan_edit_registry", {}) if isinstance(cfg.get("scan_edit_registry", {}), dict) else {}
+        if current_registry == normalized_registry:
+            return
+
+        cfg["scan_edit_registry"] = normalized_registry
+        subject_cfgs = list(getattr(self, "subject_configs", []) or self._effective_subject_configs_for_batch() or [])
+        if subject_cfgs:
+            idx = self._find_subject_config_index_for_batch_save(cfg, subject_cfgs)
+            if idx >= 0:
+                subject_cfgs[idx] = cfg
+            elif cfg not in subject_cfgs:
+                subject_cfgs.append(cfg)
+            self.subject_configs = subject_cfgs
+        if self.session and isinstance(self.session.config, dict):
+            session_subject_cfgs = self.session.config.get("subject_configs", [])
+            if isinstance(session_subject_cfgs, list):
+                matched = False
+                for i, item in enumerate(session_subject_cfgs):
+                    if item is cfg:
+                        session_subject_cfgs[i] = cfg
+                        matched = True
+                        break
+                    if isinstance(item, dict) and self._subject_key_from_cfg(item) == subject:
+                        session_subject_cfgs[i].update(cfg)
+                        matched = True
+                        break
+                if not matched:
+                    session_subject_cfgs.append(cfg)
+        if isinstance(getattr(self, "batch_editor_return_payload", None), dict):
+            payload_subject_cfgs = self.batch_editor_return_payload.get("subject_configs", [])
+            if isinstance(payload_subject_cfgs, list):
+                matched = False
+                for i, item in enumerate(payload_subject_cfgs):
+                    if isinstance(item, dict) and self._subject_key_from_cfg(item) == subject:
+                        payload_subject_cfgs[i].update(cfg)
+                        matched = True
+                        break
+                if not matched:
+                    payload_subject_cfgs.append(dict(cfg))
+        if persist_session and subject_cfgs:
+            try:
+                self._persist_current_session_subject_configs(list(subject_cfgs))
+            except Exception:
+                pass
+            try:
+                self._persist_runtime_session_state_quietly()
+            except Exception:
+                pass
+
+    def _persist_result_edit_registry(self, subject_key: str, result) -> None:
+        subject = str(subject_key or "").strip()
+        if not subject or result is None:
+            return
+        image_key = self._result_identity_key(getattr(result, "image_path", ""))
+        if not image_key:
+            return
+        registry = self._subject_edit_registry(subject)
+        history = self._ordered_unique_text_list(getattr(result, "edit_history", []) or [])
+        manual_adjustments = self._ordered_unique_text_list(getattr(result, "manual_adjustments", []) or [])
+        last_adjustment = str(getattr(result, "last_adjustment", "") or (history[-1] if history else "")).strip()
+        manually_edited = bool(getattr(result, "manually_edited", False) or history or manual_adjustments or last_adjustment)
+        if manually_edited:
+            registry[image_key] = {
+                "manually_edited": True,
+                "history": history,
+                "last_adjustment": last_adjustment,
+                "manual_adjustments": manual_adjustments,
+            }
+        else:
+            registry.pop(image_key, None)
+        self._store_subject_edit_registry(subject, registry)
+
+    def _clear_persisted_result_edit_registry(self, subject_key: str, image_path: str) -> None:
+        subject = str(subject_key or "").strip()
+        image_key = self._result_identity_key(image_path)
+        if not subject or not image_key:
+            return
+        registry = self._subject_edit_registry(subject)
+        if image_key not in registry:
+            return
+        registry.pop(image_key, None)
+        self._store_subject_edit_registry(subject, registry)
+
+    def _apply_persisted_result_edit_metadata(self, subject_key: str, result) -> None:
+        subject = str(subject_key or "").strip()
+        if not subject or result is None:
+            return
+        image_key = self._result_identity_key(getattr(result, "image_path", ""))
+        if not image_key:
+            return
+        meta = self._subject_edit_registry(subject).get(image_key, {})
+        if not isinstance(meta, dict) or not meta:
+            return
+        history = self._ordered_unique_text_list(meta.get("history", meta.get("edit_history", [])))
+        manual_adjustments = self._ordered_unique_text_list(meta.get("manual_adjustments", []))
+        last_adjustment = str(meta.get("last_adjustment", "") or (history[-1] if history else "")).strip()
+        manually_edited = bool(meta.get("manually_edited", False) or history or manual_adjustments or last_adjustment)
+        if not manually_edited:
+            return
+        setattr(result, "manually_edited", True)
+        setattr(result, "edit_history", history)
+        setattr(result, "last_adjustment", last_adjustment)
+        setattr(result, "manual_adjustments", manual_adjustments)
+        if str(getattr(result, "cached_forced_status", "") or "").strip() != "Đã sửa":
+            setattr(result, "cached_forced_status", "Đã sửa")
+        if history:
+            self.scan_edit_history[image_key] = list(history)
+        if last_adjustment:
+            self.scan_last_adjustment[image_key] = last_adjustment
+        if manual_adjustments:
+            self.scan_manual_adjustments[image_key] = list(manual_adjustments)
+        self.scan_forced_status_by_index[image_key] = "Đã sửa"
+
     def _invalidate_scoring_for_student_ids(self, student_ids: list[str], subject_key: str = "", reason: str = "") -> int:
         subject = str(subject_key or self._current_batch_subject_key() or "").strip()
         if not subject:
@@ -12391,31 +12711,33 @@ class MainWindow(QMainWindow):
         return changed
 
     def _record_adjustment(self, idx: int, details: list[str], source: str) -> None:
-        if not details:
-            return
-        message = f"({source}) " + "; ".join(details)
         image_key = self._row_image_key(idx)
-        if (not image_key) and 0 <= idx < len(self.scan_results):
-            image_key = self._result_identity_key(getattr(self.scan_results[idx], "image_path", ""))
-        if not image_key:
+        if not image_key or not details:
             return
-        history = self.scan_edit_history.setdefault(image_key, [])
-        history.append(message)
-        self.scan_last_adjustment[image_key] = message
-        self.scan_manual_adjustments[image_key] = sorted(set(self.scan_manual_adjustments.get(image_key, []) + details))
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        detail = "; ".join(str(change or "").strip() for change in details if str(change or "").strip())
+        if not detail:
+            return
+        entry = f"[{timestamp}] {source}: {detail}"
+        history = list(self.scan_edit_history.get(image_key, []))
+        history.append(entry)
+        self.scan_edit_history[image_key] = self._ordered_unique_text_list(history)
+        self.scan_last_adjustment[image_key] = entry
+        adjustments = list(self.scan_manual_adjustments.get(image_key, []))
+        adjustments.extend(str(change or "").strip() for change in details if str(change or "").strip())
+        self.scan_manual_adjustments[image_key] = self._ordered_unique_text_list(adjustments)
         target_result = self._result_by_image_path(image_key)
         if target_result is not None:
-            setattr(target_result, "edit_history", list(history))
-            setattr(target_result, "last_adjustment", message)
-            setattr(target_result, "manual_adjustments", list(self.scan_manual_adjustments.get(image_key, [])))
             setattr(target_result, "manually_edited", True)
+            setattr(target_result, "edit_history", list(self.scan_edit_history.get(image_key, [])))
+            setattr(target_result, "last_adjustment", entry)
+            setattr(target_result, "manual_adjustments", list(self.scan_manual_adjustments.get(image_key, [])))
             setattr(target_result, "cached_forced_status", "Đã sửa")
             setattr(target_result, "cached_status", "Đã sửa")
+            subject_key = str(self._current_batch_subject_key() or "").strip()
+            if subject_key:
+                self._persist_result_edit_registry(subject_key, target_result)
         self.scan_forced_status_by_index[image_key] = "Đã sửa"
-        current_subject = str(self._current_batch_subject_key() or "").strip()
-        if current_subject:
-            self.scan_results_by_subject[self._batch_result_subject_key(current_subject)] = list(self.scan_results or [])
-        self.database.log_change("scan_results", image_key, source, "", message, source)
 
     @staticmethod
     def _result_identity_key(image_path: str) -> str:
@@ -12508,16 +12830,33 @@ class MainWindow(QMainWindow):
         # DB-only mode: không duy trì working cache theo môn.
         return
     def _persist_single_scan_result_to_db(self, result: OMRResult, note: str = "") -> None:
-        subject_key = str(self._current_batch_subject_key() or "").strip()
+        subject_key = str(self._current_batch_subject_key() or self.active_batch_subject_key or "").strip()
         image_path = str(getattr(result, "image_path", "") or "").strip()
-        if not subject_key or not image_path:
+        if not subject_key or not image_path or result is None:
             return
+
+        history = self._ordered_unique_text_list(getattr(result, "edit_history", []) or self.scan_edit_history.get(image_path, []))
+        manual_adjustments = self._ordered_unique_text_list(getattr(result, "manual_adjustments", []) or self.scan_manual_adjustments.get(image_path, []))
+        last_adjustment = str(getattr(result, "last_adjustment", "") or self.scan_last_adjustment.get(image_path, "") or (history[-1] if history else "")).strip()
+        if history:
+            setattr(result, "edit_history", history)
+            self.scan_edit_history[image_path] = list(history)
+        if manual_adjustments:
+            setattr(result, "manual_adjustments", manual_adjustments)
+            self.scan_manual_adjustments[image_path] = list(manual_adjustments)
+        if last_adjustment:
+            setattr(result, "last_adjustment", last_adjustment)
+            self.scan_last_adjustment[image_path] = last_adjustment
+        if bool(history or manual_adjustments or last_adjustment or getattr(result, "manually_edited", False)):
+            setattr(result, "manually_edited", True)
+            setattr(result, "cached_forced_status", "Đã sửa")
+            self.scan_forced_status_by_index[image_path] = "Đã sửa"
+
         result.answer_string = self._normalize_non_api_answer_string(result, subject_key)
         row_idx = self._row_index_by_image_path(image_path)
         serialized = self._serialize_omr_result(result)
-        self._debug_scan_result_state("persist_single_before_db", result)
-
         subject_db_key = self._batch_result_subject_key(subject_key)
+
         updated = False
         try:
             self.database.update_scan_result_payload(
@@ -12532,7 +12871,7 @@ class MainWindow(QMainWindow):
                     continue
                 if str(payload.get("image_path", "") or "").strip() != image_path:
                     continue
-                payload_history = [str(x) for x in (payload.get("edit_history", []) or []) if str(x or "").strip()]
+                payload_history = self._ordered_unique_text_list(payload.get("edit_history", []) or [])
                 payload_forced = str(payload.get("cached_forced_status", payload.get("forced_status", "")) or "").strip()
                 if bool(payload.get("manually_edited", False)) or bool(payload_history) or payload_forced == "Đã sửa":
                     updated = True
@@ -12563,7 +12902,12 @@ class MainWindow(QMainWindow):
                 pass
 
         self.scan_results_by_subject[subject_db_key] = list(self.scan_results or [])
-        self._update_single_subject_saved_snapshot(subject_key, result, {}, row_idx)
+        try:
+            self._update_single_subject_saved_snapshot(subject_key, result, {}, row_idx)
+        except Exception:
+            pass
+        self._persist_result_edit_registry(subject_key, result)
+
     def _update_single_subject_saved_snapshot(self, subject_key: str, result: OMRResult, row_payload: dict, row_idx: int) -> None:
         subject = str(subject_key or "").strip()
         if not subject:
@@ -12603,26 +12947,25 @@ class MainWindow(QMainWindow):
                         break
 
         self.batch_working_state_by_subject.pop(self._batch_runtime_key(subject), None)
-    def _sync_subject_batch_snapshot_after_inline_edit(self, subject_key: str = "") -> None:
-        # Inline edit đã lưu trực tiếp vào DB; chỉ cập nhật metadata nhẹ trong runtime.
-        # Không save lại toàn bộ session để tránh làm chậm luồng sửa bài.
+    def _sync_subject_batch_snapshot_after_inline_edit(self, subject_key: str = "", persist_full_subject_rows: bool = False) -> None:
         subject = str(subject_key or self._current_batch_subject_key() or "").strip()
         if not subject:
             return
         cfg = self._subject_config_by_subject_key(subject)
-        if not isinstance(cfg, dict):
-            return
-        result_count = len(self.scan_results_by_subject.get(self._batch_result_subject_key(subject), []) or [])
-        if result_count <= 0 and subject == str(self._current_batch_subject_key() or "").strip() and hasattr(self, "scan_list"):
-            result_count = self.scan_list.rowCount()
-        cfg["batch_saved"] = bool(result_count)
-        cfg["batch_result_count"] = result_count
-        if not cfg.get("batch_saved_at") and result_count:
-            cfg["batch_saved_at"] = datetime.now().isoformat(timespec="seconds")
-        cfg["batch_saved_rows"] = []
-        cfg["batch_saved_preview"] = []
-        cfg["batch_saved_results"] = []
-        self.batch_working_state_by_subject.pop(self._batch_runtime_key(subject), None)
+        if isinstance(cfg, dict):
+            result_count = len(self.scan_results_by_subject.get(self._batch_result_subject_key(subject), []) or [])
+            if result_count <= 0 and subject == str(self._current_batch_subject_key() or "").strip() and hasattr(self, "scan_list"):
+                result_count = self.scan_list.rowCount()
+            cfg["batch_saved"] = bool(result_count)
+            cfg["batch_result_count"] = result_count
+            if result_count and not cfg.get("batch_saved_at"):
+                cfg["batch_saved_at"] = datetime.now().isoformat(timespec="seconds")
+        if persist_full_subject_rows:
+            try:
+                self._persist_scan_results_to_db(subject)
+            except Exception:
+                pass
+        self._update_batch_scan_scope_summary()
     def _refresh_all_statuses(self) -> None:
         duplicate_count_map: dict[str, int] = {}
         canonical_by_image: dict[str, OMRResult] = {}
@@ -12641,6 +12984,8 @@ class MainWindow(QMainWindow):
                 subject_scope=subject_scope,
                 available_exam_codes=available_exam_codes,
             )
+        self._rebuild_error_list()
+        self._apply_scan_filter()
 
     def _on_scan_cell_clicked(self, row: int, col: int) -> None:
         if row < 0:
@@ -12680,8 +13025,11 @@ class MainWindow(QMainWindow):
         sid_item = self.scan_list.item(row_idx, self.SCAN_COL_STUDENT_ID)
         payload = dict(sid_item.data(Qt.UserRole + 12) or {}) if sid_item is not None else {}
         payload_status = str(payload.get("status", "") or "").strip()
+        flags = dict(payload.get("status_flags", {}) or {})
+        if payload_status:
+            return payload_status
         payload_history = [str(x) for x in (payload.get("edit_history", []) or []) if str(x or "").strip()]
-        payload_is_edited = bool(payload.get("manually_edited", False)) or bool(payload_history) or ("đã sửa" in payload_status.lower())
+        payload_is_edited = bool(flags.get("edited", False)) or bool(payload.get("manually_edited", False)) or bool(payload_history)
         sid = (sid_item.text().strip() if sid_item else "")
         exam_code_text = str(sid_item.data(Qt.UserRole + 1) if sid_item else "").strip()
         dup = 0
@@ -13004,10 +13352,13 @@ class MainWindow(QMainWindow):
                 subject_key_now = self._current_batch_subject_key()
                 if subject_key_now:
                     self.scan_results_by_subject[self._batch_result_subject_key(subject_key_now)] = list(self.scan_results)
-                self._update_scan_row_from_result(idx, rebuilt)
                 if changes:
                     self._record_adjustment(idx, changes, "saved_row_edit")
+                self._update_scan_row_from_result(idx, rebuilt)
+                if changes:
                     self._persist_single_scan_result_to_db(rebuilt, note="saved_row_edit")
+                    self._sync_subject_batch_snapshot_after_inline_edit(persist_full_subject_rows=True)
+                    self._refresh_all_statuses()
                 else:
                     self._refresh_row_status(idx)
             else:
@@ -13797,16 +14148,17 @@ class MainWindow(QMainWindow):
             self._refresh_student_profile_for_result(result)
             scoped = self._scoped_result_copy(result)
             self.scan_blank_summary[idx_local] = self._compute_blank_questions(scoped)
-            self._update_scan_row_from_result(idx_local, result)
             self._record_adjustment(idx_local, changes, "dialog_edit")
+            self._update_scan_row_from_result(idx_local, result)
             self._persist_single_scan_result_to_db(result, note="dialog_edit")
+            self._sync_subject_batch_snapshot_after_inline_edit(persist_full_subject_rows=True)
             subject_key_now = self._current_batch_subject_key()
             if subject_key_now:
                 self.scan_results_by_subject[self._batch_result_subject_key(subject_key_now)] = list(self.scan_results)
             dialog_saved_images.add(_current_result_image_key())
             self.btn_save_batch_subject.setEnabled(False)
             invalidated = self._invalidate_scoring_for_student_ids([old_sid_for_score, str(result.student_id or "").strip()], reason="dialog_edit")
-            self._update_batch_scan_bottom_status_text()
+            self._refresh_all_statuses()
             loaded_snapshots[_current_result_image_key()] = _snapshot_from_result(result)
             if save_feedback:
                 notices = ["Đã lưu thay đổi cho bài hiện tại."]
@@ -14003,6 +14355,7 @@ class MainWindow(QMainWindow):
             self._update_scan_row_from_result(idx, res)
             self._record_adjustment(idx, changes, "manual_json")
             self._persist_single_scan_result_to_db(res, note="manual_json")
+            self._sync_subject_batch_snapshot_after_inline_edit(persist_full_subject_rows=True)
             self.btn_save_batch_subject.setEnabled(False)
             invalidated = self._invalidate_scoring_for_student_ids(
                 [old_sid_for_score, str(res.student_id or "").strip()],
