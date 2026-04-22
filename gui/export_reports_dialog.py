@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from statistics import mean, median
 
@@ -39,6 +40,7 @@ class ExportReportsDialog(QDialog):
     REPORT_COMBO_DIST = "Phổ điểm tổ hợp"
     REPORT_CLASS_SUMMARY = "Tổng hợp theo lớp"
     REPORT_ABSENT_EXAM = "Thống kê học sinh vắng thi"
+    REPORT_EXAM_MINUTES = "Biên bản kỳ thi"
     ABSENT_GROUP_BY_CLASS = "Theo lớp"
     ABSENT_GROUP_BY_SUBJECT = "Theo môn"
 
@@ -65,6 +67,7 @@ class ExportReportsDialog(QDialog):
             self.REPORT_COMBO_DIST,
             self.REPORT_CLASS_SUMMARY,
             self.REPORT_ABSENT_EXAM,
+            self.REPORT_EXAM_MINUTES,
         ]:
             self.report_list.addItem(name)
 
@@ -550,6 +553,98 @@ class ExportReportsDialog(QDialog):
             all_rows.extend(rows)
         return ReportTable(headers, all_rows, grouped_rows=grouped)
 
+    @staticmethod
+    def _safe_float(value: object) -> float | None:
+        text = str(value if value is not None else "").strip().replace(",", ".")
+        if text == "":
+            return None
+        try:
+            return float(text)
+        except Exception:
+            return None
+
+    def build_exam_minutes_report(self) -> ReportTable:
+        headers = ["Mục", "Nội dung", "Môn", "SBD", "Họ tên", "Giá trị", "Ghi chú"]
+        rows: list[list[object]] = []
+        profiles = self._student_profile_map()
+        subjects = self._collect_subject_pairs()
+        session_id = str(getattr(self.main_window, "current_session_id", "") or "").strip() or "Chưa có kỳ thi"
+        now_text = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+
+        total_students = len([sid for sid in profiles.keys() if str(sid or "").strip()])
+        rows.append(["I. THÔNG TIN CHUNG", "Kỳ thi", "", "", "", session_id, ""])
+        rows.append(["I. THÔNG TIN CHUNG", "Thời điểm lập biên bản", "", "", "", now_text, ""])
+        rows.append(["I. THÔNG TIN CHUNG", "Tổng số học sinh toàn kỳ", "", "", "", total_students, ""])
+        rows.append(["", "", "", "", "", "", ""])
+
+        rows.append(["II. THỐNG KÊ THEO MÔN", "Môn", "Tổng HS", "Tham gia", "Vắng", "Tỷ lệ tham gia", "Ghi chú"])
+        for label, key in subjects:
+            cfg = self.main_window._subject_config_by_subject_key(key) or {}
+            mapped_room_by_sid = self._subject_mapping_room_by_sid(cfg, profiles)
+            assigned_count = len(mapped_room_by_sid)
+            source_ids, _count = (set(), 0)
+            if hasattr(self.main_window, "_scoring_source_student_ids"):
+                try:
+                    source_ids, _count = self.main_window._scoring_source_student_ids(key)
+                except Exception:
+                    source_ids, _count = set(), 0
+            normalize_sid = getattr(self.main_window, "_normalized_student_id_for_match", None)
+            source_norm = {
+                str(normalize_sid(sid) or "").strip() if callable(normalize_sid) else str(sid or "").strip()
+                for sid in source_ids
+                if str(sid or "").strip()
+            }
+            assigned_norm = {
+                str(normalize_sid(sid) or "").strip() if callable(normalize_sid) else str(sid or "").strip()
+                for sid in mapped_room_by_sid.keys()
+                if str(sid or "").strip()
+            }
+            participated = len(assigned_norm & source_norm) if assigned_norm else 0
+            absent = max(0, assigned_count - participated)
+            rate = f"{(participated * 100.0 / assigned_count):.2f}%" if assigned_count > 0 else "0.00%"
+            rows.append(["II. THỐNG KÊ THEO MÔN", "Số liệu môn", label, assigned_count, participated, absent, rate])
+        rows.append(["", "", "", "", "", "", ""])
+
+        rows.append(["III. CHI TIẾT SỬA CHỮA BÀI THI", "Môn", "SBD", "Họ tên", "Điểm ban đầu", "Điểm sau sửa", "Ghi chú"])
+        total_edits = 0
+        for label, key in subjects:
+            for row in self._score_rows_for_subject_cached(key):
+                sid = str(row.get("student_id", "") or "").strip()
+                if not sid:
+                    continue
+                status_text = str(row.get("status", "") or "").strip()
+                note_text = str(row.get("note", "") or "").strip()
+                score_before = self._safe_float(row.get("score", ""))
+                score_after_raw = row.get("recheck_score", "")
+                score_after = self._safe_float(score_after_raw)
+                edited = (
+                    status_text == "Đã sửa"
+                    or bool(score_after_raw not in {"", None})
+                    or ("sửa" in note_text.casefold())
+                    or ("phúc tra" in note_text.casefold())
+                    or ("điều chỉnh" in note_text.casefold())
+                )
+                if not edited:
+                    continue
+                total_edits += 1
+                profile = profiles.get(sid, {})
+                full_name = str(profile.get("name", "") or row.get("name", "") or "").strip()
+                before_text = "" if score_before is None else score_before
+                after_text = score_after if score_after is not None else before_text
+                rows.append([
+                    "III. CHI TIẾT SỬA CHỮA BÀI THI",
+                    label,
+                    sid,
+                    full_name,
+                    before_text,
+                    after_text,
+                    note_text or status_text,
+                ])
+        if total_edits == 0:
+            rows.append(["III. CHI TIẾT SỬA CHỮA BÀI THI", "Không có bài thi được chỉnh sửa", "", "", "", "", ""])
+
+        return ReportTable(headers, rows)
+
     def _subject_score_by_sid(self, subject_key: str) -> dict[str, float]:
         key = str(subject_key or "").strip()
         if not key:
@@ -766,6 +861,8 @@ class ExportReportsDialog(QDialog):
             return self.build_combo_distribution_report()
         if name == self.REPORT_ABSENT_EXAM:
             return self.build_absent_exam_report()
+        if name == self.REPORT_EXAM_MINUTES:
+            return self.build_exam_minutes_report()
         return self.build_class_summary_report()
 
     def _render_table(self, table: ReportTable) -> None:
@@ -913,6 +1010,41 @@ class ExportReportsDialog(QDialog):
                     for row_idx in range(2, ws.max_row + 1):
                         for col_idx in range(4, len(headers) + 1):
                             ws.cell(row=row_idx, column=col_idx).alignment = Alignment(horizontal="center", vertical="center")
+            wb.save(Path(path))
+            QMessageBox.information(self, "Báo cáo", f"Đã xuất Excel:\n{path}")
+            return
+        if report_name == self.REPORT_EXAM_MINUTES:
+            ws = wb.active
+            ws.title = "bien_ban_ky_thi"
+            title = "BIÊN BẢN KỲ THI"
+            ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max(1, len(self._last_report.headers)))
+            ws.cell(row=1, column=1, value=title)
+            ws.cell(row=1, column=1).font = Font(size=16, bold=True, color="0B4EA2")
+            ws.cell(row=1, column=1).alignment = Alignment(horizontal="center", vertical="center")
+            ws.row_dimensions[1].height = 28
+            ws.append([])
+            ws.append(self._last_report.headers)
+            header_row_idx = 3
+            for col_idx in range(1, len(self._last_report.headers) + 1):
+                cell = ws.cell(row=header_row_idx, column=col_idx)
+                cell.font = Font(bold=True, color="FFFFFF")
+                cell.fill = PatternFill(fill_type="solid", fgColor="1677E5")
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+            for row in self._last_report.rows:
+                ws.append(row)
+            for row_idx in range(header_row_idx + 1, ws.max_row + 1):
+                first_col = str(ws.cell(row=row_idx, column=1).value or "").strip()
+                is_section = first_col.startswith(("I.", "II.", "III."))
+                for col_idx in range(1, len(self._last_report.headers) + 1):
+                    cell = ws.cell(row=row_idx, column=col_idx)
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                    if col_idx in {2, 4, 7}:
+                        cell.alignment = Alignment(horizontal="left", vertical="center")
+                    if is_section:
+                        cell.font = Font(bold=True)
+            widths = [26, 28, 18, 14, 28, 16, 36]
+            for idx, width in enumerate(widths, start=1):
+                ws.column_dimensions[get_column_letter(idx)].width = width
             wb.save(Path(path))
             QMessageBox.information(self, "Báo cáo", f"Đã xuất Excel:\n{path}")
             return
