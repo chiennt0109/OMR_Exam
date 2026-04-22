@@ -572,16 +572,23 @@ class ExportReportsDialog(QDialog):
         now_text = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
         total_students = len([sid for sid in profiles.keys() if str(sid or "").strip()])
-        rows.append(["I. THÔNG TIN CHUNG", "Kỳ thi", "", "", "", session_id, ""])
-        rows.append(["I. THÔNG TIN CHUNG", "Thời điểm lập biên bản", "", "", "", now_text, ""])
-        rows.append(["I. THÔNG TIN CHUNG", "Tổng số học sinh toàn kỳ", "", "", "", total_students, ""])
+        rows.append(["I. THÔNG TIN CHUNG", "", "", "", "", "", ""])
+        rows.append(["", "Kỳ thi", "", "", "", session_id, ""])
+        rows.append(["", "Thời điểm lập biên bản", "", "", "", now_text, ""])
+        rows.append(["", "Tổng số học sinh toàn kỳ", "", "", "", total_students, ""])
         rows.append(["", "", "", "", "", "", ""])
 
-        rows.append(["II. THỐNG KÊ THEO MÔN", "Môn", "Tổng HS", "Tham gia", "Vắng", "Tỷ lệ tham gia", "Ghi chú"])
+        rows.append(["II. THỐNG KÊ THEO MÔN", "", "", "", "", "", ""])
+        rows.append(["", "Môn", "Tổng HS", "Tham gia", "Vắng", "Tỷ lệ tham gia", "Ghi chú"])
         for label, key in subjects:
             cfg = self.main_window._subject_config_by_subject_key(key) or {}
             mapped_room_by_sid = self._subject_mapping_room_by_sid(cfg, profiles)
-            assigned_count = len(mapped_room_by_sid)
+            valid_mapped_room_by_sid = {
+                sid: room
+                for sid, room in mapped_room_by_sid.items()
+                if not self._is_missing_room_text(room)
+            }
+            assigned_count = len(valid_mapped_room_by_sid)
             source_ids, _count = (set(), 0)
             if hasattr(self.main_window, "_scoring_source_student_ids"):
                 try:
@@ -596,16 +603,17 @@ class ExportReportsDialog(QDialog):
             }
             assigned_norm = {
                 str(normalize_sid(sid) or "").strip() if callable(normalize_sid) else str(sid or "").strip()
-                for sid in mapped_room_by_sid.keys()
+                for sid in valid_mapped_room_by_sid.keys()
                 if str(sid or "").strip()
             }
             participated = len(assigned_norm & source_norm) if assigned_norm else 0
             absent = max(0, assigned_count - participated)
             rate = f"{(participated * 100.0 / assigned_count):.2f}%" if assigned_count > 0 else "0.00%"
-            rows.append(["II. THỐNG KÊ THEO MÔN", "Số liệu môn", label, assigned_count, participated, absent, rate])
+            rows.append(["", label, assigned_count, participated, absent, rate, ""])
         rows.append(["", "", "", "", "", "", ""])
 
-        rows.append(["III. CHI TIẾT SỬA CHỮA BÀI THI", "Môn", "SBD", "Họ tên", "Điểm ban đầu", "Điểm sau sửa", "Ghi chú"])
+        rows.append(["III. CHI TIẾT SỬA CHỮA BÀI THI", "", "", "", "", "", ""])
+        rows.append(["", "Môn", "SBD", "Họ tên", "Điểm ban đầu", "Điểm sau sửa", "Ghi chú thay đổi"])
         total_edits = 0
         for label, key in subjects:
             for row in self._score_rows_for_subject_cached(key):
@@ -631,17 +639,25 @@ class ExportReportsDialog(QDialog):
                 full_name = str(profile.get("name", "") or row.get("name", "") or "").strip()
                 before_text = "" if score_before is None else score_before
                 after_text = score_after if score_after is not None else before_text
+                change_parts: list[str] = []
+                if before_text != "" or after_text != "":
+                    change_parts.append(f"Điểm: {before_text if before_text != '' else 'N/A'} -> {after_text if after_text != '' else 'N/A'}")
+                if note_text:
+                    change_parts.append(f"Ghi chú: {note_text}")
+                if status_text and status_text != "OK":
+                    change_parts.append(f"Trạng thái: {status_text}")
+                change_note = " | ".join(dict.fromkeys(change_parts))
                 rows.append([
-                    "III. CHI TIẾT SỬA CHỮA BÀI THI",
+                    "",
                     label,
                     sid,
                     full_name,
                     before_text,
                     after_text,
-                    note_text or status_text,
+                    change_note,
                 ])
         if total_edits == 0:
-            rows.append(["III. CHI TIẾT SỬA CHỮA BÀI THI", "Không có bài thi được chỉnh sửa", "", "", "", "", ""])
+            rows.append(["", "Không có bài thi được chỉnh sửa", "", "", "", "", ""])
 
         return ReportTable(headers, rows)
 
@@ -1038,7 +1054,9 @@ class ExportReportsDialog(QDialog):
                 for col_idx in range(1, len(self._last_report.headers) + 1):
                     cell = ws.cell(row=row_idx, column=col_idx)
                     cell.alignment = Alignment(horizontal="center", vertical="center")
-                    if col_idx in {2, 4, 7}:
+                    if col_idx in {2, 7}:
+                        cell.alignment = Alignment(horizontal="left", vertical="center")
+                    if col_idx == 4 and isinstance(cell.value, str) and any(ch.isalpha() for ch in cell.value):
                         cell.alignment = Alignment(horizontal="left", vertical="center")
                     if is_section:
                         cell.font = Font(bold=True)
