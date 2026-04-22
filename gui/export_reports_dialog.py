@@ -420,30 +420,82 @@ class ExportReportsDialog(QDialog):
         normalized = str(room_text or "").strip().casefold()
         return normalized in {"", "-", "không rõ phòng", "[không rõ phòng]"}
 
+    def _subject_mapping_room_by_sid(self, subject_cfg: dict, profiles: dict[str, dict[str, str]]) -> dict[str, str]:
+        cfg = subject_cfg if isinstance(subject_cfg, dict) else {}
+        room_by_sid: dict[str, str] = {}
+        normalized_to_sid: dict[str, str] = {}
+
+        normalize_sid = getattr(self.main_window, "_normalized_student_id_for_match", None)
+        if callable(normalize_sid):
+            for sid in profiles.keys():
+                sid_text = str(sid or "").strip()
+                sid_norm = str(normalize_sid(sid_text) or "").strip()
+                if sid_text and sid_norm and sid_norm not in normalized_to_sid:
+                    normalized_to_sid[sid_norm] = sid_text
+        else:
+            for sid in profiles.keys():
+                sid_text = str(sid or "").strip()
+                if sid_text and sid_text not in normalized_to_sid:
+                    normalized_to_sid[sid_text] = sid_text
+
+        preferred_room = str(cfg.get("exam_room_name", "") or "").strip()
+        normalize_room = getattr(self.main_window, "_normalized_room_for_match", None)
+        preferred_room_norm = str(normalize_room(preferred_room) or "").strip() if callable(normalize_room) else preferred_room.casefold()
+
+        mapping_by_room_func = getattr(self.main_window, "_normalized_exam_room_mapping_by_room", None)
+        mapping_by_room = mapping_by_room_func(cfg) if callable(mapping_by_room_func) else {}
+        if isinstance(mapping_by_room, dict) and mapping_by_room:
+            for room_name, sid_set in mapping_by_room.items():
+                room_text = str(room_name or "").strip()
+                if not room_text or not isinstance(sid_set, set):
+                    continue
+                for sid_norm in sid_set:
+                    sid_key = normalized_to_sid.get(str(sid_norm or "").strip(), "")
+                    if not sid_key:
+                        continue
+                    current = room_by_sid.get(sid_key, "")
+                    if not current:
+                        room_by_sid[sid_key] = room_text
+                        continue
+                    current_norm = str(normalize_room(current) or "").strip() if callable(normalize_room) else current.casefold()
+                    next_norm = str(normalize_room(room_text) or "").strip() if callable(normalize_room) else room_text.casefold()
+                    if preferred_room_norm and next_norm == preferred_room_norm and current_norm != preferred_room_norm:
+                        room_by_sid[sid_key] = room_text
+            return room_by_sid
+
+        mapping_text = str(cfg.get("exam_room_sbd_mapping", "") or "").strip()
+        if preferred_room and mapping_text:
+            chunks = [x.strip() for x in mapping_text.replace(";", ",").replace("\n", ",").split(",") if x.strip()]
+            for token in chunks:
+                sid_norm = str(normalize_sid(token) or "").strip() if callable(normalize_sid) else token
+                sid_key = normalized_to_sid.get(sid_norm, "")
+                if sid_key:
+                    room_by_sid[sid_key] = preferred_room
+        return room_by_sid
+
     def build_absent_exam_report(self) -> ReportTable:
         subjects = self._collect_subject_pairs()
         profiles = self._student_profile_map()
         absent_items: list[dict[str, str]] = []
         for subject_label, subject_key in subjects:
             cfg = self.main_window._subject_config_by_subject_key(subject_key) or {}
+            mapped_room_by_sid = self._subject_mapping_room_by_sid(cfg, profiles)
+            if not mapped_room_by_sid:
+                continue
             source_ids: set[str] = set()
             if hasattr(self.main_window, "_scoring_source_student_ids"):
                 try:
                     source_ids, _count = self.main_window._scoring_source_student_ids(subject_key)
                 except Exception:
                     source_ids = set()
-            for sid, profile in profiles.items():
-                sid_text = str(sid or "").strip()
-                if not sid_text:
-                    continue
-                room_text = ""
-                if hasattr(self.main_window, "_subject_room_for_student_id"):
-                    try:
-                        room_text = str(self.main_window._subject_room_for_student_id(sid_text, cfg) or "").strip()
-                    except Exception:
-                        room_text = ""
-                if not room_text:
-                    room_text = str(profile.get("exam_room", "") or "").strip()
+            normalize_sid = getattr(self.main_window, "_normalized_student_id_for_match", None)
+            source_sid_normalized = {
+                str(normalize_sid(sid) or "").strip() if callable(normalize_sid) else str(sid or "").strip()
+                for sid in source_ids
+                if str(sid or "").strip()
+            }
+            for sid_text, room_text in mapped_room_by_sid.items():
+                profile = profiles.get(sid_text, {})
                 missing_room = self._is_missing_room_text(room_text)
                 if hasattr(self.main_window, "_is_missing_room_for_status"):
                     try:
@@ -452,7 +504,8 @@ class ExportReportsDialog(QDialog):
                         missing_room = self._is_missing_room_text(room_text)
                 if missing_room:
                     continue
-                if sid_text in source_ids:
+                sid_norm = str(normalize_sid(sid_text) or "").strip() if callable(normalize_sid) else sid_text
+                if sid_norm in source_sid_normalized:
                     continue
                 absent_items.append({
                     "student_id": sid_text,
