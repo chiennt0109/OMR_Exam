@@ -72,6 +72,16 @@ from models.exam_session import ExamSession, Student
 from models.template import Template, ZoneType
 from models.template_repository import TemplateRepository
 
+try:
+    from gui.ui_branding import app_icon, load_theme, TOOLBAR, STATUS, logo_symbol
+except Exception:
+    app_icon = None
+    load_theme = None
+    TOOLBAR = None
+    STATUS = None
+    logo_symbol = None
+from gui.ui_branding import app_icon, load_theme, TOOLBAR, STATUS, logo_symbol
+
 
 class PreviewImageWidget(QLabel):
     def __init__(self, parent=None):
@@ -216,6 +226,14 @@ class SubjectConfigDialog(QDialog):
         self.resize(980, 760)
         self.setMinimumSize(880, 680)
         self.setWindowState(self.windowState() | Qt.WindowMaximized)
+
+        try:
+            if callable(app_icon):
+                _ico = app_icon()
+                if _ico is not None and not _ico.isNull():
+                    self.setWindowIcon(_ico)
+        except Exception:
+            pass
         data = data or {}
         subject_options = subject_options or []
         block_options = block_options or ["10", "11", "12"]
@@ -1400,7 +1418,8 @@ class NewExamDialog(QDialog):
             self.subject_table.setItem(row_idx, 9, QTableWidgetItem(self._subject_status_text(cfg)))
 
             btn_batch_scan = QPushButton("Nhận dạng")
-            btn_batch_scan.setIcon(style.standardIcon(QStyle.SP_MediaPlay))
+            brand_scan_icon = TOOLBAR.get("scan")
+            btn_batch_scan.setIcon(brand_scan_icon if brand_scan_icon is not None and not brand_scan_icon.isNull() else style.standardIcon(QStyle.SP_MediaPlay))
             btn_batch_scan.setToolTip("Batch Scan theo môn")
             btn_batch_scan.setEnabled(callable(self.on_batch_scan_subject))
             btn_batch_scan.clicked.connect(lambda _=False, i=row_idx: self._trigger_subject_batch_scan(i))
@@ -1878,6 +1897,8 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.stack)
 
         self._build_menu()
+        self._apply_branding_to_ribbon_actions()
+        self._apply_branding_to_ribbon_actions()
         self.stack.currentChanged.connect(self._handle_stack_changed)
         db_subjects = self.database.fetch_catalog("subjects")
         db_blocks = self.database.fetch_catalog("blocks")
@@ -1896,6 +1917,56 @@ class MainWindow(QMainWindow):
         self._handle_stack_changed(self.stack.currentIndex())
         self.stack.setCurrentIndex(0)
         self._setup_auto_recognition_timer()
+
+
+    def _set_action_icon_from_branding(self, action, icon_name: str) -> None:
+        if action is None:
+            return
+        try:
+            branded_icon = TOOLBAR.get(icon_name) if TOOLBAR is not None else None
+            if branded_icon is not None and not branded_icon.isNull():
+                action.setIcon(branded_icon)
+        except Exception:
+            pass
+
+    def _apply_branding_to_ribbon_actions(self) -> None:
+        try:
+            if callable(load_theme):
+                qss = load_theme("light")
+                if qss:
+                    self.setStyleSheet(qss)
+        except Exception:
+            pass
+
+        mapping = [
+            ("ribbon_new_exam_action", "exam"),
+            ("ribbon_view_exam_action", "home"),
+            ("ribbon_subject_list_action", "subject"),
+            ("ribbon_batch_scan_action", "scan"),
+            ("ribbon_scoring_action", "scoring"),
+            ("ribbon_recheck_action", "recheck"),
+            ("ribbon_export_action", "export"),
+            ("ribbon_batch_execute_action", "batch"),
+            ("ribbon_batch_save_action", "save"),
+            ("ribbon_batch_close_action", "close"),
+            ("ribbon_exam_editor_add_subject_action", "subject"),
+            ("ribbon_exam_editor_edit_subject_action", "edit"),
+            ("ribbon_exam_editor_delete_subject_action", "delete"),
+            ("ribbon_exam_editor_save_action", "save"),
+            ("ribbon_exam_editor_close_action", "close"),
+            ("ribbon_add_subject_action", "subject"),
+            ("ribbon_edit_subject_action", "edit"),
+            ("ribbon_delete_subject_action", "delete"),
+            ("ribbon_save_subject_action", "save"),
+            ("ribbon_new_template_action", "template"),
+            ("ribbon_edit_template_action", "edit"),
+            ("ribbon_delete_template_action", "delete"),
+            ("ribbon_save_template_action", "save"),
+            ("ribbon_save_template_as_action", "export"),
+            ("ribbon_close_template_action", "close"),
+        ]
+        for attr_name, icon_name in mapping:
+            self._set_action_icon_from_branding(getattr(self, attr_name, None), icon_name)
 
     def _setup_auto_recognition_timer(self) -> None:
         self.auto_recognition_discovery_timer = QTimer(self)

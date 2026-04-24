@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gui.ui_branding import app_icon, load_theme, TOOLBAR
 
 @dataclass
 class ReportTable:
@@ -52,6 +53,8 @@ class ExportReportsDialog(QDialog):
         self.setWindowFlag(Qt.WindowMinimizeButtonHint, True)
         self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
         self.setWindowFlag(Qt.WindowCloseButtonHint, True)
+        self.setWindowIcon(app_icon())
+        self.setStyleSheet(load_theme("light"))
 
         self.combo_defs: list[tuple[str, list[str]]] = []
         self._subject_pairs_cache: list[tuple[str, str]] | None = None
@@ -127,9 +130,13 @@ class ExportReportsDialog(QDialog):
         center_layout.addWidget(self.preview_table)
 
         self.btn_preview = QPushButton("Xem trước")
+        self.btn_preview.setIcon(TOOLBAR.get("search"))
         self.btn_export_excel = QPushButton("Xuất Excel")
+        self.btn_export_excel.setIcon(TOOLBAR.get("export"))
         self.btn_export_pdf = QPushButton("Xuất PDF")
+        self.btn_export_pdf.setIcon(TOOLBAR.get("report"))
         self.btn_close = QPushButton("Đóng")
+        self.btn_close.setIcon(TOOLBAR.get("close"))
         bottom_ribbon = QHBoxLayout()
         bottom_ribbon.addStretch(1)
         bottom_ribbon.addWidget(self.btn_preview)

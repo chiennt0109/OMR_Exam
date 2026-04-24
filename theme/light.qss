@@ -1,0 +1,17 @@
+
+QMainWindow, QWidget { background-color: #F5F7FB; color: #0F172A; font-size: 13px; }
+QFrame#PageHeader { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FFFFFF, stop:1 #EEF4FF); border: 1px solid #DBE5F0; border-radius: 16px; }
+QLabel#PageTitle { color: #0B1F44; font-size: 22px; font-weight: 700; }
+QLabel#PageSubtitle { color: #475569; font-size: 12px; }
+QLabel#ContextBadge { background: #E8F1FF; color: #174EA6; border: 1px solid #C6DAFC; border-radius: 12px; padding: 6px 12px; font-weight: 600; }
+QToolBar { background: #FFFFFF; border: none; border-bottom: 1px solid #DBE5F0; spacing: 8px; padding: 8px 10px; }
+QToolButton { background: transparent; border: 1px solid transparent; border-radius: 12px; padding: 8px 10px; margin: 0 2px; }
+QToolButton:hover { background: #EEF4FF; border-color: #D7E5FF; }
+QGroupBox { background: #FFFFFF; border: 1px solid #DBE5F0; border-radius: 14px; margin-top: 12px; padding-top: 14px; font-weight: 600; }
+QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 6px; color: #0B1F44; }
+QTableWidget, QListWidget, QTextEdit, QLineEdit, QComboBox, QPlainTextEdit { background: #FFFFFF; border: 1px solid #D7DEE8; border-radius: 10px; selection-background-color: #DBEAFE; selection-color: #0F172A; }
+QHeaderView::section { background: #EFF4FB; color: #0F172A; border: none; border-right: 1px solid #DBE5F0; border-bottom: 1px solid #DBE5F0; padding: 8px; font-weight: 600; }
+QPushButton { background: #FFFFFF; border: 1px solid #CFD8E3; border-radius: 10px; padding: 8px 14px; font-weight: 600; }
+QPushButton:hover { background: #F8FBFF; border-color: #B7C8DD; }
+QProgressBar { background: #EEF2F7; border: 1px solid #D7DEE8; border-radius: 8px; text-align: center; }
+QProgressBar::chunk { background: #2563EB; border-radius: 7px; }

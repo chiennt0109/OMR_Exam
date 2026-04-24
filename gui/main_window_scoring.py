@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.omr_engine import OMRResult
+from gui.ui_branding import app_icon, load_theme, TOOLBAR
 
 
 def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult) -> None:
@@ -32,6 +33,8 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
         return
     dlg = QDialog(self)
     dlg.setWindowTitle(f"Giải trình điểm - {str(getattr(result, 'student_id', '') or '-')}")
+    dlg.setWindowIcon(app_icon())
+    dlg.setStyleSheet(load_theme("light"))
     dlg.resize(1320, 760)
     lay = QVBoxLayout(dlg)
     top_form = QFormLayout()

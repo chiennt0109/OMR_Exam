@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from core.omr_engine import OMRResult
 from models.answer_key import SubjectKey
+from gui.ui_branding import TOOLBAR, app_icon, load_theme
 
 
 def action_open_recheck(self) -> None:
@@ -47,7 +48,7 @@ def refresh_recheck_action_state(self, *, has_session: bool, has_batch_rows: boo
 
 def create_recheck_ribbon_action(self, toolbar, style):
     self.ribbon_recheck_action = toolbar.addAction(
-        style.standardIcon(QStyle.SP_BrowserReload),
+        TOOLBAR.get("recheck") or style.standardIcon(QStyle.SP_BrowserReload),
         "Phúc tra",
         self.action_open_recheck,
     )
@@ -530,6 +531,8 @@ def open_recheck_dialog(self) -> None:
 
     dlg = QDialog(self)
     dlg.setWindowTitle(f"Phúc tra - {subject_key}")
+    dlg.setWindowIcon(app_icon())
+    dlg.setStyleSheet(load_theme("light"))
     dlg.resize(1760, 940)
     dlg.setWindowState(dlg.windowState() | Qt.WindowMaximized)
     root = QVBoxLayout(dlg)

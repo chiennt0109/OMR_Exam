@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from gui.ui_branding import app_icon, load_theme, TOOLBAR
 from core.answer_key_importer import ImportedAnswerKey, ImportedAnswerKeyPackage
 from models.answer_key import SubjectKey
 
@@ -54,6 +55,8 @@ class ImportAnswerKeyDialog(QDialog):
 
         self.setWindowTitle("Kiểm tra và nhập đáp án")
         self.resize(960, 760)
+        self.setWindowIcon(app_icon())
+        self.setStyleSheet(load_theme("light"))
 
         self.exam_code_combo = QComboBox(self)
         self.exam_code_combo.setEditable(True)
@@ -75,8 +78,11 @@ class ImportAnswerKeyDialog(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
 
         self.btn_add = QPushButton("Thêm dòng", self)
+        self.btn_add.setIcon(TOOLBAR.get("edit"))
         self.btn_delete = QPushButton("Xóa dòng chọn", self)
+        self.btn_delete.setIcon(TOOLBAR.get("delete"))
         self.btn_apply_mapping = QPushButton("Áp mapping phần", self)
+        self.btn_apply_mapping.setIcon(TOOLBAR.get("refresh"))
 
         form = QFormLayout()
         form.addRow("Mã đề", self.exam_code_combo)
