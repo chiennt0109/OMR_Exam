@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 
 from core.omr_engine import OMRResult
 from models.answer_key import SubjectKey
-from gui.ui_branding import TOOLBAR, app_icon, load_theme
+from gui.ui_branding import TOOLBAR, app_icon, load_theme, apply_widget_branding, brand_button
 
 
 def action_open_recheck(self) -> None:
@@ -48,7 +48,7 @@ def refresh_recheck_action_state(self, *, has_session: bool, has_batch_rows: boo
 
 def create_recheck_ribbon_action(self, toolbar, style):
     self.ribbon_recheck_action = toolbar.addAction(
-        TOOLBAR.get("recheck") or style.standardIcon(QStyle.SP_BrowserReload),
+        style.standardIcon(QStyle.SP_BrowserReload),
         "Phúc tra",
         self.action_open_recheck,
     )
@@ -222,6 +222,11 @@ def open_recheck_dialog(self) -> None:
         btn_add_all = QPushButton("Chọn tất cả >>")
         btn_remove_all = QPushButton("<< Bỏ chọn tất cả")
         btn_import = QPushButton("Import từ Excel")
+        for _btn, _icon_name in [(btn_add, "add"), (btn_remove, "delete"), (btn_add_all, "add"), (btn_remove_all, "delete"), (btn_import, "import")]:
+            try:
+                brand_button(_btn, _icon_name)
+            except Exception:
+                pass
         action_l.addStretch(1)
         action_l.addWidget(btn_add)
         action_l.addWidget(btn_remove)
@@ -383,6 +388,18 @@ def open_recheck_dialog(self) -> None:
 
         footer.accepted.connect(_accept_builder)
         footer.rejected.connect(builder.reject)
+        try:
+            builder.setWindowIcon(app_icon())
+            builder.setStyleSheet(load_theme("light"))
+            apply_widget_branding(builder)
+        except Exception:
+            pass
+        try:
+            builder.setWindowIcon(app_icon())
+            builder.setStyleSheet(load_theme("light"))
+            apply_widget_branding(builder)
+        except Exception:
+            pass
         if builder.exec() != QDialog.Accepted:
             return None
         return list(chosen_sids)
@@ -531,8 +548,6 @@ def open_recheck_dialog(self) -> None:
 
     dlg = QDialog(self)
     dlg.setWindowTitle(f"Phúc tra - {subject_key}")
-    dlg.setWindowIcon(app_icon())
-    dlg.setStyleSheet(load_theme("light"))
     dlg.resize(1760, 940)
     dlg.setWindowState(dlg.windowState() | Qt.WindowMaximized)
     root = QVBoxLayout(dlg)
