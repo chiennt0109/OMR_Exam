@@ -17,7 +17,7 @@ import uuid
 
 sys.dont_write_bytecode = True
 
-from PySide6.QtCore import Qt, QEvent, QTimer
+from PySide6.QtCore import Qt, QEvent, QTimer, QSize
 from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPixmap, QTransform, QPainter, QPen, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -1930,19 +1930,61 @@ class MainWindow(QMainWindow):
 
     def _apply_branding_to_ribbon_actions(self) -> None:
         mapping = [
-            ("ribbon_new_exam_action", "exam"), ("ribbon_view_exam_action", "home"),
-            ("ribbon_subject_list_action", "subject"), ("ribbon_batch_scan_action", "scan"),
-            ("ribbon_scoring_action", "scoring"), ("ribbon_recheck_action", "recheck"),
-            ("ribbon_export_action", "export"), ("ribbon_batch_execute_action", "scan"),
-            ("ribbon_batch_save_action", "save"), ("ribbon_batch_close_action", "close"),
-            ("ribbon_exam_editor_add_subject_action", "add"), ("ribbon_exam_editor_edit_subject_action", "edit"),
-            ("ribbon_exam_editor_delete_subject_action", "delete"), ("ribbon_exam_editor_save_action", "save"),
-            ("ribbon_exam_editor_close_action", "close"), ("ribbon_add_subject_action", "add"),
-            ("ribbon_edit_subject_action", "edit"), ("ribbon_delete_subject_action", "delete"),
-            ("ribbon_save_subject_action", "save"), ("ribbon_new_template_action", "template"),
-            ("ribbon_edit_template_action", "edit"), ("ribbon_delete_template_action", "delete"),
-            ("ribbon_save_template_action", "save"), ("ribbon_save_template_as_action", "export"),
+            # Main workflow ribbon
+            ("ribbon_new_exam_action", "exam"),
+            ("ribbon_view_exam_action", "home"),
+            ("ribbon_subject_list_action", "subject"),
+            ("ribbon_batch_scan_action", "scan"),
+            ("ribbon_scoring_action", "scoring"),
+            ("ribbon_recheck_action", "recheck"),
+            ("ribbon_export_action", "export"),
+            # Batch-scan context
+            ("ribbon_batch_execute_action", "scan"),
+            ("ribbon_batch_save_action", "save"),
+            ("ribbon_batch_close_action", "close"),
+            # Embedded exam editor context
+            ("ribbon_exam_editor_add_subject_action", "add"),
+            ("ribbon_exam_editor_edit_subject_action", "edit"),
+            ("ribbon_exam_editor_delete_subject_action", "delete"),
+            ("ribbon_exam_editor_save_action", "save"),
+            ("ribbon_exam_editor_close_action", "close"),
+            # Catalog subject management context
+            ("ribbon_add_subject_action", "add"),
+            ("ribbon_edit_subject_action", "edit"),
+            ("ribbon_delete_subject_action", "delete"),
+            ("ribbon_save_subject_action", "save"),
+            # Template-library context
+            ("ribbon_new_template_action", "template"),
+            ("ribbon_edit_template_action", "edit"),
+            ("ribbon_delete_template_action", "delete"),
             ("ribbon_close_template_action", "close"),
+            # Main menus
+            ("act_new_session", "exam"),
+            ("act_open_from_list", "home"),
+            ("act_save_session", "save"),
+            ("act_save_as_subject", "export"),
+            ("act_close_current_session", "close"),
+            ("act_manage_template", "template"),
+            ("act_manage_subject", "subject"),
+            ("act_current_exam_subjects", "subject"),
+            ("act_import_answer_key", "import"),
+            ("act_export_answer_key_sample", "export"),
+            ("act_batch_scan_menu", "scan"),
+            ("act_execute_batch_scan", "scan"),
+            ("act_edit_selected_scan", "edit"),
+            ("act_calculate_scores", "scoring"),
+            ("act_open_recheck", "recheck"),
+            ("act_export_subject_scores", "export"),
+            ("act_export_subject_score_matrix", "export"),
+            ("act_export_class_subject_scores", "export"),
+            ("act_export_all_classes_subject_scores", "export"),
+            ("act_export_all_scores", "export"),
+            ("act_export_return_by_class", "export"),
+            ("act_export_subject_api", "export"),
+            ("act_export_reports_center", "report"),
+            ("act_export_range_report", "report"),
+            ("act_export_class_report", "report"),
+            ("act_export_management_report", "report"),
         ]
         for attr_name, icon_name in mapping:
             self._set_action_icon_from_branding(getattr(self, attr_name, None), icon_name)
@@ -3512,144 +3554,363 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Open session", f"Không thể mở kỳ thi:\n{exc}")
 
+    def _create_branded_action(
+        self,
+        text: str,
+        callback=None,
+        *,
+        icon_name: str = "",
+        shortcut: str | QKeySequence | None = None,
+        status_tip: str = "",
+        parent=None,
+    ) -> QAction:
+        """Create one QAction and apply the common icon/shortcut/status policy."""
+        action = QAction(str(text or ""), parent or self)
+        if callback is not None:
+            action.triggered.connect(callback)
+        if shortcut:
+            action.setShortcut(QKeySequence(shortcut) if isinstance(shortcut, str) else shortcut)
+        if status_tip:
+            action.setStatusTip(status_tip)
+            action.setToolTip(status_tip)
+        if icon_name:
+            self._set_action_icon_from_branding(action, icon_name)
+        return action
+
+    def _add_menu_action(
+        self,
+        menu: QMenu,
+        attr_name: str,
+        text: str,
+        callback,
+        *,
+        icon_name: str = "",
+        shortcut: str | QKeySequence | None = None,
+        status_tip: str = "",
+    ) -> QAction:
+        action = self._create_branded_action(
+            text,
+            callback,
+            icon_name=icon_name,
+            shortcut=shortcut,
+            status_tip=status_tip,
+        )
+        setattr(self, attr_name, action)
+        menu.addAction(action)
+        return action
+
     def _build_menu(self) -> None:
-        file_menu = self.menuBar().addMenu("File")
-        self.act_new_session = file_menu.addAction("Tạo kỳ thi mới")
-        self.act_new_session.setShortcut(QKeySequence("Ctrl+N"))
-        self.act_new_session.triggered.connect(self.action_create_session)
+        """Build a compact, workflow-oriented menu/ribbon.
 
-        self.act_open_from_list = file_menu.addAction("Mở từ danh sách")
-        self.act_open_from_list.setShortcut(QKeySequence("Ctrl+O"))
-        self.act_open_from_list.triggered.connect(self.action_open_session)
+        Legacy developer-only commands are intentionally not exposed here:
+        Load Template JSON, Load Answer Keys JSON, Load Selected Scan Result and
+        Apply Manual Correction. The corresponding methods are kept for backward
+        compatibility, but the main UI now routes users through the DB-first
+        workflow: configure -> recognize -> edit/recheck -> score -> export.
+        """
+        self.menuBar().clear()
 
-        self.act_save_session = file_menu.addAction("Lưu kỳ thi")
-        self.act_save_session.setShortcut(QKeySequence("Ctrl+S"))
-        self.act_save_session.triggered.connect(self.action_save_session)
+        exam_menu = self.menuBar().addMenu("Kỳ thi")
+        self.act_new_session = self._add_menu_action(
+            exam_menu,
+            "act_new_session",
+            "Tạo kỳ thi mới",
+            self.action_create_session,
+            icon_name="exam",
+            shortcut="Ctrl+N",
+            status_tip="Tạo một kỳ thi mới.",
+        )
+        self.act_open_from_list = self._add_menu_action(
+            exam_menu,
+            "act_open_from_list",
+            "Danh sách kỳ thi",
+            self.action_open_session,
+            icon_name="home",
+            shortcut="Ctrl+O",
+            status_tip="Quay về danh sách kỳ thi và mở kỳ thi đã có.",
+        )
+        exam_menu.addSeparator()
+        self.act_save_session = self._add_menu_action(
+            exam_menu,
+            "act_save_session",
+            "Lưu kỳ thi",
+            self.action_save_session,
+            icon_name="save",
+            shortcut="Ctrl+S",
+            status_tip="Lưu cấu hình kỳ thi hiện tại.",
+        )
+        self.act_save_as_subject = self._add_menu_action(
+            exam_menu,
+            "act_save_as_subject",
+            "Nhân bản kỳ thi...",
+            self.action_save_session_as,
+            icon_name="export",
+            status_tip="Tạo một bản sao từ kỳ thi đang chọn trong danh sách.",
+        )
+        self.act_close_current_session = self._add_menu_action(
+            exam_menu,
+            "act_close_current_session",
+            "Đóng kỳ thi hiện tại",
+            self.action_close_current_session,
+            icon_name="close",
+            status_tip="Đóng ngữ cảnh kỳ thi đang mở.",
+        )
+        exam_menu.addSeparator()
+        self.act_exit = self._add_menu_action(
+            exam_menu,
+            "act_exit",
+            "Thoát",
+            self.action_exit,
+            icon_name="close",
+            status_tip="Đóng ứng dụng.",
+        )
 
-        self.act_save_as_subject = file_menu.addAction("Lưu dưới tên khác")
-        self.act_save_as_subject.triggered.connect(self.action_save_session_as)
+        config_menu = self.menuBar().addMenu("Cấu hình")
+        self.act_current_exam_subjects = self._add_menu_action(
+            config_menu,
+            "act_current_exam_subjects",
+            "Môn thi của kỳ thi",
+            self.action_open_current_exam_subjects,
+            icon_name="subject",
+            status_tip="Mở danh sách môn thi thuộc kỳ thi hiện tại.",
+        )
+        self.act_manage_subject = self._add_menu_action(
+            config_menu,
+            "act_manage_subject",
+            "Danh mục môn học / khối",
+            self.action_manage_subjects,
+            icon_name="subject",
+            status_tip="Quản lý danh mục dùng chung cho cấu hình kỳ thi.",
+        )
+        self.act_manage_template = self._add_menu_action(
+            config_menu,
+            "act_manage_template",
+            "Mẫu giấy thi",
+            self.action_manage_template,
+            icon_name="template",
+            status_tip="Tạo, sửa và kiểm tra mẫu giấy thi.",
+        )
+        self.act_close_template_module = self._add_menu_action(
+            config_menu,
+            "act_close_template_module",
+            "Đóng quản lý mẫu giấy thi",
+            self._close_template_module,
+            icon_name="close",
+            status_tip="Đóng module mẫu giấy thi.",
+        )
+        self.act_close_template_module.setVisible(False)
+        config_menu.addSeparator()
+        self.act_import_answer_key = self._add_menu_action(
+            config_menu,
+            "act_import_answer_key",
+            "Nhập đáp án...",
+            self.action_import_answer_key,
+            icon_name="import",
+            status_tip="Nhập đáp án theo môn/mã đề vào CSDL.",
+        )
+        self.act_export_answer_key_sample = self._add_menu_action(
+            config_menu,
+            "act_export_answer_key_sample",
+            "Xuất mẫu đáp án...",
+            self.action_export_answer_key_sample,
+            icon_name="export",
+            status_tip="Xuất file mẫu để nhập đáp án.",
+        )
 
-        self.act_close_current_session = file_menu.addAction("Đóng kỳ thi hiện tại")
-        self.act_close_current_session.triggered.connect(self.action_close_current_session)
+        workflow_menu = self.menuBar().addMenu("Quy trình")
+        self.act_batch_scan_menu = self._add_menu_action(
+            workflow_menu,
+            "act_batch_scan_menu",
+            "Xử lý ảnh / Batch Scan",
+            self.action_run_batch_scan,
+            icon_name="scan",
+            shortcut="Ctrl+B",
+            status_tip="Mở màn hình nhận dạng bài thi.",
+        )
+        self.act_execute_batch_scan = self._add_menu_action(
+            workflow_menu,
+            "act_execute_batch_scan",
+            "Nhận dạng môn đang chọn",
+            self.action_execute_batch_scan,
+            icon_name="scan",
+            status_tip="Chạy nhận dạng cho môn đang chọn trong Batch Scan.",
+        )
+        self.act_edit_selected_scan = self._add_menu_action(
+            workflow_menu,
+            "act_edit_selected_scan",
+            "Sửa bài thi đang chọn",
+            self.action_edit_selected_scan,
+            icon_name="edit",
+            status_tip="Mở màn hình sửa bài thi đang chọn trong Batch Scan.",
+        )
+        workflow_menu.addSeparator()
+        self.act_calculate_scores = self._add_menu_action(
+            workflow_menu,
+            "act_calculate_scores",
+            "Tính điểm",
+            self.action_calculate_scores,
+            icon_name="scoring",
+            shortcut="Ctrl+R",
+            status_tip="Tính điểm theo dữ liệu nhận dạng đã chuẩn hóa theo môn.",
+        )
+        self.act_open_recheck = self._add_menu_action(
+            workflow_menu,
+            "act_open_recheck",
+            "Phúc tra",
+            self.action_open_recheck,
+            icon_name="recheck",
+            status_tip="Mở quy trình phúc tra / giải trình điểm.",
+        )
 
-        file_menu.addSeparator()
-        self.act_manage_template = file_menu.addAction("Quản lý mẫu giấy thi")
-        self.act_manage_template.triggered.connect(self.action_manage_template)
-        self.act_close_template_module = file_menu.addAction("Đóng quản lý mẫu giấy thi")
-        self.act_close_template_module.triggered.connect(self._close_template_module)
-
-        act_manage_subject = file_menu.addAction("Quản lý môn học")
-        act_manage_subject.triggered.connect(self.action_manage_subjects)
-
-        file_menu.addSeparator()
-        act_exit = file_menu.addAction("Thoát")
-        act_exit.triggered.connect(self.action_exit)
-
-        exam_menu = self.menuBar().addMenu("Exam")
-        exam_menu.addAction("Load Template JSON", self.action_load_template)
-        exam_menu.addAction("Load Answer Keys JSON", self.action_load_answer_keys)
-        exam_menu.addAction("Import Answer Key", self.action_import_answer_key)
-        exam_menu.addAction("Export Answer Key Sample", self.action_export_answer_key_sample)
-        exam_menu.addAction("Batch Scan Images", self.action_run_batch_scan)
-        exam_menu.addAction("Sửa bài thi được chọn", self.action_edit_selected_scan)
-        exam_menu.addAction("Load Selected Scan Result", self.action_load_selected_scan_result)
-        exam_menu.addAction("Apply Manual Correction", self.action_apply_manual_correction)
-
-        scoring_menu = self.menuBar().addMenu("Scoring")
-        scoring_menu.addAction("Calculate & Preview Scores", self.action_calculate_scores)
-        scoring_menu.addAction("Export Results", self.action_export_results)
-
-        self.export_menu = self.menuBar().addMenu("Export")
-        self.act_export_subject_scores = self.export_menu.addAction("Xuất điểm môn...")
-        self.act_export_subject_scores.triggered.connect(self.action_export_subject_scores)
-        self.act_export_subject_score_matrix = self.export_menu.addAction("Xuất điểm các môn...")
-        self.act_export_subject_score_matrix.triggered.connect(self.action_export_subject_score_matrix)
-        self.act_export_class_subject_scores = self.export_menu.addAction("Xuất điểm lớp...")
-        self.act_export_class_subject_scores.triggered.connect(self.action_export_class_subject_scores)
-        self.act_export_all_classes_subject_scores = self.export_menu.addAction("Xuất điểm các lớp...")
-        self.act_export_all_classes_subject_scores.triggered.connect(self.action_export_all_classes_subject_scores)
-        self.act_export_all_scores = self.export_menu.addAction("Xuất điểm chi tiết các môn...")
-        self.act_export_all_scores.triggered.connect(self.action_export_all_subject_scores)
-        self.act_export_return_by_class = self.export_menu.addAction("Trả bài theo lớp...")
-        self.act_export_return_by_class.triggered.connect(self.action_export_return_by_class)
+        self.export_menu = self.menuBar().addMenu("Xuất báo cáo")
+        self.act_export_reports_center = self._add_menu_action(
+            self.export_menu,
+            "act_export_reports_center",
+            "Trung tâm báo cáo...",
+            self.action_open_export_reports_center,
+            icon_name="report",
+            status_tip="Mở trung tâm báo cáo thống kê.",
+        )
         self.export_menu.addSeparator()
-        self.act_export_subject_api = self.export_menu.addAction("Xuất API bài làm theo môn (;)")
-        self.act_export_subject_api.triggered.connect(self.action_export_subject_api_payload)
+        self.act_export_subject_scores = self._add_menu_action(
+            self.export_menu,
+            "act_export_subject_scores",
+            "Xuất điểm môn...",
+            self.action_export_subject_scores,
+            icon_name="export",
+        )
+        self.act_export_subject_score_matrix = self._add_menu_action(
+            self.export_menu,
+            "act_export_subject_score_matrix",
+            "Xuất điểm các môn...",
+            self.action_export_subject_score_matrix,
+            icon_name="export",
+        )
+        self.act_export_class_subject_scores = self._add_menu_action(
+            self.export_menu,
+            "act_export_class_subject_scores",
+            "Xuất điểm lớp...",
+            self.action_export_class_subject_scores,
+            icon_name="export",
+        )
+        self.act_export_all_classes_subject_scores = self._add_menu_action(
+            self.export_menu,
+            "act_export_all_classes_subject_scores",
+            "Xuất điểm các lớp...",
+            self.action_export_all_classes_subject_scores,
+            icon_name="export",
+        )
+        self.act_export_all_scores = self._add_menu_action(
+            self.export_menu,
+            "act_export_all_scores",
+            "Xuất điểm chi tiết các môn...",
+            self.action_export_all_subject_scores,
+            icon_name="export",
+        )
+        self.act_export_return_by_class = self._add_menu_action(
+            self.export_menu,
+            "act_export_return_by_class",
+            "Trả bài theo lớp...",
+            self.action_export_return_by_class,
+            icon_name="export",
+        )
         self.export_menu.addSeparator()
-        self.act_export_reports_center = self.export_menu.addAction("Báo cáo thống kê...")
-        self.act_export_reports_center.triggered.connect(self.action_open_export_reports_center)
-        self.act_export_range_report = self.export_menu.addAction("Báo cáo thống kê khoảng điểm...")
-        self.act_export_range_report.triggered.connect(self.action_export_score_range_report)
-        self.act_export_class_report = self.export_menu.addAction("Báo cáo thống kê theo lớp...")
-        self.act_export_class_report.triggered.connect(self.action_export_class_report)
-        self.act_export_management_report = self.export_menu.addAction("Báo cáo tổng hợp quản lý...")
-        self.act_export_management_report.triggered.connect(self.action_export_management_report)
+        self.act_export_subject_api = self._add_menu_action(
+            self.export_menu,
+            "act_export_subject_api",
+            "Xuất API bài làm theo môn (;)",
+            self.action_export_subject_api_payload,
+            icon_name="export",
+        )
+        self.export_menu.addSeparator()
+        self.act_export_range_report = self._add_menu_action(
+            self.export_menu,
+            "act_export_range_report",
+            "Báo cáo khoảng điểm...",
+            self.action_export_score_range_report,
+            icon_name="report",
+        )
+        self.act_export_class_report = self._add_menu_action(
+            self.export_menu,
+            "act_export_class_report",
+            "Báo cáo theo lớp...",
+            self.action_export_class_report,
+            icon_name="report",
+        )
+        self.act_export_management_report = self._add_menu_action(
+            self.export_menu,
+            "act_export_management_report",
+            "Báo cáo tổng hợp quản lý...",
+            self.action_export_management_report,
+            icon_name="report",
+        )
 
-        self.template_module_menu = self.menuBar().addMenu("Template Editor")
-        self.template_module_menu.addAction("Tạo mới", self._create_new_template)
-        self.template_module_menu.addAction("Sửa", self._edit_selected_template)
-        self.template_module_menu.addAction("Xoá", self._delete_selected_template)
-        self.template_module_menu.addSeparator()
-        self.template_module_menu.addAction("Save", self._save_current_template)
-        self.template_module_menu.addAction("Save As", self._save_current_template_as)
-        self.template_module_menu.addSeparator()
-        self.template_module_menu.addAction("Close", self._close_template_module)
+        self.template_module_menu = self.menuBar().addMenu("Mẫu giấy thi")
+        self.template_module_menu.menuAction().setVisible(False)
 
-        toolbar = QToolBar("Ribbon")
+        toolbar = QToolBar("Quy trình")
+        toolbar.setObjectName("mainWorkflowRibbon")
         toolbar.setMovable(False)
+        toolbar.setFloatable(False)
         toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        toolbar.setIconSize(QSize(24, 24))
         self.addToolBar(toolbar)
         self.main_ribbon = toolbar
 
         style = self.style()
-        # Session actions
-        self.ribbon_new_exam_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileIcon), "Tạo mới", self.action_create_session)
-        self.ribbon_view_exam_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogListView), "Danh sách kỳ thi", self.action_open_session)
-        # self.ribbon_delete_exam_action = toolbar.addAction(style.standardIcon(QStyle.SP_TrashIcon), "Xoá", self._delete_selected_registry_session)
-        toolbar.addSeparator()
-        # Workflow actions
-        self.ribbon_subject_list_action = toolbar.addAction(style.standardIcon(QStyle.SP_DirIcon), "Danh sách môn thi", self.action_open_current_exam_subjects)
+        self.ribbon_new_exam_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileIcon), "Tạo kỳ thi", self.action_create_session)
+        self.ribbon_new_exam_action.setStatusTip("Tạo kỳ thi mới.")
+        self.ribbon_view_exam_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogListView), "Danh sách", self.action_open_session)
+        self.ribbon_view_exam_action.setStatusTip("Danh sách kỳ thi.")
+        self.ribbon_subject_list_action = toolbar.addAction(style.standardIcon(QStyle.SP_DirIcon), "Môn thi", self.action_open_current_exam_subjects)
+        self.ribbon_subject_list_action.setStatusTip("Danh sách môn thi của kỳ thi hiện tại.")
         self.ribbon_batch_scan_action = toolbar.addAction(style.standardIcon(QStyle.SP_ComputerIcon), "Xử lý ảnh", self.action_run_batch_scan)
+        self.ribbon_batch_scan_action.setStatusTip("Mở màn hình Batch Scan.")
         self.ribbon_scoring_action = toolbar.addAction(style.standardIcon(QStyle.SP_CommandLink), "Tính điểm", self.action_calculate_scores)
+        self.ribbon_scoring_action.setStatusTip("Tính điểm bài thi.")
         self.ribbon_recheck_action = toolbar.addAction(style.standardIcon(QStyle.SP_BrowserReload), "Phúc tra", self.action_open_recheck)
-        self.ribbon_export_action = QAction(style.standardIcon(QStyle.SP_DriveNetIcon), "Export", self)
+        self.ribbon_recheck_action.setStatusTip("Phúc tra / giải trình điểm.")
+
+        self.ribbon_export_action = QAction(style.standardIcon(QStyle.SP_DriveNetIcon), "Báo cáo", self)
         self.ribbon_export_action.triggered.connect(self.action_open_export_reports_center)
         self.ribbon_export_action.setMenu(self.export_menu)
+        self.ribbon_export_action.setStatusTip("Xuất điểm, API và báo cáo thống kê.")
         toolbar.addAction(self.ribbon_export_action)
-        toolbar.addSeparator()
+
+        self.ribbon_context_separator = toolbar.addSeparator()
+
         self.ribbon_batch_execute_action = toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Nhận dạng", self.action_execute_batch_scan)
-        self.ribbon_batch_save_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Lưu", self._save_batch_for_selected_subject)
-        self.ribbon_batch_close_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogCloseButton), "Đóng", self._close_batch_scan_view)
-        toolbar.addSeparator()
+        self.ribbon_batch_execute_action.setStatusTip("Chạy nhận dạng cho môn đang chọn.")
+        self.ribbon_batch_save_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Lưu thay đổi", self._save_batch_for_selected_subject)
+        self.ribbon_batch_save_action.setStatusTip("Lưu các thay đổi phát sinh trong Batch Scan.")
+        self.ribbon_batch_close_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogCloseButton), "Đóng Batch", self._close_batch_scan_view)
+        self.ribbon_batch_close_action.setStatusTip("Đóng màn hình Batch Scan.")
+
         self.ribbon_exam_editor_add_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogNewFolder), "Thêm môn", self._exam_editor_add_subject)
         self.ribbon_exam_editor_edit_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Sửa môn", self._exam_editor_edit_subject)
         self.ribbon_exam_editor_delete_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_TrashIcon), "Xoá môn", self._exam_editor_delete_subject)
-        self.ribbon_exam_editor_save_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Save", self._exam_editor_save)
-        self.ribbon_exam_editor_close_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogCloseButton), "Đóng", self._exam_editor_close)
-        toolbar.addSeparator()
-        self.ribbon_add_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogNewFolder), "Add Subject", self._subject_management_add)
-        self.ribbon_edit_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Edit", self._subject_management_edit)
-        self.ribbon_delete_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_TrashIcon), "Delete Subject", self._subject_management_delete)
-        self.ribbon_save_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Save", self._save_subject_management)
-        toolbar.addSeparator()
-        self.ribbon_new_template_action = QAction(style.standardIcon(QStyle.SP_FileIcon), "Tạo mới", self)
+        self.ribbon_exam_editor_save_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Lưu cấu hình", self._exam_editor_save)
+        self.ribbon_exam_editor_close_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogCloseButton), "Đóng cấu hình", self._exam_editor_close)
+
+        self.ribbon_add_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogNewFolder), "Thêm môn", self._subject_management_add)
+        self.ribbon_edit_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Sửa môn", self._subject_management_edit)
+        self.ribbon_delete_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_TrashIcon), "Xoá môn", self._subject_management_delete)
+        self.ribbon_save_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Lưu danh mục", self._save_subject_management)
+
+        self.ribbon_new_template_action = QAction(style.standardIcon(QStyle.SP_FileIcon), "Tạo mẫu", self)
         self.ribbon_new_template_action.triggered.connect(self._create_new_template)
         toolbar.addAction(self.ribbon_new_template_action)
-        self.ribbon_edit_template_action = QAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Sửa", self)
+        self.ribbon_edit_template_action = QAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Sửa mẫu", self)
         self.ribbon_edit_template_action.triggered.connect(self._edit_selected_template)
         toolbar.addAction(self.ribbon_edit_template_action)
-        self.ribbon_delete_template_action = QAction(style.standardIcon(QStyle.SP_TrashIcon), "Xoá", self)
+        self.ribbon_delete_template_action = QAction(style.standardIcon(QStyle.SP_TrashIcon), "Xoá mẫu", self)
         self.ribbon_delete_template_action.triggered.connect(self._delete_selected_template)
         toolbar.addAction(self.ribbon_delete_template_action)
-        self.ribbon_save_template_action = QAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Save", self)
-        self.ribbon_save_template_action.triggered.connect(self._save_current_template)
-        toolbar.addAction(self.ribbon_save_template_action)
-        self.ribbon_save_template_as_action = QAction(style.standardIcon(QStyle.SP_DriveFDIcon), "Save As", self)
-        self.ribbon_save_template_as_action.triggered.connect(self._save_current_template_as)
-        toolbar.addAction(self.ribbon_save_template_as_action)
-        self.ribbon_close_template_action = QAction(style.standardIcon(QStyle.SP_DialogCloseButton), "Close", self)
+        self.ribbon_close_template_action = QAction(style.standardIcon(QStyle.SP_DialogCloseButton), "Đóng mẫu", self)
         self.ribbon_close_template_action.triggered.connect(self._close_template_module)
         toolbar.addAction(self.ribbon_close_template_action)
+
+        self._apply_branding_to_ribbon_actions()
 
     def open_session(self) -> None:
         if self.session and self.session_dirty:
@@ -4014,99 +4275,137 @@ class MainWindow(QMainWindow):
             self.template_module_menu.addSeparator()
             self.template_module_menu.addAction(self.ribbon_close_template_action)
 
+    def _set_actions_visible(self, actions: list[QAction | None], visible: bool) -> None:
+        for action in actions:
+            if action is not None:
+                action.setVisible(bool(visible))
+
     def _handle_stack_changed(self, index: int) -> None:
         route_name = self._stack_index_to_route_name(index)
         self._current_route_name = route_name
+
         subject_management_visible = index == 2
         template_library_visible = index == 3
         template_editor_visible = index == 4
         exam_editor_visible = index == 5
         batch_scan_visible = route_name == "workspace_batch_scan"
         template_visible = template_library_visible or template_editor_visible
-        for action in [
+
+        general_visible = not subject_management_visible and not template_visible
+        batch_context_visible = bool(batch_scan_visible and general_visible)
+        exam_context_visible = bool(exam_editor_visible and general_visible)
+        subject_context_visible = bool(subject_management_visible)
+        template_context_visible = bool(template_library_visible)
+
+        general_actions = [
             getattr(self, "ribbon_new_exam_action", None),
             getattr(self, "ribbon_view_exam_action", None),
             getattr(self, "ribbon_subject_list_action", None),
-            getattr(self, "ribbon_delete_exam_action", None),
             getattr(self, "ribbon_batch_scan_action", None),
             getattr(self, "ribbon_scoring_action", None),
             getattr(self, "ribbon_recheck_action", None),
             getattr(self, "ribbon_export_action", None),
-        ]:
-            if action is not None:
-                action.setVisible(not subject_management_visible and not template_visible)
-        for action in [
+        ]
+        batch_actions = [
+            getattr(self, "ribbon_batch_execute_action", None),
+            getattr(self, "ribbon_batch_save_action", None),
+            getattr(self, "ribbon_batch_close_action", None),
+        ]
+        exam_editor_actions = [
             getattr(self, "ribbon_exam_editor_add_subject_action", None),
             getattr(self, "ribbon_exam_editor_edit_subject_action", None),
             getattr(self, "ribbon_exam_editor_delete_subject_action", None),
             getattr(self, "ribbon_exam_editor_save_action", None),
             getattr(self, "ribbon_exam_editor_close_action", None),
-        ]:
-            if action is not None:
-                action.setVisible(exam_editor_visible)
-        for action in [
-            getattr(self, "ribbon_batch_execute_action", None),
-            getattr(self, "ribbon_batch_save_action", None),
-            getattr(self, "ribbon_batch_close_action", None),
-        ]:
-            if action is not None:
-                action.setVisible(batch_scan_visible)
-        for action in [
+        ]
+        subject_management_actions = [
             getattr(self, "ribbon_add_subject_action", None),
             getattr(self, "ribbon_edit_subject_action", None),
             getattr(self, "ribbon_delete_subject_action", None),
             getattr(self, "ribbon_save_subject_action", None),
-        ]:
-            if action is not None:
-                action.setVisible(subject_management_visible)
+        ]
         template_library_actions = [
             getattr(self, "ribbon_new_template_action", None),
             getattr(self, "ribbon_edit_template_action", None),
             getattr(self, "ribbon_delete_template_action", None),
+            getattr(self, "ribbon_close_template_action", None),
         ]
-        template_editor_actions = [
-            getattr(self, "ribbon_save_template_action", None),
-            getattr(self, "ribbon_save_template_as_action", None),
-        ]
-        for action in template_library_actions:
-            if action is not None:
-                action.setVisible(template_library_visible)
-        for action in template_editor_actions:
-            if action is not None:
-                action.setVisible(False)
-        if getattr(self, "ribbon_close_template_action", None) is not None:
-            self.ribbon_close_template_action.setVisible(template_library_visible)
+
+        self._set_actions_visible(general_actions, general_visible)
+        self._set_actions_visible(batch_actions, batch_context_visible)
+        self._set_actions_visible(exam_editor_actions, exam_context_visible)
+        self._set_actions_visible(subject_management_actions, subject_context_visible)
+        self._set_actions_visible(template_library_actions, template_context_visible)
+
+        context_visible = batch_context_visible or exam_context_visible or subject_context_visible or template_context_visible
+        if getattr(self, "ribbon_context_separator", None) is not None:
+            self.ribbon_context_separator.setVisible(context_visible and index != 4)
 
         if hasattr(self, "main_ribbon"):
             self.main_ribbon.setVisible(index != 4)
+
         if hasattr(self, "template_module_menu"):
             self.template_module_menu.menuAction().setVisible(template_visible)
             self._rebuild_template_module_menu(library_mode=template_library_visible, editor_mode=template_editor_visible)
         if hasattr(self, "act_close_template_module"):
             self.act_close_template_module.setVisible(template_visible)
+
         if hasattr(self, "act_save_as_subject"):
             row = self.exam_list_table.currentRow() if hasattr(self, "exam_list_table") else -1
             sid = self._session_id_for_row(row) if row >= 0 else ""
             can_save_as = (index == 0) and bool(str(sid or "").strip())
             self.act_save_as_subject.setVisible(True)
             self.act_save_as_subject.setEnabled(can_save_as)
+
         self._refresh_ribbon_action_states()
 
     def _refresh_ribbon_action_states(self) -> None:
         has_session = self._has_session_context_for_export()
+        has_current_session = bool(self.current_session_id)
         has_subject_cfg = bool(self._effective_subject_configs_for_batch())
-        if getattr(self, "ribbon_new_exam_action", None) is not None:
-            self.ribbon_new_exam_action.setEnabled(True)
-        if getattr(self, "ribbon_view_exam_action", None) is not None:
-            self.ribbon_view_exam_action.setEnabled(True)
-        if getattr(self, "ribbon_subject_list_action", None) is not None:
-            self.ribbon_subject_list_action.setEnabled(bool(self.current_session_id))
-        if getattr(self, "ribbon_batch_scan_action", None) is not None:
-            self.ribbon_batch_scan_action.setEnabled(has_session and has_subject_cfg)
-        if getattr(self, "ribbon_scoring_action", None) is not None:
-            self.ribbon_scoring_action.setEnabled(has_session)
-        if getattr(self, "ribbon_recheck_action", None) is not None:
-            self.ribbon_recheck_action.setEnabled(has_session)
+        route_name = getattr(self, "_current_route_name", "")
+        batch_scan_visible = route_name == "workspace_batch_scan"
+
+        def set_enabled(attr_name: str, enabled: bool) -> None:
+            action = getattr(self, attr_name, None)
+            if action is not None:
+                action.setEnabled(bool(enabled))
+
+        # Main exam actions
+        set_enabled("ribbon_new_exam_action", True)
+        set_enabled("ribbon_view_exam_action", True)
+        set_enabled("act_new_session", True)
+        set_enabled("act_open_from_list", True)
+        set_enabled("act_save_session", has_current_session)
+        set_enabled("act_close_current_session", has_current_session)
+        set_enabled("act_current_exam_subjects", has_current_session)
+        set_enabled("ribbon_subject_list_action", has_current_session)
+
+        # Configuration actions
+        set_enabled("act_manage_subject", True)
+        set_enabled("act_manage_template", True)
+        set_enabled("act_import_answer_key", has_session)
+        set_enabled("act_export_answer_key_sample", has_session)
+
+        # Workflow actions
+        can_open_batch = has_session and has_subject_cfg
+        set_enabled("ribbon_batch_scan_action", can_open_batch)
+        set_enabled("act_batch_scan_menu", can_open_batch)
+        set_enabled("ribbon_scoring_action", has_session)
+        set_enabled("act_calculate_scores", has_session)
+        set_enabled("ribbon_recheck_action", has_session)
+        set_enabled("act_open_recheck", has_session)
+
+        can_execute_batch = bool(has_session and batch_scan_visible and not getattr(self, "_batch_scan_running", False))
+        set_enabled("ribbon_batch_execute_action", can_execute_batch)
+        set_enabled("act_execute_batch_scan", can_execute_batch)
+        set_enabled("act_edit_selected_scan", bool(has_session and batch_scan_visible))
+
+        if getattr(self, "ribbon_batch_save_action", None) is not None:
+            save_enabled = bool(hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled())
+            self.ribbon_batch_save_action.setEnabled(save_enabled)
+        set_enabled("ribbon_batch_close_action", True)
+
         has_embedded_exam_editor = bool(self.embedded_exam_dialog is not None)
         for attr_name in [
             "ribbon_exam_editor_add_subject_action",
@@ -4115,19 +4414,22 @@ class MainWindow(QMainWindow):
             "ribbon_exam_editor_save_action",
             "ribbon_exam_editor_close_action",
         ]:
-            action = getattr(self, attr_name, None)
-            if action is not None:
-                action.setEnabled(has_embedded_exam_editor)
-        if getattr(self, "ribbon_batch_execute_action", None) is not None:
-            self.ribbon_batch_execute_action.setEnabled(bool(has_session))
-        if getattr(self, "ribbon_batch_save_action", None) is not None:
-            save_enabled = bool(hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled())
-            self.ribbon_batch_save_action.setEnabled(save_enabled)
-        if getattr(self, "ribbon_batch_close_action", None) is not None:
-            self.ribbon_batch_close_action.setEnabled(True)
+            set_enabled(attr_name, has_embedded_exam_editor)
+
+        for attr_name in [
+            "ribbon_add_subject_action",
+            "ribbon_edit_subject_action",
+            "ribbon_delete_subject_action",
+            "ribbon_save_subject_action",
+            "ribbon_new_template_action",
+            "ribbon_edit_template_action",
+            "ribbon_delete_template_action",
+            "ribbon_close_template_action",
+        ]:
+            set_enabled(attr_name, True)
+
         has_export_data = self._has_exportable_data()
-        if getattr(self, "ribbon_export_action", None) is not None:
-            self.ribbon_export_action.setEnabled(has_session)
+        set_enabled("ribbon_export_action", has_session)
         self._refresh_export_action_states(has_session=has_session, has_export_data=has_export_data)
 
     def _exam_editor_add_subject(self) -> None:

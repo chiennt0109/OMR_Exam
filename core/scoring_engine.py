@@ -31,6 +31,41 @@ class ScoreResult:
 
 
 class ScoringEngine:
+    def __init__(self) -> None:
+        # Cache question definitions per SubjectKey object. During one scoring run,
+        # every row of the same subject/exam code reuses the same key object; without
+        # this cache, MCQ/TF/NUMERIC definitions are rebuilt twice per paper.
+        self._question_definition_cache: dict[int, tuple[int, dict[str, list[dict[str, object]]]]] = {}
+
+    def clear_runtime_cache(self) -> None:
+        """Clear transient scoring caches after answer keys/configs are reloaded."""
+        self._question_definition_cache = {}
+
+    @staticmethod
+    def _subject_key_revision(subject_key: SubjectKey) -> int:
+        """Cheap structural revision used to protect the cache from stale keys.
+
+        Answer keys are normally immutable objects inside one scoring batch. The
+        revision still includes identities and lengths of the answer maps so a
+        key object that has been replaced or materially changed does not reuse old
+        definitions.
+        """
+        def _part(obj: object) -> tuple[int, int]:
+            try:
+                return (id(obj), len(obj))  # type: ignore[arg-type]
+            except Exception:
+                return (id(obj), 0)
+
+        return hash((
+            id(subject_key),
+            str(getattr(subject_key, "subject", "") or ""),
+            str(getattr(subject_key, "exam_code", "") or ""),
+            _part(getattr(subject_key, "answers", {}) or {}),
+            _part(getattr(subject_key, "true_false_answers", {}) or {}),
+            _part(getattr(subject_key, "numeric_answers", {}) or {}),
+            _part(getattr(subject_key, "invalid_answer_rows", {}) or {}),
+        ))
+
     @staticmethod
     def score_result_to_dict(row: ScoreResult) -> dict:
         return asdict(row)
@@ -56,6 +91,35 @@ class ScoringEngine:
             tf_compare=str(data.get("tf_compare", "") or ""),
             numeric_compare=str(data.get("numeric_compare", "") or ""),
         )
+
+    def score_many(self, jobs: list[dict]) -> list[ScoreResult]:
+        """Score a prepared batch without rebuilding subject/profile context per row.
+
+        Each job must contain result and answer_key. Optional keys: student_name,
+        subject_config, after_score callable.
+        """
+        rows: list[ScoreResult] = []
+        for job in jobs or []:
+            if not isinstance(job, dict):
+                continue
+            result = job.get("result")
+            answer_key = job.get("answer_key")
+            if result is None or answer_key is None:
+                continue
+            row = self.score(
+                result,
+                answer_key,
+                student_name=str(job.get("student_name", "") or ""),
+                subject_config=job.get("subject_config"),
+            )
+            hook = job.get("after_score")
+            if callable(hook):
+                try:
+                    hook(result, row)
+                except Exception:
+                    pass
+            rows.append(row)
+        return rows
 
     @staticmethod
     def _score_mode(subject_config: dict | None = None) -> str:
@@ -188,6 +252,22 @@ class ScoringEngine:
         return max(0.0, float(subject_key.points_for_question(q_no) or 0.0))
 
     def _question_definitions(self, subject_key: SubjectKey) -> dict[str, list[dict[str, object]]]:
+        cache = getattr(self, "_question_definition_cache", None)
+        if cache is None:
+            cache = {}
+            self._question_definition_cache = cache
+        key = id(subject_key)
+        revision = self._subject_key_revision(subject_key)
+        cached = cache.get(key)
+        if cached and cached[0] == revision:
+            return cached[1]
+        defs = self._build_question_definitions(subject_key)
+        if len(cache) > 512:
+            cache.clear()
+        cache[key] = (revision, defs)
+        return defs
+
+    def _build_question_definitions(self, subject_key: SubjectKey) -> dict[str, list[dict[str, object]]]:
         invalid = subject_key.invalid_answer_rows or {}
         defs: dict[str, list[dict[str, object]]] = {"MCQ": [], "TF": [], "NUMERIC": []}
 
