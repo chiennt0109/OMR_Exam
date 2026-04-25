@@ -2371,9 +2371,34 @@ class MainWindow(QMainWindow):
             return {}
         current_payload = self.session.to_dict()
         current_cfg = dict(current_payload.get("config", {}) or {})
-        # Scoring rows/phases không còn mirror vào session config.
+
+        # DB là nguồn dữ liệu nặng duy nhất. Session config chỉ giữ metadata nhẹ
+        # để tránh lưu chồng chéo snapshot Batch/Scoring làm Save/Close chậm dần
+        # theo số lượng bài đã nhận dạng.
         current_cfg.pop("scoring_phases", None)
         current_cfg.pop("scoring_results", None)
+        subject_cfgs = current_cfg.get("subject_configs", [])
+        if isinstance(subject_cfgs, list):
+            sanitized_subjects: list[dict] = []
+            heavy_keys = {
+                "batch_saved_rows",
+                "batch_saved_preview",
+                "batch_saved_results",
+                "scoring_rows",
+                "scoring_results",
+                "scoring_preview_rows",
+                "scoring_phases",
+            }
+            for item in subject_cfgs:
+                if not isinstance(item, dict):
+                    sanitized_subjects.append(item)
+                    continue
+                cfg_item = dict(item)
+                for key in heavy_keys:
+                    cfg_item.pop(key, None)
+                sanitized_subjects.append(cfg_item)
+            current_cfg["subject_configs"] = sanitized_subjects
+
         current_payload["config"] = current_cfg
         return current_payload
     def _session_payload_signature(self, payload: dict) -> str:
@@ -2389,12 +2414,14 @@ class MainWindow(QMainWindow):
             self._session_saved_signature = ""
 
     def _has_pending_unsaved_work(self) -> bool:
-        if hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled():
+        if self._has_batch_unsaved_changes():
+            return True
+        if self._has_scoring_unsaved_changes():
             return True
         if self.stack.currentIndex() == 5 and self._embedded_exam_has_real_changes():
             return True
-        if bool(getattr(self, "session_dirty", False)):
-            return True
+        # Không dùng cờ session_dirty đơn thuần để hỏi lưu, vì nhiều thao tác runtime
+        # đã được auto-persist. Chỉ hỏi khi payload thực sự khác snapshot đã lưu.
         return self._session_has_real_changes()
 
     def _embedded_exam_has_real_changes(self) -> bool:
@@ -2480,23 +2507,30 @@ class MainWindow(QMainWindow):
         return "cancel"
 
     def _save_current_work(self) -> bool:
+        saved_any = False
+
         if self._has_batch_unsaved_changes():
-            return self._save_batch_for_selected_subject(
+            if not self._save_batch_for_selected_subject(
                 show_success_message=False,
                 reload_after_save=False,
                 refresh_exam_list=False,
-            )
+            ):
+                return False
+            saved_any = True
+
         if self._has_scoring_unsaved_changes():
             subject_key = self._resolve_preferred_scoring_subject()
-            if subject_key:
-                rows = self._collect_scoring_preview_rows(subject_key)
-                cfg = self._subject_config_by_subject_key(subject_key) or {}
-                mode = str((cfg or {}).get("scoring_last_mode", "Tính lại toàn bộ") or "Tính lại toàn bộ")
-                note = str((cfg or {}).get("scoring_phase_last_note", "") or "")
-                self._persist_scoring_results_for_subject(subject_key, rows, mode, note, mark_saved=True)
-                self._persist_runtime_session_state_quietly()
-                return True
-            return False
+            if not subject_key:
+                return False
+            rows = self._collect_scoring_preview_rows(subject_key)
+            cfg = self._subject_config_by_subject_key(subject_key) or {}
+            mode = str((cfg or {}).get("scoring_last_mode", "Tính lại toàn bộ") or "Tính lại toàn bộ")
+            note = str((cfg or {}).get("scoring_phase_last_note", "") or "")
+            self._persist_scoring_results_for_subject(subject_key, rows, mode, note, mark_saved=True)
+            saved_any = True
+
+        if self._session_has_real_changes() or bool(getattr(self, "session_dirty", False)) or saved_any:
+            return self._persist_runtime_session_state_quietly() if self.current_session_id else self._persist_session_quietly()
         return True
 
     def _handle_pending_changes_before_switch(self, target_text: str) -> bool:
@@ -3148,8 +3182,6 @@ class MainWindow(QMainWindow):
         path = self._selected_registry_path()
         if not path:
             QMessageBox.warning(self, "Mở kỳ thi", "Chọn kỳ thi trong danh sách trước.")
-            return
-        if not self._confirm("Mở kỳ thi", "Bạn có chắc muốn mở kỳ thi này?"):
             return
         self._open_session_path(path)
 
@@ -4072,9 +4104,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Lưu dưới tên khác", f"Không thể sao chép kỳ thi:\n{exc}")
 
     def close_current_session(self) -> None:
-        if self.session_dirty:
-            if not self._confirm("Dữ liệu chưa lưu", "Kỳ thi hiện tại có thay đổi chưa lưu. Vẫn đóng?"):
-                return
         self._release_batch_runtime_state()
         self._release_preview_resources()
         self._release_template_cache()
@@ -4180,8 +4209,6 @@ class MainWindow(QMainWindow):
     def action_create_session(self) -> None:
         if not self._confirm_before_switching_work("kỳ thi mới"):
             return
-        if not self._confirm("Tạo kỳ thi mới", "Bạn có chắc muốn tạo kỳ thi mới?"):
-            return
         session_id = self._generate_session_id("new_exam")
         payload = {
             "exam_name": "",
@@ -4218,24 +4245,21 @@ class MainWindow(QMainWindow):
         self._navigate_to("exam_list", context={}, push_current=True, require_confirm=False, reason="open_exam_list")
 
     def action_save_session(self) -> None:
-        if self._confirm("Lưu kỳ thi", "Bạn có chắc muốn lưu kỳ thi?"):
-            if self.stack.currentIndex() == 5 and self.embedded_exam_dialog:
-                self._save_embedded_exam_editor()
-                return
-            if self.stack.currentIndex() == 4 and self.template_editor_embedded:
-                self._save_current_template()
-                return
-            self.save_session()
+        if self.stack.currentIndex() == 5 and self.embedded_exam_dialog:
+            self._save_embedded_exam_editor()
+            return
+        if self.stack.currentIndex() == 4 and self.template_editor_embedded:
+            self._save_current_template()
+            return
+        self.save_session()
 
     def action_save_session_as(self) -> None:
-        if self._confirm("Lưu dưới tên khác", "Bạn có chắc muốn sao chép toàn bộ kỳ thi sang kỳ thi mới?"):
-            self.save_session_as()
+        self.save_session_as()
 
     def action_close_current_session(self) -> None:
         if not self._confirm_before_switching_work("đóng kỳ thi hiện tại"):
             return
-        if self._confirm("Đóng kỳ thi", "Bạn có chắc muốn đóng kỳ thi hiện tại?"):
-            self.close_current_session()
+        self.close_current_session()
 
     def action_manage_template(self) -> None:
         self.open_template_editor()
@@ -4915,26 +4939,19 @@ class MainWindow(QMainWindow):
         self.manage_subjects()
 
     def action_exit(self) -> None:
-        if not self._confirm_before_switching_work("thoát ứng dụng"):
-            return
-        if self._confirm("Thoát", "Bạn có chắc muốn thoát ứng dụng?"):
-            self.close()
+        self.close()
 
     def action_load_template(self) -> None:
-        if self._confirm("Load Template", "Bạn có chắc muốn tải Template JSON?"):
-            self.load_template()
+        self.load_template()
 
     def action_load_answer_keys(self) -> None:
-        if self._confirm("Load Answer Keys", "Bạn có chắc muốn tải Answer Keys JSON?"):
-            self.load_answer_keys()
+        self.load_answer_keys()
 
     def action_import_answer_key(self) -> None:
-        if self._confirm("Import Answer Key", "Bạn có chắc muốn import Answer Key?"):
-            self.import_answer_key_file()
+        self.import_answer_key_file()
 
     def action_export_answer_key_sample(self) -> None:
-        if self._confirm("Export Sample", "Bạn có chắc muốn export file mẫu?"):
-            self.export_answer_key_sample()
+        self.export_answer_key_sample()
 
     def _start_batch_scan_from_ui(self) -> None:
         if not self._ensure_current_session_loaded():
@@ -4972,16 +4989,13 @@ class MainWindow(QMainWindow):
         self.run_batch_scan()
 
     def action_edit_selected_scan(self) -> None:
-        if self._confirm("Sửa bài thi", "Bạn có chắc muốn sửa bài thi được chọn?"):
-            self._open_edit_selected_scan()
+        self._open_edit_selected_scan()
 
     def action_load_selected_scan_result(self) -> None:
-        if self._confirm("Load Selected", "Bạn có chắc muốn load kết quả bài thi đang chọn?"):
-            self._load_selected_result_for_correction()
+        self._load_selected_result_for_correction()
 
     def action_apply_manual_correction(self) -> None:
-        if self._confirm("Apply Correction", "Bạn có chắc muốn áp dụng manual correction?"):
-            self.apply_manual_correction()
+        self.apply_manual_correction()
 
     def action_calculate_scores(self) -> None:
         # From Batch Scan -> Scoring: do not prompt save when no real batch edits.
@@ -4996,8 +5010,7 @@ class MainWindow(QMainWindow):
         self._refresh_ribbon_action_states()
 
     def action_export_results(self) -> None:
-        if self._confirm("Export Results", "Bạn có chắc muốn export kết quả?"):
-            self.export_results()
+        self.export_results()
 
     def action_export_subject_scores(self) -> None:
         subject_key = self._pick_subject_for_export("Xuất điểm môn", "Chọn môn cần xuất điểm:")
@@ -6690,16 +6703,23 @@ class MainWindow(QMainWindow):
                 return matches[0]
         return -1
 
-    def _persist_current_session_subject_configs(self, subject_cfgs: list[dict]) -> bool:
+    def _persist_current_session_subject_configs(self, subject_cfgs: list[dict] | None = None) -> bool:
         if not self.current_session_id:
             return False
         if self.session is None:
             self.session = ExamSession(exam_name="Kỳ thi", exam_date=str(date.today()))
+        if subject_cfgs is None:
+            subject_cfgs = list((self.session.config or {}).get("subject_configs", []) or [])
         self.session.config = {**(self.session.config or {}), "subject_configs": list(subject_cfgs)}
         try:
-            self.database.save_exam_session(self.current_session_id, self.session.exam_name, self.session.to_dict())
+            payload = self._build_session_persistence_payload()
+            self.session.config = dict(payload.get("config", {}) or {})
+            self.database.save_exam_session(self.current_session_id, self.session.exam_name, payload)
             self.current_session_path = self._session_path_from_id(self.current_session_id)
+            self.session_dirty = False
+            self._remember_current_session_snapshot()
         except Exception:
+            self.session_dirty = True
             return False
         if self.current_session_path:
             try:
@@ -6712,20 +6732,20 @@ class MainWindow(QMainWindow):
         if not self.session or not self.current_session_id:
             return False
         try:
-            cfg = dict(self.session.config or {})
-            # Không mirror scoring payload vào config nữa.
-            cfg.pop("scoring_phases", None)
-            cfg.pop("scoring_results", None)
-            self.session.config = cfg
-            self.database.save_exam_session(self.current_session_id, self.session.exam_name, self.session.to_dict())
+            payload = self._build_session_persistence_payload()
+            self.session.config = dict(payload.get("config", {}) or {})
+            self.database.save_exam_session(self.current_session_id, self.session.exam_name, payload)
             self.current_session_path = self._session_path_from_id(self.current_session_id)
             if self.current_session_path and self.session:
                 try:
                     self.session.save_json(self.current_session_path)
                 except Exception:
                     pass
+            self.session_dirty = False
+            self._remember_current_session_snapshot()
             return True
         except Exception:
+            self.session_dirty = True
             return False
     def _save_batch_for_selected_subject(
         self,
@@ -6745,20 +6765,19 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
             return False
 
-        saved_rows = self._serialize_scan_grid_rows_for_save()
         saved_results = [self._serialize_omr_result(result) for result in (self.scan_results or [])]
         subject_key = self._subject_key_from_cfg(subject_cfg)
         saved_at = datetime.now().isoformat(timespec="seconds")
 
-        subject_cfg["batch_saved_rows"] = saved_rows
+        # Không lưu snapshot lưới vào subject config. Toàn bộ bài nhận dạng đã nằm trong DB.
+        subject_cfg.pop("batch_saved_rows", None)
+        subject_cfg.pop("batch_saved_preview", None)
+        subject_cfg.pop("batch_saved_results", None)
         subject_cfg["batch_saved"] = True
         subject_cfg["batch_saved_at"] = saved_at
         subject_cfg["batch_result_count"] = len(saved_results)
 
-        try:
-            self.sync_current_batch_subject_snapshot(persist_to_db=True)
-        except Exception:
-            pass
+        self._sync_subject_batch_snapshot_after_inline_edit(subject_key, persist_full_subject_rows=False)
 
         if subject_key:
             try:
@@ -13253,23 +13272,13 @@ class MainWindow(QMainWindow):
 
         updated = False
         try:
-            self.database.update_scan_result_payload(
+            update_result = self.database.update_scan_result_payload(
                 subject_db_key,
                 image_path,
                 serialized,
                 note=note,
             )
-            db_rows = list(self.database.fetch_scan_results_for_subject(subject_db_key) or [])
-            for payload in db_rows:
-                if not isinstance(payload, dict):
-                    continue
-                if str(payload.get("image_path", "") or "").strip() != image_path:
-                    continue
-                payload_history = self._ordered_unique_text_list(payload.get("edit_history", []) or [])
-                payload_forced = str(payload.get("cached_forced_status", payload.get("forced_status", "")) or "").strip()
-                if bool(payload.get("manually_edited", False)) or bool(payload_history) or payload_forced == "Đã sửa":
-                    updated = True
-                    break
+            updated = update_result is not False
         except Exception:
             updated = False
 
@@ -13751,7 +13760,7 @@ class MainWindow(QMainWindow):
                 self._update_scan_row_from_result(idx, rebuilt)
                 if changes:
                     self._persist_single_scan_result_to_db(rebuilt, note="saved_row_edit")
-                    self._sync_subject_batch_snapshot_after_inline_edit(persist_full_subject_rows=True)
+                    self._sync_subject_batch_snapshot_after_inline_edit(persist_full_subject_rows=False)
                     self._refresh_all_statuses()
                 else:
                     self._refresh_row_status(idx)
@@ -14545,7 +14554,7 @@ class MainWindow(QMainWindow):
             self._record_adjustment(idx_local, changes, "dialog_edit")
             self._update_scan_row_from_result(idx_local, result)
             self._persist_single_scan_result_to_db(result, note="dialog_edit")
-            self._sync_subject_batch_snapshot_after_inline_edit(persist_full_subject_rows=True)
+            self._sync_subject_batch_snapshot_after_inline_edit(persist_full_subject_rows=False)
             subject_key_now = self._current_batch_subject_key()
             if subject_key_now:
                 self.scan_results_by_subject[self._batch_result_subject_key(subject_key_now)] = list(self.scan_results)
@@ -14749,7 +14758,7 @@ class MainWindow(QMainWindow):
             self._update_scan_row_from_result(idx, res)
             self._record_adjustment(idx, changes, "manual_json")
             self._persist_single_scan_result_to_db(res, note="manual_json")
-            self._sync_subject_batch_snapshot_after_inline_edit(persist_full_subject_rows=True)
+            self._sync_subject_batch_snapshot_after_inline_edit(persist_full_subject_rows=False)
             self.btn_save_batch_subject.setEnabled(False)
             invalidated = self._invalidate_scoring_for_student_ids(
                 [old_sid_for_score, str(res.student_id or "").strip()],
