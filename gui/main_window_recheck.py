@@ -286,9 +286,8 @@ def open_recheck_dialog(self) -> None:
         available_students.sort(key=lambda x: (str(x.get("room", "")), str(x.get("sid", ""))))
         profile_by_sid = {str(x.get("sid", "")): dict(x) for x in available_students}
 
-        for row_obj in available_students:
-            r = src_tbl.rowCount()
-            src_tbl.insertRow(r)
+        src_tbl.setRowCount(len(available_students))
+        for r, row_obj in enumerate(available_students):
             src_tbl.setItem(r, 0, QTableWidgetItem(str(row_obj.get("sid", "") or "-")))
             src_tbl.setItem(r, 1, QTableWidgetItem(str(row_obj.get("name", "") or "-")))
             src_tbl.setItem(r, 2, QTableWidgetItem(str(row_obj.get("class_name", "") or "-")))
@@ -297,14 +296,12 @@ def open_recheck_dialog(self) -> None:
         chosen_sids = _normalize_sid_list(initial_sids)
 
         def _render_chosen() -> None:
-            chosen_tbl.setRowCount(0)
-            for sid in chosen_sids:
+            chosen_tbl.setRowCount(len(chosen_sids))
+            for r, sid in enumerate(chosen_sids):
                 prof = profile_by_sid.get(sid, {})
                 if not prof:
                     st_prof = _student_profile_cached(sid)
                     prof = {"sid": sid, "name": str(st_prof.get("name", "") or "-"), "class_name": str(st_prof.get("class_name", "") or "-"), "room": _subject_room_for_sid_quick(sid) or "-"}
-                r = chosen_tbl.rowCount()
-                chosen_tbl.insertRow(r)
                 chosen_tbl.setItem(r, 0, QTableWidgetItem(str(prof.get("sid", sid) or "-")))
                 chosen_tbl.setItem(r, 1, QTableWidgetItem(str(prof.get("name", "") or "-")))
                 chosen_tbl.setItem(r, 2, QTableWidgetItem(str(prof.get("class_name", "") or "-")))
@@ -388,12 +385,6 @@ def open_recheck_dialog(self) -> None:
 
         footer.accepted.connect(_accept_builder)
         footer.rejected.connect(builder.reject)
-        try:
-            builder.setWindowIcon(app_icon())
-            builder.setStyleSheet(load_theme("light"))
-            apply_widget_branding(builder)
-        except Exception:
-            pass
         try:
             builder.setWindowIcon(app_icon())
             builder.setStyleSheet(load_theme("light"))
@@ -920,14 +911,13 @@ def open_recheck_dialog(self) -> None:
 
     def _render_selected_table() -> None:
         _rebuild_recheck_entries()
-        tbl.setRowCount(0)
+        tbl.setRowCount(len(recheck_entries))
         for idx, entry in enumerate(recheck_entries, start=1):
             res = entry.get("result")
             sid = str(getattr(res, "student_id", "") or "").strip() if isinstance(res, OMRResult) else str(entry.get("requested_sid", "") or "").strip()
             prof = _student_profile_cached(sid)
             score_text = _score_display_for_sid(sid, res if isinstance(res, OMRResult) else None)
-            row = tbl.rowCount()
-            tbl.insertRow(row)
+            row = idx - 1
             tbl.setItem(row, 0, QTableWidgetItem(str(idx)))
             tbl.setItem(row, 1, QTableWidgetItem(sid or "-"))
             tbl.setItem(row, 2, QTableWidgetItem(str(prof.get("name", "") or "-")))

@@ -166,10 +166,6 @@ class ExportReportsDialog(QDialog):
             apply_widget_branding(self)
         except Exception:
             pass
-        try:
-            apply_widget_branding(self)
-        except Exception:
-            pass
         QTimer.singleShot(0, self.showMaximized)
 
     def _current_exam_text(self) -> str:
