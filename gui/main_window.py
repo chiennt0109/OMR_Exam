@@ -14,6 +14,7 @@ from datetime import date, datetime
 from pathlib import Path
 import time
 import uuid
+from typing import TYPE_CHECKING
 
 sys.dont_write_bytecode = True
 
@@ -61,17 +62,15 @@ from PySide6.QtWidgets import (
 from core.answer_key_importer import ImportedAnswerKey, ImportedAnswerKeyPackage, import_answer_key
 from core.omr_engine import OMRProcessor, OMRResult, RecognitionContext
 from core.scoring_engine import ScoringEngine
-from editor.template_editor import TemplateEditorWindow
-from gui.import_answer_key_dialog import ImportAnswerKeyDialog
-from gui.export_reports_dialog import ExportReportsDialog
-from gui.main_window_scoring import open_scoring_review_editor_dialog
-from gui.main_window_recheck import open_recheck_dialog
 from models.answer_key import AnswerKeyRepository, SubjectKey
 from models.database import OMRDatabase, bootstrap_application_db
 from models.exam_session import ExamSession, Student
 from models.template import Template, ZoneType
 from models.template_repository import TemplateRepository
 from gui.ui_branding import app_icon, load_theme, TOOLBAR, STATUS, logo_symbol, logo_main, apply_widget_branding, brand_button
+
+if TYPE_CHECKING:
+    from editor.template_editor import TemplateEditorWindow
 
 
 class PreviewImageWidget(QLabel):
@@ -645,6 +644,8 @@ class SubjectConfigDialog(QDialog):
                 + ("\n..." if len(imported_package.warnings) > 20 else ""),
             )
 
+        from gui.import_answer_key_dialog import ImportAnswerKeyDialog
+
         dlg = ImportAnswerKeyDialog(imported_package, self)
         if dlg.exec() != QDialog.Accepted:
             return
@@ -887,6 +888,8 @@ class SubjectConfigDialog(QDialog):
         if not self.answer_key_data:
             QMessageBox.information(self, "Đáp án môn", "Môn này chưa có đáp án. Hãy import file hoặc thêm đáp án trước.")
             return
+        from gui.import_answer_key_dialog import ImportAnswerKeyDialog
+
         dlg = ImportAnswerKeyDialog(self._build_imported_package_from_answer_data(self.answer_key_data), self)
         if dlg.exec() != QDialog.Accepted:
             return
@@ -5060,6 +5063,8 @@ class MainWindow(QMainWindow):
         self._export_score_range_report(ranges)
 
     def action_open_export_reports_center(self) -> None:
+        from gui.export_reports_dialog import ExportReportsDialog
+
         dlg = ExportReportsDialog(self)
         dlg.exec()
 
@@ -5114,6 +5119,8 @@ class MainWindow(QMainWindow):
                 "Imported with warnings:\n- " + "\n- ".join(imported_package.warnings[:20])
                 + ("\n..." if len(imported_package.warnings) > 20 else ""),
             )
+
+        from gui.import_answer_key_dialog import ImportAnswerKeyDialog
 
         dlg = ImportAnswerKeyDialog(imported_package, self)
         if dlg.exec() != QDialog.Accepted:
@@ -6070,6 +6077,8 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Sửa điểm tự luận", "Đã cập nhật điểm tự luận và đồng bộ lại bảng tính điểm.")
 
     def _open_scoring_review_editor(self, subject_key: str, result: OMRResult) -> None:
+        from gui.main_window_scoring import open_scoring_review_editor_dialog
+
         return open_scoring_review_editor_dialog(self, subject_key, result)
 
     def _handle_scoring_subject_changed(self, _index: int) -> None:
@@ -7198,6 +7207,8 @@ class MainWindow(QMainWindow):
             widget = item.widget()
             if widget:
                 widget.deleteLater()
+        from editor.template_editor import TemplateEditorWindow
+
         editor = TemplateEditorWindow(self, on_template_saved=lambda path, name: self._handle_template_saved(path, name))
         editor.setWindowFlags(Qt.Widget)
         editor.menuBar().setVisible(False)
@@ -15158,6 +15169,8 @@ class MainWindow(QMainWindow):
             smart_scored_scans,
         )
     def action_open_recheck(self) -> None:
+        from gui.main_window_recheck import open_recheck_dialog
+
         return open_recheck_dialog(self)
 
     def _export_student_subject_matrix_excel(self, output_path: Path) -> None:
