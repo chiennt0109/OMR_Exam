@@ -1414,7 +1414,7 @@ class NewExamDialog(QDialog):
             self.subject_table.setItem(row_idx, 7, QTableWidgetItem(str(tpl or "-")))
             auto_mode = "Nhận dạng tự động" if bool(cfg.get("auto_recognize", False)) else "Thủ công"
             self.subject_table.setItem(row_idx, 8, QTableWidgetItem(auto_mode))
-            self.subject_table.setItem(row_idx, 9, QTableWidgetItem(self._subject_status_text(cfg)))
+            self.subject_table.setItem(row_idx, 9, QTableWidgetItem(self._subject_status_text(cfg, row_idx)))
 
             btn_batch_scan = QPushButton("Nhận dạng")
             btn_batch_scan.setIcon(style.standardIcon(QStyle.SP_MediaPlay))
@@ -1428,23 +1428,31 @@ class NewExamDialog(QDialog):
             self.subject_table.setCellWidget(row_idx, 10, wrap)
         self.subject_table.resizeRowsToContents()
 
-    def _subject_status_text(self, cfg: dict) -> str:
-        if not isinstance(cfg, dict):
-            return "-"
-        count = int(cfg.get("batch_result_count", 0) or 0)
-        if count > 0 or bool(cfg.get("batch_saved")):
-            return "Đã nhận dạng"
-        for key in ("batch_saved_rows", "batch_saved_preview", "batch_saved_results"):
-            payload = cfg.get(key, [])
-            if isinstance(payload, list) and payload:
-                return "Đã nhận dạng"
+    def _subject_status_text(self, cfg: dict, row_index: int | None = None) -> str:
         parent = self.parent()
-        if parent is not None and hasattr(parent, "_is_subject_marked_batched"):
+        if parent is not None and hasattr(parent, "_subject_display_status_text"):
             try:
-                if bool(parent._is_subject_marked_batched(cfg)):
-                    return "Đã nhận dạng"
+                if isinstance(cfg, dict) and hasattr(parent, "_ensure_subject_instance_key"):
+                    try:
+                        parent._ensure_subject_instance_key(cfg, row_index)
+                    except Exception:
+                        pass
+                session_id = (
+                    getattr(parent, "embedded_exam_session_id", None)
+                    or getattr(parent, "current_session_id", None)
+                )
+                session_obj = (
+                    getattr(parent, "embedded_exam_session", None)
+                    or getattr(parent, "session", None)
+                )
+                return str(parent._subject_display_status_text(cfg, session_id=session_id, session=session_obj) or "-")
+            except TypeError:
+                try:
+                    return str(parent._subject_display_status_text(cfg) or "-")
+                except Exception:
+                    return "-"
             except Exception:
-                pass
+                return "-"
         return "-"
 
     def _current_subject_index(self) -> int:
@@ -1544,7 +1552,15 @@ class NewExamDialog(QDialog):
         return merged
 
     def _confirm_subject_identity_change(self, old_cfg: dict, new_cfg: dict) -> str:
-        has_existing_batch = bool(old_cfg.get("batch_saved")) or bool(old_cfg.get("batch_result_count"))
+        parent = self.parent()
+        has_existing_batch = False
+        if parent is not None and hasattr(parent, "_subject_has_recognition_data"):
+            try:
+                has_existing_batch = bool(parent._subject_has_recognition_data(old_cfg))
+            except Exception:
+                has_existing_batch = False
+        else:
+            has_existing_batch = bool(old_cfg.get("batch_saved")) or bool(old_cfg.get("batch_result_count"))
         if not has_existing_batch:
             return "apply"
 
@@ -1643,6 +1659,12 @@ class NewExamDialog(QDialog):
         if decision == "cancel":
             return
         if decision == "reset":
+            parent = self.parent()
+            if parent is not None and hasattr(parent, "_delete_subject_recognition_data"):
+                try:
+                    parent._delete_subject_recognition_data(old_cfg)
+                except Exception:
+                    pass
             updated = dict(edited)
             updated["batch_saved"] = False
             updated["batch_saved_at"] = "-"
@@ -2369,6 +2391,40 @@ class MainWindow(QMainWindow):
             == QMessageBox.Yes
         )
 
+    def _canonicalize_subject_configs_for_session(self, subject_cfgs: list | None) -> list:
+        """Return light subject configs with stable per-session storage keys.
+
+        The subject table status, Batch Scan storage key and Scoring lookup must all
+        use this single canonical key.  Without normalising the key here, a runtime
+        copy may create a temporary key during Batch Scan; the editor then cannot
+        find the saved DB rows until the whole session is reloaded.
+        """
+        normalized: list = []
+        if not isinstance(subject_cfgs, list):
+            return normalized
+        heavy_keys = {
+            "batch_saved",
+            "batch_saved_at",
+            "batch_result_count",
+            "batch_saved_rows",
+            "batch_saved_preview",
+            "batch_saved_results",
+            "scoring_rows",
+            "scoring_results",
+            "scoring_preview_rows",
+            "scoring_phases",
+        }
+        for idx, item in enumerate(subject_cfgs):
+            if not isinstance(item, dict):
+                normalized.append(item)
+                continue
+            cfg_item = dict(item)
+            for key in heavy_keys:
+                cfg_item.pop(key, None)
+            self._ensure_subject_instance_key(cfg_item, idx)
+            normalized.append(cfg_item)
+        return normalized
+
     def _build_session_persistence_payload(self) -> dict:
         if not self.session:
             return {}
@@ -2382,25 +2438,7 @@ class MainWindow(QMainWindow):
         current_cfg.pop("scoring_results", None)
         subject_cfgs = current_cfg.get("subject_configs", [])
         if isinstance(subject_cfgs, list):
-            sanitized_subjects: list[dict] = []
-            heavy_keys = {
-                "batch_saved_rows",
-                "batch_saved_preview",
-                "batch_saved_results",
-                "scoring_rows",
-                "scoring_results",
-                "scoring_preview_rows",
-                "scoring_phases",
-            }
-            for item in subject_cfgs:
-                if not isinstance(item, dict):
-                    sanitized_subjects.append(item)
-                    continue
-                cfg_item = dict(item)
-                for key in heavy_keys:
-                    cfg_item.pop(key, None)
-                sanitized_subjects.append(cfg_item)
-            current_cfg["subject_configs"] = sanitized_subjects
+            current_cfg["subject_configs"] = self._canonicalize_subject_configs_for_session(subject_cfgs)
 
         current_payload["config"] = current_cfg
         return current_payload
@@ -3238,6 +3276,15 @@ class MainWindow(QMainWindow):
             self.current_session_id = session_id
             self.current_session_path = self._session_path_from_id(session_id)
         if session is not None:
+            session_cfg = dict(session.config or {})
+            session_subjects = session_cfg.get("subject_configs", [])
+            if isinstance(session_subjects, list):
+                session_cfg["subject_configs"] = self._canonicalize_subject_configs_for_session(session_subjects)
+                session.config = session_cfg
+                payload = dict(payload or {})
+                payload_subjects = payload.get("subject_configs", session_cfg["subject_configs"])
+                if isinstance(payload_subjects, list):
+                    payload["subject_configs"] = self._canonicalize_subject_configs_for_session(payload_subjects)
             self.session = session
             if not is_new:
                 self.session_dirty = False
@@ -3309,12 +3356,21 @@ class MainWindow(QMainWindow):
                 "subject_catalog": self.subject_catalog,
                 "block_catalog": self.block_catalog,
             }
-            self.database.save_exam_session(session_id, session.exam_name, session.to_dict())
-            self.embedded_exam_original_payload = edited
-            self.embedded_exam_is_new = False
             self.session = session
+            self.embedded_exam_session = session
+            self.embedded_exam_session_id = session_id
             self.current_session_id = session_id
             self.current_session_path = self._session_path_from_id(session_id)
+            persistence_payload = self._build_session_persistence_payload()
+            session.config = dict(persistence_payload.get("config", {}) or {})
+            self.database.save_exam_session(session_id, session.exam_name, persistence_payload)
+            if self.embedded_exam_dialog:
+                self.embedded_exam_dialog.subject_configs = list(session.config.get("subject_configs", []) or [])
+                self.embedded_exam_dialog._refresh_subject_list()
+                self.embedded_exam_original_payload = self.embedded_exam_dialog.payload()
+            else:
+                self.embedded_exam_original_payload = edited
+            self.embedded_exam_is_new = False
             self.session_dirty = False
             self._upsert_session_registry(session_id, session.exam_name)
             self._save_session_registry()
@@ -3418,16 +3474,25 @@ class MainWindow(QMainWindow):
 
 
     def _open_batch_scan_from_exam_editor(self, session_id: str, base_session: ExamSession, payload: dict) -> None:
-        subject_cfg = dict(payload.get("subject_config") or {})
+        exam_name = str(payload.get("exam_name") or base_session.exam_name or "Kỳ thi")
+        common_template = str(payload.get("common_template") or base_session.template_path or "")
+        selected_subject_index = int(payload.get("selected_subject_index", 0) or 0)
+        all_subjects = payload.get("subject_configs")
+        if not isinstance(all_subjects, list) or not all_subjects:
+            all_subjects = list((base_session.config or {}).get("subject_configs", []))
+        all_subjects = self._canonicalize_subject_configs_for_session(list(all_subjects or []))
+        if not all_subjects:
+            subject_from_payload = dict(payload.get("subject_config") or {})
+            if subject_from_payload:
+                all_subjects = self._canonicalize_subject_configs_for_session([subject_from_payload])
+                selected_subject_index = 0
+        if not (0 <= selected_subject_index < len(all_subjects)):
+            selected_subject_index = 0
+        subject_cfg = dict(all_subjects[selected_subject_index]) if all_subjects else dict(payload.get("subject_config") or {})
         if not subject_cfg:
             QMessageBox.warning(self, "Batch Scan", "Không tìm thấy cấu hình môn để nhận dạng.")
             return
 
-        exam_name = str(payload.get("exam_name") or base_session.exam_name or "Kỳ thi")
-        common_template = str(payload.get("common_template") or base_session.template_path or "")
-        all_subjects = payload.get("subject_configs")
-        if not isinstance(all_subjects, list) or not all_subjects:
-            all_subjects = list((base_session.config or {}).get("subject_configs", []))
         self.batch_editor_return_payload = {
             "exam_name": exam_name,
             "common_template": common_template,
@@ -3448,7 +3513,6 @@ class MainWindow(QMainWindow):
             "subject_configs": all_subjects,
         }
         self.batch_editor_return_session_id = session_id
-        selected_subject_index = int(payload.get("selected_subject_index", 0) or 0)
         scan_root = str(payload.get("scan_root") or (base_session.config or {}).get("scan_root", "") or "")
         scan_mode = str(payload.get("scan_mode") or (base_session.config or {}).get("scan_mode", "Ảnh trong thư mục gốc"))
         paper_part_count = int(payload.get("paper_part_count") or (base_session.config or {}).get("paper_part_count", 3) or 3)
@@ -3473,7 +3537,16 @@ class MainWindow(QMainWindow):
 
         self.current_session_id = session_id
         self.current_session_path = self._session_path_from_id(session_id)
-        self.session_dirty = True
+        # Persist only the lightweight canonical subject keys before Batch Scan.
+        # Recognition rows will be saved under these same keys, so the subject
+        # status column can refresh immediately without requiring a page switch.
+        try:
+            persistence_payload = self._build_session_persistence_payload()
+            self.session.config = dict(persistence_payload.get("config", {}) or {})
+            self.database.save_exam_session(session_id, self.session.exam_name, persistence_payload)
+        except Exception:
+            pass
+        self.session_dirty = False
         self._refresh_session_info()
         self._refresh_batch_subject_controls()
         self.batch_subject_combo.setCurrentIndex(max(1, selected_subject_index + 1))
@@ -4716,9 +4789,10 @@ class MainWindow(QMainWindow):
             return None
 
     def _scan_rows_for_subject(self, subject_key: str) -> list[OMRResult]:
-        rows = list(self.scan_results_by_subject.get(self._batch_result_subject_key(subject_key), []) or [])
-        if rows:
-            return rows
+        for candidate_key in self._subject_scan_storage_key_candidates(subject_key):
+            rows = list(self.scan_results_by_subject.get(candidate_key, []) or [])
+            if rows:
+                return rows
         return self._refresh_scan_results_from_db(subject_key) or []
 
     def _scoring_source_student_ids(self, subject_key: str) -> tuple[set[str], int]:
@@ -5631,16 +5705,20 @@ class MainWindow(QMainWindow):
         subject = str(subject_key or "").strip()
         if not subject:
             return []
+
+        candidates = self._subject_scan_storage_key_candidates(subject)
         scoped_subject = self._batch_result_subject_key(subject)
-        has_session_scope = bool(str(self.current_session_id or "").strip())
-        rows = self.database.fetch_scan_results_for_subject(scoped_subject)
-        if not rows:
-            sid = str(self.current_session_id or "").strip()
-            legacy_scoped = f"{sid}::{subject}" if sid else ""
-            if legacy_scoped and legacy_scoped != scoped_subject:
-                rows = self.database.fetch_scan_results_for_subject(legacy_scoped)
-        if not rows and (not has_session_scope) and scoped_subject != subject:
-            rows = self.database.fetch_scan_results_for_subject(subject)
+        rows = []
+        matched_subject = scoped_subject
+        for candidate_key in candidates:
+            try:
+                rows = self.database.fetch_scan_results_for_subject(candidate_key) or []
+            except Exception:
+                rows = []
+            if rows:
+                matched_subject = candidate_key
+                break
+
         refreshed: list[OMRResult] = []
         for item in rows:
             try:
@@ -5652,6 +5730,8 @@ class MainWindow(QMainWindow):
             except Exception:
                 continue
         self.scan_results_by_subject[scoped_subject] = list(refreshed)
+        if matched_subject != scoped_subject:
+            self.scan_results_by_subject[matched_subject] = list(refreshed)
         return refreshed
 
     def _refresh_dashboard_summary_from_db(self, subject_key: str) -> None:
@@ -6303,22 +6383,164 @@ class MainWindow(QMainWindow):
         result.sync_legacy_aliases()
         return result
 
-    def _is_subject_marked_batched(self, cfg: dict) -> bool:
-        key = self._subject_key_from_cfg(cfg)
-        if not key:
-            return False
+    def _subject_scan_storage_key_candidates(
+        self,
+        subject_or_cfg: str | dict | None,
+        *,
+        session_id: str | None = None,
+        session: ExamSession | None = None,
+        include_generated: bool = True,
+    ) -> list[str]:
+        bases: list[str] = []
+
+        def add_base(value: object) -> None:
+            key = str(value or "").strip()
+            if key and key not in bases:
+                bases.append(key)
+
+        if isinstance(subject_or_cfg, dict):
+            cfg = subject_or_cfg
+            # Rendering the status column must be read-only. Do not create a new
+            # subject_instance_key here; key generation belongs to save/scan flows.
+            if include_generated:
+                try:
+                    add_base(self._subject_key_from_cfg(cfg))
+                except Exception:
+                    pass
+            for field_name in (
+                "subject_instance_key",
+                "logical_subject_key",
+                "answer_key_key",
+                "subject_key",
+                "subject_uid",
+            ):
+                add_base(cfg.get(field_name, ""))
+            try:
+                add_base(self._logical_subject_key_from_cfg(cfg))
+            except Exception:
+                pass
+            name = str(cfg.get("name", "") or "").strip()
+            block = str(cfg.get("block", "") or "").strip()
+            if name and block:
+                add_base(f"{name}_{block}")
+            elif name:
+                add_base(name)
+            legacy_keys = cfg.get("legacy_subject_instance_keys", [])
+            if isinstance(legacy_keys, list):
+                for legacy_key in legacy_keys:
+                    add_base(legacy_key)
+        else:
+            add_base(subject_or_cfg)
+
+        scope_prefixes: list[str] = []
+
+        def add_scope(value: object) -> None:
+            key = str(value or "").strip()
+            if key and key not in scope_prefixes:
+                scope_prefixes.append(key)
+
+        add_scope(self._session_scope_prefix_for(session_id=session_id, session=session))
+        add_scope(self._session_scope_prefix())
+        add_scope(self.current_session_id if session_id is None else session_id)
+        add_scope(self.current_session_id)
+
+        candidates: list[str] = []
+
+        def add_candidate(value: object) -> None:
+            key = str(value or "").strip()
+            if key and key not in candidates:
+                candidates.append(key)
+
+        for base in bases:
+            add_candidate(base)
+            if "::" in base:
+                parts = [p for p in base.split("::") if p]
+                if parts:
+                    add_candidate(parts[-1])
+                if len(parts) >= 2:
+                    add_candidate("::".join(parts[-2:]))
+            for scope_prefix in scope_prefixes:
+                if not scope_prefix:
+                    continue
+                if base.startswith(f"{scope_prefix}::"):
+                    # Compatibility with older builds that accidentally saved a doubly scoped subject key.
+                    add_candidate(f"{scope_prefix}::{base}")
+                else:
+                    add_candidate(f"{scope_prefix}::{base}")
+        return candidates
+
+    def _subject_saved_data_state(
+        self,
+        cfg: dict | None,
+        *,
+        session_id: str | None = None,
+        session: ExamSession | None = None,
+    ) -> tuple[bool, int]:
+        if not isinstance(cfg, dict):
+            return False, 0
+
         if self._subject_uses_direct_score_import(cfg):
-            return bool(self._direct_score_import_rows_for_subject(cfg))
-        scoped_key = self._batch_result_subject_key(key)
-        if self.scan_results_by_subject.get(scoped_key):
-            return True
+            rows = self._direct_score_import_rows_for_subject(cfg)
+            return bool(rows), len(rows)
+
+        candidates = self._subject_scan_storage_key_candidates(
+            cfg,
+            session_id=session_id,
+            session=session,
+            include_generated=False,
+        )
+        for key in candidates:
+            rows = self.scan_results_by_subject.get(key)
+            if isinstance(rows, list) and rows:
+                return True, len(rows)
+
+        for key in candidates:
+            try:
+                rows = self.database.fetch_scan_results_for_subject(key) or []
+            except Exception:
+                rows = []
+            if isinstance(rows, list) and rows:
+                return True, len(rows)
+
+        # Backward-compatible UI fallback. It is used only after DB/cache lookup fails.
+        # This prevents a save operation from clearing the display before the next restart
+        # when older configs still carry batch_saved/batch_result_count metadata.
         try:
-            db_rows = self.database.fetch_scan_results_for_subject(scoped_key) or []
-            if isinstance(db_rows, list) and db_rows:
-                return True
+            legacy_count = int(cfg.get("batch_result_count") or 0)
         except Exception:
-            pass
-        return bool(cfg.get("batch_saved"))
+            legacy_count = 0
+        if legacy_count > 0 or bool(cfg.get("batch_saved")):
+            return True, max(legacy_count, 1)
+        return False, 0
+
+    def _subject_has_recognition_data(self, cfg: dict | None) -> bool:
+        return self._subject_saved_data_state(cfg)[0]
+
+    def _delete_subject_recognition_data(self, cfg: dict | None) -> None:
+        if not isinstance(cfg, dict):
+            return
+        for key in self._subject_scan_storage_key_candidates(cfg):
+            try:
+                self.scan_results_by_subject.pop(key, None)
+            except Exception:
+                pass
+            try:
+                self.database.delete_scan_results_for_subject(key)
+            except Exception:
+                pass
+
+    def _subject_display_status_text(
+        self,
+        cfg: dict | None,
+        *,
+        session_id: str | None = None,
+        session: ExamSession | None = None,
+    ) -> str:
+        has_data, _count = self._subject_saved_data_state(cfg, session_id=session_id, session=session)
+        return "Đã nhận dạng" if has_data else "-"
+
+    def _is_subject_marked_batched(self, cfg: dict) -> bool:
+        return self._subject_has_recognition_data(cfg)
     def _cached_subject_scans_from_config(self, subject_key: str) -> list[OMRResult]:
         # Legacy helper giữ lại để tương thích, nhưng luôn hydrate từ DB.
         return list(self._refresh_scan_results_from_db(subject_key) or [])
@@ -6440,8 +6662,12 @@ class MainWindow(QMainWindow):
         return base
 
     def _session_scope_prefix(self) -> str:
-        sid = str(self.current_session_id or "").strip()
-        exam_name = str((self.session.exam_name if self.session else "") or "").strip().lower()
+        return self._session_scope_prefix_for()
+
+    def _session_scope_prefix_for(self, session_id: str | None = None, session: ExamSession | None = None) -> str:
+        sid = str(self.current_session_id if session_id is None else session_id or "").strip()
+        ses = self.session if session is None else session
+        exam_name = str((ses.exam_name if ses else "") or "").strip().lower()
         if sid and exam_name:
             return f"{sid}::{exam_name}"
         return sid
