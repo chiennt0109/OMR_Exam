@@ -6490,17 +6490,34 @@ class MainWindow(QMainWindow):
             include_generated=False,
         )
         for key in candidates:
-            rows = self.scan_results_by_subject.get(key)
-            if isinstance(rows, list) and rows:
-                return True, len(rows)
-
-        for key in candidates:
             try:
                 rows = self.database.fetch_scan_results_for_subject(key) or []
             except Exception:
                 rows = []
             if isinstance(rows, list) and rows:
                 return True, len(rows)
+
+        # Only the currently opened Batch Scan subject can rely on in-memory rows.
+        # This avoids stale cache making the subject status stay "Đã nhận dạng"
+        # after editing/saving subject config before a full page switch.
+        allow_live_cache = False
+        if self._batch_has_unsaved_changes():
+            current_cfg = self._selected_batch_subject_config()
+            if isinstance(current_cfg, dict):
+                active_candidates = set(
+                    self._subject_scan_storage_key_candidates(
+                        current_cfg,
+                        session_id=session_id,
+                        session=session,
+                        include_generated=True,
+                    )
+                )
+                allow_live_cache = bool(active_candidates.intersection(candidates))
+        if allow_live_cache:
+            for key in candidates:
+                rows = self.scan_results_by_subject.get(key)
+                if isinstance(rows, list) and rows:
+                    return True, len(rows)
 
         # Backward-compatible UI fallback. It is used only after DB/cache lookup fails.
         # This prevents a save operation from clearing the display before the next restart
