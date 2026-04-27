@@ -112,13 +112,13 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('self._refresh_all_statuses()', source)
         self.assertIn('self.correction_save_timer.start(150)', source)
 
-    def test_subject_status_prefers_db_and_only_uses_live_cache_for_active_unsaved_subject(self) -> None:
+    def test_subject_status_prefers_db_then_uses_broad_runtime_cache_candidates(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
-        self.assertIn('allow_live_cache = False', source)
-        self.assertIn('if self._batch_has_unsaved_changes():', source)
-        self.assertIn('active_candidates = set(', source)
-        self.assertIn('allow_live_cache = bool(active_candidates.intersection(candidates))', source)
-        self.assertIn('if allow_live_cache:', source)
+        self.assertIn('db_candidates = self._subject_scan_storage_key_candidates(', source)
+        self.assertIn('include_generated=False,', source)
+        self.assertIn('cache_candidates = self._subject_scan_storage_key_candidates(', source)
+        self.assertIn('include_generated=True,', source)
+        self.assertIn('for key in cache_candidates:', source)
         self.assertIn('rows = self.database.fetch_scan_results_for_subject(key) or []', source)
 
     def test_edited_status_is_excluded_from_error_duplicate_wrong_code_groups(self) -> None:
