@@ -1322,12 +1322,15 @@ class OMRProcessor:
         shifted[:, 1] += dy
         rows, cols = zplan.rows, zplan.cols
         need = rows * cols
-        if ztype == "MCQ_BLOCK":
-            scores, best_pts = self._sample_mcq_with_axis_refine(dark_integral, shifted, zplan.radius, shape, rows, cols)
-            mat, mat_pts = self._reorder_sampled_matrix(best_pts, scores, rows, cols, zplan.spatial_order_idx)
-        else:
-            scores = self._sample_ring_score(dark_integral, shifted, zplan.radius, shape)
-            mat, mat_pts = self._reorder_sampled_matrix(shifted, scores, rows, cols, zplan.spatial_order_idx)
+
+        # Fast-first decoding for production batch scan:
+        # sample every regular zone once after the zone-level shift. Only weak
+        # matrices use local/axis recentering. The previous hybrid build ran MCQ
+        # axis refinement unconditionally and then repeated it on fallback, which
+        # made clean scanner-locked sheets unnecessarily slow.
+        scores = self._sample_ring_score(dark_integral, shifted, zplan.radius, shape)
+        mat, mat_pts = self._reorder_sampled_matrix(shifted, scores, rows, cols, zplan.spatial_order_idx)
+
         need_fallback, weak_count, total_checks = self._zone_result_needs_fallback(mat, zplan.zone, ztype)
         fallback_used = False
         if need_fallback:
@@ -1338,12 +1341,14 @@ class OMRProcessor:
                 kind = "numeric" if ztype == "NUMERIC_BLOCK" else "zone"
                 scores, best_pts = self._sample_with_local_recenter(dark_integral, shifted, zplan.radius, shape, kind=kind)
             mat, mat_pts = self._reorder_sampled_matrix(best_pts, scores, rows, cols, zplan.spatial_order_idx)
+
         if ztype == "MCQ_BLOCK":
             self._decode_mcq_zone(mat, zplan.zone, result)
         elif ztype == "TRUE_FALSE_BLOCK":
             self._decode_true_false_zone(mat, zplan.zone, result)
         elif ztype == "NUMERIC_BLOCK":
             self._decode_numeric_zone(mat, zplan.zone, result)
+
         filled_thr = self._filled_state_threshold(zplan.zone, ztype)
         blank_thr = self._blank_state_threshold(zplan.zone, ztype)
         if store_bubble_states:

@@ -8468,15 +8468,18 @@ class MainWindow(QMainWindow):
         self.template = loaded_template
         setattr(self, "_active_template_path", str(pth.resolve()))
         self._apply_template_recognition_settings(self.template, sync_mode_selector=False)
-        # Keep batch recognition aligned with Template Editor's "Test Recognition" path:
-        # run_recognition_test(..., fast_production_test=True) keeps fast production behavior
-        # but also forces identifier recognition to reduce SID/ExamCode drift between screens.
-        result = self.omr_processor.run_recognition_test(
+        # Batch Scan must use the real production path, not Template Editor's diagnostic
+        # test path. run_recognition_test() enables collect_diagnostics=True internally,
+        # which is useful for visual debugging but too slow for hundreds of sheets.
+        # Keep identifier recognition forced, but do not build diagnostic artifacts.
+        fast_ctx = RecognitionContext(collect_diagnostics=False)
+        fast_ctx.force_identifier_recognition = True
+        fast_ctx.fast_production_test = True
+        fast_ctx.debug_deep = False
+        result = self.omr_processor.recognize_sheet_production_fast(
             image_path,
             self.template,
-            RecognitionContext(collect_diagnostics=False),
-            fast_production_test=True,
-            debug_deep=False,
+            fast_ctx,
         )
         result.sync_legacy_aliases()
         if allow_retry:
