@@ -5348,7 +5348,11 @@ class MainWindow(QMainWindow):
         self.filter_column.currentTextChanged.connect(self._apply_scan_filter)
         self.search_value = QLineEdit()
         self.search_value.setPlaceholderText("Tìm trong cột đã chọn hoặc toàn bảng")
-        self.search_value.textChanged.connect(self._apply_scan_filter)
+        self._scan_filter_debounce_timer = QTimer(self)
+        self._scan_filter_debounce_timer.setSingleShot(True)
+        self._scan_filter_debounce_timer.setInterval(180)
+        self._scan_filter_debounce_timer.timeout.connect(self._apply_scan_filter)
+        self.search_value.textChanged.connect(self._schedule_scan_filter)
 
         search_row = QHBoxLayout()
         search_row.addWidget(self.filter_column)
@@ -11744,6 +11748,12 @@ class MainWindow(QMainWindow):
                 cell = _normalize(item.text() if item else "")
             self.scan_list.setRowHidden(i, (value not in cell) or (not status_ok))
         self._update_batch_scan_bottom_status_text()
+
+    def _schedule_scan_filter(self, *_args) -> None:
+        if hasattr(self, "_scan_filter_debounce_timer") and self._scan_filter_debounce_timer is not None:
+            self._scan_filter_debounce_timer.start()
+            return
+        self._apply_scan_filter()
 
     def _handle_batch_status_filter_link(self, link: str) -> None:
         self.batch_status_filter_mode = str(link or "all").strip() or "all"
