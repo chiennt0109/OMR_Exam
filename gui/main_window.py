@@ -2890,12 +2890,11 @@ class MainWindow(QMainWindow):
         return str(sid) if sid else None
 
     def _handle_exam_list_double_click(self, row: int, col: int) -> None:
-        # double click navigation: route row double click to exam editor action.
         sid = self._session_id_for_row(row)
         if not sid:
             return
         self.exam_list_table.selectRow(row)
-        self._edit_registry_session_by_id(sid)
+        self._switch_exam_session(sid, reason="exam_list_double_click", open_route="exam_editor")
 
     def _handle_template_library_double_click(self, row: int, col: int) -> None:
         # double click navigation: route row double click to template edit action.
@@ -3220,11 +3219,12 @@ class MainWindow(QMainWindow):
         return self._session_path_from_id(sid)
 
     def _open_selected_registry_session(self) -> None:
-        path = self._selected_registry_path()
-        if not path:
+        row = self.exam_list_table.currentRow()
+        sid = self._session_id_for_row(row) if row >= 0 else None
+        if not sid:
             QMessageBox.warning(self, "Mở kỳ thi", "Chọn kỳ thi trong danh sách trước.")
             return
-        self._open_session_path(path)
+        self._switch_exam_session(str(sid), reason="open_selected", open_route="exam_editor")
 
     def _edit_selected_registry_session(self) -> None:
         row = self.exam_list_table.currentRow()
@@ -3235,35 +3235,7 @@ class MainWindow(QMainWindow):
         self._edit_registry_session_by_id(sid)
 
     def _edit_registry_session_by_id(self, session_id: str) -> None:
-        payload = self.database.fetch_exam_session(session_id)
-        if not payload:
-            QMessageBox.warning(self, "Sửa kỳ thi", "Không tìm thấy kỳ thi trong kho lưu trữ hệ thống.")
-            return False        
-        try:
-            session = ExamSession.from_dict(payload)
-            cfg = session.config or {}
-            payload = {
-                "exam_name": session.exam_name,
-                "common_template": session.template_path,
-                "scan_root": cfg.get("scan_root", ""),
-                "student_list_path": cfg.get("student_list_path", ""),
-                "students": [
-                    {
-                        "student_id": s.student_id,
-                        "name": s.name,
-                        "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
-                        "class_name": str((s.extra or {}).get("class_name", "") or ""),
-                        "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
-                    }
-                    for s in (session.students or [])
-                ],
-                "scan_mode": cfg.get("scan_mode", "Ảnh trong thư mục gốc"),
-                "paper_part_count": cfg.get("paper_part_count", 3),
-                "subject_configs": cfg.get("subject_configs", []),
-            }
-            self._open_embedded_exam_editor(session_id, session, payload)
-        except Exception as exc:
-            QMessageBox.warning(self, "Sửa kỳ thi", f"Không thể sửa kỳ thi\n{exc}")
+        self._switch_exam_session(str(session_id or ""), reason="edit_registry", open_route="exam_editor")
 
     def _open_embedded_exam_editor(self, session_id: str, session: ExamSession, payload: dict, *, is_new: bool = False) -> None:
         while self.exam_editor_layout.count():
@@ -3595,7 +3567,79 @@ class MainWindow(QMainWindow):
         self._save_session_registry()
         self._refresh_exam_list()
 
+    def _switch_exam_session(self, session_id: str, *, reason: str, open_route: str | None = None) -> bool:
+        target_id = str(session_id or "").strip()
+        if not target_id:
+            return False
+        same_session = bool(self.current_session_id and self.current_session_id == target_id)
+        if (not same_session) and (not self._confirm_before_switching_work(f"kỳ thi {target_id}")):
+            return False
+        try:
+            payload = self.database.fetch_exam_session(target_id)
+            if not payload:
+                QMessageBox.warning(self, "Mở kỳ thi", "Không tìm thấy kỳ thi trong kho lưu trữ hệ thống.")
+                return False
+            session = ExamSession.from_dict(payload)
+            self._release_batch_runtime_state()
+            self.session = session
+            self.current_session_id = target_id
+            self.current_session_path = self._session_path_from_id(target_id)
+            cfg = dict(self.session.config or {})
+            cfg.pop("scoring_phases", None)
+            cfg.pop("scoring_results", None)
+            self.session.config = cfg
+            self.subject_catalog = list(cfg.get("subject_catalog", self.subject_catalog)) or self.subject_catalog
+            self.block_catalog = list(cfg.get("block_catalog", self.block_catalog)) or self.block_catalog
+            self.scan_list.setRowCount(0)
+            self._refresh_session_info()
+            self._refresh_batch_subject_controls()
+            self._refresh_scoring_phase_table()
+            self._upsert_session_registry(target_id, self.session.exam_name if self.session else None)
+            self._save_session_registry()
+            self._refresh_exam_list()
+            self.session_dirty = False
+            self._remember_current_session_snapshot()
+            self.batch_editor_return_payload = None
+            self.batch_editor_return_session_id = None
+            self._refresh_ribbon_action_states()
+            if open_route == "exam_editor":
+                editor_payload = {
+                    "exam_name": self.session.exam_name,
+                    "common_template": self.session.template_path,
+                    "scan_root": cfg.get("scan_root", ""),
+                    "student_list_path": cfg.get("student_list_path", ""),
+                    "students": [
+                        {
+                            "student_id": s.student_id,
+                            "name": s.name,
+                            "birth_date": str((s.extra or {}).get("birth_date", "") or ""),
+                            "class_name": str((s.extra or {}).get("class_name", "") or ""),
+                            "exam_room": str((s.extra or {}).get("exam_room", "") or ""),
+                        }
+                        for s in (self.session.students or [])
+                    ],
+                    "scan_mode": cfg.get("scan_mode", "Ảnh trong thư mục gốc"),
+                    "paper_part_count": cfg.get("paper_part_count", 3),
+                    "subject_configs": cfg.get("subject_configs", []),
+                }
+                self._open_embedded_exam_editor(target_id, self.session, editor_payload)
+            elif open_route == "workspace_batch_scan":
+                self._navigate_to(
+                    "workspace_batch_scan",
+                    context={"session_id": self.current_session_id, "origin": reason},
+                    push_current=True,
+                    require_confirm=False,
+                    reason="switch_exam_open_batch",
+                )
+                self._show_batch_scan_panel()
+            return True
+        except Exception as exc:
+            QMessageBox.warning(self, "Mở kỳ thi", f"Không thể mở kỳ thi:\n{exc}")
+            return False
+
     def _open_session_path(self, path: Path) -> None:
+        self._switch_exam_session(path.stem, reason="open_session_path", open_route="exam_editor")
+        return
         try:
             self._release_batch_runtime_state()
             payload = self.database.fetch_exam_session(path.stem)
@@ -4460,11 +4504,12 @@ class MainWindow(QMainWindow):
         self._refresh_ribbon_action_states()
 
     def _refresh_ribbon_action_states(self) -> None:
-        has_session = self._has_session_context_for_export()
-        has_current_session = bool(self.current_session_id)
+        has_current_session = bool(str(getattr(self, "current_session_id", "") or "").strip())
+        has_session = has_current_session
         has_subject_cfg = bool(self._effective_subject_configs_for_batch())
         route_name = getattr(self, "_current_route_name", "")
         batch_scan_visible = route_name == "workspace_batch_scan"
+        has_active_subject = bool(str(getattr(self, "active_batch_subject_key", "") or "").strip())
 
         def set_enabled(attr_name: str, enabled: bool) -> None:
             action = getattr(self, attr_name, None)
@@ -4491,12 +4536,12 @@ class MainWindow(QMainWindow):
         can_open_batch = has_session and has_subject_cfg
         set_enabled("ribbon_batch_scan_action", can_open_batch)
         set_enabled("act_batch_scan_menu", can_open_batch)
-        set_enabled("ribbon_scoring_action", has_session)
-        set_enabled("act_calculate_scores", has_session)
+        set_enabled("ribbon_scoring_action", has_session and has_subject_cfg)
+        set_enabled("act_calculate_scores", has_session and has_subject_cfg)
         set_enabled("ribbon_recheck_action", has_session)
         set_enabled("act_open_recheck", has_session)
 
-        can_execute_batch = bool(has_session and batch_scan_visible and not getattr(self, "_batch_scan_running", False))
+        can_execute_batch = bool(has_session and batch_scan_visible and has_active_subject and not getattr(self, "_batch_scan_running", False))
         set_enabled("ribbon_batch_execute_action", can_execute_batch)
         set_enabled("act_execute_batch_scan", can_execute_batch)
         set_enabled("act_edit_selected_scan", bool(has_session and batch_scan_visible))
@@ -4558,17 +4603,7 @@ class MainWindow(QMainWindow):
             self._refresh_ribbon_action_states()
 
     def _has_session_context_for_export(self) -> bool:
-        if bool(str(getattr(self, "current_session_id", "") or "").strip()):
-            return True
-        if getattr(self, "session", None) is not None:
-            sid = str(getattr(self.session, "session_id", "") or "").strip()
-            if sid:
-                return True
-        if hasattr(self, "exam_list_table"):
-            row = self.exam_list_table.currentRow()
-            if row >= 0 and bool(str(self._session_id_for_row(row) or "").strip()):
-                return True
-        return False
+        return bool(str(getattr(self, "current_session_id", "") or "").strip())
 
     def _ensure_current_session_loaded(self) -> bool:
         if self.session is not None:
@@ -5052,16 +5087,27 @@ class MainWindow(QMainWindow):
             self.batch_subject_combo.setCurrentIndex(1)
 
     def action_run_batch_scan(self) -> None:
-        self._start_batch_scan_from_ui()
-        if hasattr(self, "batch_subject_combo") and self.batch_subject_combo.currentIndex() > 0:
-            has_unsaved = bool(hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled())
-            if not has_unsaved:
-                self._on_batch_subject_changed(self.batch_subject_combo.currentIndex(), force_reload=True)
+        if not self._ensure_current_session_loaded():
+            QMessageBox.warning(self, "Batch Scan", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
+            return
+        if not self._current_exam_has_subjects():
+            QMessageBox.warning(self, "Batch Scan", "Kỳ thi hiện tại chưa có môn thi.")
+            return
+        self._navigate_to(
+            "workspace_batch_scan",
+            context={"session_id": self.current_session_id, "origin": self._current_route_name},
+            push_current=True,
+            require_confirm=False,
+            reason="ribbon_batch_scan",
+        )
+        self._show_batch_scan_panel()
+        self._ensure_active_batch_subject_loaded(reason="ribbon_batch_scan", force_reload=False)
         self._refresh_ribbon_action_states()
 
     def action_execute_batch_scan(self) -> None:
         if self.stack.currentIndex() != 1:
-            self._start_batch_scan_from_ui()
+            self.action_run_batch_scan()
+        if not self._ensure_active_batch_subject_loaded(reason="execute_batch_scan", force_reload=False):
             return
         self.run_batch_scan()
 
@@ -5075,14 +5121,21 @@ class MainWindow(QMainWindow):
         self.apply_manual_correction()
 
     def action_calculate_scores(self) -> None:
-        # From Batch Scan -> Scoring: do not prompt save when no real batch edits.
-        if self.stack.currentIndex() != 1 or bool(hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled()):
-            if not self._confirm_before_switching_work("màn hình Tính điểm"):
+        if not self._ensure_current_session_loaded():
+            QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
+            return
+        if not self._current_exam_has_subjects():
+            QMessageBox.warning(self, "Tính điểm", "Kỳ thi hiện tại chưa có môn thi.")
+            return
+        if self._has_batch_unsaved_changes():
+            choice = self._prompt_save_changes_word_style(
+                "Batch Scan chưa lưu",
+                "Bạn có thay đổi chưa lưu. Lưu trước khi sang phần chấm điểm?",
+            )
+            if choice == "cancel":
                 return
-        if self.stack.currentIndex() == 1 and hasattr(self, "batch_subject_combo") and self.batch_subject_combo.currentIndex() > 0:
-            has_unsaved = bool(hasattr(self, "btn_save_batch_subject") and self.btn_save_batch_subject.isEnabled())
-            if not has_unsaved:
-                self._on_batch_subject_changed(self.batch_subject_combo.currentIndex(), force_reload=True)
+            if choice == "save" and not self._save_batch_for_selected_subject():
+                return
         self._open_scoring_view()
         self._refresh_ribbon_action_states()
 
@@ -6217,15 +6270,7 @@ class MainWindow(QMainWindow):
             if action is not None:
                 action.setVisible(True)
         self._refresh_ribbon_action_states()
-        if hasattr(self, "batch_subject_combo") and self.batch_subject_combo.count() > 0:
-            cfg = self._selected_batch_subject_config()
-            if cfg:
-                runtime_key = self._batch_runtime_key(cfg)
-                need_reload = bool(self.scan_list.rowCount() <= 0 or runtime_key != self._batch_loaded_runtime_key)
-                if need_reload:
-                    self._load_batch_subject_state(cfg, source_hint="show_batch_panel", force_reload=False)
-                else:
-                    self._update_batch_scan_scope_summary()
+        self._ensure_active_batch_subject_loaded(reason="show_batch_panel", force_reload=False)
 
     def _show_scoring_panel(self) -> None:
         if hasattr(self, "scan_lr_split"):
@@ -6795,21 +6840,8 @@ class MainWindow(QMainWindow):
         if not self._ensure_current_session_loaded():
             QMessageBox.warning(self, "Tính điểm", "Chưa có kỳ thi hiện tại. Vui lòng mở hoặc tạo kỳ thi trước.")
             return
-
-        # Scoring là DB-first: nếu Batch Scan hiện tại còn thay đổi chưa lưu thì hỏi người dùng
-        # lưu hay bỏ qua. Không dựng snapshot runtime để làm nguồn dữ liệu chấm.
-        if self._has_batch_unsaved_changes():
-            choice = self._prompt_save_changes_word_style(
-                "Batch Scan chưa lưu",
-                "Bạn có thay đổi chưa lưu cho môn hiện tại. Muốn lưu trước khi sang phần chấm điểm không?",
-            )
-            if choice == "cancel":
-                return
-            if choice == "save" and not self._save_batch_for_selected_subject():
-                return
-
-        if not self._eligible_scoring_subject_keys():
-            QMessageBox.warning(self, "Tính điểm", "Cần có ít nhất 1 môn đã Batch Scan hoặc đã import điểm trực tiếp trước khi tính điểm.")
+        if not self._current_exam_has_subjects():
+            QMessageBox.warning(self, "Tính điểm", "Kỳ thi hiện tại chưa có môn thi.")
             return
 
         self._navigate_to(
@@ -6819,7 +6851,7 @@ class MainWindow(QMainWindow):
             require_confirm=False,
             reason="open_scoring",
         )
-        selected_subject = self._resolve_preferred_scoring_subject()
+        selected_subject = str(self.active_batch_subject_key or "").strip() or self._first_subject_key_for_current_exam()
         self._populate_scoring_subjects(selected_subject)
         self._refresh_scoring_phase_table()
         self._refresh_dashboard_summary_from_db(selected_subject)
@@ -7774,6 +7806,80 @@ class MainWindow(QMainWindow):
             })
         return out
 
+    def _current_exam_has_subjects(self) -> bool:
+        return bool(self._effective_subject_configs_for_batch())
+
+    def _first_subject_key_for_current_exam(self) -> str:
+        cfgs = self._effective_subject_configs_for_batch()
+        if not cfgs:
+            return ""
+        return str(self._subject_instance_key_from_cfg(cfgs[0]) or "").strip()
+
+    def _subject_cfg_by_instance_key(self, subject_key: str) -> dict | None:
+        key = str(subject_key or "").strip()
+        if not key:
+            return None
+        for cfg in self._effective_subject_configs_for_batch():
+            if str(self._subject_instance_key_from_cfg(cfg) or "").strip() == key:
+                return cfg
+        return None
+
+    def _ensure_active_subject(self, *, reason: str) -> dict | None:
+        _ = str(reason or "").strip()
+        active_key = str(self.active_batch_subject_key or "").strip()
+        cfg = self._subject_cfg_by_instance_key(active_key)
+        if cfg:
+            return cfg
+        first_key = self._first_subject_key_for_current_exam()
+        if not first_key:
+            self.active_batch_subject_key = None
+            return None
+        self.active_batch_subject_key = first_key
+        return self._subject_cfg_by_instance_key(first_key)
+
+    def _switch_subject_session(self, subject_key: str, *, reason: str, force_reload: bool = False) -> bool:
+        _ = str(reason or "").strip()
+        next_key = str(subject_key or "").strip()
+        cfg = self._subject_cfg_by_instance_key(next_key)
+        if cfg is None:
+            return False
+        prev_key = str(self.active_batch_subject_key or "").strip()
+        is_changed = bool(prev_key and prev_key != next_key)
+        if is_changed and self._has_pending_unsaved_work():
+            if not self._handle_pending_changes_before_switch("môn học khác"):
+                return False
+        self.active_batch_subject_key = next_key
+        if hasattr(self, "batch_subject_combo"):
+            combo_idx = self.batch_subject_combo.findData(next_key)
+            if combo_idx >= 0 and self.batch_subject_combo.currentIndex() != combo_idx:
+                self.batch_subject_combo.blockSignals(True)
+                self.batch_subject_combo.setCurrentIndex(combo_idx)
+                self.batch_subject_combo.blockSignals(False)
+        if self._current_route_name == "workspace_batch_scan":
+            self._ensure_active_batch_subject_loaded(reason=f"switch_subject:{reason}", force_reload=force_reload)
+        elif self._current_route_name == "workspace_scoring":
+            self._populate_scoring_subjects(next_key)
+            self._ensure_scoring_preview_current(next_key, reason=f"switch_subject:{reason}", force=force_reload)
+        self._refresh_ribbon_action_states()
+        return True
+
+    def _ensure_active_batch_subject_loaded(self, *, reason: str, force_reload: bool = False) -> bool:
+        cfg = self._ensure_active_subject(reason=reason)
+        if not cfg:
+            QMessageBox.information(self, "Batch Scan", "Kỳ thi hiện tại chưa có môn thi.")
+            return False
+        runtime_key = self._batch_runtime_key(cfg)
+        if (
+            not force_reload
+            and runtime_key
+            and runtime_key == str(getattr(self, "_batch_loaded_runtime_key", "") or "").strip()
+            and hasattr(self, "scan_list")
+            and self.scan_list.rowCount() > 0
+        ):
+            self._update_batch_scan_scope_summary()
+            return True
+        return bool(self._load_batch_subject_state(cfg, source_hint=reason, force_reload=force_reload))
+
     def _resolve_subject_config_for_batch(self) -> dict | None:
         cfg = self._selected_batch_subject_config()
         if cfg:
@@ -7789,34 +7895,26 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "batch_subject_combo"):
             return
         previous_active_key = str(getattr(self, "active_batch_subject_key", "") or "").strip()
-        current_key = str(self.batch_subject_combo.currentData() or "").strip() if self.batch_subject_combo.count() > 0 else ""
         self.batch_subject_combo.blockSignals(True)
         self.batch_subject_combo.clear()
         self.batch_subject_combo.addItem("[Chọn môn]", "")
         target_index = 0
+        first_subject_key = ""
         for idx, cfg in enumerate(self._effective_subject_configs_for_batch()):
             if isinstance(cfg, dict):
                 self._ensure_subject_instance_key(cfg, idx)
             label = self._display_subject_label(cfg)
             key = self._subject_instance_key_from_cfg(cfg)
+            if not first_subject_key and key:
+                first_subject_key = key
             self.batch_subject_combo.addItem(label, key)
-            if current_key and key == current_key:
+            if previous_active_key and key == previous_active_key:
                 target_index = idx + 1
-            elif not current_key and previous_active_key and key == previous_active_key:
-                target_index = idx + 1
+        if target_index == 0 and first_subject_key:
+            self.active_batch_subject_key = first_subject_key
+            target_index = self.batch_subject_combo.findData(first_subject_key)
         self.batch_subject_combo.setCurrentIndex(target_index)
         self.batch_subject_combo.blockSignals(False)
-        selected_key = str(self.batch_subject_combo.currentData() or "").strip() if self.batch_subject_combo.currentIndex() > 0 else ""
-        selected_cfg = self._selected_batch_subject_config() if selected_key else None
-        selected_sig = self._batch_subject_refresh_signature(selected_cfg) if isinstance(selected_cfg, dict) else ""
-        has_signature_change = bool(selected_key) and bool(selected_sig) and selected_sig != str(getattr(self, "_batch_loaded_subject_signature", "") or "")
-        should_load = bool(selected_key) and (
-            selected_key != previous_active_key
-            or self.scan_list.rowCount() <= 0
-            or has_signature_change
-        )
-        if should_load:
-            self._on_batch_subject_changed(self.batch_subject_combo.currentIndex(), force_reload=has_signature_change)
         self._handle_stack_changed(self.stack.currentIndex())
 
     def _selected_batch_subject_config(self) -> dict | None:
@@ -8177,19 +8275,10 @@ class MainWindow(QMainWindow):
             return
         self._switching_batch_subject = True
         try:
-            previous_runtime_key = str(getattr(self, "active_batch_subject_key", "") or "").strip()
-            cfg = self._selected_batch_subject_config()
-            next_runtime_key = ""
-            if cfg:
-                cfg = self._merge_saved_batch_snapshot(cfg)
-                next_runtime_key = self._batch_runtime_key(cfg)
-            if previous_runtime_key and previous_runtime_key != next_runtime_key:
-                pass
-            if cfg:
-                self.active_batch_subject_key = next_runtime_key
-            else:
-                self.active_batch_subject_key = None
-            self._load_batch_subject_state(cfg, source_hint="subject_changed", force_reload=force_reload)
+            subject_key = str(self.batch_subject_combo.currentData() or "").strip() if hasattr(self, "batch_subject_combo") else ""
+            if not subject_key:
+                return
+            self._switch_subject_session(subject_key, reason="batch_subject_changed", force_reload=force_reload)
         finally:
             self._switching_batch_subject = False
 
@@ -11983,7 +12072,6 @@ class MainWindow(QMainWindow):
             for idx, item in enumerate(row_views):
                 payload = dict(item)
                 self._apply_scan_row_payload_to_grid(idx, payload, skip_actions=skip_expensive_checks)
-            scan_list.resizeRowsToContents()
             for fit_col in [self.SCAN_COL_STT, self.SCAN_COL_STUDENT_ID, self.SCAN_COL_EXAM_ROOM, self.SCAN_COL_EXAM_CODE, self.SCAN_COL_FULL_NAME, self.SCAN_COL_BIRTH_DATE, self.SCAN_COL_ACTIONS]:
                 scan_list.resizeColumnToContents(fit_col)
         finally:
@@ -12198,10 +12286,8 @@ class MainWindow(QMainWindow):
         if full_status != "OK":
             status_item.setForeground(Qt.red)
         self.scan_list.setItem(row_idx, self.SCAN_COL_STATUS, status_item)
-        if skip_actions:
-            self.scan_list.setItem(row_idx, self.SCAN_COL_ACTIONS, QTableWidgetItem("..."))
-        else:
-            self._set_scan_action_widget(row_idx)
+        action_text = "..." if skip_actions else "Sửa"
+        self.scan_list.setItem(row_idx, self.SCAN_COL_ACTIONS, QTableWidgetItem(action_text))
 
     def _update_scan_row_from_result(self, idx: int, result) -> None:
         # scan_list columns: 0 stt, 1 sid, 2 exam_room, 3 exam_code, 4 full_name, 5 birth_date, 6 content, 7 status, 8 actions
@@ -13163,7 +13249,7 @@ class MainWindow(QMainWindow):
         cfg = self._selected_batch_subject_config()
         if cfg:
             return self._subject_key_from_cfg(cfg)
-        return str(self.active_batch_subject_key or "").strip() or self._resolve_preferred_scoring_subject()
+        return str(self.active_batch_subject_key or "").strip() or self._first_subject_key_for_current_exam()
 
     @staticmethod
     def _ordered_unique_text_list(values) -> list[str]:
