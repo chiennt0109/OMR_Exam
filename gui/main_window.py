@@ -15614,6 +15614,23 @@ class MainWindow(QMainWindow):
         base_headers = ["STT", "SBD", "Họ tên", "Ngày sinh", "Lớp"]
         score_headers = [self._short_subject_label_for_export(key, label) for label, key in subjects]
         student_rows: dict[str, dict[str, object]] = {}
+        student_meta = self._student_meta_by_sid()
+
+        if self.session:
+            for st in (self.session.students or []):
+                sid = str(getattr(st, "student_id", "") or "").strip()
+                if not sid:
+                    continue
+                meta = student_meta.get(sid, {})
+                student_rows[sid] = {
+                    "SBD": sid,
+                    "Họ tên": str(getattr(st, "name", "") or meta.get("name", "") or ""),
+                    "Ngày sinh": self._format_birth_date_for_export(
+                        getattr(st, "birth_date", "") or meta.get("birth_date", "") or ""
+                    ),
+                    "Lớp": str(getattr(st, "class_name", "") or meta.get("class_name", "") or ""),
+                }
+
         for idx, (label, key) in enumerate(subjects):
             score_header = score_headers[idx]
             for row in self._build_subject_score_export_rows(key):
