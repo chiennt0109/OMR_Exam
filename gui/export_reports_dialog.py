@@ -860,31 +860,74 @@ class ExportReportsDialog(QDialog):
         return ReportTable(headers, all_rows, grouped)
 
     def build_recheck_summary_report(self) -> ReportTable:
-        headers = ["Môn", "Tổng bài", "Số bài phúc tra", "Tỷ lệ phúc tra"]
+        headers = ["Mục", "Môn", "SBD", "Họ tên", "Giá trị 1", "Giá trị 2", "Giải trình/Ghi chú"]
         rows: list[list[object]] = []
+        session_id = str(getattr(self.main_window, "current_session_id", "") or "").strip()
+        session_cfg = (getattr(self.main_window, "session", None).config or {}) if getattr(self.main_window, "session", None) else {}
+        recheck_sid_lists = session_cfg.get("recheck_sid_lists", {}) if isinstance(session_cfg.get("recheck_sid_lists", {}), dict) else {}
+        profiles = self._student_profile_map()
+        history_all = []
+        try:
+            history_all = list(self.main_window.database.fetch_recheck_history(session_id) or []) if session_id else []
+        except Exception:
+            history_all = []
+        history_by_subject: dict[str, list[dict]] = {}
+        for entry in history_all:
+            key = str((entry or {}).get("subject_key", "") or "").strip()
+            if not key:
+                continue
+            history_by_subject.setdefault(key, []).append(entry)
+
+        rows.append(["I. THỐNG KÊ PHÚC TRA THEO MÔN", "", "", "", "", "", ""])
+        rows.append(["", "Môn", "", "", "Danh sách phúc tra", "Bài lên điểm", "Tỷ lệ lên điểm / DS phúc tra"])
         for label, key in self._collect_subject_pairs():
-            subject_rows = self._score_rows_for_subject_cached(key)
-            total_rows = 0
-            recheck_rows = 0
-            for row in subject_rows:
-                sid = str((row or {}).get("student_id", "") or "").strip()
-                if not sid:
+            imported_sids = [str(x).strip() for x in (recheck_sid_lists.get(key, []) or []) if str(x).strip()]
+            imported_set = set(imported_sids)
+            increased_entries = []
+            seen_sid: set[str] = set()
+            for item in history_by_subject.get(key, []):
+                sid = str((item or {}).get("student_code", "") or "").strip()
+                old_score = self._safe_float((item or {}).get("old_score", ""))
+                new_score = self._safe_float((item or {}).get("new_score", ""))
+                if sid in seen_sid:
                     continue
-                total_rows += 1
-                note_text = str((row or {}).get("note", "") or "").casefold()
-                status_text = str((row or {}).get("status", "") or "").casefold()
-                marked_recheck = (
-                    (row or {}).get("baithiphuctra", "") not in {"", None, False, 0, "0"}
-                    or (row or {}).get("recheck_score", "") not in {"", None}
-                    or "phúc tra" in note_text
-                    or "phuc tra" in note_text
-                    or "phúc tra" in status_text
-                    or "phuc tra" in status_text
-                )
-                if marked_recheck:
-                    recheck_rows += 1
-            rate = f"{(recheck_rows * 100.0 / total_rows):.2f}%" if total_rows > 0 else "0.00%"
-            rows.append([label, total_rows, recheck_rows, rate])
+                if old_score is not None and new_score is not None and new_score > old_score and sid in imported_set:
+                    increased_entries.append(item)
+                    seen_sid.add(sid)
+            rate = f"{(len(increased_entries) * 100.0 / len(imported_set)):.2f}%" if imported_set else "0.00%"
+            rows.append(["", label, "", "", len(imported_set), len(increased_entries), rate])
+
+        rows.append(["", "", "", "", "", "", ""])
+        rows.append(["II. DANH SÁCH BÀI LÊN ĐIỂM (GROUP THEO MÔN)", "", "", "", "", "", ""])
+        for label, key in self._collect_subject_pairs():
+            imported_sids = {str(x).strip() for x in (recheck_sid_lists.get(key, []) or []) if str(x).strip()}
+            increased_rows: list[list[object]] = []
+            latest_by_sid: dict[str, dict] = {}
+            for item in history_by_subject.get(key, []):
+                sid = str((item or {}).get("student_code", "") or "").strip()
+                if not sid or sid not in imported_sids:
+                    continue
+                old_score = self._safe_float((item or {}).get("old_score", ""))
+                new_score = self._safe_float((item or {}).get("new_score", ""))
+                if old_score is None or new_score is None or new_score <= old_score:
+                    continue
+                latest_by_sid[sid] = item
+            for sid in sorted(latest_by_sid.keys()):
+                item = latest_by_sid[sid]
+                profile = profiles.get(sid, {})
+                name = str(profile.get("name", "") or "").strip()
+                old_score = self._safe_float((item or {}).get("old_score", ""))
+                new_score = self._safe_float((item or {}).get("new_score", ""))
+                explain = str((item or {}).get("change_text", "") or "").strip()
+                if not explain:
+                    explain = str(((item or {}).get("payload", {}) or {}).get("note", "") or "").strip()
+                increased_rows.append(["", label, sid, name, old_score if old_score is not None else "", new_score if new_score is not None else "", explain])
+            if increased_rows:
+                rows.append([f"Môn: {label}", "", "", "", "", "", ""])
+                rows.append(["", "Môn", "SBD", "Họ tên", "Điểm cũ", "Điểm mới", "Giải trình/Ghi chú"])
+                rows.extend(increased_rows)
+            else:
+                rows.append([f"Môn: {label}", "", "", "", "", "", "Không có bài lên điểm từ danh sách phúc tra import."])
         return ReportTable(headers, rows)
 
     @staticmethod
