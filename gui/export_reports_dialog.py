@@ -878,11 +878,13 @@ class ExportReportsDialog(QDialog):
                 continue
             history_by_subject.setdefault(key, []).append(entry)
 
-        rows.append(["I. THỐNG KÊ PHÚC TRA THEO MÔN", "", "", "", "", "", ""])
-        rows.append(["", "Môn", "", "", "Danh sách phúc tra", "Bài lên điểm", "Tỷ lệ lên điểm / DS phúc tra"])
+        summary_rows: list[list[object]] = []
+        detail_block_rows: list[list[object]] = []
         for label, key in self._collect_subject_pairs():
             imported_sids = [str(x).strip() for x in (recheck_sid_lists.get(key, []) or []) if str(x).strip()]
             imported_set = set(imported_sids)
+            if not imported_set:
+                continue
             increased_entries = []
             seen_sid: set[str] = set()
             for item in history_by_subject.get(key, []):
@@ -894,13 +896,12 @@ class ExportReportsDialog(QDialog):
                 if old_score is not None and new_score is not None and new_score > old_score and sid in imported_set:
                     increased_entries.append(item)
                     seen_sid.add(sid)
+            if not increased_entries:
+                continue
             rate = f"{(len(increased_entries) * 100.0 / len(imported_set)):.2f}%" if imported_set else "0.00%"
-            rows.append(["", label, "", "", len(imported_set), len(increased_entries), rate])
+            summary_rows.append(["", label, "", "", len(imported_set), len(increased_entries), rate])
 
-        rows.append(["", "", "", "", "", "", ""])
-        rows.append(["II. DANH SÁCH BÀI LÊN ĐIỂM (GROUP THEO MÔN)", "", "", "", "", "", ""])
-        for label, key in self._collect_subject_pairs():
-            imported_sids = {str(x).strip() for x in (recheck_sid_lists.get(key, []) or []) if str(x).strip()}
+            imported_sids = imported_set
             increased_rows: list[list[object]] = []
             latest_by_sid: dict[str, dict] = {}
             for item in history_by_subject.get(key, []):
@@ -923,11 +924,20 @@ class ExportReportsDialog(QDialog):
                     explain = str(((item or {}).get("payload", {}) or {}).get("note", "") or "").strip()
                 increased_rows.append(["", label, sid, name, old_score if old_score is not None else "", new_score if new_score is not None else "", explain])
             if increased_rows:
-                rows.append([f"Môn: {label}", "", "", "", "", "", ""])
-                rows.append(["", "Môn", "SBD", "Họ tên", "Điểm cũ", "Điểm mới", "Giải trình/Ghi chú"])
-                rows.extend(increased_rows)
-            else:
-                rows.append([f"Môn: {label}", "", "", "", "", "", "Không có bài lên điểm từ danh sách phúc tra import."])
+                detail_block_rows.append([f"Môn: {label}", "", "", "", "", "", ""])
+                detail_block_rows.append(["", "Môn", "SBD", "Họ tên", "Điểm cũ", "Điểm mới", "Giải trình/Ghi chú"])
+                detail_block_rows.extend(increased_rows)
+
+        if not summary_rows:
+            rows.append(["", "Không có môn phúc tra có thay đổi điểm.", "", "", "", "", ""])
+            return ReportTable(headers, rows)
+
+        rows.append(["I. THỐNG KÊ PHÚC TRA THEO MÔN", "", "", "", "", "", ""])
+        rows.append(["", "Môn", "", "", "Danh sách phúc tra", "Bài lên điểm", "Tỷ lệ lên điểm / DS phúc tra"])
+        rows.extend(summary_rows)
+        rows.append(["", "", "", "", "", "", ""])
+        rows.append(["II. DANH SÁCH BÀI LÊN ĐIỂM (GROUP THEO MÔN)", "", "", "", "", "", ""])
+        rows.extend(detail_block_rows)
         return ReportTable(headers, rows)
 
     @staticmethod
