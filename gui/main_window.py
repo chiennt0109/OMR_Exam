@@ -1792,6 +1792,11 @@ class NewExamDialog(QDialog):
                 except Exception:
                     pass
             updated = dict(edited)
+            # Keep subject runtime identity stable across config edits so status lookup,
+            # DB storage key resolution and auto-recognition all read the same stream.
+            for stable_key in ("subject_instance_key", "subject_uid", "logical_subject_key", "legacy_subject_instance_keys"):
+                if stable_key in old_cfg and stable_key not in updated:
+                    updated[stable_key] = copy.deepcopy(old_cfg.get(stable_key))
             updated["batch_saved"] = False
             updated["batch_saved_at"] = "-"
             updated["batch_result_count"] = 0
@@ -2295,8 +2300,9 @@ class MainWindow(QMainWindow):
             old_signature = self._auto_recognition_last_seen.get(subject_key)
             self._auto_recognition_last_seen[subject_key] = new_signature
             if old_signature is None:
-                if self._scan_signature_has_files(new_signature) and self._pending_auto_recognition_paths_for_cfg(cfg):
-                    self._enqueue_auto_recognition_subject(subject_key)
+                # Baseline only: when auto mode is newly enabled (or app just opened),
+                # do not immediately re-run recognition for an entire existing folder.
+                # Auto recognition should react to subsequent file changes.
                 continue
             if new_signature == old_signature:
                 continue
