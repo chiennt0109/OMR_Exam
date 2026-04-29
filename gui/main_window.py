@@ -1792,6 +1792,11 @@ class NewExamDialog(QDialog):
                 except Exception:
                     pass
             updated = dict(edited)
+            # Keep subject runtime identity stable across config edits so status lookup,
+            # DB storage key resolution and auto-recognition all read the same stream.
+            for stable_key in ("subject_instance_key", "subject_uid", "logical_subject_key", "legacy_subject_instance_keys"):
+                if stable_key in old_cfg and stable_key not in updated:
+                    updated[stable_key] = copy.deepcopy(old_cfg.get(stable_key))
             updated["batch_saved"] = False
             updated["batch_saved_at"] = "-"
             updated["batch_result_count"] = 0
