@@ -4814,12 +4814,6 @@ class MainWindow(QMainWindow):
         pairs: list[tuple[str, str]] = []
         subject_rank = {str(name).strip().casefold(): idx for idx, name in enumerate(self.subject_catalog or [])}
 
-        def _sort_key(entry: tuple[str, str]) -> tuple[int, str]:
-            key = str(entry[1] or "").strip()
-            subject_name = key.split("_", 1)[0].strip().casefold()
-            rank = subject_rank.get(subject_name, 10**6)
-            return (rank, key.casefold())
-
         for cfg in self._subject_configs_for_scoring():
             key = str(self._subject_key_from_cfg(cfg) or "").strip()
             if not key:
@@ -4827,9 +4821,19 @@ class MainWindow(QMainWindow):
             label = self._display_subject_label(cfg)
             pairs.append((label, key))
         if not pairs:
-            for key in sorted(str(k) for k in (self.scoring_results_by_subject or {}).keys() if str(k).strip()):
+            for key in (str(k) for k in (self.scoring_results_by_subject or {}).keys() if str(k).strip()):
                 pairs.append((key, key))
-        return sorted(pairs, key=_sort_key)
+
+        indexed_pairs = list(enumerate(pairs))
+
+        def _sort_key(item: tuple[int, tuple[str, str]]) -> tuple[int, int]:
+            original_idx, entry = item
+            key = str(entry[1] or "").strip()
+            subject_name = key.split("_", 1)[0].strip().casefold()
+            rank = subject_rank.get(subject_name, 10**6)
+            return (rank, original_idx)
+
+        return [entry for _idx, entry in sorted(indexed_pairs, key=_sort_key)]
 
     def _has_exportable_data(self) -> bool:
         for _label, key in self._iter_export_subjects():
