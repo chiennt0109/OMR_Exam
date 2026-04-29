@@ -1180,6 +1180,47 @@ class ExportReportsDialog(QDialog):
             wb.save(Path(path))
             QMessageBox.information(self, "Báo cáo", f"Đã xuất Excel:\n{path}")
             return
+        if report_name == self.REPORT_RECHECK_SUMMARY:
+            ws = wb.active
+            ws.title = "bao_cao_phuc_tra"
+            title = "BÁO CÁO PHÚC TRA"
+            ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max(1, len(self._last_report.headers)))
+            ws.cell(row=1, column=1, value=title)
+            ws.cell(row=1, column=1).font = Font(size=16, bold=True, color="0B4EA2")
+            ws.cell(row=1, column=1).alignment = Alignment(horizontal="center", vertical="center")
+            ws.row_dimensions[1].height = 28
+            ws.append([])
+            for row in self._last_report.rows:
+                ws.append(row)
+            data_start_row = 3
+            for row_idx in range(data_start_row, ws.max_row + 1):
+                first_col = str(ws.cell(row=row_idx, column=1).value or "").strip()
+                second_col = str(ws.cell(row=row_idx, column=2).value or "").strip()
+                third_col = str(ws.cell(row=row_idx, column=3).value or "").strip()
+                is_section = first_col.startswith(("I.", "II.", "III."))
+                is_subheader = first_col == "" and (
+                    (second_col == "Môn" and third_col == "")
+                    or (second_col == "Loại" and third_col == "Môn")
+                )
+                for col_idx in range(1, len(self._last_report.headers) + 1):
+                    cell = ws.cell(row=row_idx, column=col_idx)
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                    if col_idx in {2, 7}:
+                        cell.alignment = Alignment(horizontal="left", vertical="center")
+                    if col_idx == 5 and isinstance(cell.value, str) and any(ch.isalpha() for ch in cell.value):
+                        cell.alignment = Alignment(horizontal="left", vertical="center")
+                    if is_section:
+                        cell.fill = PatternFill(fill_type="solid", fgColor="1677E5")
+                        cell.font = Font(bold=True, color="FFFFFF")
+                    elif is_subheader:
+                        cell.font = Font(bold=True, color="1F2D3D")
+                        cell.fill = PatternFill(fill_type="solid", fgColor="E8EEF7")
+            widths = [26, 26, 20, 14, 30, 20, 42]
+            for idx, width in enumerate(widths, start=1):
+                ws.column_dimensions[get_column_letter(idx)].width = width
+            wb.save(Path(path))
+            QMessageBox.information(self, "Báo cáo", f"Đã xuất Excel:\n{path}")
+            return
         if report_name == self.REPORT_CLASS_SUMMARY and self._last_report.grouped_rows:
             if wb.active:
                 wb.remove(wb.active)
