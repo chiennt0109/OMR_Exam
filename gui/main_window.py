@@ -4826,11 +4826,28 @@ class MainWindow(QMainWindow):
 
         indexed_pairs = list(enumerate(pairs))
 
+        def _subject_rank_from_key(subject_key: str) -> int:
+            key = str(subject_key or "").strip()
+            if not key:
+                return 10**6
+            cfg = self._subject_config_by_subject_key(key) or {}
+            candidates = [
+                str(cfg.get("name", "") or "").strip(),
+                str(cfg.get("subject", "") or "").strip(),
+                key,
+                key.split("_", 1)[0].strip(),
+            ]
+            for candidate in candidates:
+                if not candidate:
+                    continue
+                rank = subject_rank.get(candidate.casefold())
+                if rank is not None:
+                    return rank
+            return 10**6
+
         def _sort_key(item: tuple[int, tuple[str, str]]) -> tuple[int, int]:
             original_idx, entry = item
-            key = str(entry[1] or "").strip()
-            subject_name = key.split("_", 1)[0].strip().casefold()
-            rank = subject_rank.get(subject_name, 10**6)
+            rank = _subject_rank_from_key(str(entry[1] or ""))
             return (rank, original_idx)
 
         return [entry for _idx, entry in sorted(indexed_pairs, key=_sort_key)]
