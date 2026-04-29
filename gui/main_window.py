@@ -6691,7 +6691,7 @@ class MainWindow(QMainWindow):
                 cfg,
                 session_id=session_id,
                 session=session,
-                include_generated=False,
+                include_generated=True,
             )
             candidates_by_idx[idx] = candidates
             all_candidates.extend(candidates)
@@ -6760,7 +6760,7 @@ class MainWindow(QMainWindow):
             cfg,
             session_id=session_id,
             session=session,
-            include_generated=False,
+            include_generated=True,
         )
         for key in candidates:
             rows = self.scan_results_by_subject.get(key)
