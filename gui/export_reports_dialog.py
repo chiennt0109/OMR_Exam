@@ -132,12 +132,16 @@ class ExportReportsDialog(QDialog):
         self.btn_preview = QPushButton("Xem trước")
         self.btn_export_excel = QPushButton("Xuất Excel")
         self.btn_export_pdf = QPushButton("Xuất PDF")
+        self.btn_package_recheck_by_subject = QPushButton("Đóng gói phúc tra theo môn")
+        self.btn_package_recheck_by_class = QPushButton("Đóng gói phúc tra theo lớp")
         self.btn_close = QPushButton("Đóng")
         bottom_ribbon = QHBoxLayout()
         bottom_ribbon.addStretch(1)
         bottom_ribbon.addWidget(self.btn_preview)
         bottom_ribbon.addWidget(self.btn_export_excel)
         bottom_ribbon.addWidget(self.btn_export_pdf)
+        bottom_ribbon.addWidget(self.btn_package_recheck_by_subject)
+        bottom_ribbon.addWidget(self.btn_package_recheck_by_class)
         bottom_ribbon.addWidget(self.btn_close)
 
         layout = QGridLayout(self)
@@ -157,6 +161,8 @@ class ExportReportsDialog(QDialog):
         self.btn_preview.clicked.connect(self.preview_report)
         self.btn_export_excel.clicked.connect(self.export_excel)
         self.btn_export_pdf.clicked.connect(self.export_pdf)
+        self.btn_package_recheck_by_subject.clicked.connect(lambda: self._package_recheck("subject"))
+        self.btn_package_recheck_by_class.clicked.connect(lambda: self._package_recheck("class"))
         self.btn_close.clicked.connect(self.close)
 
         self._last_report: ReportTable | None = None
@@ -425,6 +431,16 @@ class ExportReportsDialog(QDialog):
         self.row_class.setVisible(text == self.REPORT_CLASS_SUMMARY)
         self.row_absent_group.setVisible(text == self.REPORT_ABSENT_EXAM)
         self.row_combo.setVisible(text in {self.REPORT_COMBO_RANK, self.REPORT_COMBO_DIST, self.REPORT_CLASS_SUMMARY})
+        is_recheck_report = text == self.REPORT_RECHECK_SUMMARY
+        self.btn_package_recheck_by_subject.setVisible(is_recheck_report)
+        self.btn_package_recheck_by_class.setVisible(is_recheck_report)
+
+    def _package_recheck(self, group_by: str) -> None:
+        fn = getattr(self.main_window, "_export_recheck_package", None)
+        if not callable(fn):
+            QMessageBox.warning(self, "Báo cáo phúc tra", "Không tìm thấy chức năng đóng gói bài phúc tra.")
+            return
+        fn(group_by=group_by)
 
     @staticmethod
     def _is_missing_room_text(room_text: str) -> bool:
@@ -860,7 +876,7 @@ class ExportReportsDialog(QDialog):
         return ReportTable(headers, all_rows, grouped)
 
     def build_recheck_summary_report(self) -> ReportTable:
-        headers = ["Mục", "Môn", "SBD", "Họ tên", "Giá trị 1", "Giá trị 2", "Giải trình/Ghi chú"]
+        headers = ["Mục", "Nội dung", "Môn", "SBD", "Họ tên", "Giá trị", "Ghi chú"]
         rows: list[list[object]] = []
         session_id = str(getattr(self.main_window, "current_session_id", "") or "").strip()
         session_cfg = (getattr(self.main_window, "session", None).config or {}) if getattr(self.main_window, "session", None) else {}
@@ -895,7 +911,7 @@ class ExportReportsDialog(QDialog):
                 if old_score is not None and new_score is not None and new_score > old_score and sid in imported_set:
                     latest_increase_by_sid[sid] = item
             rate = f"{(len(latest_increase_by_sid) * 100.0 / len(imported_set)):.2f}%" if imported_set else "0.00%"
-            summary_rows.append(["", label, "", "", len(imported_set), len(latest_increase_by_sid), rate])
+            summary_rows.append(["", "Thống kê phúc tra", label, "", "", f"DS: {len(imported_set)} | Lên điểm: {len(latest_increase_by_sid)}", rate])
             if not latest_increase_by_sid:
                 continue
 
@@ -920,10 +936,10 @@ class ExportReportsDialog(QDialog):
                 explain = str((item or {}).get("change_text", "") or "").strip()
                 if not explain:
                     explain = str(((item or {}).get("payload", {}) or {}).get("note", "") or "").strip()
-                increased_rows.append(["", label, sid, name, old_score if old_score is not None else "", new_score if new_score is not None else "", explain])
+                increased_rows.append(["", "Bài lên điểm", label, sid, name, f"{old_score if old_score is not None else ''} -> {new_score if new_score is not None else ''}", explain])
             if increased_rows:
                 detail_block_rows.append([f"Môn: {label}", "", "", "", "", "", ""])
-                detail_block_rows.append(["", "Môn", "SBD", "Họ tên", "Điểm cũ", "Điểm mới", "Giải trình/Ghi chú"])
+                detail_block_rows.append(["", "Loại", "Môn", "SBD", "Họ tên", "Điểm cũ -> mới", "Giải trình/Ghi chú"])
                 detail_block_rows.extend(increased_rows)
 
         if not has_any_recheck_list:
