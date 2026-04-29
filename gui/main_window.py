@@ -15767,7 +15767,9 @@ class MainWindow(QMainWindow):
         ws = wb.active
         ws.title = "scores_by_student"
 
-        subjects = sorted(set(str(k or "").strip() for k in (self.scoring_results_by_subject or {}).keys() if str(k or "").strip()))
+        subjects = [key for _label, key in self._iter_export_subjects() if str(key or "").strip()]
+        if not subjects:
+            subjects = sorted(set(str(k or "").strip() for k in (self.scoring_results_by_subject or {}).keys() if str(k or "").strip()))
         header = ["Student ID", "Name"] + subjects
         ws.append(header)
 
