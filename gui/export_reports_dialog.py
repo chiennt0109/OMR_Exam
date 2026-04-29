@@ -40,6 +40,7 @@ class ExportReportsDialog(QDialog):
     REPORT_COMBO_RANK = "Bảng điểm theo tổ hợp"
     REPORT_COMBO_DIST = "Phổ điểm tổ hợp"
     REPORT_CLASS_SUMMARY = "Tổng hợp theo lớp"
+    REPORT_RECHECK_SUMMARY = "Báo cáo phúc tra"
     REPORT_ABSENT_EXAM = "Thống kê học sinh vắng thi"
     REPORT_EXAM_MINUTES = "Biên bản kỳ thi"
     ABSENT_GROUP_BY_CLASS = "Theo lớp"
@@ -67,6 +68,7 @@ class ExportReportsDialog(QDialog):
             self.REPORT_COMBO_RANK,
             self.REPORT_COMBO_DIST,
             self.REPORT_CLASS_SUMMARY,
+            self.REPORT_RECHECK_SUMMARY,
             self.REPORT_ABSENT_EXAM,
             self.REPORT_EXAM_MINUTES,
         ]:
@@ -857,6 +859,77 @@ class ExportReportsDialog(QDialog):
             all_rows.extend(rows)
         return ReportTable(headers, all_rows, grouped)
 
+    def build_recheck_summary_report(self) -> ReportTable:
+        headers = ["Mục", "Môn", "SBD", "Họ tên", "Giá trị 1", "Giá trị 2", "Giải trình/Ghi chú"]
+        rows: list[list[object]] = []
+        session_id = str(getattr(self.main_window, "current_session_id", "") or "").strip()
+        session_cfg = (getattr(self.main_window, "session", None).config or {}) if getattr(self.main_window, "session", None) else {}
+        recheck_sid_lists = session_cfg.get("recheck_sid_lists", {}) if isinstance(session_cfg.get("recheck_sid_lists", {}), dict) else {}
+        profiles = self._student_profile_map()
+        history_all = []
+        try:
+            history_all = list(self.main_window.database.fetch_recheck_history(session_id) or []) if session_id else []
+        except Exception:
+            history_all = []
+        history_by_subject: dict[str, list[dict]] = {}
+        for entry in history_all:
+            key = str((entry or {}).get("subject_key", "") or "").strip()
+            if not key:
+                continue
+            history_by_subject.setdefault(key, []).append(entry)
+
+        rows.append(["I. THỐNG KÊ PHÚC TRA THEO MÔN", "", "", "", "", "", ""])
+        rows.append(["", "Môn", "", "", "Danh sách phúc tra", "Bài lên điểm", "Tỷ lệ lên điểm / DS phúc tra"])
+        for label, key in self._collect_subject_pairs():
+            imported_sids = [str(x).strip() for x in (recheck_sid_lists.get(key, []) or []) if str(x).strip()]
+            imported_set = set(imported_sids)
+            increased_entries = []
+            seen_sid: set[str] = set()
+            for item in history_by_subject.get(key, []):
+                sid = str((item or {}).get("student_code", "") or "").strip()
+                old_score = self._safe_float((item or {}).get("old_score", ""))
+                new_score = self._safe_float((item or {}).get("new_score", ""))
+                if sid in seen_sid:
+                    continue
+                if old_score is not None and new_score is not None and new_score > old_score and sid in imported_set:
+                    increased_entries.append(item)
+                    seen_sid.add(sid)
+            rate = f"{(len(increased_entries) * 100.0 / len(imported_set)):.2f}%" if imported_set else "0.00%"
+            rows.append(["", label, "", "", len(imported_set), len(increased_entries), rate])
+
+        rows.append(["", "", "", "", "", "", ""])
+        rows.append(["II. DANH SÁCH BÀI LÊN ĐIỂM (GROUP THEO MÔN)", "", "", "", "", "", ""])
+        for label, key in self._collect_subject_pairs():
+            imported_sids = {str(x).strip() for x in (recheck_sid_lists.get(key, []) or []) if str(x).strip()}
+            increased_rows: list[list[object]] = []
+            latest_by_sid: dict[str, dict] = {}
+            for item in history_by_subject.get(key, []):
+                sid = str((item or {}).get("student_code", "") or "").strip()
+                if not sid or sid not in imported_sids:
+                    continue
+                old_score = self._safe_float((item or {}).get("old_score", ""))
+                new_score = self._safe_float((item or {}).get("new_score", ""))
+                if old_score is None or new_score is None or new_score <= old_score:
+                    continue
+                latest_by_sid[sid] = item
+            for sid in sorted(latest_by_sid.keys()):
+                item = latest_by_sid[sid]
+                profile = profiles.get(sid, {})
+                name = str(profile.get("name", "") or "").strip()
+                old_score = self._safe_float((item or {}).get("old_score", ""))
+                new_score = self._safe_float((item or {}).get("new_score", ""))
+                explain = str((item or {}).get("change_text", "") or "").strip()
+                if not explain:
+                    explain = str(((item or {}).get("payload", {}) or {}).get("note", "") or "").strip()
+                increased_rows.append(["", label, sid, name, old_score if old_score is not None else "", new_score if new_score is not None else "", explain])
+            if increased_rows:
+                rows.append([f"Môn: {label}", "", "", "", "", "", ""])
+                rows.append(["", "Môn", "SBD", "Họ tên", "Điểm cũ", "Điểm mới", "Giải trình/Ghi chú"])
+                rows.extend(increased_rows)
+            else:
+                rows.append([f"Môn: {label}", "", "", "", "", "", "Không có bài lên điểm từ danh sách phúc tra import."])
+        return ReportTable(headers, rows)
+
     @staticmethod
     def _compact_columns_for_rows(headers: list[str], rows: list[list[object]], fixed_cols: int = 6) -> tuple[list[str], list[list[object]]]:
         if not headers:
@@ -882,6 +955,8 @@ class ExportReportsDialog(QDialog):
             return self.build_combo_ranking_report()
         if name == self.REPORT_COMBO_DIST:
             return self.build_combo_distribution_report()
+        if name == self.REPORT_RECHECK_SUMMARY:
+            return self.build_recheck_summary_report()
         if name == self.REPORT_ABSENT_EXAM:
             return self.build_absent_exam_report()
         if name == self.REPORT_EXAM_MINUTES:
