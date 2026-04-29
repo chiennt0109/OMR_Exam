@@ -40,6 +40,7 @@ class ExportReportsDialog(QDialog):
     REPORT_COMBO_RANK = "Bảng điểm theo tổ hợp"
     REPORT_COMBO_DIST = "Phổ điểm tổ hợp"
     REPORT_CLASS_SUMMARY = "Tổng hợp theo lớp"
+    REPORT_RECHECK_SUMMARY = "Báo cáo phúc tra"
     REPORT_ABSENT_EXAM = "Thống kê học sinh vắng thi"
     REPORT_EXAM_MINUTES = "Biên bản kỳ thi"
     ABSENT_GROUP_BY_CLASS = "Theo lớp"
@@ -67,6 +68,7 @@ class ExportReportsDialog(QDialog):
             self.REPORT_COMBO_RANK,
             self.REPORT_COMBO_DIST,
             self.REPORT_CLASS_SUMMARY,
+            self.REPORT_RECHECK_SUMMARY,
             self.REPORT_ABSENT_EXAM,
             self.REPORT_EXAM_MINUTES,
         ]:
@@ -857,6 +859,34 @@ class ExportReportsDialog(QDialog):
             all_rows.extend(rows)
         return ReportTable(headers, all_rows, grouped)
 
+    def build_recheck_summary_report(self) -> ReportTable:
+        headers = ["Môn", "Tổng bài", "Số bài phúc tra", "Tỷ lệ phúc tra"]
+        rows: list[list[object]] = []
+        for label, key in self._collect_subject_pairs():
+            subject_rows = self._score_rows_for_subject_cached(key)
+            total_rows = 0
+            recheck_rows = 0
+            for row in subject_rows:
+                sid = str((row or {}).get("student_id", "") or "").strip()
+                if not sid:
+                    continue
+                total_rows += 1
+                note_text = str((row or {}).get("note", "") or "").casefold()
+                status_text = str((row or {}).get("status", "") or "").casefold()
+                marked_recheck = (
+                    (row or {}).get("baithiphuctra", "") not in {"", None, False, 0, "0"}
+                    or (row or {}).get("recheck_score", "") not in {"", None}
+                    or "phúc tra" in note_text
+                    or "phuc tra" in note_text
+                    or "phúc tra" in status_text
+                    or "phuc tra" in status_text
+                )
+                if marked_recheck:
+                    recheck_rows += 1
+            rate = f"{(recheck_rows * 100.0 / total_rows):.2f}%" if total_rows > 0 else "0.00%"
+            rows.append([label, total_rows, recheck_rows, rate])
+        return ReportTable(headers, rows)
+
     @staticmethod
     def _compact_columns_for_rows(headers: list[str], rows: list[list[object]], fixed_cols: int = 6) -> tuple[list[str], list[list[object]]]:
         if not headers:
@@ -882,6 +912,8 @@ class ExportReportsDialog(QDialog):
             return self.build_combo_ranking_report()
         if name == self.REPORT_COMBO_DIST:
             return self.build_combo_distribution_report()
+        if name == self.REPORT_RECHECK_SUMMARY:
+            return self.build_recheck_summary_report()
         if name == self.REPORT_ABSENT_EXAM:
             return self.build_absent_exam_report()
         if name == self.REPORT_EXAM_MINUTES:
