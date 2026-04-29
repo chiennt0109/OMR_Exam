@@ -2827,30 +2827,46 @@ class MainWindow(QMainWindow):
 
         tables_row = QHBoxLayout()
 
-        self.subjects_table = QTableWidget(0, 1)
-        self.subjects_table.setHorizontalHeaderLabels(["Subject Name"])
+        subject_group = QGroupBox("Môn học")
+        subject_layout = QVBoxLayout(subject_group)
+        self.subjects_table = QTableWidget(0, 2)
+        self.subjects_table.setHorizontalHeaderLabels(["STT", "Tên môn"])
         self.subjects_table.verticalHeader().setVisible(False)
         self.subjects_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.subjects_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.subjects_table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.subjects_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.subjects_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.subjects_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.subjects_table.itemSelectionChanged.connect(lambda: self._handle_subject_management_selection("subjects"))
+        subject_layout.addWidget(self.subjects_table)
+        subject_order_row = QHBoxLayout()
+        btn_subject_up = QPushButton("↑ Lên")
+        btn_subject_up.clicked.connect(lambda: self._move_subject_management_row("subjects", -1))
+        btn_subject_down = QPushButton("↓ Xuống")
+        btn_subject_down.clicked.connect(lambda: self._move_subject_management_row("subjects", 1))
+        subject_order_row.addWidget(btn_subject_up)
+        subject_order_row.addWidget(btn_subject_down)
+        subject_order_row.addStretch()
+        subject_layout.addLayout(subject_order_row)
 
+        grade_group = QGroupBox("Khối")
+        grade_layout = QVBoxLayout(grade_group)
         self.grades_table = QTableWidget(0, 1)
-        self.grades_table.setHorizontalHeaderLabels(["Grade"])
+        self.grades_table.setHorizontalHeaderLabels(["Tên khối"])
         self.grades_table.verticalHeader().setVisible(False)
         self.grades_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.grades_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.grades_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.grades_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.grades_table.itemSelectionChanged.connect(lambda: self._handle_subject_management_selection("grades"))
+        grade_layout.addWidget(self.grades_table)
 
-        tables_row.addWidget(self.subjects_table)
-        tables_row.addWidget(self.grades_table)
+        tables_row.addWidget(subject_group)
+        tables_row.addWidget(grade_group)
         layout.addLayout(tables_row)
 
         form = QFormLayout()
-        self.subject_management_label = QLabel("Subject Name")
+        self.subject_management_label = QLabel("Tên môn")
         self.subject_management_editor = QLineEdit()
         self.subject_management_editor.setPlaceholderText("Nhập giá trị đang chọn")
         form.addRow(self.subject_management_label, self.subject_management_editor)
@@ -2882,7 +2898,7 @@ class MainWindow(QMainWindow):
 
     def _set_subject_management_mode(self, mode: str) -> None:
         self.subject_management_mode = mode
-        self.subject_management_label.setText("Subject Name" if mode == "subjects" else "Grade")
+        self.subject_management_label.setText("Tên môn" if mode == "subjects" else "Tên khối")
 
     def _refresh_subject_management_tables(self) -> None:
         self.subjects = list(self.subject_catalog)
@@ -2892,7 +2908,11 @@ class MainWindow(QMainWindow):
             table.blockSignals(True)
             table.setRowCount(len(values))
             for row, value in enumerate(values):
-                table.setItem(row, 0, QTableWidgetItem(value))
+                if mode == "subjects":
+                    table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
+                    table.setItem(row, 1, QTableWidgetItem(value))
+                else:
+                    table.setItem(row, 0, QTableWidgetItem(value))
             table.clearSelection()
             table.blockSignals(False)
         self._subject_management_add()
@@ -2942,6 +2962,20 @@ class MainWindow(QMainWindow):
         self._apply_subject_management_values()
         self._refresh_subject_management_tables()
         self._set_subject_management_mode(self.subject_management_mode)
+
+    def _move_subject_management_row(self, mode: str, delta: int) -> None:
+        table = self._subject_management_table(mode)
+        row = table.currentRow()
+        values = self._subject_management_values(mode)
+        target = row + delta
+        if row < 0 or row >= len(values) or target < 0 or target >= len(values):
+            return
+        values[row], values[target] = values[target], values[row]
+        self._set_subject_management_mode(mode)
+        self._apply_subject_management_values()
+        self._refresh_subject_management_tables()
+        table = self._subject_management_table(mode)
+        table.selectRow(target)
 
     def _apply_subject_management_values(self) -> None:
         old_subjects = list(self.subject_catalog)
@@ -4778,6 +4812,14 @@ class MainWindow(QMainWindow):
 
     def _iter_export_subjects(self) -> list[tuple[str, str]]:
         pairs: list[tuple[str, str]] = []
+        subject_rank = {str(name).strip().casefold(): idx for idx, name in enumerate(self.subject_catalog or [])}
+
+        def _sort_key(entry: tuple[str, str]) -> tuple[int, str]:
+            key = str(entry[1] or "").strip()
+            subject_name = key.split("_", 1)[0].strip().casefold()
+            rank = subject_rank.get(subject_name, 10**6)
+            return (rank, key.casefold())
+
         for cfg in self._subject_configs_for_scoring():
             key = str(self._subject_key_from_cfg(cfg) or "").strip()
             if not key:
@@ -4787,7 +4829,7 @@ class MainWindow(QMainWindow):
         if not pairs:
             for key in sorted(str(k) for k in (self.scoring_results_by_subject or {}).keys() if str(k).strip()):
                 pairs.append((key, key))
-        return pairs
+        return sorted(pairs, key=_sort_key)
 
     def _has_exportable_data(self) -> bool:
         for _label, key in self._iter_export_subjects():
