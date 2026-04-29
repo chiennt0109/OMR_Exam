@@ -40,6 +40,7 @@ class ExportReportsDialog(QDialog):
     REPORT_COMBO_RANK = "Bảng điểm theo tổ hợp"
     REPORT_COMBO_DIST = "Phổ điểm tổ hợp"
     REPORT_CLASS_SUMMARY = "Tổng hợp theo lớp"
+    REPORT_RECHECK_SUMMARY = "Báo cáo phúc tra"
     REPORT_ABSENT_EXAM = "Thống kê học sinh vắng thi"
     REPORT_EXAM_MINUTES = "Biên bản kỳ thi"
     ABSENT_GROUP_BY_CLASS = "Theo lớp"
@@ -67,6 +68,7 @@ class ExportReportsDialog(QDialog):
             self.REPORT_COMBO_RANK,
             self.REPORT_COMBO_DIST,
             self.REPORT_CLASS_SUMMARY,
+            self.REPORT_RECHECK_SUMMARY,
             self.REPORT_ABSENT_EXAM,
             self.REPORT_EXAM_MINUTES,
         ]:
@@ -130,12 +132,16 @@ class ExportReportsDialog(QDialog):
         self.btn_preview = QPushButton("Xem trước")
         self.btn_export_excel = QPushButton("Xuất Excel")
         self.btn_export_pdf = QPushButton("Xuất PDF")
+        self.btn_package_recheck_by_subject = QPushButton("Đóng gói phúc tra theo môn")
+        self.btn_package_recheck_by_class = QPushButton("Đóng gói phúc tra theo lớp")
         self.btn_close = QPushButton("Đóng")
         bottom_ribbon = QHBoxLayout()
         bottom_ribbon.addStretch(1)
         bottom_ribbon.addWidget(self.btn_preview)
         bottom_ribbon.addWidget(self.btn_export_excel)
         bottom_ribbon.addWidget(self.btn_export_pdf)
+        bottom_ribbon.addWidget(self.btn_package_recheck_by_subject)
+        bottom_ribbon.addWidget(self.btn_package_recheck_by_class)
         bottom_ribbon.addWidget(self.btn_close)
 
         layout = QGridLayout(self)
@@ -155,6 +161,8 @@ class ExportReportsDialog(QDialog):
         self.btn_preview.clicked.connect(self.preview_report)
         self.btn_export_excel.clicked.connect(self.export_excel)
         self.btn_export_pdf.clicked.connect(self.export_pdf)
+        self.btn_package_recheck_by_subject.clicked.connect(lambda: self._package_recheck("subject"))
+        self.btn_package_recheck_by_class.clicked.connect(lambda: self._package_recheck("class"))
         self.btn_close.clicked.connect(self.close)
 
         self._last_report: ReportTable | None = None
@@ -423,6 +431,16 @@ class ExportReportsDialog(QDialog):
         self.row_class.setVisible(text == self.REPORT_CLASS_SUMMARY)
         self.row_absent_group.setVisible(text == self.REPORT_ABSENT_EXAM)
         self.row_combo.setVisible(text in {self.REPORT_COMBO_RANK, self.REPORT_COMBO_DIST, self.REPORT_CLASS_SUMMARY})
+        is_recheck_report = text == self.REPORT_RECHECK_SUMMARY
+        self.btn_package_recheck_by_subject.setVisible(is_recheck_report)
+        self.btn_package_recheck_by_class.setVisible(is_recheck_report)
+
+    def _package_recheck(self, group_by: str) -> None:
+        fn = getattr(self.main_window, "_export_recheck_package", None)
+        if not callable(fn):
+            QMessageBox.warning(self, "Báo cáo phúc tra", "Không tìm thấy chức năng đóng gói bài phúc tra.")
+            return
+        fn(group_by=group_by)
 
     @staticmethod
     def _is_missing_room_text(room_text: str) -> bool:
@@ -857,6 +875,85 @@ class ExportReportsDialog(QDialog):
             all_rows.extend(rows)
         return ReportTable(headers, all_rows, grouped)
 
+    def build_recheck_summary_report(self) -> ReportTable:
+        headers = ["Mục", "Nội dung", "Môn", "SBD", "Họ tên", "Giá trị", "Ghi chú"]
+        rows: list[list[object]] = []
+        session_id = str(getattr(self.main_window, "current_session_id", "") or "").strip()
+        session_cfg = (getattr(self.main_window, "session", None).config or {}) if getattr(self.main_window, "session", None) else {}
+        recheck_sid_lists = session_cfg.get("recheck_sid_lists", {}) if isinstance(session_cfg.get("recheck_sid_lists", {}), dict) else {}
+        profiles = self._student_profile_map()
+        history_all = []
+        try:
+            history_all = list(self.main_window.database.fetch_recheck_history(session_id) or []) if session_id else []
+        except Exception:
+            history_all = []
+        history_by_subject: dict[str, list[dict]] = {}
+        for entry in history_all:
+            key = str((entry or {}).get("subject_key", "") or "").strip()
+            if not key:
+                continue
+            history_by_subject.setdefault(key, []).append(entry)
+
+        summary_rows: list[list[object]] = []
+        detail_block_rows: list[list[object]] = []
+        has_any_recheck_list = False
+        for label, key in self._collect_subject_pairs():
+            imported_sids = [str(x).strip() for x in (recheck_sid_lists.get(key, []) or []) if str(x).strip()]
+            imported_set = set(imported_sids)
+            if not imported_set:
+                continue
+            has_any_recheck_list = True
+            latest_increase_by_sid: dict[str, dict] = {}
+            for item in history_by_subject.get(key, []):
+                sid = str((item or {}).get("student_code", "") or "").strip()
+                old_score = self._safe_float((item or {}).get("old_score", ""))
+                new_score = self._safe_float((item or {}).get("new_score", ""))
+                if old_score is not None and new_score is not None and new_score > old_score and sid in imported_set:
+                    latest_increase_by_sid[sid] = item
+            rate = f"{(len(latest_increase_by_sid) * 100.0 / len(imported_set)):.2f}%" if imported_set else "0.00%"
+            summary_rows.append(["", "Thống kê phúc tra", label, "", "", f"DS: {len(imported_set)} | Lên điểm: {len(latest_increase_by_sid)}", rate])
+            if not latest_increase_by_sid:
+                continue
+
+            imported_sids = imported_set
+            increased_rows: list[list[object]] = []
+            latest_by_sid: dict[str, dict] = {}
+            for item in history_by_subject.get(key, []):
+                sid = str((item or {}).get("student_code", "") or "").strip()
+                if not sid or sid not in imported_sids:
+                    continue
+                old_score = self._safe_float((item or {}).get("old_score", ""))
+                new_score = self._safe_float((item or {}).get("new_score", ""))
+                if old_score is None or new_score is None or new_score <= old_score:
+                    continue
+                latest_by_sid[sid] = item
+            for sid in sorted(latest_by_sid.keys()):
+                item = latest_by_sid[sid]
+                profile = profiles.get(sid, {})
+                name = str(profile.get("name", "") or "").strip()
+                old_score = self._safe_float((item or {}).get("old_score", ""))
+                new_score = self._safe_float((item or {}).get("new_score", ""))
+                explain = str((item or {}).get("change_text", "") or "").strip()
+                if not explain:
+                    explain = str(((item or {}).get("payload", {}) or {}).get("note", "") or "").strip()
+                increased_rows.append(["", "Bài lên điểm", label, sid, name, f"{old_score if old_score is not None else ''} -> {new_score if new_score is not None else ''}", explain])
+            if increased_rows:
+                detail_block_rows.append([f"Môn: {label}", "", "", "", "", "", ""])
+                detail_block_rows.append(["", "Loại", "Môn", "SBD", "Họ tên", "Điểm cũ -> mới", "Giải trình/Ghi chú"])
+                detail_block_rows.extend(increased_rows)
+
+        if not has_any_recheck_list:
+            rows.append(["", "Không có môn có danh sách phúc tra.", "", "", "", "", ""])
+            return ReportTable(headers, rows)
+
+        rows.append(["I. THỐNG KÊ PHÚC TRA THEO MÔN", "", "", "", "", "", ""])
+        rows.append(["", "Môn", "", "", "Danh sách phúc tra", "Bài lên điểm", "Tỷ lệ lên điểm / DS phúc tra"])
+        rows.extend(summary_rows)
+        rows.append(["", "", "", "", "", "", ""])
+        rows.append(["II. DANH SÁCH BÀI LÊN ĐIỂM (GROUP THEO MÔN)", "", "", "", "", "", ""])
+        rows.extend(detail_block_rows)
+        return ReportTable(headers, rows)
+
     @staticmethod
     def _compact_columns_for_rows(headers: list[str], rows: list[list[object]], fixed_cols: int = 6) -> tuple[list[str], list[list[object]]]:
         if not headers:
@@ -882,6 +979,8 @@ class ExportReportsDialog(QDialog):
             return self.build_combo_ranking_report()
         if name == self.REPORT_COMBO_DIST:
             return self.build_combo_distribution_report()
+        if name == self.REPORT_RECHECK_SUMMARY:
+            return self.build_recheck_summary_report()
         if name == self.REPORT_ABSENT_EXAM:
             return self.build_absent_exam_report()
         if name == self.REPORT_EXAM_MINUTES:
@@ -1076,6 +1175,47 @@ class ExportReportsDialog(QDialog):
                         cell.font = Font(bold=True, color="1F2D3D")
                         cell.fill = PatternFill(fill_type="solid", fgColor="E8EEF7")
             widths = [26, 28, 18, 14, 28, 16, 36]
+            for idx, width in enumerate(widths, start=1):
+                ws.column_dimensions[get_column_letter(idx)].width = width
+            wb.save(Path(path))
+            QMessageBox.information(self, "Báo cáo", f"Đã xuất Excel:\n{path}")
+            return
+        if report_name == self.REPORT_RECHECK_SUMMARY:
+            ws = wb.active
+            ws.title = "bao_cao_phuc_tra"
+            title = "BÁO CÁO PHÚC TRA"
+            ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max(1, len(self._last_report.headers)))
+            ws.cell(row=1, column=1, value=title)
+            ws.cell(row=1, column=1).font = Font(size=16, bold=True, color="0B4EA2")
+            ws.cell(row=1, column=1).alignment = Alignment(horizontal="center", vertical="center")
+            ws.row_dimensions[1].height = 28
+            ws.append([])
+            for row in self._last_report.rows:
+                ws.append(row)
+            data_start_row = 3
+            for row_idx in range(data_start_row, ws.max_row + 1):
+                first_col = str(ws.cell(row=row_idx, column=1).value or "").strip()
+                second_col = str(ws.cell(row=row_idx, column=2).value or "").strip()
+                third_col = str(ws.cell(row=row_idx, column=3).value or "").strip()
+                is_section = first_col.startswith(("I.", "II.", "III."))
+                is_subheader = first_col == "" and (
+                    (second_col == "Môn" and third_col == "")
+                    or (second_col == "Loại" and third_col == "Môn")
+                )
+                for col_idx in range(1, len(self._last_report.headers) + 1):
+                    cell = ws.cell(row=row_idx, column=col_idx)
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                    if col_idx in {2, 7}:
+                        cell.alignment = Alignment(horizontal="left", vertical="center")
+                    if col_idx == 5 and isinstance(cell.value, str) and any(ch.isalpha() for ch in cell.value):
+                        cell.alignment = Alignment(horizontal="left", vertical="center")
+                    if is_section:
+                        cell.fill = PatternFill(fill_type="solid", fgColor="1677E5")
+                        cell.font = Font(bold=True, color="FFFFFF")
+                    elif is_subheader:
+                        cell.font = Font(bold=True, color="1F2D3D")
+                        cell.fill = PatternFill(fill_type="solid", fgColor="E8EEF7")
+            widths = [26, 26, 20, 14, 30, 20, 42]
             for idx, width in enumerate(widths, start=1):
                 ws.column_dimensions[get_column_letter(idx)].width = width
             wb.save(Path(path))
