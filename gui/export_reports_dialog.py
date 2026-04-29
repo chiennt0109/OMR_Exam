@@ -880,11 +880,13 @@ class ExportReportsDialog(QDialog):
 
         summary_rows: list[list[object]] = []
         detail_block_rows: list[list[object]] = []
+        has_any_recheck_list = False
         for label, key in self._collect_subject_pairs():
             imported_sids = [str(x).strip() for x in (recheck_sid_lists.get(key, []) or []) if str(x).strip()]
             imported_set = set(imported_sids)
             if not imported_set:
                 continue
+            has_any_recheck_list = True
             latest_increase_by_sid: dict[str, dict] = {}
             for item in history_by_subject.get(key, []):
                 sid = str((item or {}).get("student_code", "") or "").strip()
@@ -892,10 +894,10 @@ class ExportReportsDialog(QDialog):
                 new_score = self._safe_float((item or {}).get("new_score", ""))
                 if old_score is not None and new_score is not None and new_score > old_score and sid in imported_set:
                     latest_increase_by_sid[sid] = item
-            if not latest_increase_by_sid:
-                continue
             rate = f"{(len(latest_increase_by_sid) * 100.0 / len(imported_set)):.2f}%" if imported_set else "0.00%"
             summary_rows.append(["", label, "", "", len(imported_set), len(latest_increase_by_sid), rate])
+            if not latest_increase_by_sid:
+                continue
 
             imported_sids = imported_set
             increased_rows: list[list[object]] = []
@@ -924,8 +926,8 @@ class ExportReportsDialog(QDialog):
                 detail_block_rows.append(["", "Môn", "SBD", "Họ tên", "Điểm cũ", "Điểm mới", "Giải trình/Ghi chú"])
                 detail_block_rows.extend(increased_rows)
 
-        if not summary_rows:
-            rows.append(["", "Không có môn phúc tra có thay đổi điểm.", "", "", "", "", ""])
+        if not has_any_recheck_list:
+            rows.append(["", "Không có môn có danh sách phúc tra.", "", "", "", "", ""])
             return ReportTable(headers, rows)
 
         rows.append(["I. THỐNG KÊ PHÚC TRA THEO MÔN", "", "", "", "", "", ""])
