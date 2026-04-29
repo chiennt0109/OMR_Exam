@@ -885,21 +885,17 @@ class ExportReportsDialog(QDialog):
             imported_set = set(imported_sids)
             if not imported_set:
                 continue
-            increased_entries = []
-            seen_sid: set[str] = set()
+            latest_increase_by_sid: dict[str, dict] = {}
             for item in history_by_subject.get(key, []):
                 sid = str((item or {}).get("student_code", "") or "").strip()
                 old_score = self._safe_float((item or {}).get("old_score", ""))
                 new_score = self._safe_float((item or {}).get("new_score", ""))
-                if sid in seen_sid:
-                    continue
                 if old_score is not None and new_score is not None and new_score > old_score and sid in imported_set:
-                    increased_entries.append(item)
-                    seen_sid.add(sid)
-            if not increased_entries:
+                    latest_increase_by_sid[sid] = item
+            if not latest_increase_by_sid:
                 continue
-            rate = f"{(len(increased_entries) * 100.0 / len(imported_set)):.2f}%" if imported_set else "0.00%"
-            summary_rows.append(["", label, "", "", len(imported_set), len(increased_entries), rate])
+            rate = f"{(len(latest_increase_by_sid) * 100.0 / len(imported_set)):.2f}%" if imported_set else "0.00%"
+            summary_rows.append(["", label, "", "", len(imported_set), len(latest_increase_by_sid), rate])
 
             imported_sids = imported_set
             increased_rows: list[list[object]] = []
