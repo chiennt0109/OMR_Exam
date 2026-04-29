@@ -1685,6 +1685,14 @@ class NewExamDialog(QDialog):
         if not ok:
             QMessageBox.warning(self, "Môn thi", "Không thể lưu thay đổi cấu hình môn vào CSDL.")
             return False
+        parent = self.parent()
+        if parent is not None:
+            session_obj = getattr(parent, "embedded_exam_session", None) or getattr(parent, "session", None)
+            cfg = getattr(session_obj, "config", {}) if session_obj is not None else {}
+            if isinstance(cfg, dict):
+                saved_cfgs = cfg.get("subject_configs", [])
+                if isinstance(saved_cfgs, list) and saved_cfgs:
+                    self.subject_configs = list(saved_cfgs)
         self._reload_subject_grid(reason=reason)
         return True
 
