@@ -2152,6 +2152,8 @@ class MainWindow(QMainWindow):
             ("act_export_all_classes_subject_scores", "export"),
             ("act_export_all_scores", "export"),
             ("act_export_return_by_class", "export"),
+            ("act_export_recheck_by_subject", "export"),
+            ("act_export_recheck_by_class", "export"),
             ("act_export_subject_api", "export"),
             ("act_export_reports_center", "report"),
             ("act_export_range_report", "report"),
@@ -4072,6 +4074,20 @@ class MainWindow(QMainWindow):
             self.action_export_return_by_class,
             icon_name="export",
         )
+        self.act_export_recheck_by_subject = self._add_menu_action(
+            self.export_menu,
+            "act_export_recheck_by_subject",
+            "Đóng gói bài phúc tra theo môn...",
+            self.action_export_recheck_by_subject,
+            icon_name="export",
+        )
+        self.act_export_recheck_by_class = self._add_menu_action(
+            self.export_menu,
+            "act_export_recheck_by_class",
+            "Đóng gói bài phúc tra theo lớp...",
+            self.action_export_recheck_by_class,
+            icon_name="export",
+        )
         self.export_menu.addSeparator()
         self.act_export_subject_api = self._add_menu_action(
             self.export_menu,
@@ -4748,6 +4764,8 @@ class MainWindow(QMainWindow):
             "act_export_all_classes_subject_scores",
             "act_export_all_scores",
             "act_export_return_by_class",
+            "act_export_recheck_by_subject",
+            "act_export_recheck_by_class",
             "act_export_subject_api",
             "act_export_reports_center",
             "act_export_range_report",
@@ -5259,6 +5277,12 @@ class MainWindow(QMainWindow):
 
     def action_export_return_by_class(self) -> None:
         self._export_return_by_class()
+
+    def action_export_recheck_by_subject(self) -> None:
+        self._export_recheck_package(group_by="subject")
+
+    def action_export_recheck_by_class(self) -> None:
+        self._export_recheck_package(group_by="class")
 
     def action_export_subject_api_payload(self) -> None:
         subject_key = self._pick_subject_for_export("Xuất API bài làm", "Chọn môn cần xuất API bài làm:")
@@ -16260,6 +16284,75 @@ class MainWindow(QMainWindow):
             self,
             "Trả bài theo lớp",
             f"Đã xử lý xong.\n- Lớp: {class_name}\n- File đã copy: {copied_count}\n- File thiếu/không tồn tại: {missing_image_count}\n- Bản ghi bỏ qua (không có đường dẫn ảnh): {skipped_count}\n- Thư mục đích: {class_dir}",
+        )
+
+    def _export_recheck_package(self, group_by: str = "subject") -> None:
+        if not self.session:
+            QMessageBox.information(self, "Đóng gói bài phúc tra", "Chưa có kỳ thi hiện tại.")
+            return
+        output_root = QFileDialog.getExistingDirectory(self, "Chọn thư mục lưu đóng gói bài phúc tra")
+        if not output_root:
+            return
+        package_root = Path(output_root) / "recheck_package"
+        package_root.mkdir(parents=True, exist_ok=True)
+        student_meta = self._student_meta_by_sid()
+        copied_count = 0
+        missing_image_count = 0
+        skipped_count = 0
+
+        for subject_label, subject_key in self._iter_export_subjects():
+            rows = self._scan_rows_for_subject(subject_key)
+            if not rows:
+                continue
+            subject_folder = self._safe_file_component(subject_label, fallback=self._safe_sheet_name(subject_key, fallback="subject"))
+            used_paths: set[Path] = set()
+            for row in rows:
+                image_path = str(getattr(row, "image_path", "") or "").strip()
+                sid = str(getattr(row, "student_id", "") or "").strip()
+                payload = self._lookup_subject_score_payload(subject_key, sid) if sid else {}
+                note_text = str((payload or {}).get("note", "") or "").casefold()
+                status_text = str((payload or {}).get("status", "") or "").casefold()
+                is_recheck = (
+                    (payload or {}).get("baithiphuctra", "") not in {"", None, False, 0, "0"}
+                    or (payload or {}).get("recheck_score", "") not in {"", None}
+                    or "phúc tra" in note_text
+                    or "phuc tra" in note_text
+                    or "phúc tra" in status_text
+                    or "phuc tra" in status_text
+                )
+                if not is_recheck:
+                    continue
+                if not image_path:
+                    skipped_count += 1
+                    continue
+                source_path = Path(image_path)
+                if not source_path.exists() or not source_path.is_file():
+                    missing_image_count += 1
+                    continue
+                meta = student_meta.get(sid, {})
+                row_class = str(getattr(row, "class_name", "") or meta.get("class_name", "") or "(Không lớp)").strip() or "(Không lớp)"
+                if group_by == "class":
+                    target_dir = package_root / self._safe_file_component(row_class, fallback="class") / subject_folder
+                else:
+                    target_dir = package_root / subject_folder / self._safe_file_component(row_class, fallback="class")
+                target_dir.mkdir(parents=True, exist_ok=True)
+                student_name = str(getattr(row, "full_name", "") or meta.get("name", "") or "").strip()
+                base_name = f"{self._safe_file_component(sid, fallback='SBD')}_{self._safe_file_component(student_name, fallback='ho_ten')}"
+                ext = source_path.suffix
+                target_file = target_dir / f"{base_name}{ext}"
+                dup_idx = 2
+                while target_file.exists() or target_file in used_paths:
+                    target_file = target_dir / f"{base_name}_{dup_idx}{ext}"
+                    dup_idx += 1
+                used_paths.add(target_file)
+                shutil.copy2(source_path, target_file)
+                copied_count += 1
+
+        mode_text = "theo lớp" if group_by == "class" else "theo môn"
+        QMessageBox.information(
+            self,
+            "Đóng gói bài phúc tra",
+            f"Đã xử lý xong ({mode_text}).\n- File đã copy: {copied_count}\n- File thiếu/không tồn tại: {missing_image_count}\n- Bản ghi bỏ qua (không có đường dẫn ảnh): {skipped_count}\n- Thư mục đích: {package_root}",
         )
 
     def _export_subject_api_payload(self, subject_key: str) -> None:
