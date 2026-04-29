@@ -2152,6 +2152,8 @@ class MainWindow(QMainWindow):
             ("act_export_all_classes_subject_scores", "export"),
             ("act_export_all_scores", "export"),
             ("act_export_return_by_class", "export"),
+            ("act_export_recheck_by_subject", "export"),
+            ("act_export_recheck_by_class", "export"),
             ("act_export_subject_api", "export"),
             ("act_export_reports_center", "report"),
             ("act_export_range_report", "report"),
@@ -4072,6 +4074,20 @@ class MainWindow(QMainWindow):
             self.action_export_return_by_class,
             icon_name="export",
         )
+        self.act_export_recheck_by_subject = self._add_menu_action(
+            self.export_menu,
+            "act_export_recheck_by_subject",
+            "Đóng gói bài phúc tra theo môn...",
+            self.action_export_recheck_by_subject,
+            icon_name="export",
+        )
+        self.act_export_recheck_by_class = self._add_menu_action(
+            self.export_menu,
+            "act_export_recheck_by_class",
+            "Đóng gói bài phúc tra theo lớp...",
+            self.action_export_recheck_by_class,
+            icon_name="export",
+        )
         self.export_menu.addSeparator()
         self.act_export_subject_api = self._add_menu_action(
             self.export_menu,
@@ -4748,6 +4764,8 @@ class MainWindow(QMainWindow):
             "act_export_all_classes_subject_scores",
             "act_export_all_scores",
             "act_export_return_by_class",
+            "act_export_recheck_by_subject",
+            "act_export_recheck_by_class",
             "act_export_subject_api",
             "act_export_reports_center",
             "act_export_range_report",
@@ -5259,6 +5277,12 @@ class MainWindow(QMainWindow):
 
     def action_export_return_by_class(self) -> None:
         self._export_return_by_class()
+
+    def action_export_recheck_by_subject(self) -> None:
+        self._export_recheck_package(group_by="subject")
+
+    def action_export_recheck_by_class(self) -> None:
+        self._export_recheck_package(group_by="class")
 
     def action_export_subject_api_payload(self) -> None:
         subject_key = self._pick_subject_for_export("Xuất API bài làm", "Chọn môn cần xuất API bài làm:")
