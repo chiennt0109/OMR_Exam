@@ -4811,29 +4811,38 @@ class MainWindow(QMainWindow):
                 action.setEnabled(bool(has_session))
 
     def _iter_export_subjects(self) -> list[tuple[str, str]]:
-        pairs: list[tuple[str, str]] = []
         subject_rank = {str(name).strip().casefold(): idx for idx, name in enumerate(self.subject_catalog or [])}
+        ranked_pairs: list[tuple[int, int, tuple[str, str]]] = []
 
-        for cfg in self._subject_configs_for_scoring():
+        def _rank_from_candidates(candidates: list[str]) -> int:
+            for candidate in candidates:
+                name = str(candidate or "").strip().casefold()
+                if not name:
+                    continue
+                rank = subject_rank.get(name)
+                if rank is not None:
+                    return rank
+            return 10**6
+
+        for idx, cfg in enumerate(self._subject_configs_for_scoring()):
             key = str(self._subject_key_from_cfg(cfg) or "").strip()
             if not key:
                 continue
             label = self._display_subject_label(cfg)
-            pairs.append((label, key))
-        if not pairs:
-            for key in (str(k) for k in (self.scoring_results_by_subject or {}).keys() if str(k).strip()):
-                pairs.append((key, key))
+            rank = _rank_from_candidates([
+                str(cfg.get("name", "") or ""),
+                str(cfg.get("subject", "") or ""),
+                key.split("_", 1)[0],
+            ])
+            ranked_pairs.append((rank, idx, (label, key)))
 
-        indexed_pairs = list(enumerate(pairs))
+        if not ranked_pairs:
+            for idx, key in enumerate(str(k) for k in (self.scoring_results_by_subject or {}).keys() if str(k).strip()):
+                rank = _rank_from_candidates([key.split("_", 1)[0], key])
+                ranked_pairs.append((rank, idx, (key, key)))
 
-        def _sort_key(item: tuple[int, tuple[str, str]]) -> tuple[int, int]:
-            original_idx, entry = item
-            key = str(entry[1] or "").strip()
-            subject_name = key.split("_", 1)[0].strip().casefold()
-            rank = subject_rank.get(subject_name, 10**6)
-            return (rank, original_idx)
-
-        return [entry for _idx, entry in sorted(indexed_pairs, key=_sort_key)]
+        ranked_pairs.sort(key=lambda item: (item[0], item[1]))
+        return [entry for _rank, _idx, entry in ranked_pairs]
 
     def _has_exportable_data(self) -> bool:
         for _label, key in self._iter_export_subjects():
