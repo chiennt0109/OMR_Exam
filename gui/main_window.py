@@ -55,7 +55,6 @@ from PySide6.QtWidgets import (
     QToolBar,
     QStyle,
     QGroupBox,
-    QStackedWidget,
     QScrollArea,
 )
 
@@ -90,6 +89,73 @@ from gui.main_window_export_mixin import MainWindowExportMixin
 from gui.main_window_misc_mixin import MainWindowMiscMixin
 
 
+
+class _SignalHook:
+    """Tiny signal adapter used by _SimplePageHost.
+
+    This keeps old `currentChanged.connect(...)` call sites working without using
+    a Qt stacked page widget.
+    """
+    def __init__(self) -> None:
+        self._callbacks = []
+
+    def connect(self, callback) -> None:
+        if callable(callback) and callback not in self._callbacks:
+            self._callbacks.append(callback)
+
+    def emit(self, *args) -> None:
+        for callback in list(self._callbacks):
+            try:
+                callback(*args)
+            except TypeError:
+                callback()
+
+
+class _SimplePageHost(QWidget):
+    """Single-visible-page host that replaces the old stacked-page widget.
+
+    Pages are plain widgets in one VBoxLayout. Only the active page is visible.
+    The class intentionally implements the small subset of methods used by the
+    existing modules (`addWidget`, `setCurrentIndex`, `currentIndex`) so the rest
+    of the application remains stable while the heavy stacked widget dependency
+    is removed.
+    """
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.currentChanged = _SignalHook()
+        self._pages: list[QWidget] = []
+        self._current_index = -1
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(0)
+
+    def addWidget(self, widget: QWidget) -> int:
+        index = len(self._pages)
+        self._pages.append(widget)
+        self._layout.addWidget(widget)
+        widget.setVisible(False)
+        if self._current_index < 0:
+            self.setCurrentIndex(index)
+        return index
+
+    def currentIndex(self) -> int:
+        return int(self._current_index)
+
+    def setCurrentIndex(self, index: int) -> None:
+        try:
+            index = int(index)
+        except Exception:
+            index = 0
+        if not (0 <= index < len(self._pages)):
+            index = 0 if self._pages else -1
+        if index == self._current_index:
+            return
+        if 0 <= self._current_index < len(self._pages):
+            self._pages[self._current_index].setVisible(False)
+        self._current_index = index
+        if 0 <= index < len(self._pages):
+            self._pages[index].setVisible(True)
+        self.currentChanged.emit(index)
 class MainWindow(MainWindowBrandingMixin, MainWindowAutoRecognitionMixin, MainWindowSessionMixin, MainWindowWorkspaceMixin, MainWindowTemplateMixin, MainWindowImportMixin, MainWindowBatchSubjectMixin, MainWindowBatchRecognitionMixin, MainWindowBatchScopeMixin, MainWindowBatchStorageMixin, MainWindowBatchUiMixin, MainWindowBatchEditMixin, MainWindowScoringMixin, MainWindowExportMixin, MainWindowMiscMixin, QMainWindow):
     SCAN_COL_STT = 0
     SCAN_COL_STUDENT_ID = 1
@@ -159,7 +225,7 @@ class MainWindow(MainWindowBrandingMixin, MainWindowAutoRecognitionMixin, MainWi
         self.template_editor_embedded: TemplateEditorWindow | None = None
         self.template_editor_mode = "library"
 
-        self.stack = QStackedWidget()
+        self.stack = _SimplePageHost(self)  # Compatibility alias; not the old Qt stacked widget.
         self.stack.addWidget(self._build_exam_list_page())
         self.stack.addWidget(self._build_workspace_page())
         self.stack.addWidget(self._build_subject_management_page())

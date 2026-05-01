@@ -55,7 +55,6 @@ from PySide6.QtWidgets import (
     QToolBar,
     QStyle,
     QGroupBox,
-    QStackedWidget,
     QScrollArea,
 )
 
@@ -300,27 +299,29 @@ class MainWindowSessionMixin:
         return self._session_storage_dir() / f"{session_id}.json"
 
     def _load_session_registry(self) -> list[dict[str, str | bool]]:
+        """Return the exam list from SQLite only."""
         try:
-            rows = self.database.list_exam_sessions()
-            return [dict(x) for x in rows]
+            return [dict(x) for x in (self.database.list_exam_sessions() or [])]
         except Exception:
             return []
 
     def _save_session_registry(self) -> None:
+        """Compatibility alias: registry is no longer persisted separately."""
         self.session_registry = self._load_session_registry()
 
     def _upsert_session_registry(self, session_id: str, name: str | None = None) -> None:
-        payload = self.database.fetch_exam_session(session_id) or {}
-        exam_name = str(name or payload.get("exam_name") or "Kỳ thi")
-        if payload:
-            self.database.save_exam_session(session_id, exam_name, payload)
+        """Compatibility alias after a DB write.
+
+        Exam sessions are written by save_exam_session(). This method intentionally
+        does not write again; it only refreshes the in-memory list from SQLite.
+        """
         self.session_registry = self._load_session_registry()
 
     def _session_name_exists(self, exam_name: str, exclude_session_id: str = "") -> bool:
         name_norm = str(exam_name or "").strip().casefold()
         if not name_norm:
             return False
-        for row in self.session_registry:
+        for row in self._load_session_registry():
             sid = str(row.get("session_id", "") or "")
             if exclude_session_id and sid == exclude_session_id:
                 continue
@@ -359,8 +360,6 @@ class MainWindowSessionMixin:
                 if p.exists() and p.suffix.lower() == ".json":
                     self.answer_keys = AnswerKeyRepository.load_json(p)
                     self.imported_exam_codes = sorted({k.split("::", 1)[1] for k in self.answer_keys.keys.keys() if "::" in k})
-            self._upsert_session_registry(path.stem, self.session.exam_name if self.session else None)
-            self._save_session_registry()
             self._refresh_exam_list()
             self.session_dirty = False
             self._remember_current_session_snapshot()
@@ -424,8 +423,6 @@ class MainWindowSessionMixin:
                 payload = self._build_session_persistence_payload()
                 self.session.config = dict(payload.get("config", {}) or {})
                 self.database.save_exam_session(self.current_session_id, self.session.exam_name, payload)
-            self._upsert_session_registry(self.current_session_id, self.session.exam_name if self.session else None)
-            self._save_session_registry()
             self._refresh_exam_list()
             self.session_dirty = False
             self._remember_current_session_snapshot()
@@ -443,8 +440,6 @@ class MainWindowSessionMixin:
             payload = self._build_session_persistence_payload()
             self.session.config = dict(payload.get("config", {}) or {})
             self.database.save_exam_session(self.current_session_id, self.session.exam_name, payload)
-            self._upsert_session_registry(self.current_session_id, self.session.exam_name if self.session else None)
-            self._save_session_registry()
             self._refresh_exam_list()
             self.session_dirty = False
             self._remember_current_session_snapshot()
@@ -556,15 +551,18 @@ class MainWindowSessionMixin:
                     new_score=float(item.get("new_score", 0.0) or 0.0),
                     payload=dict(item.get("payload", {}) or {}),
                 )
-
-            self._upsert_session_registry(new_session_id, new_name)
-            self._save_session_registry()
             self._refresh_exam_list()
             QMessageBox.information(self, "Lưu dưới tên khác", f"Đã sao chép kỳ thi thành '{new_name}'.")
         except Exception as exc:
             QMessageBox.warning(self, "Lưu dưới tên khác", f"Không thể sao chép kỳ thi:\n{exc}")
 
     def close_current_session(self) -> None:
+        """Destroy the active in-memory exam session and return to the exam list.
+
+        Persisted exam data is kept in SQLite. Runtime objects, cached scan rows,
+        editor widgets and scoring state are cleared so the next exam starts from a
+        clean session.
+        """
         self._release_batch_runtime_state()
         self._release_preview_resources()
         self._release_template_cache()
@@ -578,20 +576,37 @@ class MainWindowSessionMixin:
         self.scoring_phases = []
         self.scoring_results_by_subject = {}
         self._scoring_dirty_subjects = set()
-        self.scan_results_by_subject = {}
         self.current_session_path = None
         self.current_session_id = None
         self.session_dirty = False
         self._session_saved_signature = ""
-        self.session_info.clear()
-        self.exam_code_preview.setText("Mã đề trên phiếu trả lời mẫu: -")
-        self.scan_list.setRowCount(0)
-        self.score_preview_table.setRowCount(0)
-        self.error_list.clear()
-        self.result_preview.clear()
-        self.scan_result_preview.setRowCount(0)
-        self.manual_edit.clear()
+        self._current_route_name = "exam_list"
+        self._current_route_context = {}
+        self._route_history = []
+        for attr, clear_call in [
+            ("session_info", "clear"),
+            ("scan_list", "setRowCount"),
+            ("score_preview_table", "setRowCount"),
+            ("error_list", "clear"),
+            ("result_preview", "clear"),
+            ("scan_result_preview", "setRowCount"),
+            ("manual_edit", "clear"),
+        ]:
+            widget = getattr(self, attr, None)
+            if widget is None:
+                continue
+            try:
+                if clear_call == "setRowCount":
+                    widget.setRowCount(0)
+                else:
+                    getattr(widget, clear_call)()
+            except Exception:
+                pass
+        if hasattr(self, "exam_code_preview"):
+            self.exam_code_preview.setText("Mã đề trên phiếu trả lời mẫu: -")
+        self._refresh_exam_list()
         self._refresh_batch_subject_controls()
+        self._refresh_ribbon_action_states()
         self.stack.setCurrentIndex(0)
 
     def _release_batch_runtime_state(self) -> None:
@@ -630,7 +645,7 @@ class MainWindowSessionMixin:
         if hasattr(self, "result_preview"):
             self.result_preview.clear()
         if hasattr(self, "preview_source_pixmap"):
-            self.preview_source_pixmap = None
+            self.preview_source_pixmap = QPixmap()
 
     def _release_editor_resources(self) -> None:
         for attr in ["template_editor_embedded", "embedded_exam_dialog"]:
@@ -681,7 +696,9 @@ class MainWindowSessionMixin:
     def action_open_session(self) -> None:
         if not self._confirm_interrupt_active_workflows("Danh sách kỳ thi"):
             return
-        self._navigate_to("exam_list", context={}, push_current=True, require_confirm=False, reason="open_exam_list")
+        if not self._confirm_before_switching_work("Danh sách kỳ thi"):
+            return
+        self.close_current_session()
 
     def action_save_session(self) -> None:
         if self.stack.currentIndex() == 5 and self.embedded_exam_dialog:

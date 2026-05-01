@@ -55,7 +55,6 @@ from PySide6.QtWidgets import (
     QToolBar,
     QStyle,
     QGroupBox,
-    QStackedWidget,
     QScrollArea,
 )
 

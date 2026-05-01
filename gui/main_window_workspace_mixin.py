@@ -55,7 +55,6 @@ from PySide6.QtWidgets import (
     QToolBar,
     QStyle,
     QGroupBox,
-    QStackedWidget,
     QScrollArea,
 )
 
@@ -90,16 +89,39 @@ class MainWindowWorkspaceMixin:
             self._render_preview_pixmap()
 
     def _build_exam_list_page(self) -> QWidget:
+        """Build the single DB-backed exam list page.
+
+        The table is intentionally simple: one row per exam session from SQLite,
+        no cached registry file, no stacked sub-view, and one compact action cell
+        using the shared software icon system.
+        """
         w = QWidget()
         layout = QVBoxLayout(w)
-        layout.addWidget(QLabel("Danh sách các kỳ thi"))
 
-        self.exam_list_table = QTableWidget(0, 9)
-        self.exam_list_table.setHorizontalHeaderLabels(["STT", "Tên kỳ thi", "Số môn", "Thư mục quét", "Môn học", "Trạng thái", "Xem", "Xoá", "Mặc định"])
+        title_row = QHBoxLayout()
+        title_icon = QLabel()
+        try:
+            pix = logo_symbol()
+            if pix is not None and not pix.isNull():
+                title_icon.setPixmap(pix.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        except Exception:
+            pass
+        title = QLabel("Danh sách kỳ thi")
+        title.setObjectName("ExamListTitle")
+        title_row.addWidget(title_icon)
+        title_row.addWidget(title)
+        title_row.addStretch(1)
+        layout.addLayout(title_row)
+
+        self.exam_list_table = QTableWidget(0, 7)
+        self.exam_list_table.setHorizontalHeaderLabels([
+            "STT", "Tên kỳ thi", "Số môn", "Thư mục quét", "Môn học", "Trạng thái", "Thao tác"
+        ])
         self.exam_list_table.verticalHeader().setVisible(False)
         self.exam_list_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.exam_list_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.exam_list_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.exam_list_table.setAlternatingRowColors(True)
         hdr = self.exam_list_table.horizontalHeader()
         hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
@@ -108,12 +130,9 @@ class MainWindowWorkspaceMixin:
         hdr.setSectionResizeMode(4, QHeaderView.Stretch)
         hdr.setSectionResizeMode(5, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(6, QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(7, QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(8, QHeaderView.ResizeToContents)
-        # double click navigation: open selected exam directly.
         self.exam_list_table.cellDoubleClicked.connect(self._handle_exam_list_double_click)
         self.exam_list_table.itemSelectionChanged.connect(lambda: self._handle_stack_changed(self.stack.currentIndex()))
-        layout.addWidget(self.exam_list_table)
+        layout.addWidget(self.exam_list_table, 1)
         return w
 
     def _build_subject_management_page(self) -> QWidget:
@@ -383,37 +402,83 @@ class MainWindowWorkspaceMixin:
         self._open_edit_selected_scan()
 
     def _make_row_icon_button(self, icon, tooltip: str, cb):
-        btn = QPushButton()
-        btn.setIcon(icon)
-        btn.setToolTip(tooltip)
-        btn.setFlat(True)
+        """Create a compact text+shared-icon button for table action cells.
+
+        The `icon` argument is accepted for compatibility with older call sites,
+        but the rendered button uses the application's shared toolbar icon map.
+        """
+        short_text = {
+            "Xem kỳ thi": "Xem",
+            "Xoá kỳ thi": "Xoá",
+            "Xóa kỳ thi": "Xoá",
+            "Đặt mặc định": "Mặc định",
+            "Sửa bài thi": "Sửa",
+            "Xoá bài thi": "Xoá",
+            "Xóa bài thi": "Xoá",
+        }.get(str(tooltip or ""), str(tooltip or "...").replace(" kỳ thi", "").replace(" bài thi", ""))
+        btn = QPushButton(short_text)
+        btn.setToolTip(str(tooltip or short_text))
+        icon_name = {
+            "Xem kỳ thi": "preview",
+            "Xoá kỳ thi": "delete",
+            "Xóa kỳ thi": "delete",
+            "Đặt mặc định": "save",
+            "Sửa bài thi": "edit",
+            "Xoá bài thi": "delete",
+            "Xóa bài thi": "delete",
+        }.get(str(tooltip or ""), "")
+        if icon_name:
+            try:
+                ico = TOOLBAR.get(icon_name)
+                if ico is not None and not ico.isNull():
+                    btn.setIcon(ico)
+            except Exception:
+                pass
+        btn.setFlat(False)
         btn.clicked.connect(cb)
+        try:
+            brand_button(btn)
+        except Exception:
+            pass
         return btn
 
     def _refresh_exam_list(self) -> None:
+        """Reload and render the exam list strictly from SQLite.
+
+        Flow after create/edit/delete/default-change:
+            DB write -> list_exam_sessions() -> fetch each session payload -> render grid.
+        No legacy registry cache and no per-row UI state are reused.
+        """
+        self.session_registry = self._load_session_registry()
+        self.exam_list_table.setRowCount(0)
         self.exam_list_table.setRowCount(len(self.session_registry))
-        style = self.style()
         for idx, row in enumerate(self.session_registry):
-            sid = str(row.get("session_id", ""))
-            name = str(row.get("name") or f"Kỳ thi {idx+1}")
+            sid = str(row.get("session_id", "") or "")
+            name = str(row.get("name") or f"Kỳ thi {idx + 1}")
             subject_text = "-"
             subject_count = "0"
             scan_root = "-"
+            status = "Mặc định" if bool(row.get("default")) else "Đã lưu"
             payload = self.database.fetch_exam_session(sid) if sid else None
             if sid and payload:
                 try:
                     ses = ExamSession.from_dict(payload)
-                    cfg = ses.config or {}
+                    cfg = dict(ses.config or {})
                     subject_cfgs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
                     subject_count = str(len(subject_cfgs))
-                    subject_text = ", ".join(f"{x.get('name','?')}-{x.get('block','?')}" for x in subject_cfgs[:4])
+                    subject_items = [
+                        f"{str(x.get('name', '?') or '?')}-{str(x.get('block', '?') or '?')}"
+                        for x in subject_cfgs[:4]
+                        if isinstance(x, dict)
+                    ]
+                    subject_text = ", ".join(subject_items) or "-"
                     if len(subject_cfgs) > 4:
-                        subject_text += f" ...(+{len(subject_cfgs)-4})"
+                        subject_text += f" ...(+{len(subject_cfgs) - 4})"
                     scan_root = str(cfg.get("scan_root", "") or "-")
+                    name = str(ses.exam_name or name)
                 except Exception:
-                    pass
-            status = "Mặc định" if bool(row.get("default")) else "Thường"
-            if sid and not payload:
+                    status = "Lỗi dữ liệu"
+            elif sid:
                 status = "Không tìm thấy"
 
             self.exam_list_table.setItem(idx, 0, QTableWidgetItem(str(idx + 1)))
@@ -422,18 +487,20 @@ class MainWindowWorkspaceMixin:
             self.exam_list_table.setItem(idx, 1, name_item)
             self.exam_list_table.setItem(idx, 2, QTableWidgetItem(subject_count))
             self.exam_list_table.setItem(idx, 3, QTableWidgetItem(scan_root))
-            self.exam_list_table.setItem(idx, 4, QTableWidgetItem(subject_text or "-"))
+            self.exam_list_table.setItem(idx, 4, QTableWidgetItem(subject_text))
             self.exam_list_table.setItem(idx, 5, QTableWidgetItem(status))
 
-            b_edit = self._make_row_icon_button(style.standardIcon(QStyle.SP_DialogOpenButton), "Xem kỳ thi", lambda _=False, s=sid: self._edit_registry_session_by_id(s))
-            b_del = self._make_row_icon_button(style.standardIcon(QStyle.SP_TrashIcon), "Xoá kỳ thi", lambda _=False, s=sid: self._delete_registry_session_by_id(s))
-            b_def = self._make_row_icon_button(style.standardIcon(QStyle.SP_DialogApplyButton), "Đặt mặc định", lambda _=False, s=sid: self._set_default_registry_session_by_id(s))
-            edit_wrap = QWidget(); e_l = QHBoxLayout(edit_wrap); e_l.setContentsMargins(0, 0, 0, 0); e_l.addWidget(b_edit)
-            del_wrap = QWidget(); d_l = QHBoxLayout(del_wrap); d_l.setContentsMargins(0, 0, 0, 0); d_l.addWidget(b_del)
-            def_wrap = QWidget(); f_l = QHBoxLayout(def_wrap); f_l.setContentsMargins(0, 0, 0, 0); f_l.addWidget(b_def)
-            self.exam_list_table.setCellWidget(idx, 6, edit_wrap)
-            self.exam_list_table.setCellWidget(idx, 7, del_wrap)
-            self.exam_list_table.setCellWidget(idx, 8, def_wrap)
+            action_wrap = QWidget()
+            action_layout = QHBoxLayout(action_wrap)
+            action_layout.setContentsMargins(4, 2, 4, 2)
+            action_layout.setSpacing(6)
+            for button in [
+                self._make_row_icon_button(None, "Xem kỳ thi", lambda _=False, s=sid: self._edit_registry_session_by_id(s)),
+                self._make_row_icon_button(None, "Xoá kỳ thi", lambda _=False, s=sid: self._delete_registry_session_by_id(s)),
+                self._make_row_icon_button(None, "Đặt mặc định", lambda _=False, s=sid: self._set_default_registry_session_by_id(s)),
+            ]:
+                action_layout.addWidget(button)
+            self.exam_list_table.setCellWidget(idx, 6, action_wrap)
 
         self.exam_list_table.resizeRowsToContents()
 
@@ -545,8 +612,15 @@ class MainWindowWorkspaceMixin:
         if not self.embedded_exam_dialog or not self.embedded_exam_session_id:
             return False
         edited = self.embedded_exam_dialog.payload()
-        self._register_templates_from_payload(edited)
+        exam_name = str(edited.get("exam_name", "") or "").strip()
+        if not exam_name:
+            QMessageBox.warning(self, "Lưu kỳ thi", "Tên kỳ thi không được để trống.")
+            return False
         session_id = self.embedded_exam_session_id
+        if self._session_name_exists(exam_name, exclude_session_id=session_id):
+            QMessageBox.warning(self, "Lưu kỳ thi", "Tên kỳ thi đã tồn tại. Vui lòng chọn tên khác.")
+            return False
+        self._register_templates_from_payload(edited)
         saved_payload = self.database.fetch_exam_session(session_id)
         if not saved_payload and not self.embedded_exam_is_new:
             QMessageBox.warning(self, "Sửa kỳ thi", "Không tìm thấy kỳ thi trong kho lưu trữ hệ thống.")
@@ -600,8 +674,6 @@ class MainWindowWorkspaceMixin:
                 self.embedded_exam_original_payload = edited
             self.embedded_exam_is_new = False
             self.session_dirty = False
-            self._upsert_session_registry(session_id, session.exam_name)
-            self._save_session_registry()
             self._refresh_exam_list()
             self._refresh_session_info()
             self._refresh_batch_subject_controls()
@@ -665,12 +737,13 @@ class MainWindowWorkspaceMixin:
         return [normalized[k] for k in ordered_keys if k in normalized]
 
     def _close_embedded_exam_editor(self) -> None:
-        self.embedded_exam_dialog = None
-        self.embedded_exam_session = None
-        self.embedded_exam_session_id = None
-        self.embedded_exam_original_payload = None
-        self.embedded_exam_is_new = False
-        self._navigate_to("exam_list", context={}, push_current=False, require_confirm=False, reason="close_exam_editor")
+        """Leave the active exam and return to the DB-backed exam list.
+
+        The in-memory session is intentionally cleared here: opening an exam creates
+        the runtime session; returning to the exam list destroys that runtime session.
+        Persisted data remains in SQLite and the list is reloaded from DB.
+        """
+        self.close_current_session()
 
     @staticmethod
     def _payload_changed(a: dict | None, b: dict | None) -> bool:
@@ -803,9 +876,10 @@ class MainWindowWorkspaceMixin:
         if not self._confirm("Xoá kỳ thi", "Bạn có chắc muốn xoá kỳ thi khỏi danh sách?"):
             return
         self.database.delete_exam_session(session_id)
-        self.session_registry = self._load_session_registry()
-        self._save_session_registry()
-        self._refresh_exam_list()
+        if str(getattr(self, "current_session_id", "") or "") == str(session_id):
+            self.close_current_session()
+        else:
+            self._refresh_exam_list()
 
     def _set_default_selected_registry_session(self) -> None:
         row = self.exam_list_table.currentRow()
@@ -819,8 +893,6 @@ class MainWindowWorkspaceMixin:
         if not self._confirm("Đặt mặc định", "Đặt kỳ thi này làm mặc định?"):
             return
         self.database.set_app_state("default_session_id", str(session_id))
-        self.session_registry = self._load_session_registry()
-        self._save_session_registry()
         self._refresh_exam_list()
 
     def _create_branded_action(
@@ -1140,58 +1212,44 @@ class MainWindowWorkspaceMixin:
         self.addToolBar(toolbar)
         self.main_ribbon = toolbar
 
-        style = self.style()
-        self.ribbon_new_exam_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileIcon), "Tạo kỳ thi", self.action_create_session)
-        self.ribbon_new_exam_action.setStatusTip("Tạo kỳ thi mới.")
-        self.ribbon_view_exam_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogListView), "Danh sách", self.action_open_session)
-        self.ribbon_view_exam_action.setStatusTip("Danh sách kỳ thi.")
-        self.ribbon_subject_list_action = toolbar.addAction(style.standardIcon(QStyle.SP_DirIcon), "Môn thi", self.action_open_current_exam_subjects)
-        self.ribbon_subject_list_action.setStatusTip("Danh sách môn thi của kỳ thi hiện tại.")
-        self.ribbon_batch_scan_action = toolbar.addAction(style.standardIcon(QStyle.SP_ComputerIcon), "Xử lý ảnh", self.action_run_batch_scan)
-        self.ribbon_batch_scan_action.setStatusTip("Mở màn hình Batch Scan.")
-        self.ribbon_scoring_action = toolbar.addAction(style.standardIcon(QStyle.SP_CommandLink), "Tính điểm", self.action_calculate_scores)
-        self.ribbon_scoring_action.setStatusTip("Tính điểm bài thi.")
-        self.ribbon_recheck_action = toolbar.addAction(style.standardIcon(QStyle.SP_BrowserReload), "Phúc tra", self.action_open_recheck)
-        self.ribbon_recheck_action.setStatusTip("Phúc tra / giải trình điểm.")
+        def _add_toolbar_action(attr_name: str, text: str, callback, icon_name: str, status_tip: str = "") -> QAction:
+            action = self._create_branded_action(text, callback, icon_name=icon_name, status_tip=status_tip, parent=self)
+            toolbar.addAction(action)
+            setattr(self, attr_name, action)
+            return action
 
-        self.ribbon_export_action = QAction(style.standardIcon(QStyle.SP_DriveNetIcon), "Báo cáo", self)
-        self.ribbon_export_action.triggered.connect(self.action_open_export_reports_center)
+        self.ribbon_new_exam_action = _add_toolbar_action("ribbon_new_exam_action", "Tạo kỳ thi", self.action_create_session, "add", "Tạo kỳ thi mới.")
+        self.ribbon_view_exam_action = _add_toolbar_action("ribbon_view_exam_action", "Danh sách", self.action_open_session, "exam", "Danh sách kỳ thi.")
+        self.ribbon_subject_list_action = _add_toolbar_action("ribbon_subject_list_action", "Môn thi", self.action_open_current_exam_subjects, "subject", "Danh sách môn thi của kỳ thi hiện tại.")
+        self.ribbon_batch_scan_action = _add_toolbar_action("ribbon_batch_scan_action", "Xử lý ảnh", self.action_run_batch_scan, "scan", "Mở màn hình Batch Scan.")
+        self.ribbon_scoring_action = _add_toolbar_action("ribbon_scoring_action", "Tính điểm", self.action_calculate_scores, "scoring", "Tính điểm bài thi.")
+        self.ribbon_recheck_action = _add_toolbar_action("ribbon_recheck_action", "Phúc tra", self.action_open_recheck, "recheck", "Phúc tra / giải trình điểm.")
+
+        self.ribbon_export_action = self._create_branded_action("Báo cáo", self.action_open_export_reports_center, icon_name="report", status_tip="Xuất điểm, API và báo cáo thống kê.", parent=self)
         self.ribbon_export_action.setMenu(self.export_menu)
-        self.ribbon_export_action.setStatusTip("Xuất điểm, API và báo cáo thống kê.")
         toolbar.addAction(self.ribbon_export_action)
 
         self.ribbon_context_separator = toolbar.addSeparator()
 
-        self.ribbon_batch_execute_action = toolbar.addAction(style.standardIcon(QStyle.SP_MediaPlay), "Nhận dạng", self.action_execute_batch_scan)
-        self.ribbon_batch_execute_action.setStatusTip("Chạy nhận dạng cho môn đang chọn.")
-        self.ribbon_batch_save_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Lưu thay đổi", self._save_batch_for_selected_subject)
-        self.ribbon_batch_save_action.setStatusTip("Lưu các thay đổi phát sinh trong Batch Scan.")
-        self.ribbon_batch_close_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogCloseButton), "Đóng Batch", self._close_batch_scan_view)
-        self.ribbon_batch_close_action.setStatusTip("Đóng màn hình Batch Scan.")
+        self.ribbon_batch_execute_action = _add_toolbar_action("ribbon_batch_execute_action", "Nhận dạng", self.action_execute_batch_scan, "scan", "Chạy nhận dạng cho môn đang chọn.")
+        self.ribbon_batch_save_action = _add_toolbar_action("ribbon_batch_save_action", "Lưu thay đổi", self._save_batch_for_selected_subject, "save", "Lưu các thay đổi phát sinh trong Batch Scan.")
+        self.ribbon_batch_close_action = _add_toolbar_action("ribbon_batch_close_action", "Đóng Batch", self._close_batch_scan_view, "close", "Đóng màn hình Batch Scan.")
 
-        self.ribbon_exam_editor_add_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogNewFolder), "Thêm môn", self._exam_editor_add_subject)
-        self.ribbon_exam_editor_edit_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Sửa môn", self._exam_editor_edit_subject)
-        self.ribbon_exam_editor_delete_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_TrashIcon), "Xoá môn", self._exam_editor_delete_subject)
-        self.ribbon_exam_editor_save_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Lưu cấu hình", self._exam_editor_save)
-        self.ribbon_exam_editor_close_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogCloseButton), "Đóng cấu hình", self._exam_editor_close)
+        self.ribbon_exam_editor_add_subject_action = _add_toolbar_action("ribbon_exam_editor_add_subject_action", "Thêm môn", self._exam_editor_add_subject, "add")
+        self.ribbon_exam_editor_edit_subject_action = _add_toolbar_action("ribbon_exam_editor_edit_subject_action", "Sửa môn", self._exam_editor_edit_subject, "edit")
+        self.ribbon_exam_editor_delete_subject_action = _add_toolbar_action("ribbon_exam_editor_delete_subject_action", "Xoá môn", self._exam_editor_delete_subject, "delete")
+        self.ribbon_exam_editor_save_action = _add_toolbar_action("ribbon_exam_editor_save_action", "Lưu cấu hình", self._exam_editor_save, "save")
+        self.ribbon_exam_editor_close_action = _add_toolbar_action("ribbon_exam_editor_close_action", "Đóng cấu hình", self._exam_editor_close, "close")
 
-        self.ribbon_add_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogNewFolder), "Thêm môn", self._subject_management_add)
-        self.ribbon_edit_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_FileDialogDetailedView), "Sửa môn", self._subject_management_edit)
-        self.ribbon_delete_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_TrashIcon), "Xoá môn", self._subject_management_delete)
-        self.ribbon_save_subject_action = toolbar.addAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Lưu danh mục", self._save_subject_management)
+        self.ribbon_add_subject_action = _add_toolbar_action("ribbon_add_subject_action", "Thêm môn", self._subject_management_add, "add")
+        self.ribbon_edit_subject_action = _add_toolbar_action("ribbon_edit_subject_action", "Sửa môn", self._subject_management_edit, "edit")
+        self.ribbon_delete_subject_action = _add_toolbar_action("ribbon_delete_subject_action", "Xoá môn", self._subject_management_delete, "delete")
+        self.ribbon_save_subject_action = _add_toolbar_action("ribbon_save_subject_action", "Lưu danh mục", self._save_subject_management, "save")
 
-        self.ribbon_new_template_action = QAction(style.standardIcon(QStyle.SP_FileIcon), "Tạo mẫu", self)
-        self.ribbon_new_template_action.triggered.connect(self._create_new_template)
-        toolbar.addAction(self.ribbon_new_template_action)
-        self.ribbon_edit_template_action = QAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Sửa mẫu", self)
-        self.ribbon_edit_template_action.triggered.connect(self._edit_selected_template)
-        toolbar.addAction(self.ribbon_edit_template_action)
-        self.ribbon_delete_template_action = QAction(style.standardIcon(QStyle.SP_TrashIcon), "Xoá mẫu", self)
-        self.ribbon_delete_template_action.triggered.connect(self._delete_selected_template)
-        toolbar.addAction(self.ribbon_delete_template_action)
-        self.ribbon_close_template_action = QAction(style.standardIcon(QStyle.SP_DialogCloseButton), "Đóng mẫu", self)
-        self.ribbon_close_template_action.triggered.connect(self._close_template_module)
-        toolbar.addAction(self.ribbon_close_template_action)
+        self.ribbon_new_template_action = _add_toolbar_action("ribbon_new_template_action", "Tạo mẫu", self._create_new_template, "template")
+        self.ribbon_edit_template_action = _add_toolbar_action("ribbon_edit_template_action", "Sửa mẫu", self._edit_selected_template, "edit")
+        self.ribbon_delete_template_action = _add_toolbar_action("ribbon_delete_template_action", "Xoá mẫu", self._delete_selected_template, "delete")
+        self.ribbon_close_template_action = _add_toolbar_action("ribbon_close_template_action", "Đóng mẫu", self._close_template_module, "close")
 
         self._apply_branding_to_ribbon_actions()
 
@@ -1435,6 +1493,10 @@ class MainWindowWorkspaceMixin:
         if require_confirm and target != self._current_route_name:
             if not self._confirm_before_switching_work(reason or target):
                 return False
+        if target == "exam_list" and getattr(self, "current_session_id", None):
+            self.close_current_session()
+            return True
+
         if push_current:
             self._push_route_history(self._current_route_name, self._current_route_context)
         self._current_route_name = target
