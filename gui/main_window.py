@@ -6851,22 +6851,31 @@ class MainWindow(QMainWindow):
             rows = self._direct_score_import_rows_for_subject(cfg)
             return bool(rows), len(rows)
 
-        candidates = self._subject_scan_storage_key_candidates(
+        db_candidates = self._subject_scan_storage_key_candidates(
             cfg,
             session_id=session_id,
             session=session,
             include_generated=True,
         )
-        for key in candidates:
-            rows = self.scan_results_by_subject.get(key)
-            if isinstance(rows, list) and rows:
-                return True, len(rows)
-
-        for key in candidates:
+        for key in db_candidates:
             try:
                 rows = self.database.fetch_scan_results_for_subject(key) or []
             except Exception:
                 rows = []
+            if isinstance(rows, list) and rows:
+                return True, len(rows)
+
+        # DB is authoritative, but we still need a broad in-memory fallback so
+        # status does not drop to "-" right after saving subject config when
+        # runtime keys are still being normalized.
+        cache_candidates = self._subject_scan_storage_key_candidates(
+            cfg,
+            session_id=session_id,
+            session=session,
+            include_generated=True,
+        )
+        for key in cache_candidates:
+            rows = self.scan_results_by_subject.get(key)
             if isinstance(rows, list) and rows:
                 return True, len(rows)
 
