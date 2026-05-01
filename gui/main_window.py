@@ -4846,46 +4846,38 @@ class MainWindow(QMainWindow):
                 action.setEnabled(bool(has_session))
 
     def _iter_export_subjects(self) -> list[tuple[str, str]]:
-        pairs: list[tuple[str, str]] = []
         subject_rank = {str(name).strip().casefold(): idx for idx, name in enumerate(self.subject_catalog or [])}
+        ranked_pairs: list[tuple[int, int, tuple[str, str]]] = []
 
-        for cfg in self._subject_configs_for_scoring():
-            key = str(self._subject_key_from_cfg(cfg) or "").strip()
-            if not key:
-                continue
-            label = self._display_subject_label(cfg)
-            pairs.append((label, key))
-        if not pairs:
-            for key in (str(k) for k in (self.scoring_results_by_subject or {}).keys() if str(k).strip()):
-                pairs.append((key, key))
-
-        indexed_pairs = list(enumerate(pairs))
-
-        def _subject_rank_from_key(subject_key: str) -> int:
-            key = str(subject_key or "").strip()
-            if not key:
-                return 10**6
-            cfg = self._subject_config_by_subject_key(key) or {}
-            candidates = [
-                str(cfg.get("name", "") or "").strip(),
-                str(cfg.get("subject", "") or "").strip(),
-                key,
-                key.split("_", 1)[0].strip(),
-            ]
+        def _rank_from_candidates(candidates: list[str]) -> int:
             for candidate in candidates:
-                if not candidate:
+                name = str(candidate or "").strip().casefold()
+                if not name:
                     continue
-                rank = subject_rank.get(candidate.casefold())
+                rank = subject_rank.get(name)
                 if rank is not None:
                     return rank
             return 10**6
 
-        def _sort_key(item: tuple[int, tuple[str, str]]) -> tuple[int, int]:
-            original_idx, entry = item
-            rank = _subject_rank_from_key(str(entry[1] or ""))
-            return (rank, original_idx)
+        for idx, cfg in enumerate(self._subject_configs_for_scoring()):
+            key = str(self._subject_key_from_cfg(cfg) or "").strip()
+            if not key:
+                continue
+            label = self._display_subject_label(cfg)
+            rank = _rank_from_candidates([
+                str(cfg.get("name", "") or ""),
+                str(cfg.get("subject", "") or ""),
+                key.split("_", 1)[0],
+            ])
+            ranked_pairs.append((rank, idx, (label, key)))
 
-        return [entry for _idx, entry in sorted(indexed_pairs, key=_sort_key)]
+        if not ranked_pairs:
+            for idx, key in enumerate(str(k) for k in (self.scoring_results_by_subject or {}).keys() if str(k).strip()):
+                rank = _rank_from_candidates([key.split("_", 1)[0], key])
+                ranked_pairs.append((rank, idx, (key, key)))
+
+        ranked_pairs.sort(key=lambda item: (item[0], item[1]))
+        return [entry for _rank, _idx, entry in ranked_pairs]
 
     def _has_exportable_data(self) -> bool:
         for _label, key in self._iter_export_subjects():
