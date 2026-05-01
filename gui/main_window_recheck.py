@@ -411,8 +411,19 @@ def open_recheck_dialog(self) -> None:
     QApplication.processEvents()
 
     result_rows = []
+    # `cfg` is not a local variable in this scope. Reuse the subject config that was
+    # resolved immediately after subject selection so the recheck loader searches all
+    # stable/legacy scan-storage keys for the selected subject.
+    subject_cfg_for_storage = subject_cfg_cached if isinstance(subject_cfg_cached, dict) else {}
+    if not subject_cfg_for_storage:
+        try:
+            subject_cfg_for_storage = self._subject_config_by_subject_key(subject_key) or {}
+        except Exception:
+            subject_cfg_for_storage = {}
+
     if hasattr(self, "_subject_scan_storage_key_candidates"):
-        for candidate_key in self._subject_scan_storage_key_candidates(cfg):
+        storage_seed = subject_cfg_for_storage or subject_key
+        for candidate_key in self._subject_scan_storage_key_candidates(storage_seed):
             result_rows = self.database.fetch_scan_results_for_subject(candidate_key) or []
             if result_rows:
                 break
