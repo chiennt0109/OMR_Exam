@@ -4922,25 +4922,6 @@ class MainWindow(QMainWindow):
         return cleaned or fallback
 
     @staticmethod
-    def _parse_score_ranges(range_text: str) -> list[tuple[float, float]]:
-        ranges: list[tuple[float, float]] = []
-        for chunk in str(range_text or "").split(","):
-            text = chunk.strip()
-            if not text:
-                continue
-            if "-" not in text:
-                raise ValueError(f"Khoảng không hợp lệ: '{text}'. Định dạng đúng: min-max.")
-            left, right = text.split("-", 1)
-            start = float(left.strip().replace(",", "."))
-            end = float(right.strip().replace(",", "."))
-            if end < start:
-                start, end = end, start
-            ranges.append((start, end))
-        if not ranges:
-            raise ValueError("Không có khoảng điểm hợp lệ.")
-        return ranges
-
-    @staticmethod
     def _format_birth_date_for_export(value: object) -> str:
         raw = str(value or "").strip()
         if not raw:
@@ -5390,24 +5371,7 @@ class MainWindow(QMainWindow):
         self._export_subject_api_payload(subject_key)
 
     def action_export_score_range_report(self) -> None:
-        if not self._has_exportable_data():
-            QMessageBox.information(self, "Báo cáo khoảng điểm", "Chưa có dữ liệu để xuất.")
-            return
-        default_ranges = "0-2,2-4,4-6,6-8,8-10"
-        range_text, ok = QInputDialog.getText(
-            self,
-            "Báo cáo khoảng điểm",
-            "Nhập các khoảng điểm (ngăn cách bằng dấu phẩy, ví dụ 0-2,2-4,4-6,6-8,8-10):",
-            text=default_ranges,
-        )
-        if not ok:
-            return
-        try:
-            ranges = self._parse_score_ranges(range_text)
-        except Exception as exc:
-            QMessageBox.warning(self, "Báo cáo khoảng điểm", str(exc))
-            return
-        self._export_score_range_report(ranges)
+        self.action_open_export_reports_center()
 
     def action_open_export_reports_center(self) -> None:
         from gui.export_reports_dialog import ExportReportsDialog
@@ -5416,10 +5380,10 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def action_export_class_report(self) -> None:
-        self._export_class_report()
+        self.action_open_export_reports_center()
 
     def action_export_management_report(self) -> None:
-        self._export_management_report()
+        self.action_open_export_reports_center()
 
     def import_answer_key_file(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
@@ -16302,15 +16266,6 @@ class MainWindow(QMainWindow):
                     "answer_string": _answer_string_for_api(result),
                 })
         QMessageBox.information(self, "Xuất API bài làm", f"Đã xuất API bài làm:\n{path}")
-
-    def _export_score_range_report(self, ranges: list[tuple[float, float]]) -> None:
-        self.action_open_export_reports_center()
-
-    def _export_class_report(self) -> None:
-        self.action_open_export_reports_center()
-
-    def _export_management_report(self) -> None:
-        self.action_open_export_reports_center()
 
     def _refresh_session_info(self) -> None:
         if not self.session:
