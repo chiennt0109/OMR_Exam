@@ -1356,8 +1356,8 @@ class MainWindowWorkspaceMixin:
         self._refresh_ribbon_action_states()
 
     def _refresh_ribbon_action_states(self) -> None:
-        has_session = self._has_session_context_for_export()
-        has_current_session = bool(self.current_session_id)
+        has_current_session = bool(str(getattr(self, "current_session_id", "") or "").strip())
+        has_session = has_current_session
         has_subject_cfg = bool(self._effective_subject_configs_for_batch())
         route_name = getattr(self, "_current_route_name", "")
         batch_scan_visible = route_name == "workspace_batch_scan"
