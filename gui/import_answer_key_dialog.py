@@ -133,10 +133,27 @@ class ImportAnswerKeyDialog(QDialog):
             self.exam_code_combo.addItem("0000")
         self.exam_code_combo.setCurrentText(codes[0] if codes else "0000")
 
+    @staticmethod
+    def _rows_from_saved_payload(payload: dict | None) -> list[ImportedAnswerRow]:
+        rows: list[ImportedAnswerRow] = []
+        if not isinstance(payload, dict):
+            return rows
+        for q_no, ans in sorted((payload.get("mcq_answers") or {}).items(), key=lambda x: int(x[0])):
+            rows.append(ImportedAnswerRow("MCQ", int(q_no), str(ans or "").strip().upper()))
+        for q_no, flags in sorted((payload.get("tf_answers") or {}).items(), key=lambda x: int(x[0])):
+            token = "".join("Đ" if bool((flags or {}).get(ch)) else "S" for ch in ["a", "b", "c", "d"])
+            rows.append(ImportedAnswerRow("TF", int(q_no), token))
+        for q_no, ans in sorted((payload.get("numeric_answers") or {}).items(), key=lambda x: int(x[0])):
+            rows.append(ImportedAnswerRow("NUMERIC", int(q_no), str(ans or "").strip()))
+        return rows
+
     def _load_rows(self) -> None:
+        exam_code = str(self.exam_code_combo.currentText() or "").strip() or "0000"
         if self._legacy_mode:
-            exam_code = str(self.exam_code_combo.currentText() or "").strip() or "0000"
             self.rows = list(self._legacy_rows_by_exam_code.get(exam_code, []))
+        else:
+            existing = self.main_window._fetch_answer_keys_for_subject_scoped(self.subject_key) or {}
+            self.rows = self._rows_from_saved_payload(existing.get(exam_code))
         self._is_refreshing = True
         self.table.setRowCount(0)
         for row in self.rows:

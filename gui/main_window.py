@@ -1756,10 +1756,11 @@ class NewExamDialog(QDialog):
         payload = dlg.payload()
         before = copy.deepcopy(self.subject_configs)
         self.subject_configs.append(payload)
-        self._persist_subject_answer_keys(None, payload, action="add_subject")
         if not self._persist_subject_grid_after_change(reason="add_subject"):
             self.subject_configs = before
             self._reload_subject_grid(reason="add_subject_rollback")
+            return
+        self._persist_subject_answer_keys(None, payload, action="add_subject")
 
     def _edit_subject(self) -> None:
         idx = self._current_subject_index()
@@ -1783,22 +1784,18 @@ class NewExamDialog(QDialog):
 
         if not self._subject_identity_changed(old_cfg, edited):
             self.subject_configs[idx] = self._copy_noncritical_subject_updates(old_cfg, edited)
-            self._persist_subject_answer_keys(old_cfg, self.subject_configs[idx], action="edit_subject")
             if not self._persist_subject_grid_after_change(reason="edit_subject_noncritical"):
                 self.subject_configs = before
                 self._reload_subject_grid(reason="edit_subject_rollback")
+                return
+            self._persist_subject_answer_keys(old_cfg, self.subject_configs[idx], action="edit_subject")
             return
 
         decision = self._confirm_subject_identity_change(old_cfg, edited)
         if decision == "cancel":
             return
+        reset_recognition_data = decision == "reset"
         if decision == "reset":
-            parent = self.parent()
-            if parent is not None and hasattr(parent, "_delete_subject_recognition_data"):
-                try:
-                    parent._delete_subject_recognition_data(old_cfg)
-                except Exception:
-                    pass
             updated = dict(edited)
             # Keep subject runtime identity stable across config edits so status lookup,
             # DB storage key resolution and auto-recognition all read the same stream.
@@ -1815,10 +1812,19 @@ class NewExamDialog(QDialog):
         else:
             self.subject_configs[idx] = dict(old_cfg) | dict(edited)
 
-        self._persist_subject_answer_keys(old_cfg, self.subject_configs[idx], action="edit_subject")
         if not self._persist_subject_grid_after_change(reason="edit_subject"):
             self.subject_configs = before
             self._reload_subject_grid(reason="edit_subject_rollback")
+            return
+        if reset_recognition_data:
+            parent = self.parent()
+            if parent is not None and hasattr(parent, "_delete_subject_recognition_data"):
+                try:
+                    parent._delete_subject_recognition_data(old_cfg)
+                except Exception:
+                    pass
+            self._reload_subject_grid(reason="edit_subject_reset_recognition")
+        self._persist_subject_answer_keys(old_cfg, self.subject_configs[idx], action="edit_subject")
 
     def _delete_subject(self) -> None:
         idx = self._current_subject_index()
@@ -1836,10 +1842,11 @@ class NewExamDialog(QDialog):
             return
         before = copy.deepcopy(self.subject_configs)
         del self.subject_configs[idx]
-        self._delete_subject_answer_keys(old_cfg)
         if not self._persist_subject_grid_after_change(reason="delete_subject"):
             self.subject_configs = before
             self._reload_subject_grid(reason="delete_subject_rollback")
+            return
+        self._delete_subject_answer_keys(old_cfg)
 
     def _validate_and_accept(self) -> None:
         if not self.exam_name.text().strip():
@@ -2074,14 +2081,34 @@ class MainWindow(QMainWindow):
         self.stack.currentChanged.connect(self._handle_stack_changed)
         db_subjects = self.database.fetch_catalog("subjects")
         db_blocks = self.database.fetch_catalog("blocks")
+        default_subject_catalog = list(self.subject_catalog)
+        default_block_catalog = list(self.block_catalog)
         if db_subjects:
-            self.subject_catalog = db_subjects
-            self.subjects = list(db_subjects)
+            merged_subjects = list(db_subjects)
+            seen_subjects = {str(x).strip().casefold() for x in merged_subjects if str(x).strip()}
+            for item in default_subject_catalog:
+                key = str(item).strip().casefold()
+                if key and key not in seen_subjects:
+                    merged_subjects.append(item)
+                    seen_subjects.add(key)
+            self.subject_catalog = merged_subjects
+            self.subjects = list(merged_subjects)
+            if merged_subjects != db_subjects:
+                self.database.replace_catalog("subjects", self.subject_catalog)
         else:
             self.database.replace_catalog("subjects", self.subject_catalog)
         if db_blocks:
-            self.block_catalog = db_blocks
-            self.grades = list(db_blocks)
+            merged_blocks = list(db_blocks)
+            seen_blocks = {str(x).strip().casefold() for x in merged_blocks if str(x).strip()}
+            for item in default_block_catalog:
+                key = str(item).strip().casefold()
+                if key and key not in seen_blocks:
+                    merged_blocks.append(item)
+                    seen_blocks.add(key)
+            self.block_catalog = merged_blocks
+            self.grades = list(merged_blocks)
+            if merged_blocks != db_blocks:
+                self.database.replace_catalog("blocks", self.block_catalog)
         else:
             self.database.replace_catalog("blocks", self.block_catalog)
         self._refresh_exam_list()
@@ -2900,9 +2927,11 @@ class MainWindow(QMainWindow):
         self.subject_management_mode = mode
         self.subject_management_label.setText("Tên môn" if mode == "subjects" else "Tên khối")
 
-    def _refresh_subject_management_tables(self) -> None:
-        self.subjects = list(self.subject_catalog)
-        self.grades = list(self.block_catalog)
+    def _refresh_subject_management_tables(self, *, reset_from_catalog: bool = False) -> None:
+        """Render the subject/block catalog editor without DB side effects."""
+        if reset_from_catalog:
+            self.subjects = list(self.subject_catalog)
+            self.grades = list(self.block_catalog)
         for mode, values in (("subjects", self.subjects), ("grades", self.grades)):
             table = self._subject_management_table(mode)
             table.blockSignals(True)
@@ -2959,7 +2988,6 @@ class MainWindow(QMainWindow):
         if row >= len(values):
             return
         del values[row]
-        self._apply_subject_management_values()
         self._refresh_subject_management_tables()
         self._set_subject_management_mode(self.subject_management_mode)
 
@@ -2972,7 +3000,6 @@ class MainWindow(QMainWindow):
             return
         values[row], values[target] = values[target], values[row]
         self._set_subject_management_mode(mode)
-        self._apply_subject_management_values()
         self._refresh_subject_management_tables()
         table = self._subject_management_table(mode)
         table.selectRow(target)
@@ -2990,25 +3017,15 @@ class MainWindow(QMainWindow):
             self.database.log_change("catalog", "blocks", "block_catalog", old_blocks, self.block_catalog, "subject_management")
 
     def _sync_subject_configs_with_catalog(self) -> bool:
-        if not self.session:
-            return False
-        cfg = dict(self.session.config or {})
-        subject_configs = cfg.get("subject_configs", []) if isinstance(cfg.get("subject_configs", []), list) else []
-        allowed = {x.casefold() for x in self.subject_catalog}
-        filtered = [x for x in subject_configs if str(x.get("name", "")).strip().casefold() in allowed]
-        changed = len(filtered) != len(subject_configs)
-        if changed:
-            cfg["subject_configs"] = filtered
-            self.session.config = cfg
-            self.session.subjects = [
-                f"{str(x.get('name', '')).strip()}_{str(x.get('block', '')).strip()}"
-                for x in filtered
-                if str(x.get("name", "")).strip()
-            ]
-            self.session_dirty = True
-            self._refresh_batch_subject_controls()
-            self._refresh_session_info()
-        return changed
+        """Compatibility no-op: keep exam subjects independent from the catalog.
+
+        The catalog is a global pick-list for combo boxes. It is not a
+        constraint on subjects already configured in an exam. Older code filtered
+        session.config["subject_configs"] by the current catalog, which could
+        silently remove a subject from the exam after a catalog edit or a
+        partially loaded catalog.
+        """
+        return False
 
     def _save_subject_management(self) -> None:
         value = self.subject_management_editor.text().strip()
@@ -3019,21 +3036,29 @@ class MainWindow(QMainWindow):
                 values.append(value)
             else:
                 values[self.subject_edit_index] = value
-        if not self.subjects:
+
+        subject_values = [item.strip() for item in self.subjects if item.strip()]
+        grade_values = [item.strip() for item in self.grades if item.strip()]
+        if not subject_values:
             QMessageBox.warning(self, "Quản lý môn học", "Danh sách môn học không được để trống.")
             return
-        if not self.grades:
+        if not grade_values:
             QMessageBox.warning(self, "Quản lý khối", "Danh sách khối không được để trống.")
             return
 
-        normalized = [item.strip() for item in values if item.strip()]
-        if len(normalized) != len(set(x.casefold() for x in normalized)):
+        normalized_current = [item.strip() for item in values if item.strip()]
+        if len(normalized_current) != len(set(x.casefold() for x in normalized_current)):
             QMessageBox.warning(self, "Quản lý môn học", f"Danh sách {label} không được trùng lặp.")
             return
-        if self.subject_management_mode == "subjects":
-            self.subjects = normalized
-        else:
-            self.grades = normalized
+        if len(subject_values) != len(set(x.casefold() for x in subject_values)):
+            QMessageBox.warning(self, "Quản lý môn học", "Danh sách môn học không được trùng lặp.")
+            return
+        if len(grade_values) != len(set(x.casefold() for x in grade_values)):
+            QMessageBox.warning(self, "Quản lý khối", "Danh sách khối không được trùng lặp.")
+            return
+
+        self.subjects = subject_values
+        self.grades = grade_values
         self._apply_subject_management_values()
         self.session_dirty = True
 
@@ -3042,13 +3067,13 @@ class MainWindow(QMainWindow):
             cfg["subject_catalog"] = list(self.subject_catalog)
             cfg["block_catalog"] = list(self.block_catalog)
             self.session.config = cfg
-            removed = self._sync_subject_configs_with_catalog()
-            if removed:
-                QMessageBox.information(self, "Quản lý môn học", "Đã cập nhật danh sách môn/khối và đồng bộ các môn trong kỳ thi hiện tại.")
-            else:
-                QMessageBox.information(self, "Quản lý môn học", "Đã cập nhật danh sách môn và khối.")
-        else:
-            QMessageBox.information(self, "Quản lý môn học", "Đã cập nhật danh sách môn và khối.")
+            self._sync_subject_configs_with_catalog()
+
+        QMessageBox.information(
+            self,
+            "Quản lý môn học",
+            "Đã cập nhật danh sách môn và khối. Cấu hình môn trong kỳ thi hiện tại được giữ nguyên.",
+        )
         self._refresh_subject_management_tables()
         self._set_subject_management_mode(self.subject_management_mode)
 
@@ -4338,9 +4363,19 @@ class MainWindow(QMainWindow):
             self.database.save_exam_session(new_session_id, new_name, payload)
 
             for old_subject_key, new_subject_key in subject_key_map.items():
-                source_scan_key = f"{source_prefix}::{old_subject_key}" if source_prefix else old_subject_key
-                target_scan_key = f"{target_prefix}::{new_subject_key}" if target_prefix else new_subject_key
-                source_rows = list(self.database.fetch_scan_results_for_subject(source_scan_key) or [])
+                source_scan_candidates = [old_subject_key]
+                if source_prefix and not old_subject_key.startswith(f"{source_prefix}::"):
+                    source_scan_candidates.append(f"{source_prefix}::{old_subject_key}")
+                elif source_prefix:
+                    source_scan_candidates.append(f"{source_prefix}::{old_subject_key}")
+
+                source_rows = []
+                for source_scan_key in dict.fromkeys(source_scan_candidates):
+                    source_rows = list(self.database.fetch_scan_results_for_subject(source_scan_key) or [])
+                    if source_rows:
+                        break
+
+                target_scan_key = new_subject_key if not target_prefix or new_subject_key.startswith(f"{target_prefix}::") else f"{target_prefix}::{new_subject_key}"
                 self.database.replace_scan_results_for_subject(target_scan_key, source_rows)
 
                 source_keys = self.database.fetch_answer_keys_for_subject(old_subject_key)
@@ -6284,7 +6319,15 @@ class MainWindow(QMainWindow):
         if not subject or not sid:
             return None
         sid_norm = self._normalized_student_id_for_match(sid)
-        rows = self.database.fetch_scan_results_for_subject(self._batch_result_subject_key(subject)) or []
+        rows = []
+        cfg = self._subject_config_by_subject_key(subject)
+        if cfg and hasattr(self, "_subject_scan_storage_key_candidates"):
+            for candidate_key in self._subject_scan_storage_key_candidates(cfg):
+                rows = self.database.fetch_scan_results_for_subject(candidate_key) or []
+                if rows:
+                    break
+        if not rows:
+            rows = self.database.fetch_scan_results_for_subject(self._batch_result_subject_key(subject)) or []
         best_match: OMRResult | None = None
         for payload in rows:
             res = self._deserialize_omr_result(payload)
@@ -7028,6 +7071,8 @@ class MainWindow(QMainWindow):
         base = str(subject_key or "").strip()
         scope_prefix = self._session_scope_prefix()
         if scope_prefix and base:
+            if base.startswith(f"{scope_prefix}::"):
+                return base
             return f"{scope_prefix}::{base}"
         return base
 
@@ -7090,6 +7135,35 @@ class MainWindow(QMainWindow):
                 return rows or {}
 
         return {}
+
+    def _save_answer_keys_for_subject_scoped(
+        self,
+        subject_key: str,
+        subject_cfg: dict | None,
+        answer_keys: dict,
+    ) -> str:
+        """Save answer keys using the same scoped key family used by fetch/scoring."""
+        cfg = subject_cfg if isinstance(subject_cfg, dict) else self._subject_config_by_subject_key(subject_key)
+        storage_key = self._answer_key_subject_key(subject_key, cfg)
+        if not storage_key and isinstance(cfg, dict):
+            storage_key = self._answer_key_subject_key(self._subject_instance_key_from_cfg(cfg), cfg)
+        if not storage_key:
+            return ""
+
+        safe_rows = dict(answer_keys or {})
+        self.database.replace_answer_keys_for_subject(storage_key, safe_rows)
+
+        try:
+            if isinstance(cfg, dict):
+                cfg["answer_key_key"] = storage_key
+                cfg["imported_answer_keys"] = safe_rows
+            cfg_ref = self._session_subject_config_ref_by_subject_key(subject_key)
+            if isinstance(cfg_ref, dict):
+                cfg_ref["answer_key_key"] = storage_key
+                cfg_ref["imported_answer_keys"] = safe_rows
+        except Exception:
+            pass
+        return storage_key
 
     def _display_subject_label(self, cfg: dict | None) -> str:
         if not isinstance(cfg, dict):
@@ -7370,7 +7444,11 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
             return False
 
-        saved_results = [self._serialize_omr_result(result) for result in (self.scan_results or [])]
+        current_results = list(self._collect_current_subject_results_for_save() or self.scan_results or [])
+        if not current_results and row_count > 0:
+            current_results = list(self.scan_results or [])
+        self.scan_results = current_results
+        saved_results = [self._serialize_omr_result(result) for result in current_results]
         subject_key = self._subject_key_from_cfg(subject_cfg)
         saved_at = datetime.now().isoformat(timespec="seconds")
 
@@ -12695,7 +12773,15 @@ class MainWindow(QMainWindow):
         if matched is not None and self._result_has_recognition_payload(matched):
             return self._lightweight_result_copy(matched)
 
-        db_rows = self.database.fetch_scan_results_for_subject(self._batch_result_subject_key(subject_key))
+        db_rows = []
+        cfg = self._subject_config_by_subject_key(subject_key)
+        if cfg and hasattr(self, "_subject_scan_storage_key_candidates"):
+            for candidate_key in self._subject_scan_storage_key_candidates(cfg):
+                db_rows = self.database.fetch_scan_results_for_subject(candidate_key) or []
+                if db_rows:
+                    break
+        if not db_rows:
+            db_rows = self.database.fetch_scan_results_for_subject(self._batch_result_subject_key(subject_key)) or []
         db_pool: list[OMRResult] = []
         for item in db_rows:
             try:

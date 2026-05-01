@@ -410,7 +410,14 @@ def open_recheck_dialog(self) -> None:
     loading.show()
     QApplication.processEvents()
 
-    result_rows = self.database.fetch_scan_results_for_subject(self._batch_result_subject_key(subject_key)) or []
+    result_rows = []
+    if hasattr(self, "_subject_scan_storage_key_candidates"):
+        for candidate_key in self._subject_scan_storage_key_candidates(cfg):
+            result_rows = self.database.fetch_scan_results_for_subject(candidate_key) or []
+            if result_rows:
+                break
+    else:
+        result_rows = self.database.fetch_scan_results_for_subject(self._batch_result_subject_key(subject_key)) or []
     loading.setValue(2)
     QApplication.processEvents()
     scans = [self._deserialize_omr_result(x) for x in result_rows]
