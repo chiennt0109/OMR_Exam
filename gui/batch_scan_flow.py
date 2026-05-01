@@ -8,6 +8,95 @@ import csv
 import re
 
 
+def _normalize_mapping_key(text: str) -> str:
+    return str(text or "").strip().lower().replace(" ", "").replace("_", "")
+
+
+def _load_api_mapping_rows(path: Path) -> tuple[list[str], list[dict[str, str]]]:
+    ext = path.suffix.lower()
+    rows: list[dict[str, str]] = []
+    if ext in {".csv", ".txt", ".tsv"}:
+        raw = path.read_text(encoding="utf-8-sig", errors="ignore")
+        non_empty_lines = [ln for ln in raw.splitlines() if str(ln).strip()]
+        first_line = non_empty_lines[0] if non_empty_lines else ""
+        if raw.strip():
+            force_tab = ext in {".tsv", ".txt"} and ("	" in first_line)
+            if force_tab:
+                dialect = csv.excel_tab
+            else:
+                try:
+                    dialect = csv.Sniffer().sniff(raw[:2048])
+                except Exception:
+                    dialect = csv.excel_tab if "	" in first_line else csv.excel
+        else:
+            dialect = csv.excel
+        reader = csv.DictReader(raw.splitlines(), dialect=dialect)
+        headers = [str(x or "").strip("﻿") for x in (reader.fieldnames or []) if str(x or "").strip()]
+        if len(headers) <= 1 and "	" in first_line:
+            reader = csv.DictReader(raw.splitlines(), dialect=csv.excel_tab)
+            headers = [str(x or "").strip("﻿") for x in (reader.fieldnames or []) if str(x or "").strip()]
+        for row in reader:
+            rows.append({str(k).strip("﻿"): str(v or "") for k, v in (row or {}).items()})
+        return headers, rows
+    if ext == ".xlsx":
+        try:
+            from openpyxl import load_workbook  # type: ignore
+        except Exception as exc:
+            raise RuntimeError(f"Thiếu openpyxl để đọc .xlsx: {exc}")
+        wb = load_workbook(path, read_only=True, data_only=True)
+        ws = wb.active
+        values = list(ws.values)
+        if not values:
+            return [], []
+        headers = [str(x or "") for x in values[0]]
+        for data in values[1:]:
+            row = {}
+            for idx, key in enumerate(headers):
+                row[str(key)] = str(data[idx] if idx < len(data) and data[idx] is not None else "")
+            rows.append(row)
+        return [str(h or "") for h in headers if str(h or "").strip()], rows
+    raise RuntimeError("Chỉ hỗ trợ .csv/.txt/.tsv/.xlsx")
+
+
+def _expected_answer_string_length_for_subject(self, subject_key: str) -> int:
+    fetched = self._fetch_answer_keys_for_subject_scoped(subject_key) or {}
+    if not fetched:
+        return 0
+    sample = next(iter(fetched.values()))
+    if hasattr(sample, "answers"):
+        mcq_map = sample.answers if isinstance(sample.answers, dict) else {}
+        tf_map = sample.true_false_answers if isinstance(sample.true_false_answers, dict) else {}
+        numeric = sample.numeric_answers if isinstance(sample.numeric_answers, dict) else {}
+    elif isinstance(sample, dict):
+        mcq_map = sample.get("mcq_answers", sample.get("answers", {})) if isinstance(sample.get("mcq_answers", sample.get("answers", {})), dict) else {}
+        tf_map = sample.get("true_false_answers", {}) if isinstance(sample.get("true_false_answers", {}), dict) else {}
+        numeric = sample.get("numeric_answers", {}) if isinstance(sample.get("numeric_answers", {}), dict) else {}
+    else:
+        mcq_map = {}; tf_map = {}; numeric = {}
+    return int(len(mcq_map) + 4 * len(tf_map) + sum(len(str(v or "")) for v in numeric.values()))
+
+
+def _answer_layout_for_subject(self, subject_key: str) -> tuple[list[int], list[int], list[tuple[int, int]]]:
+    fetched = self._fetch_answer_keys_for_subject_scoped(subject_key) or {}
+    if not fetched:
+        return [], [], []
+    sample = next(iter(fetched.values()))
+    if hasattr(sample, "answers"):
+        mcq_map = sample.answers if isinstance(sample.answers, dict) else {}
+        tf_map = sample.true_false_answers if isinstance(sample.true_false_answers, dict) else {}
+        numeric_map = sample.numeric_answers if isinstance(sample.numeric_answers, dict) else {}
+    elif isinstance(sample, dict):
+        mcq_map = sample.get("mcq_answers", sample.get("answers", {})) if isinstance(sample.get("mcq_answers", sample.get("answers", {})), dict) else {}
+        tf_map = sample.get("true_false_answers", {}) if isinstance(sample.get("true_false_answers", {}), dict) else {}
+        numeric_map = sample.get("numeric_answers", {}) if isinstance(sample.get("numeric_answers", {}), dict) else {}
+    else:
+        mcq_map, tf_map, numeric_map = {}, {}, {}
+    mcq_questions = sorted(set(int(q) for q in mcq_map.keys() if str(q).strip().lstrip("-").isdigit()))
+    tf_questions = sorted(set(int(q) for q in tf_map.keys() if str(q).strip().lstrip("-").isdigit()))
+    numeric_questions = sorted(set(int(q) for q in numeric_map.keys() if str(q).strip().lstrip("-").isdigit()))
+    numeric_layout = [(q, len(str((numeric_map or {}).get(q, (numeric_map or {}).get(str(q), "")) or ""))) for q in numeric_questions]
+    return mcq_questions, tf_questions, numeric_layout
+
 def run_batch_scan_from_api_file(self, subject_cfg: dict, file_scope_mode: str, api_file: str) -> None:
     subject_key_for_results = self._subject_key_from_cfg(subject_cfg) if subject_cfg else self._resolve_preferred_scoring_subject()
     scan_folder = str((subject_cfg or {}).get("scan_folder", "") or "").strip()
@@ -17,7 +106,7 @@ def run_batch_scan_from_api_file(self, subject_cfg: dict, file_scope_mode: str, 
         QMessageBox.warning(self, "API bài thi", "Chưa cấu hình Thư mục bài thi môn.")
         return
     try:
-        headers, mapping_rows = self._load_api_mapping_rows(Path(api_file))
+        headers, mapping_rows = _load_api_mapping_rows(Path(api_file))
     except Exception as exc:
         QMessageBox.warning(self, "API bài thi", f"Không đọc được file mapping:\n{exc}")
         return
@@ -28,7 +117,7 @@ def run_batch_scan_from_api_file(self, subject_cfg: dict, file_scope_mode: str, 
         QMessageBox.warning(self, "API bài thi", "Không tìm thấy tiêu đề cột trong file mapping.")
         return
     
-    expected_len = self._expected_answer_string_length_for_subject(subject_key_for_results)
+    expected_len = _expected_answer_string_length_for_subject(self, subject_key_for_results)
     pick = QDialog(self)
     pick.setWindowTitle("Chọn cột API bài thi")
     pick_lay = QVBoxLayout(pick)
@@ -40,7 +129,7 @@ def run_batch_scan_from_api_file(self, subject_cfg: dict, file_scope_mode: str, 
     
     def _find_idx(alias: set[str], combo: QComboBox) -> int:
         for i in range(combo.count()):
-            if self._normalize_mapping_key(combo.itemText(i)) in alias:
+            if _normalize_mapping_key(combo.itemText(i)) in alias:
                 return i
         return 0
     
@@ -69,7 +158,7 @@ def run_batch_scan_from_api_file(self, subject_cfg: dict, file_scope_mode: str, 
         QMessageBox.warning(self, "API bài thi", "Bắt buộc chọn cột FileName.")
         return
     
-    mcq_questions, tf_questions, numeric_layout = self._answer_layout_for_subject(subject_key_for_results)
+    mcq_questions, tf_questions, numeric_layout = _answer_layout_for_subject(self, subject_key_for_results)
     q_counts = (subject_cfg or {}).get("question_counts", {}) if isinstance(subject_cfg or {}, dict) else {}
     if not any(int((q_counts or {}).get(k, 0) or 0) > 0 for k in ["MCQ", "TF", "NUMERIC"]):
         tpl_path = str((subject_cfg or {}).get("template", "") or "").strip()
