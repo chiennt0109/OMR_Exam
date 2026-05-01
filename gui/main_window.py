@@ -16168,73 +16168,10 @@ class MainWindow(QMainWindow):
         )
 
     def _export_recheck_package(self, group_by: str = "subject") -> None:
-        if not self.session:
-            QMessageBox.information(self, "Đóng gói bài phúc tra", "Chưa có kỳ thi hiện tại.")
-            return
-        output_root = QFileDialog.getExistingDirectory(self, "Chọn thư mục lưu đóng gói bài phúc tra")
-        if not output_root:
-            return
-        package_root = Path(output_root) / "recheck_package"
-        package_root.mkdir(parents=True, exist_ok=True)
-        student_meta = self._student_meta_by_sid()
-        copied_count = 0
-        missing_image_count = 0
-        skipped_count = 0
+        from gui.export_reports_dialog import ExportReportsDialog
 
-        for subject_label, subject_key in self._iter_export_subjects():
-            rows = self._scan_rows_for_subject(subject_key)
-            if not rows:
-                continue
-            subject_folder = self._safe_file_component(subject_label, fallback=self._safe_sheet_name(subject_key, fallback="subject"))
-            used_paths: set[Path] = set()
-            for row in rows:
-                image_path = str(getattr(row, "image_path", "") or "").strip()
-                sid = str(getattr(row, "student_id", "") or "").strip()
-                payload = self._lookup_subject_score_payload(subject_key, sid) if sid else {}
-                note_text = str((payload or {}).get("note", "") or "").casefold()
-                status_text = str((payload or {}).get("status", "") or "").casefold()
-                is_recheck = (
-                    (payload or {}).get("baithiphuctra", "") not in {"", None, False, 0, "0"}
-                    or (payload or {}).get("recheck_score", "") not in {"", None}
-                    or "phúc tra" in note_text
-                    or "phuc tra" in note_text
-                    or "phúc tra" in status_text
-                    or "phuc tra" in status_text
-                )
-                if not is_recheck:
-                    continue
-                if not image_path:
-                    skipped_count += 1
-                    continue
-                source_path = Path(image_path)
-                if not source_path.exists() or not source_path.is_file():
-                    missing_image_count += 1
-                    continue
-                meta = student_meta.get(sid, {})
-                row_class = str(getattr(row, "class_name", "") or meta.get("class_name", "") or "(Không lớp)").strip() or "(Không lớp)"
-                if group_by == "class":
-                    target_dir = package_root / self._safe_file_component(row_class, fallback="class") / subject_folder
-                else:
-                    target_dir = package_root / subject_folder / self._safe_file_component(row_class, fallback="class")
-                target_dir.mkdir(parents=True, exist_ok=True)
-                student_name = str(getattr(row, "full_name", "") or meta.get("name", "") or "").strip()
-                base_name = f"{self._safe_file_component(sid, fallback='SBD')}_{self._safe_file_component(student_name, fallback='ho_ten')}"
-                ext = source_path.suffix
-                target_file = target_dir / f"{base_name}{ext}"
-                dup_idx = 2
-                while target_file.exists() or target_file in used_paths:
-                    target_file = target_dir / f"{base_name}_{dup_idx}{ext}"
-                    dup_idx += 1
-                used_paths.add(target_file)
-                shutil.copy2(source_path, target_file)
-                copied_count += 1
-
-        mode_text = "theo lớp" if group_by == "class" else "theo môn"
-        QMessageBox.information(
-            self,
-            "Đóng gói bài phúc tra",
-            f"Đã xử lý xong ({mode_text}).\n- File đã copy: {copied_count}\n- File thiếu/không tồn tại: {missing_image_count}\n- Bản ghi bỏ qua (không có đường dẫn ảnh): {skipped_count}\n- Thư mục đích: {package_root}",
-        )
+        dlg = ExportReportsDialog(self)
+        dlg._package_recheck(group_by)
 
     def _export_subject_api_payload(self, subject_key: str) -> None:
         subject = str(subject_key or "").strip()
@@ -16367,117 +16304,13 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Xuất API bài làm", f"Đã xuất API bài làm:\n{path}")
 
     def _export_score_range_report(self, ranges: list[tuple[float, float]]) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Báo cáo thống kê khoảng điểm", "score_range_report.xlsx", "Excel (*.xlsx)")
-        if not path:
-            return
-        from openpyxl import Workbook
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "score_ranges"
-        ws.append(["subject_key", "subject_label", "range", "count", "ratio_percent"])
-        subjects = self._iter_export_subjects()
-        for label, key in subjects:
-            rows = self._ensure_export_score_rows_for_subject(key)
-            values = []
-            for row in rows:
-                score_value = self._score_value_for_statistics(row)
-                if score_value is None:
-                    continue
-                values.append(score_value)
-            total = len(values)
-            if total <= 0:
-                for start, end in ranges:
-                    ws.append([key, label, f"{start:g}-{end:g}", 0, 0.0])
-                continue
-            for idx, (start, end) in enumerate(ranges):
-                if idx == len(ranges) - 1:
-                    cnt = sum(1 for x in values if start <= x <= end)
-                else:
-                    cnt = sum(1 for x in values if start <= x < end)
-                ratio = round((cnt * 100.0 / total), 2)
-                ws.append([key, label, f"{start:g}-{end:g}", cnt, ratio])
-        wb.save(path)
-        QMessageBox.information(self, "Báo cáo thống kê khoảng điểm", f"Đã xuất báo cáo:\n{path}")
+        self.action_open_export_reports_center()
 
     def _export_class_report(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Báo cáo thống kê theo lớp", "class_score_report.xlsx", "Excel (*.xlsx)")
-        if not path:
-            return
-        from openpyxl import Workbook
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "class_stats"
-        ws.append(["subject_key", "subject_label", "class_name", "student_count", "avg_score", "min_score", "max_score", "pass_rate_percent"])
-        subjects = self._iter_export_subjects()
-        student_meta = self._student_meta_by_sid()
-        for label, key in subjects:
-            rows = self._ensure_export_score_rows_for_subject(key)
-            grouped: dict[str, list[float]] = {}
-            for row in rows:
-                sid = str(row.get("student_id", "") or "").strip()
-                class_name = str(row.get("class_name", "") or "").strip() or str((student_meta.get(sid, {}) or {}).get("class_name", "") or "").strip() or "Chưa phân lớp"
-                score_value = self._score_value_for_statistics(row)
-                if score_value is None:
-                    continue
-                grouped.setdefault(class_name, []).append(score_value)
-            for class_name, values in sorted(grouped.items(), key=lambda x: x[0]):
-                count = len(values)
-                if count <= 0:
-                    continue
-                avg_score = round(sum(values) / count, 4)
-                pass_rate = round((sum(1 for x in values if x >= 5.0) * 100.0 / count), 2)
-                ws.append([key, label, class_name, count, avg_score, min(values), max(values), pass_rate])
-        wb.save(path)
-        QMessageBox.information(self, "Báo cáo thống kê theo lớp", f"Đã xuất báo cáo:\n{path}")
+        self.action_open_export_reports_center()
 
     def _export_management_report(self) -> None:
-        default_ranges = [(0.0, 2.0), (2.0, 4.0), (4.0, 6.0), (6.0, 8.0), (8.0, 10.0)]
-        path, _ = QFileDialog.getSaveFileName(self, "Báo cáo tổng hợp quản lý", "management_report.xlsx", "Excel (*.xlsx)")
-        if not path:
-            return
-        from openpyxl import Workbook
-        wb = Workbook()
-        ws_overview = wb.active
-        ws_overview.title = "overview"
-        ws_overview.append(["subject_key", "subject_label", "student_count", "avg_score", "std_like", "pass_rate_percent"])
-        ws_ranges = wb.create_sheet("score_ranges")
-        ws_ranges.append(["subject_key", "subject_label", "range", "count", "ratio_percent"])
-        ws_classes = wb.create_sheet("class_stats")
-        ws_classes.append(["subject_key", "subject_label", "class_name", "student_count", "avg_score"])
-        subjects = self._iter_export_subjects()
-        student_meta = self._student_meta_by_sid()
-        for label, key in subjects:
-            rows = self._ensure_export_score_rows_for_subject(key)
-            scores: list[float] = []
-            class_bucket: dict[str, list[float]] = {}
-            for row in rows:
-                val = self._score_value_for_statistics(row)
-                if val is None:
-                    continue
-                scores.append(val)
-                sid = str(row.get("student_id", "") or "").strip()
-                class_name = str(row.get("class_name", "") or "").strip() or str((student_meta.get(sid, {}) or {}).get("class_name", "") or "").strip() or "Chưa phân lớp"
-                class_bucket.setdefault(class_name, []).append(val)
-            count = len(scores)
-            if count <= 0:
-                ws_overview.append([key, label, 0, 0.0, 0.0, 0.0])
-                for start, end in default_ranges:
-                    ws_ranges.append([key, label, f"{start:g}-{end:g}", 0, 0.0])
-                continue
-            avg_score = sum(scores) / count
-            variance = sum((x - avg_score) ** 2 for x in scores) / count
-            pass_rate = (sum(1 for x in scores if x >= 5.0) * 100.0 / count)
-            ws_overview.append([key, label, count, round(avg_score, 4), round(variance ** 0.5, 4), round(pass_rate, 2)])
-            for idx, (start, end) in enumerate(default_ranges):
-                if idx == len(default_ranges) - 1:
-                    c = sum(1 for x in scores if start <= x <= end)
-                else:
-                    c = sum(1 for x in scores if start <= x < end)
-                ws_ranges.append([key, label, f"{start:g}-{end:g}", c, round(c * 100.0 / count, 2)])
-            for class_name, vals in sorted(class_bucket.items(), key=lambda x: x[0]):
-                ws_classes.append([key, label, class_name, len(vals), round(sum(vals) / len(vals), 4)])
-        wb.save(path)
-        QMessageBox.information(self, "Báo cáo tổng hợp quản lý", f"Đã xuất báo cáo:\n{path}")
+        self.action_open_export_reports_center()
 
     def _refresh_session_info(self) -> None:
         if not self.session:
