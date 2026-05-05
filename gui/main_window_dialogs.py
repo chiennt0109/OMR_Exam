@@ -262,6 +262,7 @@ class SubjectConfigDialog(QDialog):
             self.subject_name.setCurrentText(str(data.get("name", "")).strip())
 
         self.block_name = QComboBox(); self.block_name.setEditable(True); self.block_name.addItems(block_options)
+        
         self.block_name.setCurrentText(str(data.get("block", block_options[0] if block_options else "10")))
         self.is_essay_subject = QCheckBox("Môn tự luận")
         self.is_essay_subject.setChecked(bool(data.get("is_essay_subject", False)))
