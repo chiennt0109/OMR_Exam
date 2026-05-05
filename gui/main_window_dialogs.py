@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -263,6 +264,8 @@ class SubjectConfigDialog(QDialog):
 
         self.block_name = QComboBox(); self.block_name.setEditable(True); self.block_name.addItems(block_options)
         self.block_name.setCurrentText(str(data.get("block", block_options[0] if block_options else "10")))
+        self.block_name.setMinimumContentsLength(16)
+        self.block_name.setMinimumWidth(220)
         self.is_essay_subject = QCheckBox("Môn tự luận")
         self.is_essay_subject.setChecked(bool(data.get("is_essay_subject", False)))
         self.auto_recognize = QCheckBox("Tự động nhận dạng")
@@ -296,6 +299,8 @@ class SubjectConfigDialog(QDialog):
         self.btn_import_exam_room_mapping.clicked.connect(self._import_exam_room_mapping_from_file)
         self.btn_delete_exam_room_mapping = QPushButton("Xóa phòng")
         self.btn_delete_exam_room_mapping.clicked.connect(self._remove_selected_exam_room_mapping)
+        self.btn_delete_multi_exam_room_mapping = QPushButton("Xóa nhiều...")
+        self.btn_delete_multi_exam_room_mapping.clicked.connect(self._remove_multiple_exam_room_mappings)
         self.exam_room_mapping_hint = QLabel("Chưa nạp mapping SBD/phòng.")
         self.exam_room_mapping_hint.setWordWrap(False)
         room_map_wrap = QWidget()
@@ -305,6 +310,7 @@ class SubjectConfigDialog(QDialog):
         room_map_lay.addWidget(self.exam_room_mapping_selector, 0)
         room_map_lay.addWidget(self.btn_import_exam_room_mapping, 0)
         room_map_lay.addWidget(self.btn_delete_exam_room_mapping, 0)
+        room_map_lay.addWidget(self.btn_delete_multi_exam_room_mapping, 0)
         room_map_lay.addWidget(self.exam_room_mapping_hint, 1)
         self._restore_exam_room_mapping_from_data(data, seed_room)
         self.answer_codes = QLineEdit(", ".join(sorted((data.get("imported_answer_keys") or {}).keys()))); self.answer_codes.setReadOnly(True)
@@ -353,6 +359,7 @@ class SubjectConfigDialog(QDialog):
         self.q_numeric = QLineEdit(str((qsc.get("NUMERIC") or {}).get("per_question", 1.0)))
 
         self.total_score = QLineEdit(); self.total_score.setReadOnly(True)
+        self.total_score.setMaximumWidth(120)
 
         self._score_line_edits = [
             self.sec_mcq_total, self.sec_tf_total, self.sec_tf_1, self.sec_tf_2, self.sec_tf_3, self.sec_tf_4, self.sec_numeric_total,
@@ -965,6 +972,7 @@ class SubjectConfigDialog(QDialog):
             self.exam_room_mapping_selector.addItem("[Chưa có danh sách]", "")
             self.exam_room_mapping_hint.setText("Chưa nạp mapping SBD/phòng.")
             self.btn_delete_exam_room_mapping.setEnabled(False)
+            self.btn_delete_multi_exam_room_mapping.setEnabled(False)
             return
         for room in sorted(self._exam_room_mapping_cache.keys()):
             cnt = len(self._exam_room_mapping_cache.get(room, []))
@@ -975,6 +983,7 @@ class SubjectConfigDialog(QDialog):
             if idx >= 0:
                 self.exam_room_mapping_selector.setCurrentIndex(idx)
         self.btn_delete_exam_room_mapping.setEnabled(self.exam_room_mapping_selector.count() > 0)
+        self.btn_delete_multi_exam_room_mapping.setEnabled(self.exam_room_mapping_selector.count() > 1)
         self._on_exam_room_mapping_selected(self.exam_room_mapping_selector.currentIndex())
 
     def _on_exam_room_mapping_selected(self, _index: int) -> None:
@@ -984,9 +993,11 @@ class SubjectConfigDialog(QDialog):
             count = len(self._exam_room_mapping_cache.get(room, []))
             self.exam_room_mapping_hint.setText(f"{room}: {count} SBD")
             self.btn_delete_exam_room_mapping.setEnabled(True)
+            self.btn_delete_multi_exam_room_mapping.setEnabled(len(self._exam_room_mapping_cache) > 1)
         else:
             self.exam_room_mapping_hint.setText("Chưa nạp mapping SBD/phòng.")
             self.btn_delete_exam_room_mapping.setEnabled(False)
+            self.btn_delete_multi_exam_room_mapping.setEnabled(False)
 
     def _remove_selected_exam_room_mapping(self) -> None:
         room = str(self.exam_room_mapping_selector.currentData() or "").strip()
@@ -994,6 +1005,41 @@ class SubjectConfigDialog(QDialog):
             return
         self._exam_room_mapping_cache.pop(room, None)
         if self.exam_room_name.currentText().strip() == room:
+            self.exam_room_name.setCurrentText("")
+        if self._exam_room_mapping_cache and not self.exam_room_name.currentText().strip():
+            self.exam_room_name.setCurrentText(sorted(self._exam_room_mapping_cache.keys())[0])
+        self._refresh_exam_room_mapping_selector()
+
+    def _remove_multiple_exam_room_mappings(self) -> None:
+        rooms = sorted(self._exam_room_mapping_cache.keys())
+        if len(rooms) <= 1:
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Xóa nhiều phòng")
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("Chọn các phòng cần xóa khỏi danh sách SBD phòng thi:"))
+        room_list = QListWidget()
+        room_list.setSelectionMode(QAbstractItemView.MultiSelection)
+        for room in rooms:
+            count = len(self._exam_room_mapping_cache.get(room, []))
+            item = QListWidgetItem(f"{room} ({count} SBD)")
+            item.setData(Qt.UserRole, room)
+            room_list.addItem(item)
+        lay.addWidget(room_list)
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        selected_rooms = [str(i.data(Qt.UserRole) or "").strip() for i in room_list.selectedItems()]
+        selected_rooms = [r for r in selected_rooms if r]
+        if not selected_rooms:
+            QMessageBox.information(self, "Xóa nhiều phòng", "Chưa chọn phòng nào để xóa.")
+            return
+        for room in selected_rooms:
+            self._exam_room_mapping_cache.pop(room, None)
+        if self.exam_room_name.currentText().strip() in selected_rooms:
             self.exam_room_name.setCurrentText("")
         if self._exam_room_mapping_cache and not self.exam_room_name.currentText().strip():
             self.exam_room_name.setCurrentText(sorted(self._exam_room_mapping_cache.keys())[0])

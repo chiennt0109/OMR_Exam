@@ -211,6 +211,24 @@ class MainWindowAutoRecognitionMixin:
             gc.collect()
             self._update_auto_recognition_progress()
 
+    def _schedule_auto_recognition_for_existing_files(self, subject_cfgs: list[dict] | None = None) -> None:
+        """Queue subjects with auto mode enabled even when files already existed before config save."""
+        cfgs = subject_cfgs if isinstance(subject_cfgs, list) else self._effective_subject_configs_for_batch()
+        for cfg in cfgs or []:
+            if not isinstance(cfg, dict):
+                continue
+            if not bool(cfg.get("auto_recognize", False)):
+                continue
+            if self._subject_uses_direct_score_import(cfg):
+                continue
+            subject_key = self._subject_instance_key_from_cfg(cfg)
+            if not subject_key:
+                continue
+            signature = self._scan_folder_signature(cfg)
+            self._auto_recognition_last_seen[subject_key] = signature
+            if self._scan_signature_has_files(signature) and self._pending_auto_recognition_paths_for_cfg(cfg):
+                self._enqueue_auto_recognition_subject(subject_key)
+
     def _run_auto_recognition_for_subject(self, subject_key: str) -> None:
         if not hasattr(self, "batch_subject_combo") or self.batch_subject_combo.count() <= 1:
             return
