@@ -677,6 +677,9 @@ class MainWindowWorkspaceMixin:
             self._refresh_exam_list()
             self._refresh_session_info()
             self._refresh_batch_subject_controls()
+            self._schedule_auto_recognition_for_existing_files(
+                list(session.config.get("subject_configs", []) or [])
+            )
             self._refresh_ribbon_action_states()
             if hasattr(self, "scoring_subject_combo"):
                 preferred_scoring = self._resolve_preferred_scoring_subject()
