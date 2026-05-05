@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -262,7 +263,6 @@ class SubjectConfigDialog(QDialog):
             self.subject_name.setCurrentText(str(data.get("name", "")).strip())
 
         self.block_name = QComboBox(); self.block_name.setEditable(True); self.block_name.addItems(block_options)
-        
         self.block_name.setCurrentText(str(data.get("block", block_options[0] if block_options else "10")))
         self.block_name.setMinimumContentsLength(16)
         self.block_name.setMinimumWidth(220)
