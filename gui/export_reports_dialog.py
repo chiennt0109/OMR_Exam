@@ -721,8 +721,13 @@ class ExportReportsDialog(QDialog):
                 if abs(score - 10.0) < 1e-9:
                     perfect += 1
                     continue
+                bucket_score = score
+                # Put exact integer boundaries (except 0 and 10) into the lower bin
+                # so reports do not appear shifted to a "higher" score range.
+                if 0.0 < bucket_score < 10.0 and abs(bucket_score - round(bucket_score)) < 1e-9:
+                    bucket_score -= 1e-9
                 for idx, (lo, hi) in enumerate(bins):
-                    if lo <= score < hi:
+                    if lo <= bucket_score < hi:
                         counts[idx] += 1
                         break
             rows.append([label, len(scores), *counts, perfect])
