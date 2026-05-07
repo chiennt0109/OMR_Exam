@@ -1079,8 +1079,11 @@ class SubjectConfigDialog(QDialog):
 
     def payload(self) -> dict:
         def f(v: str, label: str) -> float:
+            raw = str(v or "").strip()
+            if raw == "":
+                return 0.0
             try:
-                return float(v.strip().replace(",", "."))
+                return float(raw.replace(",", "."))
             except Exception as exc:
                 raise ImportError(f"Giá trị điểm '{label}' không hợp lệ: {v}") from exc
 

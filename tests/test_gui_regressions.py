@@ -201,6 +201,25 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('self._reset_auto_recognition_state(pause=True)', session_source)
         self.assertIn('self._reset_auto_recognition_state(pause=False)', session_source)
         self.assertIn('if prev_session_id and next_session_id and prev_session_id != next_session_id:', workspace_source)
+
+    def test_save_as_clone_resets_answer_key_binding_and_copies_scoped_answer_keys(self) -> None:
+        source = Path('gui/main_window_session_mixin.py').read_text(encoding='utf-8')
+        self.assertIn('subject_cfg.pop("answer_key_key", None)', source)
+        self.assertIn('source_answer_key_candidates = [old_subject_key]', source)
+        self.assertIn('source_keys = self.database.fetch_answer_keys_for_subject(source_answer_key)', source)
+        self.assertIn('self.database.replace_answer_keys_for_subject(new_subject_key, source_keys)', source)
+
+    def test_subject_distribution_report_headers_match_subject_name_and_non_overlapping_bins(self) -> None:
+        source = Path('gui/export_reports_dialog.py').read_text(encoding='utf-8')
+        self.assertIn('headers = ["Tên môn", "Tổng bài", "0–<1", "1–<2", "2–<3", "3–<4", "4–<5", "5–<6", "6–<7", "7–<8", "8–<9", "9–<10", "=10"]', source)
+        self.assertNotIn('if idx == 0 and lo <= score <= hi:', source)
+        self.assertIn('if 0.0 < bucket_score < 10.0 and abs(bucket_score - round(bucket_score)) < 1e-9:', source)
+        self.assertIn('bucket_score -= 1e-9', source)
+
+    def test_subject_dialog_payload_treats_empty_score_fields_as_zero(self) -> None:
+        source = Path('gui/main_window_dialogs.py').read_text(encoding='utf-8')
+        self.assertIn('if raw == "":\n                return 0.0', source)
+        self.assertIn('return float(raw.replace(",", "."))', source)
     def test_scoring_syncs_current_batch_snapshot_before_scoring(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
         self.assertIn('def _sync_current_batch_subject_snapshot(self, persist_to_db: bool = True) -> tuple[str, list[OMRResult]]:', source)
