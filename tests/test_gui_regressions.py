@@ -178,6 +178,12 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn("if not subject:\n                return []", block)
         self.assertNotIn('codes.update(str(x).strip() for x in (self.imported_exam_codes or []) if str(x).strip())', block)
         self.assertNotIn("if current_code and current_code != \"-\":\n                codes.add(str(current_code).strip())", block)
+
+    def test_answer_key_scope_key_uses_exam_name_when_session_id_missing(self) -> None:
+        source = Path('gui/main_window_dialogs.py').read_text(encoding='utf-8')
+        self.assertIn('if session_id and exam_name:', source)
+        self.assertIn('elif session_id:', source)
+        self.assertIn('scope_prefix = exam_name', source)
     def test_scoring_syncs_current_batch_snapshot_before_scoring(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
         self.assertIn('def _sync_current_batch_subject_snapshot(self, persist_to_db: bool = True) -> tuple[str, list[OMRResult]]:', source)
