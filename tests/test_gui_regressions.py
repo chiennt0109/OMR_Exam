@@ -208,6 +208,11 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('source_answer_key_candidates = [old_subject_key]', source)
         self.assertIn('source_keys = self.database.fetch_answer_keys_for_subject(source_answer_key)', source)
         self.assertIn('self.database.replace_answer_keys_for_subject(new_subject_key, source_keys)', source)
+
+    def test_subject_distribution_report_headers_match_subject_name_and_non_overlapping_bins(self) -> None:
+        source = Path('gui/export_reports_dialog.py').read_text(encoding='utf-8')
+        self.assertIn('headers = ["Tên môn", "Tổng bài", "0–<1", "1–<2", "2–<3", "3–<4", "4–<5", "5–<6", "6–<7", "7–<8", "8–<9", "9–<10", "=10"]', source)
+        self.assertNotIn('if idx == 0 and lo <= score <= hi:', source)
     def test_scoring_syncs_current_batch_snapshot_before_scoring(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
         self.assertIn('def _sync_current_batch_subject_snapshot(self, persist_to_db: bool = True) -> tuple[str, list[OMRResult]]:', source)

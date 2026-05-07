@@ -705,7 +705,7 @@ class ExportReportsDialog(QDialog):
         return dict(out)
 
     def build_subject_distribution_report(self) -> ReportTable:
-        headers = ["Mã môn", "Tổng bài", "0–<=1", "1–<2", "2–<3", "3–<4", "4–<5", "5–<6", "6–<7", "7–<8", "8–<9", "9–<10", "=10"]
+        headers = ["Tên môn", "Tổng bài", "0–<1", "1–<2", "2–<3", "3–<4", "4–<5", "5–<6", "6–<7", "7–<8", "8–<9", "9–<10", "=10"]
         rows: list[list[object]] = []
         bins = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 7), (7, 8), (8, 9), (9, 10)]
         for label, key in self._collect_subject_pairs():
@@ -722,9 +722,6 @@ class ExportReportsDialog(QDialog):
                     perfect += 1
                     continue
                 for idx, (lo, hi) in enumerate(bins):
-                    if idx == 0 and lo <= score <= hi:
-                        counts[idx] += 1
-                        break
                     if lo <= score < hi:
                         counts[idx] += 1
                         break
