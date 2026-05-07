@@ -207,11 +207,7 @@ class MainWindowSessionMixin:
 
     def _interrupt_active_workflows(self) -> None:
         self._batch_cancel_requested = True
-        self._auto_recognition_pause_requested = True
-        self._auto_recognition_queue.clear()
-        self._auto_recognition_enqueued.clear()
-        self._auto_recognition_active_subject = ""
-        self._update_auto_recognition_progress()
+        self._reset_auto_recognition_state(pause=True)
 
     def _confirm_interrupt_active_workflows(self, destination_text: str) -> bool:
         if not self._has_active_workflows():
@@ -564,6 +560,7 @@ class MainWindowSessionMixin:
         clean session.
         """
         self._release_batch_runtime_state()
+        self._reset_auto_recognition_state(pause=False)
         self._release_preview_resources()
         self._release_template_cache()
         self._release_editor_resources()

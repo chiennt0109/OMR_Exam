@@ -77,6 +77,15 @@ from gui.main_window_dialogs import PreviewImageWidget, SubjectConfigDialog, New
 
 class MainWindowAutoRecognitionMixin:
     """Auto-recognition timers, folder polling, queue and pause state."""
+    def _reset_auto_recognition_state(self, *, pause: bool = False) -> None:
+        self._auto_recognition_pause_requested = bool(pause)
+        self._auto_recognition_busy = False
+        self._auto_recognition_active_subject = ""
+        self._auto_recognition_queue.clear()
+        self._auto_recognition_enqueued.clear()
+        self._auto_recognition_last_seen.clear()
+        self._update_auto_recognition_progress()
+
     def _setup_auto_recognition_timer(self) -> None:
         self.auto_recognition_discovery_timer = QTimer(self)
         self.auto_recognition_discovery_timer.setInterval(4000)
@@ -231,6 +240,10 @@ class MainWindowAutoRecognitionMixin:
 
     def _run_auto_recognition_for_subject(self, subject_key: str) -> None:
         if not hasattr(self, "batch_subject_combo") or self.batch_subject_combo.count() <= 1:
+            return
+        scope_prefix = str(self._session_scope_prefix() or "").strip()
+        if scope_prefix and not str(subject_key or "").strip().startswith(f"{scope_prefix}::"):
+            # Hard session isolation: never allow auto-recognition jobs from another exam/session.
             return
         previous_subject_index = self.batch_subject_combo.currentIndex()
         previous_scope_index = self.batch_file_scope_combo.currentIndex() if hasattr(self, "batch_file_scope_combo") else -1
