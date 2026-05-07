@@ -560,6 +560,13 @@ class MainWindowWorkspaceMixin:
             QMessageBox.warning(self, "Sửa kỳ thi", f"Không thể sửa kỳ thi\n{exc}")
 
     def _open_embedded_exam_editor(self, session_id: str, session: ExamSession, payload: dict, *, is_new: bool = False) -> None:
+        prev_session_id = str(getattr(self, "current_session_id", "") or "").strip()
+        next_session_id = str(session_id or "").strip()
+        if prev_session_id and next_session_id and prev_session_id != next_session_id:
+            # Hard isolation between exams: drop any pending auto-recognition jobs/signatures
+            # before switching the active editor context to another session.
+            self._reset_auto_recognition_state(pause=False)
+
         while self.exam_editor_layout.count():
             item = self.exam_editor_layout.takeAt(0)
             w = item.widget()

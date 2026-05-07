@@ -178,6 +178,22 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn("if not subject:\n                return []", block)
         self.assertNotIn('codes.update(str(x).strip() for x in (self.imported_exam_codes or []) if str(x).strip())', block)
         self.assertNotIn("if current_code and current_code != \"-\":\n                codes.add(str(current_code).strip())", block)
+
+    def test_answer_key_scope_key_uses_exam_name_when_session_id_missing(self) -> None:
+        source = Path('gui/main_window_dialogs.py').read_text(encoding='utf-8')
+        self.assertIn('if session_id and exam_name:', source)
+        self.assertIn('elif session_id:', source)
+        self.assertIn('scope_prefix = exam_name', source)
+
+    def test_auto_recognition_hard_session_isolation_guards_cross_exam_jobs(self) -> None:
+        auto_source = Path('gui/main_window_auto_recognition_mixin.py').read_text(encoding='utf-8')
+        session_source = Path('gui/main_window_session_mixin.py').read_text(encoding='utf-8')
+        workspace_source = Path('gui/main_window_workspace_mixin.py').read_text(encoding='utf-8')
+        self.assertIn('def _reset_auto_recognition_state(self, *, pause: bool = False) -> None:', auto_source)
+        self.assertIn('if scope_prefix and not str(subject_key or "").strip().startswith(f"{scope_prefix}::"):', auto_source)
+        self.assertIn('self._reset_auto_recognition_state(pause=True)', session_source)
+        self.assertIn('self._reset_auto_recognition_state(pause=False)', session_source)
+        self.assertIn('if prev_session_id and next_session_id and prev_session_id != next_session_id:', workspace_source)
     def test_scoring_syncs_current_batch_snapshot_before_scoring(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
         self.assertIn('def _sync_current_batch_subject_snapshot(self, persist_to_db: bool = True) -> tuple[str, list[OMRResult]]:', source)
