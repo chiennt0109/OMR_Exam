@@ -295,8 +295,13 @@ class MainWindowBatchSubjectMixin:
 
     @staticmethod
     def _logical_subject_key_from_cfg(cfg: dict) -> str:
+        logical = str(cfg.get("logical_subject_key", "") or "").strip()
+        if logical:
+            return logical
         key = str(cfg.get("answer_key_key", "") or "").strip()
-        if key:
+        # answer_key_key can be a fully scoped storage key from another session.
+        # Do not reuse it as logical identity to avoid cross-session subject mixing.
+        if key and "::" not in key:
             return key
         name = str(cfg.get("name", "") or "").strip()
         block = str(cfg.get("block", "") or "").strip()
