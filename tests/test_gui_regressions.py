@@ -201,6 +201,13 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertIn('self._reset_auto_recognition_state(pause=True)', session_source)
         self.assertIn('self._reset_auto_recognition_state(pause=False)', session_source)
         self.assertIn('if prev_session_id and next_session_id and prev_session_id != next_session_id:', workspace_source)
+
+    def test_save_as_clone_resets_answer_key_binding_and_copies_scoped_answer_keys(self) -> None:
+        source = Path('gui/main_window_session_mixin.py').read_text(encoding='utf-8')
+        self.assertIn('subject_cfg.pop("answer_key_key", None)', source)
+        self.assertIn('source_answer_key_candidates = [old_subject_key]', source)
+        self.assertIn('source_keys = self.database.fetch_answer_keys_for_subject(source_answer_key)', source)
+        self.assertIn('self.database.replace_answer_keys_for_subject(new_subject_key, source_keys)', source)
     def test_scoring_syncs_current_batch_snapshot_before_scoring(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
         self.assertIn('def _sync_current_batch_subject_snapshot(self, persist_to_db: bool = True) -> tuple[str, list[OMRResult]]:', source)
