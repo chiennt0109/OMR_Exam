@@ -655,13 +655,15 @@ class MainWindowScoringMixin:
         if not subject_scores:
             return 0
         changed = 0
-        for sid in student_ids:
-            sid_key = str(sid or "").strip()
-            if not sid_key:
-                continue
-            if sid_key in subject_scores:
-                subject_scores.pop(sid_key, None)
-                changed += 1
+        normalized_ids = [str(sid or "").strip() for sid in (student_ids or []) if str(sid or "").strip()]
+        if not normalized_ids:
+            changed = len(subject_scores)
+            subject_scores = {}
+        else:
+            for sid_key in normalized_ids:
+                if sid_key in subject_scores:
+                    subject_scores.pop(sid_key, None)
+                    changed += 1
         if changed <= 0:
             return 0
         self.scoring_results_by_subject[subject] = subject_scores
@@ -684,7 +686,7 @@ class MainWindowScoringMixin:
                 subject,
                 "invalidate_scoring_records",
                 "",
-                f"removed={changed}; student_ids={','.join(sorted({str(s or '').strip() for s in student_ids if str(s or '').strip()}))}",
+                f"removed={changed}; student_ids={','.join(sorted(set(normalized_ids)))}",
                 reason or "invalidate_scoring_records",
             )
         except Exception:

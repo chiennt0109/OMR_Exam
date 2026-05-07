@@ -531,9 +531,12 @@ class ScoringEngine:
                 bonus_full_credit_points += q_points if q_no in full_credit_map["TF"] else 0.0
                 score += q_points
                 continue
-            if raw_student == "_" * width:
-                blank += 1
+            blank_statements = sum(1 for ch in raw_student[:width] if ch == "_")
+            if blank_statements >= width:
+                blank += int(width)
                 continue
+            if blank_statements > 0:
+                blank += int(blank_statements)
             matched = 0
             for expected, actual in zip(key_match[:width], student_tf[:width]):
                 if expected == actual or expected == "G":
