@@ -368,7 +368,18 @@ class ImportAnswerKeyDialog(QDialog):
                 "true_false_answers": tf_answers,
                 "numeric_answers": numeric_answers,
             }
-            self.main_window._save_answer_keys_for_subject_scoped(self.subject_key, merged)
+            self.main_window._save_answer_keys_for_subject_scoped(self.subject_key, self.subject_cfg, merged)
+            invalidated = 0
+            try:
+                invalidated = int(self.main_window._invalidate_scoring_for_student_ids([], subject_key=self.subject_key, reason="answer_key_updated") or 0)
+            except Exception:
+                invalidated = 0
+            QMessageBox.information(
+                self,
+                "Nhập đáp án",
+                "Đã cập nhật đáp án. Vui lòng chạy lại Tính điểm để đảm bảo kết quả mới nhất."
+                + (f"\nĐã làm mới {invalidated} kết quả điểm cũ." if invalidated > 0 else ""),
+            )
         self.accept()
 
 
