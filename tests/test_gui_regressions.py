@@ -179,6 +179,13 @@ class GuiRegressionTests(unittest.TestCase):
         self.assertNotIn('codes.update(str(x).strip() for x in (self.imported_exam_codes or []) if str(x).strip())', block)
         self.assertNotIn("if current_code and current_code != \"-\":\n                codes.add(str(current_code).strip())", block)
 
+
+    def test_batch_scope_key_uses_exam_name_when_session_id_missing(self) -> None:
+        source = Path('gui/main_window_batch_subject_mixin.py').read_text(encoding='utf-8')
+        self.assertIn('if sid and exam_name:', source)
+        self.assertIn('if exam_name:', source)
+        self.assertIn('return exam_name', source)
+
     def test_answer_key_scope_key_uses_exam_name_when_session_id_missing(self) -> None:
         source = Path('gui/main_window_dialogs.py').read_text(encoding='utf-8')
         self.assertIn('if session_id and exam_name:', source)

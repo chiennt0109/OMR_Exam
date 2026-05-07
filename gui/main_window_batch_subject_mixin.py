@@ -369,6 +369,11 @@ class MainWindowBatchSubjectMixin:
         exam_name = str((ses.exam_name if ses else "") or "").strip().lower()
         if sid and exam_name:
             return f"{sid}::{exam_name}"
+        if exam_name:
+            # Fallback isolation for transient editor/runtime states where session_id
+            # is not yet assigned (or was briefly cleared). Without this, unscoped
+            # subject keys may collide between different exams and cause cross-save.
+            return exam_name
         return sid
 
     def _answer_key_subject_key(self, subject_key: str, subject_cfg: dict | None = None) -> str:
