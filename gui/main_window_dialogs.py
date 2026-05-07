@@ -1240,7 +1240,12 @@ class NewExamDialog(QDialog):
         block_text = str(block or "").strip()
         if not block_text and "_" in base:
             block_text = str(base.rsplit("_", 1)[-1]).strip()
-        scope_prefix = f"{session_id}::{exam_name}" if session_id and exam_name else session_id
+        if session_id and exam_name:
+            scope_prefix = f"{session_id}::{exam_name}"
+        elif session_id:
+            scope_prefix = session_id
+        else:
+            scope_prefix = exam_name
         if scope_prefix and block_text:
             return f"{scope_prefix}::{base}::{block_text}"
         if scope_prefix:
