@@ -42,6 +42,7 @@ class ImportAnswerKeyDialog(QDialog):
             self.main_window = real_parent
             self.rows = []
             self.subject_key = str(subject_key or "").strip()
+            self.subject_cfg = {}
             self._legacy_package: ImportedAnswerKeyPackage = imported_package
             self._legacy_rows_by_exam_code = self._rows_by_exam_code_from_package(imported_package)
         else:
@@ -49,6 +50,13 @@ class ImportAnswerKeyDialog(QDialog):
             self.main_window = parent_window
             self.rows = rows or []
             self.subject_key = str(subject_key or "").strip()
+            self.subject_cfg = {}
+            if self.subject_key and hasattr(self.main_window, "_subject_config_by_subject_key"):
+                try:
+                    cfg = self.main_window._subject_config_by_subject_key(self.subject_key)
+                    self.subject_cfg = dict(cfg) if isinstance(cfg, dict) else {}
+                except Exception:
+                    self.subject_cfg = {}
             self._legacy_package = ImportedAnswerKeyPackage()
             self._legacy_rows_by_exam_code: dict[str, list[ImportedAnswerRow]] = {}
         self._is_refreshing = False
@@ -368,7 +376,20 @@ class ImportAnswerKeyDialog(QDialog):
                 "true_false_answers": tf_answers,
                 "numeric_answers": numeric_answers,
             }
-            self.main_window._save_answer_keys_for_subject_scoped(self.subject_key, merged)
+            storage_key = self.main_window._save_answer_keys_for_subject_scoped(self.subject_key, self.subject_cfg, merged)
+            invalidated = 0
+            invalidate_subject = str(storage_key or self.subject_key or "").strip()
+            if invalidate_subject:
+                try:
+                    invalidated = int(self.main_window._invalidate_scoring_for_student_ids([], subject_key=invalidate_subject, reason="answer_key_updated") or 0)
+                except Exception:
+                    invalidated = 0
+            QMessageBox.information(
+                self,
+                "Nhập đáp án",
+                "Đã cập nhật đáp án. Vui lòng chạy lại Tính điểm để đảm bảo kết quả mới nhất."
+                + (f"\nĐã làm mới {invalidated} kết quả điểm cũ." if invalidated > 0 else ""),
+            )
         self.accept()
 
 
