@@ -792,6 +792,28 @@ class MainWindowWorkspaceMixin:
         if not isinstance(all_subjects, list) or not all_subjects:
             all_subjects = list((base_session.config or {}).get("subject_configs", []))
         all_subjects = self._canonicalize_subject_configs_for_session(list(all_subjects or []))
+        # Guard rail: if exam name clearly encodes grade (e.g. "K10", "Khối 10"),
+        # keep subject rows of the same block only. This prevents cross-exam payload
+        # contamination where subjects from another grade/session are mixed in.
+        try:
+            exam_name_cf = str(exam_name or "").casefold()
+            target_block = ""
+            m = re.search(r"\bk\s*([0-9]{1,2})\b", exam_name_cf)
+            if not m:
+                m = re.search(r"\bkhối\s*([0-9]{1,2})\b", exam_name_cf)
+            if m:
+                target_block = str(m.group(1) or "").strip()
+            if target_block:
+                matched_block_subjects = [
+                    dict(cfg) for cfg in all_subjects
+                    if isinstance(cfg, dict) and str(cfg.get("block", "") or "").strip() == target_block
+                ]
+                if matched_block_subjects and len(matched_block_subjects) < len(all_subjects):
+                    all_subjects = matched_block_subjects
+                    if not (0 <= selected_subject_index < len(all_subjects)):
+                        selected_subject_index = 0
+        except Exception:
+            pass
         if not all_subjects:
             subject_from_payload = dict(payload.get("subject_config") or {})
             if subject_from_payload:
