@@ -213,6 +213,11 @@ class GuiRegressionTests(unittest.TestCase):
         source = Path('gui/export_reports_dialog.py').read_text(encoding='utf-8')
         self.assertIn('headers = ["Tên môn", "Tổng bài", "0–<1", "1–<2", "2–<3", "3–<4", "4–<5", "5–<6", "6–<7", "7–<8", "8–<9", "9–<10", "=10"]', source)
         self.assertNotIn('if idx == 0 and lo <= score <= hi:', source)
+
+    def test_subject_dialog_payload_treats_empty_score_fields_as_zero(self) -> None:
+        source = Path('gui/main_window_dialogs.py').read_text(encoding='utf-8')
+        self.assertIn('if raw == "":\n                return 0.0', source)
+        self.assertIn('return float(raw.replace(",", "."))', source)
     def test_scoring_syncs_current_batch_snapshot_before_scoring(self) -> None:
         source = Path('gui/main_window.py').read_text(encoding='utf-8')
         self.assertIn('def _sync_current_batch_subject_snapshot(self, persist_to_db: bool = True) -> tuple[str, list[OMRResult]]:', source)
