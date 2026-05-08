@@ -476,10 +476,8 @@ class MainWindowSessionMixin:
         # 2) Chỉ sau khi tên hợp lệ mới thực hiện copy kỳ thi.
         try:
             new_session_id = self._generate_session_id(new_name)
-            source_exam_name = str(source_payload.get("exam_name", "") or "").strip().lower()
-            target_exam_name = str(new_name or "").strip().lower()
-            source_prefix = f"{source_session_id}::{source_exam_name}" if source_session_id and source_exam_name else source_session_id
-            target_prefix = f"{new_session_id}::{target_exam_name}" if new_session_id and target_exam_name else new_session_id
+            source_prefix = str(source_session_id or "").strip()
+            target_prefix = str(new_session_id or "").strip()
 
             payload = copy.deepcopy(source_payload)
             payload["exam_name"] = new_name
