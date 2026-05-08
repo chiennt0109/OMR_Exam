@@ -189,21 +189,13 @@ class MainWindowBatchSubjectMixin:
         key_norm = str(subject_key or "").strip()
         if not key_norm:
             return None
-        exact_match: dict | None = None
-        logical_matches: list[dict] = []
         for cfg in self._subject_configs_for_scoring():
             canonical = self._subject_instance_key_from_cfg(cfg)
-            logical = self._logical_subject_key_from_cfg(cfg)
             if key_norm == canonical:
-                exact_match = cfg
-                break
-            if key_norm == logical:
-                logical_matches.append(cfg)
-        if exact_match is not None:
-            return exact_match
-        # legacy fallback / migration: only allow logical-key lookup when unambiguous.
-        if len(logical_matches) == 1:
-            return logical_matches[0]
+                return cfg
+        # Security hardening: never resolve by logical subject key here.
+        # Logical keys can repeat across different exam sessions/blocks and may
+        # cause cross-session data writes (scan rows/scores/answer-key bindings).
         return None
 
     def _session_subject_config_ref_by_subject_key(self, subject_key: str) -> dict | None:
@@ -217,23 +209,14 @@ class MainWindowBatchSubjectMixin:
         key_norm = str(subject_key or "").strip()
         if not key_norm:
             return None
-        exact_match: dict | None = None
-        logical_matches: list[dict] = []
         for idx, cfg in enumerate(self._subject_configs_in_session()):
             if not isinstance(cfg, dict):
                 continue
             self._ensure_subject_instance_key(cfg, idx)
             canonical = self._subject_instance_key_from_cfg(cfg)
-            logical = self._logical_subject_key_from_cfg(cfg)
             if key_norm == canonical:
-                exact_match = cfg
-                break
-            if key_norm == logical:
-                logical_matches.append(cfg)
-        if exact_match is not None:
-            return exact_match
-        if len(logical_matches) == 1:
-            return logical_matches[0]
+                return cfg
+        # Same hardening as `_subject_config_by_subject_key`: no logical fallback.
         return None
 
     def _ensure_answer_keys_for_subject(self, subject_key: str) -> bool:
@@ -408,14 +391,16 @@ class MainWindowBatchSubjectMixin:
         base = str(subject_key or "").strip()
         if not base:
             return ""
+        scope_prefix = self._session_scope_prefix()
         if "::" in base:
+            if scope_prefix and not base.startswith(f"{scope_prefix}::"):
+                return ""
             return base
         block = ""
         if isinstance(subject_cfg, dict):
             block = str(subject_cfg.get("block", "") or "").strip()
         if not block and "_" in base:
             block = str(base.rsplit("_", 1)[-1]).strip()
-        scope_prefix = self._session_scope_prefix()
         if scope_prefix and block:
             return f"{scope_prefix}::{base}::{block}"
         if scope_prefix:
@@ -437,14 +422,10 @@ class MainWindowBatchSubjectMixin:
 
         if isinstance(subject_cfg, dict):
             _push(self._subject_instance_key_from_cfg(subject_cfg))
-            _push(self._answer_key_subject_key(self._subject_instance_key_from_cfg(subject_cfg), subject_cfg))
-            logical = self._logical_subject_key_from_cfg(subject_cfg)
-            if logical:
-                _push(self._answer_key_subject_key(logical, subject_cfg))
             raw_answer_key = str(subject_cfg.get("answer_key_key", "") or "").strip()
-            if raw_answer_key:
-                _push(self._answer_key_subject_key(raw_answer_key, subject_cfg))
-        _push(self._answer_key_subject_key(subject_key, subject_cfg))
+            if raw_answer_key and self._subject_key_belongs_to_current_session(raw_answer_key):
+                _push(raw_answer_key)
+        _push(self._subject_instance_key_from_cfg(subject_cfg) if isinstance(subject_cfg, dict) else "")
         _push(self._batch_result_subject_key(subject_key))
 
         has_session_scope = bool(str(self.current_session_id or "").strip())
