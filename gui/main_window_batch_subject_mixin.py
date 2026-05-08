@@ -365,14 +365,14 @@ class MainWindowBatchSubjectMixin:
 
     def _session_scope_prefix_for(self, session_id: str | None = None, session: ExamSession | None = None) -> str:
         sid = str(self.current_session_id if session_id is None else session_id or "").strip()
+        if sid:
+            # Session scope must stay stable across exam-name edits to avoid remapping
+            # subject keys to a new namespace and making already-scored subjects appear lost.
+            return sid
         ses = self.session if session is None else session
         exam_name = str((ses.exam_name if ses else "") or "").strip().lower()
-        if sid and exam_name:
-            return f"{sid}::{exam_name}"
         if exam_name:
-            # Fallback isolation for transient editor/runtime states where session_id
-            # is not yet assigned (or was briefly cleared). Without this, unscoped
-            # subject keys may collide between different exams and cause cross-save.
+            # Fallback isolation for transient states where session_id is unavailable.
             return exam_name
         return sid
 

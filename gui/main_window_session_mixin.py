@@ -476,10 +476,8 @@ class MainWindowSessionMixin:
         # 2) Chỉ sau khi tên hợp lệ mới thực hiện copy kỳ thi.
         try:
             new_session_id = self._generate_session_id(new_name)
-            source_exam_name = str(source_payload.get("exam_name", "") or "").strip().lower()
-            target_exam_name = str(new_name or "").strip().lower()
-            source_prefix = f"{source_session_id}::{source_exam_name}" if source_session_id and source_exam_name else source_session_id
-            target_prefix = f"{new_session_id}::{target_exam_name}" if new_session_id and target_exam_name else new_session_id
+            source_prefix = str(source_session_id or "").strip()
+            target_prefix = str(new_session_id or "").strip()
 
             payload = copy.deepcopy(source_payload)
             payload["exam_name"] = new_name
@@ -498,6 +496,9 @@ class MainWindowSessionMixin:
                 subject_cfg["subject_uid"] = new_uid
                 subject_cfg["logical_subject_key"] = logical
                 subject_cfg["subject_instance_key"] = new_key
+                # IMPORTANT: do not retain the source exam answer-key binding.
+                # Each cloned exam must own an isolated answer-key scope key.
+                subject_cfg.pop("answer_key_key", None)
                 if old_key:
                     subject_key_map[old_key] = new_key
 
@@ -519,7 +520,17 @@ class MainWindowSessionMixin:
                 target_scan_key = new_subject_key if not target_prefix or new_subject_key.startswith(f"{target_prefix}::") else f"{target_prefix}::{new_subject_key}"
                 self.database.replace_scan_results_for_subject(target_scan_key, source_rows)
 
-                source_keys = self.database.fetch_answer_keys_for_subject(old_subject_key)
+                source_answer_key_candidates = [old_subject_key]
+                if source_prefix and not old_subject_key.startswith(f"{source_prefix}::"):
+                    source_answer_key_candidates.append(f"{source_prefix}::{old_subject_key}")
+                elif source_prefix:
+                    source_answer_key_candidates.append(f"{source_prefix}::{old_subject_key}")
+
+                source_keys = {}
+                for source_answer_key in dict.fromkeys(source_answer_key_candidates):
+                    source_keys = self.database.fetch_answer_keys_for_subject(source_answer_key)
+                    if source_keys:
+                        break
                 self.database.replace_answer_keys_for_subject(new_subject_key, source_keys)
 
                 source_scores = list(self.database.fetch_scores_for_subject(old_subject_key) or [])

@@ -705,7 +705,7 @@ class ExportReportsDialog(QDialog):
         return dict(out)
 
     def build_subject_distribution_report(self) -> ReportTable:
-        headers = ["Mã môn", "Tổng bài", "0–<=1", "1–<2", "2–<3", "3–<4", "4–<5", "5–<6", "6–<7", "7–<8", "8–<9", "9–<10", "=10"]
+        headers = ["Tên môn", "Tổng bài", "0–<1", "1–<2", "2–<3", "3–<4", "4–<5", "5–<6", "6–<7", "7–<8", "8–<9", "9–<10", "=10"]
         rows: list[list[object]] = []
         bins = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 7), (7, 8), (8, 9), (9, 10)]
         for label, key in self._collect_subject_pairs():
@@ -721,11 +721,13 @@ class ExportReportsDialog(QDialog):
                 if abs(score - 10.0) < 1e-9:
                     perfect += 1
                     continue
+                bucket_score = score
+                # Put exact integer boundaries (except 0 and 10) into the lower bin
+                # so reports do not appear shifted to a "higher" score range.
+                if 0.0 < bucket_score < 10.0 and abs(bucket_score - round(bucket_score)) < 1e-9:
+                    bucket_score -= 1e-9
                 for idx, (lo, hi) in enumerate(bins):
-                    if idx == 0 and lo <= score <= hi:
-                        counts[idx] += 1
-                        break
-                    if lo <= score < hi:
+                    if lo <= bucket_score < hi:
                         counts[idx] += 1
                         break
             rows.append([label, len(scores), *counts, perfect])
