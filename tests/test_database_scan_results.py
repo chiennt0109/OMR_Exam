@@ -78,3 +78,17 @@ def test_delete_scan_result_removes_only_target_row(tmp_path: Path) -> None:
     rows = db.fetch_scan_results_for_subject("Math")
 
     assert [row["image_path"] for row in rows] == ["b.png"]
+
+
+def test_reassign_scan_results_subject_key_moves_rows_and_clears_source(tmp_path: Path) -> None:
+    db = OMRDatabase.default(tmp_path / "omr.db")
+    db.upsert_scan_result("session_a::Toan::1", {"image_path": "a.png", "student_id": "S1", "exam_code": "A1", "mcq_answers": {}, "true_false_answers": {}, "numeric_answers": {}, "answer_string": ""})
+    db.upsert_scan_result("session_a::Toan::1", {"image_path": "b.png", "student_id": "S2", "exam_code": "A2", "mcq_answers": {}, "true_false_answers": {}, "numeric_answers": {}, "answer_string": ""})
+
+    moved = db.reassign_scan_results_subject_key("session_a::Toan::1", "session_a::Toan::2")
+    src_rows = db.fetch_scan_results_for_subject("session_a::Toan::1")
+    dst_rows = db.fetch_scan_results_for_subject("session_a::Toan::2")
+
+    assert moved == 2
+    assert src_rows == []
+    assert [row["image_path"] for row in dst_rows] == ["a.png", "b.png"]
