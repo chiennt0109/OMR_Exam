@@ -391,14 +391,16 @@ class MainWindowBatchSubjectMixin:
         base = str(subject_key or "").strip()
         if not base:
             return ""
+        scope_prefix = self._session_scope_prefix()
         if "::" in base:
+            if scope_prefix and not base.startswith(f"{scope_prefix}::"):
+                return ""
             return base
         block = ""
         if isinstance(subject_cfg, dict):
             block = str(subject_cfg.get("block", "") or "").strip()
         if not block and "_" in base:
             block = str(base.rsplit("_", 1)[-1]).strip()
-        scope_prefix = self._session_scope_prefix()
         if scope_prefix and block:
             return f"{scope_prefix}::{base}::{block}"
         if scope_prefix:
@@ -420,14 +422,10 @@ class MainWindowBatchSubjectMixin:
 
         if isinstance(subject_cfg, dict):
             _push(self._subject_instance_key_from_cfg(subject_cfg))
-            _push(self._answer_key_subject_key(self._subject_instance_key_from_cfg(subject_cfg), subject_cfg))
-            logical = self._logical_subject_key_from_cfg(subject_cfg)
-            if logical:
-                _push(self._answer_key_subject_key(logical, subject_cfg))
             raw_answer_key = str(subject_cfg.get("answer_key_key", "") or "").strip()
-            if raw_answer_key:
-                _push(self._answer_key_subject_key(raw_answer_key, subject_cfg))
-        _push(self._answer_key_subject_key(subject_key, subject_cfg))
+            if raw_answer_key and self._subject_key_belongs_to_current_session(raw_answer_key):
+                _push(raw_answer_key)
+        _push(self._subject_instance_key_from_cfg(subject_cfg) if isinstance(subject_cfg, dict) else "")
         _push(self._batch_result_subject_key(subject_key))
 
         has_session_scope = bool(str(self.current_session_id or "").strip())
