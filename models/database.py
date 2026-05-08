@@ -438,6 +438,40 @@ class OMRDatabase:
         self.conn.execute("DELETE FROM scan_results WHERE subject_key = ?", (str(subject_key or ""),))
         self.conn.commit()
 
+    def reassign_scan_results_subject_key(
+        self,
+        source_subject_key: str,
+        target_subject_key: str,
+        *,
+        note: str = "recover_subject_mapping",
+    ) -> int:
+        """Move all recognized rows from one subject key to another."""
+        source = str(source_subject_key or "").strip()
+        target = str(target_subject_key or "").strip()
+        if not source or not target or source == target:
+            return 0
+        # Safety lock: only allow recovery inside the same session scope.
+        src_scope = source.split("::", 1)[0] if "::" in source else ""
+        dst_scope = target.split("::", 1)[0] if "::" in target else ""
+        if src_scope and dst_scope and src_scope != dst_scope:
+            raise ValueError(f"Unsafe recovery: source scope '{src_scope}' != target scope '{dst_scope}'.")
+
+        cur = self.conn.cursor()
+        rows = cur.execute("SELECT image_path FROM scan_results WHERE subject_key = ? ORDER BY id ASC", (source,)).fetchall()
+        image_paths = [str(row[0] or "") for row in rows if str(row[0] or "").strip()]
+        if not image_paths:
+            return 0
+
+        for image_path in image_paths:
+            cur.execute("DELETE FROM scan_results WHERE subject_key = ? AND image_path = ?", (target, image_path))
+            cur.execute(
+                "UPDATE scan_results SET subject_key = ?, updated_at = CURRENT_TIMESTAMP WHERE subject_key = ? AND image_path = ?",
+                (target, source, image_path),
+            )
+        self.conn.commit()
+        self.log_change("scan_results", target, "reassign_subject_key", source, target, f"{note}:{len(image_paths)}")
+        return len(image_paths)
+
     def replace_scan_results_for_subject(
         self,
         subject_key: str,
