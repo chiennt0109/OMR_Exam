@@ -321,11 +321,15 @@ class MainWindowExportMixin:
             return None
 
     def _scan_rows_for_subject(self, subject_key: str) -> list[OMRResult]:
-        for candidate_key in self._subject_scan_storage_key_candidates(subject_key):
-            rows = list(self.scan_results_by_subject.get(candidate_key, []) or [])
-            if rows:
-                return rows
-        return self._refresh_scan_results_from_db(subject_key) or []
+        subject = self._batch_result_subject_key(subject_key)
+        try:
+            self._assert_current_session_subject_key(subject, "export scan rows")
+        except Exception:
+            return []
+        rows = list(self.scan_results_by_subject.get(subject, []) or [])
+        if rows:
+            return rows
+        return self._refresh_scan_results_from_db(subject) or []
 
     def _scoring_source_student_ids(self, subject_key: str) -> tuple[set[str], int]:
         subject = str(subject_key or "").strip()

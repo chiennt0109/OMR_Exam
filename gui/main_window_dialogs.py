@@ -1166,6 +1166,14 @@ class NewExamDialog(QDialog):
         self.block_options = block_options
         self.template_repo = template_repo or TemplateRepository()
         self.database = getattr(parent, "database", None)
+        self._dialog_session_id = str(
+            data.get("session_id", "")
+            or getattr(parent, "embedded_exam_session_id", "",)
+            or getattr(parent, "current_session_id", "",)
+            or ""
+        ).strip()
+        self._dialog_exam_name_at_open = str(data.get("exam_name", "") or "").strip()
+        self._ensure_dialog_subject_identity_keys()
 
         lay = QVBoxLayout(self)
         form = QFormLayout()
@@ -1232,27 +1240,91 @@ class NewExamDialog(QDialog):
 
         self._refresh_subject_list()
 
+    def _dialog_owner_session_id(self) -> str:
+        parent = self.parent()
+        sid = str(self._dialog_session_id or "").strip()
+        if not sid and parent is not None:
+            sid = str(
+                getattr(parent, "embedded_exam_session_id", "",)
+                or getattr(parent, "current_session_id", "",)
+                or ""
+            ).strip()
+        if sid:
+            self._dialog_session_id = sid
+        return sid
+
+    def _storage_key_belongs_to_dialog(self, storage_key: str) -> bool:
+        key = str(storage_key or "").strip()
+        if not key:
+            return False
+        owner = self._dialog_owner_session_id()
+        if not owner:
+            return "::" not in key
+        return key.startswith(f"{owner}::") or "::" not in key
+
+    @staticmethod
+    def _dialog_logical_subject_key(cfg: dict) -> str:
+        if not isinstance(cfg, dict):
+            return "General"
+        logical = str(cfg.get("logical_subject_key", "") or "").strip()
+        if logical:
+            return logical
+        answer_key = str(cfg.get("answer_key_key", "") or "").strip()
+        if answer_key and "::" not in answer_key:
+            return answer_key
+        name = str(cfg.get("name", "") or "").strip()
+        block = str(cfg.get("block", "") or "").strip()
+        return f"{name}_{block}" if name and block else (name or "General")
+
+    def _ensure_dialog_subject_identity_keys(self) -> None:
+        owner = self._dialog_owner_session_id() or "session"
+        for idx, cfg in enumerate(list(self.subject_configs or [])):
+            if not isinstance(cfg, dict):
+                continue
+            existing = str(cfg.get("subject_instance_key", "") or "").strip()
+            if existing and owner and not existing.startswith(f"{owner}::"):
+                legacy = list(cfg.get("legacy_subject_instance_keys", [])) if isinstance(cfg.get("legacy_subject_instance_keys", []), list) else []
+                if existing not in legacy:
+                    legacy.append(existing)
+                cfg["legacy_subject_instance_keys"] = legacy[-10:]
+                existing = ""
+            logical = self._dialog_logical_subject_key(cfg)
+            cfg["logical_subject_key"] = logical
+            uid = str(cfg.get("subject_uid", "") or "").strip()
+            if not uid:
+                uid = str(uuid.uuid4())
+                cfg["subject_uid"] = uid
+            if not existing:
+                # Use uid, not table index.  Index-based keys can collide after insert/delete/reorder.
+                cfg["subject_instance_key"] = f"{owner}::{logical}::{uid}"
+
     def _answer_key_scope_key(self, subject_key: str, block: str = "") -> str:
         base = str(subject_key or "").strip()
         if not base:
             return ""
+        owner = self._dialog_owner_session_id()
         if "::" in base:
+            if owner and not base.startswith(f"{owner}::"):
+                return ""
             return base
-        session_id = str(getattr(self.parent(), "current_session_id", "") or "").strip()
-        exam_name = str(self.exam_name.text() if hasattr(self, "exam_name") else "").strip().lower()
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "_answer_key_subject_key"):
+            try:
+                # Parent may be displaying the embedded editor while another session remains
+                # current in memory.  Prefer the dialog owner session and avoid exam-name scope.
+                cfg = {"block": str(block or "").strip(), "subject_instance_key": f"{owner}::{base}" if owner else base}
+                scoped = str(parent._answer_key_subject_key(base, cfg) or "").strip()
+                if scoped and (not owner or scoped.startswith(f"{owner}::") or "::" not in scoped):
+                    return scoped
+            except Exception:
+                pass
         block_text = str(block or "").strip()
         if not block_text and "_" in base:
             block_text = str(base.rsplit("_", 1)[-1]).strip()
-        if session_id and exam_name:
-            scope_prefix = f"{session_id}::{exam_name}"
-        elif session_id:
-            scope_prefix = session_id
-        else:
-            scope_prefix = exam_name
-        if scope_prefix and block_text:
-            return f"{scope_prefix}::{base}::{block_text}"
-        if scope_prefix:
-            return f"{scope_prefix}::{base}"
+        if owner and block_text:
+            return f"{owner}::{base}::{block_text}"
+        if owner:
+            return f"{owner}::{base}"
         return base
 
     @staticmethod
@@ -1551,14 +1623,10 @@ class NewExamDialog(QDialog):
 
     def _subject_status_snapshot(self) -> dict[int, str]:
         parent = self.parent()
-        session_id = (
-            getattr(parent, "embedded_exam_session_id", None)
-            or getattr(parent, "current_session_id", None)
-        ) if parent is not None else None
-        session_obj = (
-            getattr(parent, "embedded_exam_session", None)
-            or getattr(parent, "session", None)
-        ) if parent is not None else None
+        session_id = self._dialog_owner_session_id() if parent is not None else None
+        session_obj = getattr(parent, "embedded_exam_session", None) if parent is not None else None
+        if session_obj is None and parent is not None and str(getattr(parent, "current_session_id", "") or "").strip() == str(session_id or "").strip():
+            session_obj = getattr(parent, "session", None)
         if parent is not None and hasattr(parent, "_subject_display_status_map"):
             try:
                 return dict(parent._subject_display_status_map(self.subject_configs, session_id=session_id, session=session_obj) or {})
@@ -1575,14 +1643,10 @@ class NewExamDialog(QDialog):
                         parent._ensure_subject_instance_key(cfg, row_index)
                     except Exception:
                         pass
-                session_id = (
-                    getattr(parent, "embedded_exam_session_id", None)
-                    or getattr(parent, "current_session_id", None)
-                )
-                session_obj = (
-                    getattr(parent, "embedded_exam_session", None)
-                    or getattr(parent, "session", None)
-                )
+                session_id = self._dialog_owner_session_id()
+                session_obj = getattr(parent, "embedded_exam_session", None)
+                if session_obj is None and str(getattr(parent, "current_session_id", "") or "").strip() == str(session_id or "").strip():
+                    session_obj = getattr(parent, "session", None)
                 return str(parent._subject_display_status_text(cfg, session_id=session_id, session=session_obj) or "-")
             except TypeError:
                 try:
@@ -1723,7 +1787,46 @@ class NewExamDialog(QDialog):
             return "reset"
         return "apply"
 
+    def _sync_dialog_payload_to_parent_session(self) -> None:
+        parent = self.parent()
+        if parent is None:
+            return
+        session_obj = getattr(parent, "embedded_exam_session", None)
+        if session_obj is None:
+            return
+        try:
+            payload = self.payload()
+            session_obj.exam_name = str(payload.get("exam_name", "") or session_obj.exam_name or "Kỳ thi")
+            session_obj.template_path = str(payload.get("common_template", "") or "")
+            session_obj.subjects = [str(cfg.get("name", "") or "") for cfg in payload.get("subject_configs", []) if isinstance(cfg, dict)]
+            session_obj.students = [
+                Student(
+                    student_id=str(row.get("student_id", "") or ""),
+                    name=str(row.get("name", "") or ""),
+                    extra={
+                        "birth_date": str(row.get("birth_date", "") or ""),
+                        "class_name": str(row.get("class_name", "") or ""),
+                        "exam_room": str(row.get("exam_room", "") or ""),
+                    },
+                )
+                for row in (payload.get("students", []) or [])
+                if isinstance(row, dict) and str(row.get("student_id", "") or "").strip()
+            ]
+            cfg_base = dict(getattr(session_obj, "config", {}) or {})
+            cfg_base.update({
+                "scan_mode": payload.get("scan_mode", "Ảnh trong thư mục gốc"),
+                "scan_root": payload.get("scan_root", ""),
+                "student_list_path": payload.get("student_list_path", ""),
+                "paper_part_count": payload.get("paper_part_count", 3),
+                "subject_configs": payload.get("subject_configs", []),
+            })
+            session_obj.config = cfg_base
+        except Exception:
+            return
+
     def _call_save_exam(self, *, show_message: bool = True, refresh_subject_grid: bool = True) -> bool:
+        self._ensure_dialog_subject_identity_keys()
+        self._sync_dialog_payload_to_parent_session()
         if not callable(self.on_save_exam):
             return True
         try:
@@ -1733,19 +1836,18 @@ class NewExamDialog(QDialog):
         return ok is not False
 
     def _persist_subject_grid_after_change(self, *, reason: str) -> bool:
-        """Persist the current exam payload, then reload the subject grid through one renderer."""
+        """Persist the current exam payload and repaint from the dialog-owned list only.
+
+        Critical safety rule: never replace this editor's ``subject_configs`` from
+        ``parent.session``/``embedded_exam_session`` after saving.  In the previous
+        build, when the parent still held a stale session object, adding/editing one
+        subject copied the whole subject list of another exam into the current exam.
+        """
+        self._ensure_dialog_subject_identity_keys()
         ok = self._call_save_exam(show_message=False, refresh_subject_grid=False)
         if not ok:
             QMessageBox.warning(self, "Môn thi", "Không thể lưu thay đổi cấu hình môn vào CSDL.")
             return False
-        parent = self.parent()
-        if parent is not None:
-            session_obj = getattr(parent, "embedded_exam_session", None) or getattr(parent, "session", None)
-            cfg = getattr(session_obj, "config", {}) if session_obj is not None else {}
-            if isinstance(cfg, dict):
-                saved_cfgs = cfg.get("subject_configs", [])
-                if isinstance(saved_cfgs, list) and saved_cfgs:
-                    self.subject_configs = list(saved_cfgs)
         self._reload_subject_grid(reason=reason)
         return True
 
@@ -1761,13 +1863,23 @@ class NewExamDialog(QDialog):
             return
         try:
             old_cfg = old_cfg if isinstance(old_cfg, dict) else {}
-            old_subject_key = str(old_cfg.get("answer_key_key", "") or "")
-            new_subject_key = str(new_cfg.get("answer_key_key", "") or "")
-            old_scoped_key = self._answer_key_scope_key(old_subject_key, str(old_cfg.get("block", "") or "")) if old_subject_key else ""
-            new_scoped_key = self._answer_key_scope_key(new_subject_key, str(new_cfg.get("block", "") or "")) if new_subject_key else ""
-            if old_scoped_key and old_scoped_key != new_scoped_key:
+            parent = self.parent()
+
+            def _canonical_answer_storage_key(cfg: dict) -> str:
+                if parent is not None and hasattr(parent, "_subject_key_from_cfg") and hasattr(parent, "_answer_key_subject_key"):
+                    try:
+                        subject_storage_key = str(parent._subject_key_from_cfg(cfg) or "").strip()
+                        return str(parent._answer_key_subject_key(subject_storage_key, cfg) or "").strip()
+                    except Exception:
+                        pass
+                raw_key = str(cfg.get("subject_instance_key", "") or cfg.get("answer_key_key", "") or "").strip()
+                return self._answer_key_scope_key(raw_key, str(cfg.get("block", "") or "")) if raw_key else ""
+
+            old_scoped_key = _canonical_answer_storage_key(old_cfg)
+            new_scoped_key = _canonical_answer_storage_key(new_cfg)
+            if old_scoped_key and old_scoped_key != new_scoped_key and self._storage_key_belongs_to_dialog(old_scoped_key):
                 db.replace_answer_keys_for_subject(old_scoped_key, {})
-            if new_scoped_key:
+            if new_scoped_key and self._storage_key_belongs_to_dialog(new_scoped_key):
                 new_keys = new_cfg.get("imported_answer_keys", {}) or {}
                 db.replace_answer_keys_for_subject(new_scoped_key, new_keys)
                 if old_cfg.get("imported_answer_keys", {}) != new_keys:
@@ -1787,9 +1899,18 @@ class NewExamDialog(QDialog):
         if db is None or not isinstance(cfg, dict):
             return
         try:
-            subject_key = str(cfg.get("answer_key_key", "") or "")
-            scoped_key = self._answer_key_scope_key(subject_key, str(cfg.get("block", "") or "")) if subject_key else ""
-            if scoped_key:
+            parent = self.parent()
+            if parent is not None and hasattr(parent, "_subject_key_from_cfg") and hasattr(parent, "_answer_key_subject_key"):
+                try:
+                    subject_key = str(parent._subject_key_from_cfg(cfg) or "")
+                    scoped_key = str(parent._answer_key_subject_key(subject_key, cfg) or "")
+                except Exception:
+                    subject_key = str(cfg.get("subject_instance_key", "") or cfg.get("answer_key_key", "") or "")
+                    scoped_key = self._answer_key_scope_key(subject_key, str(cfg.get("block", "") or "")) if subject_key else ""
+            else:
+                subject_key = str(cfg.get("subject_instance_key", "") or cfg.get("answer_key_key", "") or "")
+                scoped_key = self._answer_key_scope_key(subject_key, str(cfg.get("block", "") or "")) if subject_key else ""
+            if scoped_key and self._storage_key_belongs_to_dialog(scoped_key):
                 db.replace_answer_keys_for_subject(scoped_key, {})
                 db.log_change("answer_keys", scoped_key, "imported_answer_keys", cfg.get("imported_answer_keys", {}) or {}, {}, "delete_subject")
         except Exception:
@@ -1923,7 +2044,9 @@ class NewExamDialog(QDialog):
         self.accept()
 
     def payload(self) -> dict:
+        self._ensure_dialog_subject_identity_keys()
         return {
+            "session_id": self._dialog_owner_session_id(),
             "exam_name": self.exam_name.text().strip(),
             "common_template": self.common_template.text().strip(),
             "scan_root": self.scan_root.text().strip(),

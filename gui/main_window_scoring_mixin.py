@@ -175,8 +175,12 @@ class MainWindowScoringMixin:
         self._refresh_scoring_state_label(subject_key)
 
     def _persist_scoring_results_for_subject(self, subject_key: str, rows: list[dict], mode: str, note: str, *, mark_saved: bool) -> None:
-        subject = str(subject_key or "").strip()
+        subject = self._batch_result_subject_key(str(subject_key or "").strip())
         if not subject:
+            return
+        try:
+            self._assert_current_session_subject_key(subject, "persist scoring results")
+        except Exception:
             return
         packed: dict[str, dict] = {}
         for row in (rows or []):
@@ -184,15 +188,33 @@ class MainWindowScoringMixin:
             if sid_key:
                 packed[sid_key] = dict(row or {})
         self.scoring_results_by_subject[subject] = packed
+        mode_text = str(mode or "").strip().lower()
+        note_text = str(note or "").strip().lower()
+        allow_empty_clear = (
+            mode_text.startswith("reset")
+            or "reset" in mode_text
+            or mode_text.startswith("clear")
+            or "clear" in mode_text
+            or note_text.startswith("reset")
+            or "delete" in note_text
+        )
         try:
-            self.database.conn.execute("DELETE FROM scores WHERE subject_key = ?", (subject,))
-            for payload in packed.values():
-                self.database.upsert_score_row(
+            if hasattr(self.database, "replace_score_rows_for_subject"):
+                self.database.replace_score_rows_for_subject(
                     subject,
-                    str(payload.get("student_id", "") or ""),
-                    str(payload.get("exam_code", "") or ""),
-                    dict(payload),
+                    list(packed.values()),
+                    allow_empty=allow_empty_clear,
+                    note=note or mode or "persist_scoring_results",
                 )
+            elif packed or allow_empty_clear:
+                self.database.conn.execute("DELETE FROM scores WHERE subject_key = ?", (subject,))
+                for payload in packed.values():
+                    self.database.upsert_score_row(
+                        subject,
+                        str(payload.get("student_id", "") or ""),
+                        str(payload.get("exam_code", "") or ""),
+                        dict(payload),
+                    )
         except Exception:
             pass
         if mark_saved:
@@ -210,13 +232,46 @@ class MainWindowScoringMixin:
 
     def _load_scoring_results_for_subject_from_storage(self, subject_key: str, *, force_db: bool = False) -> dict[str, dict]:
         # DB là nguồn chuẩn cho scoring; chỉ dùng runtime cache đã có nếu cùng subject trong phiên hiện tại.
-        subject = str(subject_key or "").strip()
+        subject = self._batch_result_subject_key(str(subject_key or "").strip())
         if not subject:
+            return {}
+        try:
+            self._assert_current_session_subject_key(subject, "load scoring results")
+        except Exception:
             return {}
         cached = self.scoring_results_by_subject.get(subject)
         if (not force_db) and isinstance(cached, dict) and cached:
             return dict(cached)
         db_rows = self.database.fetch_scores_for_subject(subject) or []
+
+        if not db_rows:
+            cfg = self._subject_config_by_subject_key(subject) or self._subject_config_by_subject_key(subject_key)
+            for legacy_key in self._subject_scan_session_legacy_key_candidates(cfg or subject_key):
+                if legacy_key == subject:
+                    continue
+                try:
+                    legacy_rows = self.database.fetch_scores_for_subject(legacy_key) or []
+                except Exception:
+                    legacy_rows = []
+                if not legacy_rows:
+                    continue
+                db_rows = []
+                for payload in legacy_rows:
+                    if isinstance(payload, dict):
+                        migrated = dict(payload)
+                        migrated["subject"] = subject
+                        db_rows.append(migrated)
+                try:
+                    self.database.replace_score_rows_for_subject(
+                        subject,
+                        db_rows,
+                        allow_empty=False,
+                        note=f"safe_session_score_alias_migration:{legacy_key}",
+                    )
+                except Exception:
+                    pass
+                break
+
         loaded: dict[str, dict] = {}
         for payload in db_rows:
             if not isinstance(payload, dict):
@@ -657,8 +712,11 @@ class MainWindowScoringMixin:
         changed = 0
         normalized_ids = [str(sid or "").strip() for sid in (student_ids or []) if str(sid or "").strip()]
         if not normalized_ids:
-            changed = len(subject_scores)
-            subject_scores = {}
+            # Safety: an empty invalidation list must never mean "delete all scores".
+            # Mark the subject stale and let an explicit full recalculation/reset handle it.
+            self._scoring_dirty_subjects.add(subject)
+            self._clear_subject_scoring_saved_state(subject, count=len(subject_scores), mode="invalidate", note=reason or "empty_invalidation_skipped")
+            return 0
         else:
             for sid_key in normalized_ids:
                 if sid_key in subject_scores:

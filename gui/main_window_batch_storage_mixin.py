@@ -117,17 +117,44 @@ class MainWindowBatchStorageMixin:
         if not subject:
             return []
 
-        candidates = self._subject_scan_storage_key_candidates(subject)
         scoped_subject = self._batch_result_subject_key(subject)
-        rows = []
-        matched_subject = scoped_subject
-        for candidate_key in candidates:
-            try:
-                rows = self.database.fetch_scan_results_for_subject(candidate_key) or []
-            except Exception:
-                rows = []
-            if rows:
-                matched_subject = candidate_key
+        try:
+            self._assert_current_session_subject_key(scoped_subject, "load scan results")
+        except Exception:
+            return []
+
+        try:
+            rows = self.database.fetch_scan_results_for_subject(scoped_subject) or []
+        except Exception:
+            rows = []
+
+        # Safe compatibility bridge: the previous build could store rows under
+        # session-scoped aliases such as ``session_id::exam_name::Toán_12::12``.
+        # The first safety patch stopped all fallback reads, which protected data
+        # but made already-recognized subjects appear blank after returning from
+        # the edit dialog.  We now migrate only aliases that still belong to the
+        # current session prefix; unscoped/foreign keys are never read here.
+        if not rows:
+            cfg = self._subject_config_by_subject_key(scoped_subject) or self._subject_config_by_subject_key(subject)
+            for legacy_key in self._subject_scan_session_legacy_key_candidates(cfg or subject):
+                if legacy_key == scoped_subject:
+                    continue
+                try:
+                    legacy_rows = self.database.fetch_scan_results_for_subject(legacy_key) or []
+                except Exception:
+                    legacy_rows = []
+                if not legacy_rows:
+                    continue
+                rows = legacy_rows
+                try:
+                    self.database.replace_scan_results_for_subject(
+                        scoped_subject,
+                        rows,
+                        allow_empty=False,
+                        note=f"safe_session_alias_migration:{legacy_key}",
+                    )
+                except Exception:
+                    pass
                 break
 
         refreshed: list[OMRResult] = []
@@ -136,13 +163,17 @@ class MainWindowBatchStorageMixin:
                 result = self._deserialize_omr_result(item)
                 if result is None:
                     continue
-                self._apply_persisted_result_edit_metadata(subject, result)
+                self._apply_persisted_result_edit_metadata(scoped_subject, result)
                 refreshed.append(result)
             except Exception:
                 continue
+
+        if not refreshed:
+            cached = self.scan_results_by_subject.get(scoped_subject)
+            if isinstance(cached, list) and cached:
+                return list(cached)
+
         self.scan_results_by_subject[scoped_subject] = list(refreshed)
-        if matched_subject != scoped_subject:
-            self.scan_results_by_subject[matched_subject] = list(refreshed)
         return refreshed
 
     @staticmethod
@@ -231,82 +262,106 @@ class MainWindowBatchStorageMixin:
         session: ExamSession | None = None,
         include_generated: bool = True,
     ) -> list[str]:
-        bases: list[str] = []
+        """Return the one safe scan storage key for the current subject.
 
-        def add_base(value: object) -> None:
-            key = str(value or "").strip()
-            if key and key not in bases:
-                bases.append(key)
+        Older builds returned many fallback keys (logical key, name_block,
+        unscoped answer key, legacy keys).  That made a subject in exam A able to
+        read or delete data from exam B.  Runtime read/save/delete paths must now
+        use only the canonical session-scoped subject_instance_key.
+        """
+        key = ""
+        if isinstance(subject_or_cfg, dict):
+            cfg = subject_or_cfg
+            if include_generated:
+                try:
+                    key = self._subject_instance_key_from_cfg(cfg)
+                except Exception:
+                    key = ""
+            if not key:
+                key = str(cfg.get("subject_instance_key", "") or "").strip()
+            if not key:
+                logical = ""
+                try:
+                    logical = self._logical_subject_key_from_cfg(cfg)
+                except Exception:
+                    logical = ""
+                key = logical or str(cfg.get("answer_key_key", "") or cfg.get("subject_key", "") or "").strip()
+        else:
+            key = str(subject_or_cfg or "").strip()
+
+        if not key:
+            return []
+        scoped = self._batch_result_subject_key(key)
+        scope_prefix = self._session_scope_prefix_for(session_id=session_id, session=session) or self._session_scope_prefix()
+        if scope_prefix and not scoped.startswith(f"{scope_prefix}::"):
+            return []
+        return [scoped]
+
+    def _subject_scan_session_legacy_key_candidates(
+        self,
+        subject_or_cfg: str | dict | None,
+        *,
+        session_id: str | None = None,
+        session: ExamSession | None = None,
+    ) -> list[str]:
+        """Return session-scoped legacy aliases that are safe to read/migrate.
+
+        This function intentionally refuses unscoped keys.  It is only for
+        recovering data that was already saved inside the current session
+        namespace before the canonical ``subject_instance_key`` was normalized.
+        """
+        scope_prefix = self._session_scope_prefix_for(session_id=session_id, session=session) or self._session_scope_prefix()
+        scope_prefix = str(scope_prefix or "").strip()
+        if not scope_prefix:
+            return []
+
+        candidates: list[str] = []
+
+        def push(value: object, *, allow_prefix_unscoped: bool = True) -> None:
+            raw = str(value or "").strip()
+            if not raw:
+                return
+            if raw.startswith(f"{scope_prefix}::"):
+                key = raw
+            elif "::" in raw:
+                # Belongs to another namespace; do not read it.
+                return
+            elif allow_prefix_unscoped:
+                key = f"{scope_prefix}::{raw}"
+            else:
+                return
+            if key and key not in candidates:
+                candidates.append(key)
 
         if isinstance(subject_or_cfg, dict):
             cfg = subject_or_cfg
-            # Rendering the status column must be read-only. Do not create a new
-            # subject_instance_key here; key generation belongs to save/scan flows.
-            if include_generated:
-                try:
-                    add_base(self._subject_key_from_cfg(cfg))
-                except Exception:
-                    pass
-            for field_name in (
-                "subject_instance_key",
-                "logical_subject_key",
-                "answer_key_key",
-                "subject_key",
-                "subject_uid",
-            ):
-                add_base(cfg.get(field_name, ""))
+            for field_name in ("subject_instance_key", "answer_key_key", "subject_key", "logical_subject_key"):
+                push(cfg.get(field_name, ""))
             try:
-                add_base(self._logical_subject_key_from_cfg(cfg))
+                push(self._logical_subject_key_from_cfg(cfg))
             except Exception:
                 pass
             name = str(cfg.get("name", "") or "").strip()
             block = str(cfg.get("block", "") or "").strip()
             if name and block:
-                add_base(f"{name}_{block}")
-            elif name:
-                add_base(name)
+                push(f"{name}_{block}")
+            if name:
+                push(name)
             legacy_keys = cfg.get("legacy_subject_instance_keys", [])
             if isinstance(legacy_keys, list):
                 for legacy_key in legacy_keys:
-                    add_base(legacy_key)
+                    push(legacy_key)
         else:
-            add_base(subject_or_cfg)
+            push(subject_or_cfg)
 
-        scope_prefixes: list[str] = []
-
-        def add_scope(value: object) -> None:
-            key = str(value or "").strip()
-            if key and key not in scope_prefixes:
-                scope_prefixes.append(key)
-
-        add_scope(self._session_scope_prefix_for(session_id=session_id, session=session))
-        add_scope(self._session_scope_prefix())
-        add_scope(self.current_session_id if session_id is None else session_id)
-        add_scope(self.current_session_id)
-
-        candidates: list[str] = []
-
-        def add_candidate(value: object) -> None:
-            key = str(value or "").strip()
-            if key and key not in candidates:
-                candidates.append(key)
-
-        for base in bases:
-            add_candidate(base)
-            if "::" in base:
-                parts = [p for p in base.split("::") if p]
-                if parts:
-                    add_candidate(parts[-1])
-                if len(parts) >= 2:
-                    add_candidate("::".join(parts[-2:]))
-            for scope_prefix in scope_prefixes:
-                if not scope_prefix:
-                    continue
-                if base.startswith(f"{scope_prefix}::"):
-                    # Compatibility with older builds that accidentally saved a doubly scoped subject key.
-                    add_candidate(f"{scope_prefix}::{base}")
-                else:
-                    add_candidate(f"{scope_prefix}::{base}")
+        canonical = ""
+        try:
+            canonical = self._subject_scan_storage_key_candidates(subject_or_cfg, session_id=session_id, session=session)[0]
+        except Exception:
+            canonical = ""
+        if canonical and canonical in candidates:
+            candidates.remove(canonical)
+            candidates.insert(0, canonical)
         return candidates
 
     def _scan_result_counts_for_subject_keys(self, subject_keys: list[str]) -> dict[str, int]:
@@ -486,15 +541,22 @@ class MainWindowBatchStorageMixin:
     def _delete_subject_recognition_data(self, cfg: dict | None) -> None:
         if not isinstance(cfg, dict):
             return
-        for key in self._subject_scan_storage_key_candidates(cfg):
-            try:
-                self.scan_results_by_subject.pop(key, None)
-            except Exception:
-                pass
-            try:
-                self.database.delete_scan_results_for_subject(key)
-            except Exception:
-                pass
+        keys = self._subject_scan_storage_key_candidates(cfg)
+        if not keys:
+            return
+        key = keys[0]
+        try:
+            self._assert_current_session_subject_key(key, "delete recognition data")
+        except Exception:
+            return
+        try:
+            self.scan_results_by_subject.pop(key, None)
+        except Exception:
+            pass
+        try:
+            self.database.delete_scan_results_for_subject(key)
+        except Exception:
+            pass
 
     def _subject_display_status_text(
         self,
@@ -643,12 +705,19 @@ class MainWindowBatchStorageMixin:
                 QMessageBox.warning(self, "Lưu Batch", "Chưa có dữ liệu Batch Scan để lưu.")
             return False
 
-        current_results = list(self._collect_current_subject_results_for_save() or self.scan_results or [])
+        subject_key = self._subject_key_from_cfg(subject_cfg)
+        subject_db_key = self._batch_result_subject_key(subject_key)
+        try:
+            self._assert_current_session_subject_key(subject_db_key, "save batch")
+        except Exception as exc:
+            QMessageBox.warning(self, "Lưu Batch", f"Khoá môn không an toàn, không lưu Batch:\n{exc}")
+            return False
+
+        current_results = list(self._collect_current_subject_results_for_save(subject_key) or self.scan_results or [])
         if not current_results and row_count > 0:
             current_results = list(self.scan_results or [])
         self.scan_results = current_results
         saved_results = [self._serialize_omr_result(result) for result in current_results]
-        subject_key = self._subject_key_from_cfg(subject_cfg)
         saved_at = datetime.now().isoformat(timespec="seconds")
 
         # Không lưu snapshot lưới vào subject config. Toàn bộ bài nhận dạng đã nằm trong DB.
@@ -663,8 +732,7 @@ class MainWindowBatchStorageMixin:
 
         if subject_key:
             try:
-                subject_db_key = self._batch_result_subject_key(subject_key)
-                self.database.replace_scan_results_for_subject(subject_db_key, saved_results, note="save_batch_subject")
+                self.database.replace_scan_results_for_subject(subject_db_key, saved_results, note="save_batch_subject", allow_empty=False)
                 self._mark_subject_batch_saved(subject_key, len(saved_results), saved_at)
             except Exception as exc:
                 QMessageBox.warning(self, "Lưu Batch", f"Không thể lưu dữ liệu Batch Scan vào CSDL: {exc}")
@@ -1106,8 +1174,12 @@ class MainWindowBatchStorageMixin:
             source_rows = list(self.scan_results_by_subject.get(scoped_key, self.scan_results) or [])
         for result in source_rows:
             result.answer_string = self._normalize_non_api_answer_string(result, subject_key)
+        try:
+            self._assert_current_session_subject_key(scoped_key, "persist scan results")
+        except Exception:
+            return
         rows = [self._serialize_omr_result(x) for x in source_rows]
-        self.database.replace_scan_results_for_subject(scoped_key, rows)
+        self.database.replace_scan_results_for_subject(scoped_key, rows, allow_empty=False, note="batch_save")
         self.database.log_change("scan_results", scoped_key, "replace_subject_rows", "", f"{len(rows)} rows", "batch_save")
         self._refresh_scan_results_from_db(subject_key)
 

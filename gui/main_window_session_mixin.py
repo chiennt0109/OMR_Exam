@@ -366,6 +366,7 @@ class MainWindowSessionMixin:
             self._refresh_scoring_phase_table()
             cfg = self.session.config or {}
             editor_payload = {
+                "session_id": path.stem,
                 "exam_name": self.session.exam_name,
                 "common_template": self.session.template_path,
                 "scan_root": cfg.get("scan_root", ""),
@@ -673,6 +674,7 @@ class MainWindowSessionMixin:
             return
         session_id = self._generate_session_id("new_exam")
         payload = {
+            "session_id": session_id,
             "exam_name": "",
             "common_template": "",
             "scan_root": "",

@@ -327,8 +327,8 @@ class MainWindowBatchSubjectMixin:
         if not uid:
             uid = str(uuid.uuid4())
             cfg["subject_uid"] = uid
-        suffix = f"{int(index)}" if isinstance(index, int) and index >= 0 else uid
-        value = f"{scope_prefix}::{logical}::{suffix}"
+        # Use uid, not table index.  Index-based keys become unsafe after insert/delete/reorder.
+        value = f"{scope_prefix}::{logical}::{uid}"
         cfg["logical_subject_key"] = logical
         cfg["subject_instance_key"] = value
         return value
@@ -357,14 +357,42 @@ class MainWindowBatchSubjectMixin:
         if scope_prefix and base:
             if base.startswith(f"{scope_prefix}::"):
                 return base
+            # Never return an unscoped storage key while a session is open.
+            # If a legacy key from another session accidentally reaches this path,
+            # it is namespaced under the current session instead of touching old data.
             return f"{scope_prefix}::{base}"
         return base
+
+    def _subject_key_belongs_to_current_session(self, subject_key: str) -> bool:
+        key = str(subject_key or "").strip()
+        if not key:
+            return False
+        scope_prefix = str(self._session_scope_prefix() or "").strip()
+        return (not scope_prefix) or key.startswith(f"{scope_prefix}::")
+
+    def _assert_current_session_subject_key(self, subject_key: str, action: str = "") -> None:
+        key = str(subject_key or "").strip()
+        if not self._subject_key_belongs_to_current_session(key):
+            label = f" for {action}" if action else ""
+            raise RuntimeError(f"Unsafe subject_key{label}: '{key}' does not belong to current session '{self._session_scope_prefix()}'.")
 
     def _session_scope_prefix(self) -> str:
         return self._session_scope_prefix_for()
 
     def _session_scope_prefix_for(self, session_id: str | None = None, session: ExamSession | None = None) -> str:
-        sid = str(self.current_session_id if session_id is None else session_id or "").strip()
+        if session_id is None:
+            sid = ""
+            # When the embedded exam editor is open, it owns its own session id.
+            # Do not let an older active Batch/Scoring session leak into subject keys.
+            try:
+                if getattr(self, "embedded_exam_dialog", None) is not None and getattr(self, "embedded_exam_session_id", None):
+                    sid = str(getattr(self, "embedded_exam_session_id", "") or "").strip()
+            except Exception:
+                sid = ""
+            if not sid:
+                sid = str(getattr(self, "current_session_id", "") or "").strip()
+        else:
+            sid = str(session_id or "").strip()
         if sid:
             # Session scope must stay stable across exam-name edits to avoid remapping
             # subject keys to a new namespace and making already-scored subjects appear lost.
@@ -395,6 +423,11 @@ class MainWindowBatchSubjectMixin:
         return base
 
     def _fetch_answer_keys_for_subject_scoped(self, subject_key: str, subject_cfg: dict | None = None) -> dict[str, dict[str, Any]]:
+        """Fetch answer keys only from the current session namespace.
+
+        Legacy unscoped keys are deliberately not read while a session is open;
+        otherwise two exams that share a subject name/block can leak answer keys.
+        """
         candidates: list[str] = []
 
         def _push(value: str) -> None:
@@ -402,27 +435,32 @@ class MainWindowBatchSubjectMixin:
             if key and key not in candidates:
                 candidates.append(key)
 
-        _push(subject_key)
         if isinstance(subject_cfg, dict):
-            _push(str(subject_cfg.get("answer_key_key", "") or ""))
-            _push(self._logical_subject_key_from_cfg(subject_cfg))
             _push(self._subject_instance_key_from_cfg(subject_cfg))
+            _push(self._answer_key_subject_key(self._subject_instance_key_from_cfg(subject_cfg), subject_cfg))
+            logical = self._logical_subject_key_from_cfg(subject_cfg)
+            if logical:
+                _push(self._answer_key_subject_key(logical, subject_cfg))
+            raw_answer_key = str(subject_cfg.get("answer_key_key", "") or "").strip()
+            if raw_answer_key:
+                _push(self._answer_key_subject_key(raw_answer_key, subject_cfg))
+        _push(self._answer_key_subject_key(subject_key, subject_cfg))
+        _push(self._batch_result_subject_key(subject_key))
 
         has_session_scope = bool(str(self.current_session_id or "").strip())
-        block = str((subject_cfg or {}).get("block", "") or "").strip() if isinstance(subject_cfg, dict) else ""
-        sid = str(self.current_session_id or "").strip()
-
         for candidate in candidates:
-            scoped = self._answer_key_subject_key(candidate, subject_cfg)
-            rows = self.database.fetch_answer_keys_for_subject(scoped) if scoped else {}
-            if not rows and sid:
-                legacy_scoped = f"{sid}::{candidate}::{block}" if block else f"{sid}::{candidate}"
-                rows = self.database.fetch_answer_keys_for_subject(legacy_scoped)
-            if not rows and (not has_session_scope) and scoped and scoped != candidate:
-                rows = self.database.fetch_answer_keys_for_subject(candidate)
+            candidate = str(candidate or "").strip()
+            if has_session_scope and not self._subject_key_belongs_to_current_session(candidate):
+                continue
+            rows = self.database.fetch_answer_keys_for_subject(candidate) if candidate else {}
             if rows:
                 return rows or {}
 
+        # Compatibility only before a session context exists.
+        if not has_session_scope:
+            raw = str(subject_key or "").strip()
+            if raw:
+                return self.database.fetch_answer_keys_for_subject(raw) or {}
         return {}
 
     def _save_answer_keys_for_subject_scoped(

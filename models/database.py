@@ -127,6 +127,14 @@ SCHEMA = [
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
     """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_scan_results_subject_image
+    ON scan_results(subject_key, image_path)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_scores_subject_student_exam
+    ON scores(subject_key, student_code, exam_code)
+    """,
 ]
 
 INDEXES = [
@@ -307,6 +315,27 @@ class OMRDatabase:
         return payload
 
     def save_exam_session(self, session_id: str, exam_name: str, payload: dict[str, Any]) -> None:
+        sid = str(session_id or "").strip()
+        try:
+            safe_payload = json.loads(json.dumps(payload or {}, ensure_ascii=False))
+        except Exception:
+            safe_payload = dict(payload or {})
+        if sid:
+            safe_payload["session_id"] = sid
+            cfg = safe_payload.get("config", {})
+            if isinstance(cfg, dict):
+                subject_cfgs = cfg.get("subject_configs", [])
+                if isinstance(subject_cfgs, list):
+                    for item in subject_cfgs:
+                        if not isinstance(item, dict):
+                            continue
+                        key = str(item.get("subject_instance_key", "") or "").strip()
+                        if key and "::" in key and not key.startswith(f"{sid}::"):
+                            legacy = list(item.get("legacy_subject_instance_keys", [])) if isinstance(item.get("legacy_subject_instance_keys", []), list) else []
+                            if key not in legacy:
+                                legacy.append(key)
+                            item["legacy_subject_instance_keys"] = legacy[-10:]
+                            item.pop("subject_instance_key", None)
         self.conn.execute(
             """
             INSERT INTO exams(session_id, exam_name, payload_json, updated_at)
@@ -316,7 +345,7 @@ class OMRDatabase:
                 payload_json = excluded.payload_json,
                 updated_at = CURRENT_TIMESTAMP
             """,
-            (str(session_id), str(exam_name or "Kỳ thi"), json.dumps(payload, ensure_ascii=False)),
+            (sid, str(exam_name or "Kỳ thi"), json.dumps(safe_payload, ensure_ascii=False)),
         )
         self.conn.commit()
 
@@ -409,19 +438,42 @@ class OMRDatabase:
         self.conn.execute("DELETE FROM scan_results WHERE subject_key = ?", (str(subject_key or ""),))
         self.conn.commit()
 
-    def replace_scan_results_for_subject(self, subject_key: str, rows: Iterable[dict[str, Any]]) -> None:
-        subject = str(subject_key or "")
+    def replace_scan_results_for_subject(
+        self,
+        subject_key: str,
+        rows: Iterable[dict[str, Any]],
+        *,
+        allow_empty: bool = True,
+        note: str = "",
+    ) -> None:
+        """Replace scan rows for one canonical subject key.
+
+        ``note`` is accepted for compatibility with UI callers.  ``allow_empty``
+        lets dangerous callers opt out of an accidental empty replace.
+        """
+        subject = str(subject_key or "").strip()
+        if not subject:
+            return
+        row_list = list(rows or [])
+        if not row_list and not allow_empty:
+            return
         cur = self.conn.cursor()
         cur.execute("DELETE FROM scan_results WHERE subject_key = ?", (subject,))
-        payload_rows = [self._scan_result_db_tuple(subject, row) for row in list(rows)]
-        cur.executemany(
-            """
-            INSERT INTO scan_results(subject_key, image_path, exam_code_text, student_code_text, mcq_answer, tf_answer, numeric_answer, payload_json, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """,
-            payload_rows,
-        )
+        payload_rows = [self._scan_result_db_tuple(subject, row) for row in row_list]
+        if payload_rows:
+            cur.executemany(
+                """
+                INSERT INTO scan_results(subject_key, image_path, exam_code_text, student_code_text, mcq_answer, tf_answer, numeric_answer, payload_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                payload_rows,
+            )
         self.conn.commit()
+        if note:
+            try:
+                self.log_change("scan_results", subject, "replace_subject_rows", "", f"{len(payload_rows)} rows", note)
+            except Exception:
+                pass
 
     def fetch_scan_results_for_subject(self, subject_key: str) -> list[dict[str, Any]]:
         rows = self.conn.execute(
@@ -504,6 +556,67 @@ class OMRDatabase:
             ),
         )
         self.conn.commit()
+
+    def delete_scores_for_subject(self, subject_key: str, *, note: str = "") -> None:
+        subject = str(subject_key or "").strip()
+        if not subject:
+            return
+        self.conn.execute("DELETE FROM scores WHERE subject_key = ?", (subject,))
+        self.conn.commit()
+        if note:
+            try:
+                self.log_change("scores", subject, "delete_subject_scores", "", "", note)
+            except Exception:
+                pass
+
+    def replace_score_rows_for_subject(
+        self,
+        subject_key: str,
+        rows: Iterable[dict[str, Any]],
+        *,
+        allow_empty: bool = False,
+        note: str = "",
+    ) -> None:
+        subject = str(subject_key or "").strip()
+        if not subject:
+            return
+        row_list = list(rows or [])
+        if not row_list and not allow_empty:
+            return
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM scores WHERE subject_key = ?", (subject,))
+        for payload in row_list:
+            if not isinstance(payload, dict):
+                continue
+            cur.execute(
+                """
+                INSERT INTO scores(subject_key, student_code, exam_code, score, correct_count, wrong_count, blank_count, payload_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(subject_key, student_code, exam_code) DO UPDATE SET
+                    score = excluded.score,
+                    correct_count = excluded.correct_count,
+                    wrong_count = excluded.wrong_count,
+                    blank_count = excluded.blank_count,
+                    payload_json = excluded.payload_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    subject,
+                    str(payload.get("student_id", payload.get("student_code", "")) or ""),
+                    str(payload.get("exam_code", "") or ""),
+                    float(payload.get("score", 0) or 0),
+                    int(payload.get("correct", payload.get("correct_count", 0)) or 0),
+                    int(payload.get("wrong", payload.get("wrong_count", 0)) or 0),
+                    int(payload.get("blank", payload.get("blank_count", 0)) or 0),
+                    json.dumps(payload, ensure_ascii=False),
+                ),
+            )
+        self.conn.commit()
+        if note:
+            try:
+                self.log_change("scores", subject, "replace_subject_scores", "", f"{len(row_list)} rows", note)
+            except Exception:
+                pass
 
     def fetch_scores_for_subject(self, subject_key: str) -> list[dict[str, Any]]:
         rows = self.conn.execute(

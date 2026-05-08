@@ -769,7 +769,13 @@ class MainWindowBatchRecognitionMixin:
             setattr(self.omr_processor, "alignment_profile", mode)
         file_scope_mode = str(self.batch_file_scope_combo.currentData() or "new_only") if hasattr(self, "batch_file_scope_combo") else "new_only"
         subject_key_for_reset = self._subject_key_from_cfg(subject_cfg) if isinstance(subject_cfg, dict) else ""
+        subject_key_for_reset = self._batch_result_subject_key(subject_key_for_reset) if subject_key_for_reset else ""
         if file_scope_mode == "all" and subject_key_for_reset:
+            try:
+                self._assert_current_session_subject_key(subject_key_for_reset, "reset before batch scan all")
+            except Exception as exc:
+                QMessageBox.warning(self, "Nhận dạng toàn bộ", f"Khoá môn không an toàn, không thể nhận dạng toàn bộ:\n{exc}")
+                return
             has_scoring = bool(self.scoring_results_by_subject.get(subject_key_for_reset, {}))
             try:
                 has_scoring = has_scoring or bool(self.database.fetch_scores_for_subject(subject_key_for_reset))
@@ -897,6 +903,11 @@ class MainWindowBatchRecognitionMixin:
 
         subject_key_for_results = self._subject_key_from_cfg(subject_cfg) if subject_cfg else self._resolve_preferred_scoring_subject()
         subject_db_key = self._batch_result_subject_key(subject_key_for_results)
+        try:
+            self._assert_current_session_subject_key(subject_db_key, "batch scan results")
+        except Exception as exc:
+            QMessageBox.warning(self, "Batch Scan", f"Khoá môn không an toàn, không nhận dạng:\n{exc}")
+            return
         existing_results = list(self._refresh_scan_results_from_db(subject_key_for_results) or [])
         recognized_paths = {
             self._result_identity_key(str(getattr(item, "image_path", "") or ""))
@@ -945,6 +956,7 @@ class MainWindowBatchRecognitionMixin:
         self._batch_scan_running = True
         try:
             if file_scope_mode == "all":
+                self._assert_current_session_subject_key(subject_db_key, "delete old scan results before batch all")
                 self.database.delete_scan_results_for_subject(subject_db_key)
                 self.scan_results = []
             else:
@@ -1018,6 +1030,8 @@ class MainWindowBatchRecognitionMixin:
         self.database.replace_scan_results_for_subject(
             subject_db_key,
             [self._serialize_omr_result(x) for x in self.scan_results],
+            allow_empty=False,
+            note="batch_scan_replace_results",
         )
 
         forced_status_by_image = {

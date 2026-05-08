@@ -99,6 +99,12 @@ def _answer_layout_for_subject(self, subject_key: str) -> tuple[list[int], list[
 
 def run_batch_scan_from_api_file(self, subject_cfg: dict, file_scope_mode: str, api_file: str) -> None:
     subject_key_for_results = self._subject_key_from_cfg(subject_cfg) if subject_cfg else self._resolve_preferred_scoring_subject()
+    subject_db_key = self._batch_result_subject_key(subject_key_for_results)
+    try:
+        self._assert_current_session_subject_key(subject_db_key, "API batch scan")
+    except Exception as exc:
+        QMessageBox.warning(self, "API bài thi", f"Khoá môn không an toàn, không nạp API bài thi:\n{exc}")
+        return
     scan_folder = str((subject_cfg or {}).get("scan_folder", "") or "").strip()
     if not scan_folder:
         scan_folder = str(getattr(self, "batch_scan_folder_value", QLineEdit("-")).text() if hasattr(self, "batch_scan_folder_value") else "").strip()
@@ -355,7 +361,7 @@ def run_batch_scan_from_api_file(self, subject_cfg: dict, file_scope_mode: str, 
         return
     
     if file_scope_mode == "all":
-        self.database.delete_scan_results_for_subject(self._batch_result_subject_key(subject_key_for_results))
+        self.database.delete_scan_results_for_subject(subject_db_key)
         self.scan_results = []
     else:
         self.scan_results = list(self._refresh_scan_results_from_db(subject_key_for_results) or [])
@@ -363,8 +369,8 @@ def run_batch_scan_from_api_file(self, subject_cfg: dict, file_scope_mode: str, 
     for r in out:
         by_path[str(r.image_path)] = r
     self.scan_results = list(by_path.values())
-    self.scan_results_by_subject[self._batch_result_subject_key(subject_key_for_results)] = list(self.scan_results)
-    self.database.replace_scan_results_for_subject(self._batch_result_subject_key(subject_key_for_results), [self._serialize_omr_result(x) for x in self.scan_results])
+    self.scan_results_by_subject[subject_db_key] = list(self.scan_results)
+    self.database.replace_scan_results_for_subject(subject_db_key, [self._serialize_omr_result(x) for x in self.scan_results], allow_empty=False, note="api_batch_scan_replace")
     self._populate_scan_grid_from_results(self.scan_results)
     self._finalize_batch_scan_display()
     self._update_batch_scan_scope_summary()
