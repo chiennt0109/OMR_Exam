@@ -450,6 +450,11 @@ class OMRDatabase:
         target = str(target_subject_key or "").strip()
         if not source or not target or source == target:
             return 0
+        # Safety lock: only allow recovery inside the same session scope.
+        src_scope = source.split("::", 1)[0] if "::" in source else ""
+        dst_scope = target.split("::", 1)[0] if "::" in target else ""
+        if src_scope and dst_scope and src_scope != dst_scope:
+            raise ValueError(f"Unsafe recovery: source scope '{src_scope}' != target scope '{dst_scope}'.")
 
         cur = self.conn.cursor()
         rows = cur.execute("SELECT image_path FROM scan_results WHERE subject_key = ? ORDER BY id ASC", (source,)).fetchall()

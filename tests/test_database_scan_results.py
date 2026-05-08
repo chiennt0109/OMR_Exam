@@ -92,3 +92,15 @@ def test_reassign_scan_results_subject_key_moves_rows_and_clears_source(tmp_path
     assert moved == 2
     assert src_rows == []
     assert [row["image_path"] for row in dst_rows] == ["a.png", "b.png"]
+
+
+def test_reassign_scan_results_subject_key_rejects_cross_scope_move(tmp_path: Path) -> None:
+    db = OMRDatabase.default(tmp_path / "omr.db")
+    db.upsert_scan_result("session_a::Toan::1", {"image_path": "a.png", "student_id": "S1", "exam_code": "A1", "mcq_answers": {}, "true_false_answers": {}, "numeric_answers": {}, "answer_string": ""})
+
+    try:
+        db.reassign_scan_results_subject_key("session_a::Toan::1", "session_b::Toan::1")
+    except ValueError as exc:
+        assert "Unsafe recovery" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for cross-scope recovery")
