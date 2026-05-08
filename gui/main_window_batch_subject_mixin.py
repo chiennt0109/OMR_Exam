@@ -340,9 +340,13 @@ class MainWindowBatchSubjectMixin:
         if scope_prefix and base:
             if base.startswith(f"{scope_prefix}::"):
                 return base
+            if "::" in base:
+                # Hard lock: reject foreign scoped keys instead of auto-rewriting.
+                # Auto-prefixing could hide cross-session bugs and produce orphan data.
+                raise RuntimeError(
+                    f"Unsafe subject_key '{base}': out of current session scope '{scope_prefix}'."
+                )
             # Never return an unscoped storage key while a session is open.
-            # If a legacy key from another session accidentally reaches this path,
-            # it is namespaced under the current session instead of touching old data.
             return f"{scope_prefix}::{base}"
         return base
 

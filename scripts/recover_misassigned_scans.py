@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from models.database import OMRDatabase
 
@@ -16,6 +21,11 @@ def main() -> int:
         help="CSV mapping gồm 2 cột: source_subject_key,target_subject_key",
     )
     parser.add_argument("--dry-run", action="store_true", help="Chỉ in kế hoạch, không ghi DB.")
+    parser.add_argument(
+        "--session-scope",
+        default="",
+        help="Khoá an toàn bổ sung: chỉ cho phép mapping có prefix scope này (ví dụ session_id).",
+    )
     args = parser.parse_args()
 
     db = OMRDatabase.default(Path(args.db))
@@ -35,6 +45,14 @@ def main() -> int:
             target = str(row.get("target_subject_key", "") or "").strip()
             if not source or not target:
                 continue
+            enforced_scope = str(args.session_scope or "").strip()
+            if enforced_scope:
+                src_scope = source.split("::", 1)[0] if "::" in source else ""
+                dst_scope = target.split("::", 1)[0] if "::" in target else ""
+                if src_scope != enforced_scope or dst_scope != enforced_scope:
+                    raise ValueError(
+                        f"Mapping ngoài scope cho phép: source='{source}', target='{target}', scope='{enforced_scope}'"
+                    )
             if args.dry_run:
                 cnt = len(db.fetch_scan_results_for_subject(source))
                 print(f"[DRY-RUN] {source} -> {target}: {cnt} rows")
@@ -50,4 +68,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
