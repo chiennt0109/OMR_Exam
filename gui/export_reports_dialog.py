@@ -515,35 +515,75 @@ class ExportReportsDialog(QDialog):
         return ReportTable(headers=headers, rows=rows)
 
     def _score_formula_details(self, subject_key: str, cfg: dict) -> tuple[float, str]:
-        score_engine = getattr(self.main_window, "scoring_engine", None)
-        formula_text = ""
-        if score_engine is not None and hasattr(score_engine, "describe_formula"):
-            try:
-                formula_text = str(score_engine.describe_formula(subject_key, cfg) or "").strip()
-            except Exception:
-                formula_text = ""
         section_scores = (cfg.get("section_scores", {}) or {}) if isinstance(cfg, dict) else {}
+        question_scores = (cfg.get("question_scores", {}) or {}) if isinstance(cfg, dict) else {}
+        section_layout = (cfg.get("section_layout", {}) or {}) if isinstance(cfg, dict) else {}
+
         total = 0.0
-        for section in ("MCQ", "TF", "NUMERIC"):
-            sec_cfg = section_scores.get(section, {}) or {}
-            try:
-                total += float(sec_cfg.get("total_points", 0) or 0)
-            except Exception:
-                pass
-        cleaned_formula = "; ".join(part.strip() for part in formula_text.split(";") if part.strip() and "= 0" not in part)
-        return round(total, 2), cleaned_formula
+        detail_parts: list[str] = []
+        score_mode = str(cfg.get("score_mode", "") or "").strip()
+
+        if score_mode == "Điểm theo phần":
+            for section in ("MCQ", "TF", "NUMERIC"):
+                sec_cfg = section_scores.get(section, {}) or {}
+                sec_total = float(sec_cfg.get("total_points", 0) or 0)
+                if sec_total <= 0:
+                    continue
+                total += sec_total
+                q_count = int((section_layout.get(section, {}) or {}).get("count", 0) or 0)
+                if section == "TF":
+                    tf_rule = (question_scores.get("TF", {}) or {}) if isinstance(question_scores, dict) else {}
+                    rule_bits = []
+                    for k in ("1", "2", "3", "4"):
+                        v = float(tf_rule.get(k, 0) or 0)
+                        if v > 0:
+                            rule_bits.append(f"{k} ý={v:g}")
+                    rule_txt = f" ({', '.join(rule_bits)})" if rule_bits else ""
+                    detail_parts.append(f"{section}: tổng {sec_total:g}{rule_txt}")
+                else:
+                    pp = (sec_total / q_count) if q_count > 0 else 0
+                    detail_parts.append(f"{section}: tổng {sec_total:g}" + (f", {pp:g}/câu" if pp > 0 else ""))
+        else:
+            for section in ("MCQ", "TF", "NUMERIC"):
+                q_cfg = question_scores.get(section, {}) or {}
+                if section == "TF":
+                    vals = []
+                    for k in ("1", "2", "3", "4"):
+                        v = float(q_cfg.get(k, 0) or 0)
+                        if v > 0:
+                            vals.append(f"{k} ý={v:g}")
+                            total = max(total, v)
+                    if vals:
+                        detail_parts.append(f"TF: {'; '.join(vals)}")
+                else:
+                    per_q = float(q_cfg.get("per_question", 0) or 0)
+                    if per_q <= 0:
+                        continue
+                    q_count = int((section_layout.get(section, {}) or {}).get("count", 0) or 0)
+                    part_total = per_q * q_count
+                    total += part_total
+                    detail_parts.append(f"{section}: {per_q:g}/câu x {q_count} = {part_total:g}")
+
+        return round(total, 2), "; ".join(detail_parts)
 
     def _g_answer_details(self, subject_key: str) -> str:
         payload = self.main_window._fetch_answer_keys_for_subject_scoped(subject_key) or {}
         out: list[str] = []
         for exam_code, key_data in payload.items():
+            if not isinstance(key_data, dict):
+                continue
             for section_name, key_field in (("MCQ", "answers"), ("TF", "true_false_answers"), ("NUMERIC", "numeric_answers")):
-                answers = key_data.get(key_field, {}) if isinstance(key_data, dict) else {}
+                answers = key_data.get(key_field, {}) or {}
                 if not isinstance(answers, dict):
                     continue
-                g_qs = [str(q) for q, ans in answers.items() if str(ans).strip().upper() == "G"]
+                g_qs = []
+                for q, ans in answers.items():
+                    ans_text = str(ans or "").strip().upper()
+                    if ans_text == "G" or ans_text.startswith("G;"):
+                        g_qs.append(str(q))
                 if g_qs:
-                    out.append(f"{exam_code}-{section_name}: " + ", ".join(sorted(g_qs, key=lambda x: int(x) if x.isdigit() else x)))
+                    sorted_q = sorted(g_qs, key=lambda x: int(x) if x.isdigit() else x)
+                    out.append(f"{exam_code}-{section_name}: " + ", ".join(sorted_q))
         return "; ".join(out)
 
     def build_absent_exam_report(self) -> ReportTable:
