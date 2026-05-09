@@ -519,6 +519,25 @@ class ExportReportsDialog(QDialog):
         question_scores = (cfg.get("question_scores", {}) or {}) if isinstance(cfg, dict) else {}
         section_layout = (cfg.get("section_layout", {}) or {}) if isinstance(cfg, dict) else {}
 
+        answer_payload = self.main_window._fetch_answer_keys_for_subject_scoped(subject_key) or {}
+        answer_counts = {"MCQ": 0, "TF": 0, "NUMERIC": 0}
+        for _code, key_data in answer_payload.items():
+            if not isinstance(key_data, dict):
+                continue
+            maps = {
+                "MCQ": key_data.get("answers", {}) or {},
+                "TF": key_data.get("true_false_answers", {}) or {},
+                "NUMERIC": key_data.get("numeric_answers", {}) or {},
+            }
+            for sec, amap in maps.items():
+                if isinstance(amap, dict):
+                    answer_counts[sec] = max(answer_counts.get(sec, 0), len(amap))
+
+        def _q_count(section: str) -> int:
+            by_layout = int((section_layout.get(section, {}) or {}).get("count", 0) or 0)
+            by_answer = int(answer_counts.get(section, 0) or 0)
+            return by_answer if by_answer > 0 else by_layout
+
         total = 0.0
         detail_parts: list[str] = []
         score_mode = str(cfg.get("score_mode", "") or "").strip()
@@ -530,7 +549,7 @@ class ExportReportsDialog(QDialog):
                 if sec_total <= 0:
                     continue
                 total += sec_total
-                q_count = int((section_layout.get(section, {}) or {}).get("count", 0) or 0)
+                q_count = _q_count(section)
                 if section == "TF":
                     tf_rule = (question_scores.get("TF", {}) or {}) if isinstance(question_scores, dict) else {}
                     rule_bits = []
@@ -559,10 +578,11 @@ class ExportReportsDialog(QDialog):
                     per_q = float(q_cfg.get("per_question", 0) or 0)
                     if per_q <= 0:
                         continue
-                    q_count = int((section_layout.get(section, {}) or {}).get("count", 0) or 0)
+                    q_count = _q_count(section)
                     part_total = per_q * q_count
                     total += part_total
-                    detail_parts.append(f"{section}: {per_q:g}/câu x {q_count} = {part_total:g}")
+                    if q_count > 0 and part_total > 0:
+                        detail_parts.append(f"{section}: {per_q:g}/câu x {q_count} = {part_total:g}")
 
         return round(total, 2), "; ".join(detail_parts)
 
