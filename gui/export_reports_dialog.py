@@ -43,6 +43,8 @@ class ExportReportsDialog(QDialog):
     REPORT_RECHECK_SUMMARY = "Báo cáo phúc tra"
     REPORT_ABSENT_EXAM = "Thống kê học sinh vắng thi"
     REPORT_EXAM_MINUTES = "Biên bản kỳ thi"
+    REPORT_SCORE_EXPORT = "Xuất biểu điểm"
+    REPORT_ANSWER_KEY_EXPORT = "Xuất đáp án"
     ABSENT_GROUP_BY_CLASS = "Theo lớp"
     ABSENT_GROUP_BY_SUBJECT = "Theo môn"
 
@@ -71,6 +73,8 @@ class ExportReportsDialog(QDialog):
             self.REPORT_RECHECK_SUMMARY,
             self.REPORT_ABSENT_EXAM,
             self.REPORT_EXAM_MINUTES,
+            self.REPORT_SCORE_EXPORT,
+            self.REPORT_ANSWER_KEY_EXPORT,
         ]:
             self.report_list.addItem(name)
 
@@ -132,16 +136,12 @@ class ExportReportsDialog(QDialog):
         self.btn_preview = QPushButton("Xem trước")
         self.btn_export_excel = QPushButton("Xuất Excel")
         self.btn_export_pdf = QPushButton("Xuất PDF")
-        self.btn_package_recheck_by_subject = QPushButton("Đóng gói phúc tra theo môn")
-        self.btn_package_recheck_by_class = QPushButton("Đóng gói phúc tra theo lớp")
         self.btn_close = QPushButton("Đóng")
         bottom_ribbon = QHBoxLayout()
         bottom_ribbon.addStretch(1)
         bottom_ribbon.addWidget(self.btn_preview)
         bottom_ribbon.addWidget(self.btn_export_excel)
         bottom_ribbon.addWidget(self.btn_export_pdf)
-        bottom_ribbon.addWidget(self.btn_package_recheck_by_subject)
-        bottom_ribbon.addWidget(self.btn_package_recheck_by_class)
         bottom_ribbon.addWidget(self.btn_close)
 
         layout = QGridLayout(self)
@@ -161,8 +161,6 @@ class ExportReportsDialog(QDialog):
         self.btn_preview.clicked.connect(self.preview_report)
         self.btn_export_excel.clicked.connect(self.export_excel)
         self.btn_export_pdf.clicked.connect(self.export_pdf)
-        self.btn_package_recheck_by_subject.clicked.connect(lambda: self._package_recheck("subject"))
-        self.btn_package_recheck_by_class.clicked.connect(lambda: self._package_recheck("class"))
         self.btn_close.clicked.connect(self.close)
 
         self._last_report: ReportTable | None = None
@@ -431,9 +429,6 @@ class ExportReportsDialog(QDialog):
         self.row_class.setVisible(text == self.REPORT_CLASS_SUMMARY)
         self.row_absent_group.setVisible(text == self.REPORT_ABSENT_EXAM)
         self.row_combo.setVisible(text in {self.REPORT_COMBO_RANK, self.REPORT_COMBO_DIST, self.REPORT_CLASS_SUMMARY})
-        is_recheck_report = text == self.REPORT_RECHECK_SUMMARY
-        self.btn_package_recheck_by_subject.setVisible(is_recheck_report)
-        self.btn_package_recheck_by_class.setVisible(is_recheck_report)
 
     def _package_recheck(self, group_by: str) -> None:
         fn = getattr(self.main_window, "_export_recheck_package", None)
@@ -499,6 +494,52 @@ class ExportReportsDialog(QDialog):
                 if sid_key:
                     room_by_sid[sid_key] = preferred_room
         return room_by_sid
+
+
+    def build_score_export_report(self) -> ReportTable:
+        headers = ["Môn", "Tổng điểm", "Chi tiết thành phần điểm", "Chi tiết câu cho điểm"]
+        rows: list[list[object]] = []
+        for subject_label, subject_key in self._collect_subject_pairs():
+            cfg = self.main_window._subject_config_by_subject_key(subject_key) or {}
+            score = self._subject_score_summary(subject_key)
+            sections = cfg.get("section_scores", {}) if isinstance(cfg, dict) else {}
+            detail_parts = []
+            if isinstance(sections, dict):
+                for part in ("MCQ", "TF", "NUMERIC"):
+                    part_cfg = sections.get(part, {}) or {}
+                    if isinstance(part_cfg, dict):
+                        detail_parts.append(f"{part}: {part_cfg.get('score', 0)}")
+            q_mode = cfg.get("question_scores", {}) if isinstance(cfg, dict) else {}
+            q_details = []
+            if isinstance(q_mode, dict):
+                for part in ("MCQ", "TF", "NUMERIC"):
+                    item = q_mode.get(part, {}) or {}
+                    if isinstance(item, dict):
+                        q_details.append(f"{part}: {item.get('per_question', 0)}/câu")
+            rows.append([subject_label, score, "; ".join(detail_parts) or "-", "; ".join(q_details) or "-"])
+        return ReportTable(headers=headers, rows=rows)
+
+    def build_answer_key_export_report(self) -> ReportTable:
+        headers = ["Môn", "Số mã đề", "Trạng thái"]
+        rows: list[list[object]] = []
+        for subject_label, subject_key in self._collect_subject_pairs():
+            payload = self.main_window._fetch_answer_keys_for_subject_scoped(subject_key) or {}
+            rows.append([subject_label, len(payload), "Sẵn sàng xuất" if payload else "Chưa có đáp án"])
+        return ReportTable(headers=headers, rows=rows)
+
+    def _subject_score_summary(self, subject_key: str) -> float:
+        if subject_key in self._subject_score_cache:
+            return self._subject_score_cache[subject_key]
+        rows = self._score_rows_for_subject_cached(subject_key)
+        vals = []
+        for row in rows:
+            try:
+                vals.append(float(row.get("score", 0) or 0))
+            except Exception:
+                pass
+        value = round(sum(vals), 2)
+        self._subject_score_cache[subject_key] = value
+        return value
 
     def build_absent_exam_report(self) -> ReportTable:
         subjects = self._collect_subject_pairs()
@@ -987,6 +1028,10 @@ class ExportReportsDialog(QDialog):
             return self.build_absent_exam_report()
         if name == self.REPORT_EXAM_MINUTES:
             return self.build_exam_minutes_report()
+        if name == self.REPORT_SCORE_EXPORT:
+            return self.build_score_export_report()
+        if name == self.REPORT_ANSWER_KEY_EXPORT:
+            return self.build_answer_key_export_report()
         return self.build_class_summary_report()
 
     def _render_table(self, table: ReportTable) -> None:
@@ -1288,6 +1333,26 @@ class ExportReportsDialog(QDialog):
             _apply_name_alignment(ws, self._last_report.headers)
         wb.save(Path(path))
         QMessageBox.information(self, "Báo cáo", f"Đã xuất Excel:\n{path}")
+
+    def _export_answer_keys_excel(self, path: str) -> None:
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        if wb.active:
+            wb.remove(wb.active)
+        for subject_label, subject_key in self._collect_subject_pairs():
+            ws = wb.create_sheet(self.main_window._safe_sheet_name(subject_label, fallback="subject"))
+            ws.append(["Mã đề", "Phần", "Câu", "Đáp án"])
+            payload = self.main_window._fetch_answer_keys_for_subject_scoped(subject_key) or {}
+            for exam_code, key_data in payload.items():
+                for section_name, key_field in (("MCQ", "answers"), ("TF", "true_false_answers"), ("NUMERIC", "numeric_answers")):
+                    answers = key_data.get(key_field, {}) if isinstance(key_data, dict) else {}
+                    if not isinstance(answers, dict):
+                        continue
+                    for question_no, ans in sorted(answers.items(), key=lambda x: int(str(x[0])) if str(x[0]).isdigit() else str(x[0])):
+                        ws.append([exam_code, section_name, question_no, ans])
+        wb.save(Path(path))
+        QMessageBox.information(self, "Xuất đáp án", f"Đã xuất Excel đáp án:\n{path}")
 
     def export_pdf(self) -> None:
         if self._last_report is None:
