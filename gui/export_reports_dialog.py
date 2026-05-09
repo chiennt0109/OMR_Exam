@@ -136,16 +136,12 @@ class ExportReportsDialog(QDialog):
         self.btn_preview = QPushButton("Xem trước")
         self.btn_export_excel = QPushButton("Xuất Excel")
         self.btn_export_pdf = QPushButton("Xuất PDF")
-        self.btn_package_recheck_by_subject = QPushButton("Đóng gói phúc tra theo môn")
-        self.btn_package_recheck_by_class = QPushButton("Đóng gói phúc tra theo lớp")
         self.btn_close = QPushButton("Đóng")
         bottom_ribbon = QHBoxLayout()
         bottom_ribbon.addStretch(1)
         bottom_ribbon.addWidget(self.btn_preview)
         bottom_ribbon.addWidget(self.btn_export_excel)
         bottom_ribbon.addWidget(self.btn_export_pdf)
-        bottom_ribbon.addWidget(self.btn_package_recheck_by_subject)
-        bottom_ribbon.addWidget(self.btn_package_recheck_by_class)
         bottom_ribbon.addWidget(self.btn_close)
 
         layout = QGridLayout(self)
@@ -165,8 +161,6 @@ class ExportReportsDialog(QDialog):
         self.btn_preview.clicked.connect(self.preview_report)
         self.btn_export_excel.clicked.connect(self.export_excel)
         self.btn_export_pdf.clicked.connect(self.export_pdf)
-        self.btn_package_recheck_by_subject.clicked.connect(lambda: self._package_recheck("subject"))
-        self.btn_package_recheck_by_class.clicked.connect(lambda: self._package_recheck("class"))
         self.btn_close.clicked.connect(self.close)
 
         self._last_report: ReportTable | None = None
@@ -435,9 +429,6 @@ class ExportReportsDialog(QDialog):
         self.row_class.setVisible(text == self.REPORT_CLASS_SUMMARY)
         self.row_absent_group.setVisible(text == self.REPORT_ABSENT_EXAM)
         self.row_combo.setVisible(text in {self.REPORT_COMBO_RANK, self.REPORT_COMBO_DIST, self.REPORT_CLASS_SUMMARY})
-        is_recheck_report = text == self.REPORT_RECHECK_SUMMARY
-        self.btn_package_recheck_by_subject.setVisible(is_recheck_report)
-        self.btn_package_recheck_by_class.setVisible(is_recheck_report)
 
     def _package_recheck(self, group_by: str) -> None:
         fn = getattr(self.main_window, "_export_recheck_package", None)
