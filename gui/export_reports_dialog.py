@@ -43,6 +43,8 @@ class ExportReportsDialog(QDialog):
     REPORT_RECHECK_SUMMARY = "Báo cáo phúc tra"
     REPORT_ABSENT_EXAM = "Thống kê học sinh vắng thi"
     REPORT_EXAM_MINUTES = "Biên bản kỳ thi"
+    REPORT_SCORE_EXPORT = "Xuất biểu điểm"
+    REPORT_ANSWER_KEY_EXPORT = "Xuất đáp án"
     ABSENT_GROUP_BY_CLASS = "Theo lớp"
     ABSENT_GROUP_BY_SUBJECT = "Theo môn"
 
@@ -71,6 +73,8 @@ class ExportReportsDialog(QDialog):
             self.REPORT_RECHECK_SUMMARY,
             self.REPORT_ABSENT_EXAM,
             self.REPORT_EXAM_MINUTES,
+            self.REPORT_SCORE_EXPORT,
+            self.REPORT_ANSWER_KEY_EXPORT,
         ]:
             self.report_list.addItem(name)
 
@@ -499,6 +503,117 @@ class ExportReportsDialog(QDialog):
                 if sid_key:
                     room_by_sid[sid_key] = preferred_room
         return room_by_sid
+
+
+    def build_score_export_report(self) -> ReportTable:
+        headers = ["Môn", "Tổng điểm", "Chi tiết thành phần điểm", "Chi tiết câu cho điểm"]
+        rows: list[list[object]] = []
+        for subject_label, subject_key in self._collect_subject_pairs():
+            cfg = self.main_window._subject_config_by_subject_key(subject_key) or {}
+            total_score, formula = self._score_formula_details(subject_key, cfg)
+            g_detail = self._g_answer_details(subject_key)
+            rows.append([subject_label, total_score, formula or "-", g_detail or "-"])
+        return ReportTable(headers=headers, rows=rows)
+
+    def build_answer_key_export_report(self) -> ReportTable:
+        headers = ["Môn", "Số mã đề", "Trạng thái"]
+        rows: list[list[object]] = []
+        for subject_label, subject_key in self._collect_subject_pairs():
+            payload = self.main_window._fetch_answer_keys_for_subject_scoped(subject_key) or {}
+            rows.append([subject_label, len(payload), "Sẵn sàng xuất" if payload else "Chưa có đáp án"])
+        return ReportTable(headers=headers, rows=rows)
+
+    def _score_formula_details(self, subject_key: str, cfg: dict) -> tuple[float, str]:
+        section_scores = (cfg.get("section_scores", {}) or {}) if isinstance(cfg, dict) else {}
+        question_scores = (cfg.get("question_scores", {}) or {}) if isinstance(cfg, dict) else {}
+        section_layout = (cfg.get("section_layout", {}) or {}) if isinstance(cfg, dict) else {}
+
+        answer_payload = self.main_window._fetch_answer_keys_for_subject_scoped(subject_key) or {}
+        answer_counts = {"MCQ": 0, "TF": 0, "NUMERIC": 0}
+        for _code, key_data in answer_payload.items():
+            if not isinstance(key_data, dict):
+                continue
+            maps = {
+                "MCQ": key_data.get("answers", {}) or {},
+                "TF": key_data.get("true_false_answers", {}) or {},
+                "NUMERIC": key_data.get("numeric_answers", {}) or {},
+            }
+            for sec, amap in maps.items():
+                if isinstance(amap, dict):
+                    answer_counts[sec] = max(answer_counts.get(sec, 0), len(amap))
+
+        def _q_count(section: str) -> int:
+            by_layout = int((section_layout.get(section, {}) or {}).get("count", 0) or 0)
+            by_answer = int(answer_counts.get(section, 0) or 0)
+            return by_answer if by_answer > 0 else by_layout
+
+        total = 0.0
+        detail_parts: list[str] = []
+        score_mode = str(cfg.get("score_mode", "") or "").strip()
+
+        if score_mode == "Điểm theo phần":
+            for section in ("MCQ", "TF", "NUMERIC"):
+                sec_cfg = section_scores.get(section, {}) or {}
+                sec_total = float(sec_cfg.get("total_points", 0) or 0)
+                if sec_total <= 0:
+                    continue
+                total += sec_total
+                q_count = _q_count(section)
+                if section == "TF":
+                    tf_rule = (question_scores.get("TF", {}) or {}) if isinstance(question_scores, dict) else {}
+                    rule_bits = []
+                    for k in ("1", "2", "3", "4"):
+                        v = float(tf_rule.get(k, 0) or 0)
+                        if v > 0:
+                            rule_bits.append(f"{k} ý={v:g}")
+                    rule_txt = f" ({', '.join(rule_bits)})" if rule_bits else ""
+                    detail_parts.append(f"{section}: tổng {sec_total:g}{rule_txt}")
+                else:
+                    pp = (sec_total / q_count) if q_count > 0 else 0
+                    detail_parts.append(f"{section}: tổng {sec_total:g}" + (f", {pp:g}/câu" if pp > 0 else ""))
+        else:
+            for section in ("MCQ", "TF", "NUMERIC"):
+                q_cfg = question_scores.get(section, {}) or {}
+                if section == "TF":
+                    vals = []
+                    for k in ("1", "2", "3", "4"):
+                        v = float(q_cfg.get(k, 0) or 0)
+                        if v > 0:
+                            vals.append(f"{k} ý={v:g}")
+                            total = max(total, v)
+                    if vals:
+                        detail_parts.append(f"TF: {'; '.join(vals)}")
+                else:
+                    per_q = float(q_cfg.get("per_question", 0) or 0)
+                    if per_q <= 0:
+                        continue
+                    q_count = _q_count(section)
+                    part_total = per_q * q_count
+                    total += part_total
+                    if q_count > 0 and part_total > 0:
+                        detail_parts.append(f"{section}: {per_q:g}/câu x {q_count} = {part_total:g}")
+
+        return round(total, 2), "; ".join(detail_parts)
+
+    def _g_answer_details(self, subject_key: str) -> str:
+        payload = self.main_window._fetch_answer_keys_for_subject_scoped(subject_key) or {}
+        out: list[str] = []
+        for exam_code, key_data in payload.items():
+            if not isinstance(key_data, dict):
+                continue
+            for section_name, key_field in (("MCQ", "answers"), ("TF", "true_false_answers"), ("NUMERIC", "numeric_answers")):
+                answers = key_data.get(key_field, {}) or {}
+                if not isinstance(answers, dict):
+                    continue
+                g_qs = []
+                for q, ans in answers.items():
+                    ans_text = str(ans or "").strip().upper()
+                    if ans_text == "G" or ans_text.startswith("G;"):
+                        g_qs.append(str(q))
+                if g_qs:
+                    sorted_q = sorted(g_qs, key=lambda x: int(x) if x.isdigit() else x)
+                    out.append(f"{exam_code}-{section_name}: " + ", ".join(sorted_q))
+        return "; ".join(out)
 
     def build_absent_exam_report(self) -> ReportTable:
         subjects = self._collect_subject_pairs()
@@ -987,6 +1102,10 @@ class ExportReportsDialog(QDialog):
             return self.build_absent_exam_report()
         if name == self.REPORT_EXAM_MINUTES:
             return self.build_exam_minutes_report()
+        if name == self.REPORT_SCORE_EXPORT:
+            return self.build_score_export_report()
+        if name == self.REPORT_ANSWER_KEY_EXPORT:
+            return self.build_answer_key_export_report()
         return self.build_class_summary_report()
 
     def _render_table(self, table: ReportTable) -> None:
@@ -1288,6 +1407,26 @@ class ExportReportsDialog(QDialog):
             _apply_name_alignment(ws, self._last_report.headers)
         wb.save(Path(path))
         QMessageBox.information(self, "Báo cáo", f"Đã xuất Excel:\n{path}")
+
+    def _export_answer_keys_excel(self, path: str) -> None:
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        if wb.active:
+            wb.remove(wb.active)
+        for subject_label, subject_key in self._collect_subject_pairs():
+            ws = wb.create_sheet(self.main_window._safe_sheet_name(subject_label, fallback="subject"))
+            ws.append(["Mã đề", "Phần", "Câu", "Đáp án"])
+            payload = self.main_window._fetch_answer_keys_for_subject_scoped(subject_key) or {}
+            for exam_code, key_data in payload.items():
+                for section_name, key_field in (("MCQ", "answers"), ("TF", "true_false_answers"), ("NUMERIC", "numeric_answers")):
+                    answers = key_data.get(key_field, {}) if isinstance(key_data, dict) else {}
+                    if not isinstance(answers, dict):
+                        continue
+                    for question_no, ans in sorted(answers.items(), key=lambda x: int(str(x[0])) if str(x[0]).isdigit() else str(x[0])):
+                        ws.append([exam_code, section_name, question_no, ans])
+        wb.save(Path(path))
+        QMessageBox.information(self, "Xuất đáp án", f"Đã xuất Excel đáp án:\n{path}")
 
     def export_pdf(self) -> None:
         if self._last_report is None:
