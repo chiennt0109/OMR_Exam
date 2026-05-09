@@ -1187,20 +1187,6 @@ class MainWindowWorkspaceMixin:
             self.action_export_return_by_class,
             icon_name="export",
         )
-        self.act_export_recheck_by_subject = self._add_menu_action(
-            self.export_menu,
-            "act_export_recheck_by_subject",
-            "Đóng gói bài phúc tra theo môn...",
-            self.action_export_recheck_by_subject,
-            icon_name="export",
-        )
-        self.act_export_recheck_by_class = self._add_menu_action(
-            self.export_menu,
-            "act_export_recheck_by_class",
-            "Đóng gói bài phúc tra theo lớp...",
-            self.action_export_recheck_by_class,
-            icon_name="export",
-        )
         self.export_menu.addSeparator()
         self.act_export_subject_api = self._add_menu_action(
             self.export_menu,

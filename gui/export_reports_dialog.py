@@ -501,22 +501,9 @@ class ExportReportsDialog(QDialog):
         rows: list[list[object]] = []
         for subject_label, subject_key in self._collect_subject_pairs():
             cfg = self.main_window._subject_config_by_subject_key(subject_key) or {}
-            score = self._subject_score_summary(subject_key)
-            sections = cfg.get("section_scores", {}) if isinstance(cfg, dict) else {}
-            detail_parts = []
-            if isinstance(sections, dict):
-                for part in ("MCQ", "TF", "NUMERIC"):
-                    part_cfg = sections.get(part, {}) or {}
-                    if isinstance(part_cfg, dict):
-                        detail_parts.append(f"{part}: {part_cfg.get('score', 0)}")
-            q_mode = cfg.get("question_scores", {}) if isinstance(cfg, dict) else {}
-            q_details = []
-            if isinstance(q_mode, dict):
-                for part in ("MCQ", "TF", "NUMERIC"):
-                    item = q_mode.get(part, {}) or {}
-                    if isinstance(item, dict):
-                        q_details.append(f"{part}: {item.get('per_question', 0)}/câu")
-            rows.append([subject_label, score, "; ".join(detail_parts) or "-", "; ".join(q_details) or "-"])
+            total_score, formula = self._score_formula_details(subject_key, cfg)
+            g_detail = self._g_answer_details(subject_key)
+            rows.append([subject_label, total_score, formula or "-", g_detail or "-"])
         return ReportTable(headers=headers, rows=rows)
 
     def build_answer_key_export_report(self) -> ReportTable:
@@ -527,19 +514,37 @@ class ExportReportsDialog(QDialog):
             rows.append([subject_label, len(payload), "Sẵn sàng xuất" if payload else "Chưa có đáp án"])
         return ReportTable(headers=headers, rows=rows)
 
-    def _subject_score_summary(self, subject_key: str) -> float:
-        if subject_key in self._subject_score_cache:
-            return self._subject_score_cache[subject_key]
-        rows = self._score_rows_for_subject_cached(subject_key)
-        vals = []
-        for row in rows:
+    def _score_formula_details(self, subject_key: str, cfg: dict) -> tuple[float, str]:
+        score_engine = getattr(self.main_window, "scoring_engine", None)
+        formula_text = ""
+        if score_engine is not None and hasattr(score_engine, "describe_formula"):
             try:
-                vals.append(float(row.get("score", 0) or 0))
+                formula_text = str(score_engine.describe_formula(subject_key, cfg) or "").strip()
+            except Exception:
+                formula_text = ""
+        section_scores = (cfg.get("section_scores", {}) or {}) if isinstance(cfg, dict) else {}
+        total = 0.0
+        for section in ("MCQ", "TF", "NUMERIC"):
+            sec_cfg = section_scores.get(section, {}) or {}
+            try:
+                total += float(sec_cfg.get("total_points", 0) or 0)
             except Exception:
                 pass
-        value = round(sum(vals), 2)
-        self._subject_score_cache[subject_key] = value
-        return value
+        cleaned_formula = "; ".join(part.strip() for part in formula_text.split(";") if part.strip() and "= 0" not in part)
+        return round(total, 2), cleaned_formula
+
+    def _g_answer_details(self, subject_key: str) -> str:
+        payload = self.main_window._fetch_answer_keys_for_subject_scoped(subject_key) or {}
+        out: list[str] = []
+        for exam_code, key_data in payload.items():
+            for section_name, key_field in (("MCQ", "answers"), ("TF", "true_false_answers"), ("NUMERIC", "numeric_answers")):
+                answers = key_data.get(key_field, {}) if isinstance(key_data, dict) else {}
+                if not isinstance(answers, dict):
+                    continue
+                g_qs = [str(q) for q, ans in answers.items() if str(ans).strip().upper() == "G"]
+                if g_qs:
+                    out.append(f"{exam_code}-{section_name}: " + ", ".join(sorted(g_qs, key=lambda x: int(x) if x.isdigit() else x)))
+        return "; ".join(out)
 
     def build_absent_exam_report(self) -> ReportTable:
         subjects = self._collect_subject_pairs()
