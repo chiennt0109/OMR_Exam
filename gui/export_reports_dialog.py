@@ -525,7 +525,7 @@ class ExportReportsDialog(QDialog):
             if not isinstance(key_data, dict):
                 continue
             maps = {
-                "MCQ": key_data.get("answers", {}) or {},
+                "MCQ": key_data.get("mcq_answers", {}) or key_data.get("answers", {}) or {},
                 "TF": key_data.get("true_false_answers", {}) or {},
                 "NUMERIC": key_data.get("numeric_answers", {}) or {},
             }
@@ -571,9 +571,12 @@ class ExportReportsDialog(QDialog):
                         v = float(q_cfg.get(k, 0) or 0)
                         if v > 0:
                             vals.append(f"{k} ý={v:g}")
-                            total = max(total, v)
                     if vals:
-                        detail_parts.append(f"TF: {'; '.join(vals)}")
+                        q_count = _q_count(section)
+                        tf_max = max(float(q_cfg.get(k, 0) or 0) for k in ("1", "2", "3", "4"))
+                        if tf_max > 0 and q_count > 0:
+                            total += tf_max * q_count
+                        detail_parts.append(f"TF: {'; '.join(vals)}" + (f"; tổng={tf_max:g} x {q_count} = {tf_max*q_count:g}" if tf_max > 0 and q_count > 0 else ""))
                 else:
                     per_q = float(q_cfg.get("per_question", 0) or 0)
                     if per_q <= 0:
@@ -592,7 +595,7 @@ class ExportReportsDialog(QDialog):
         for exam_code, key_data in payload.items():
             if not isinstance(key_data, dict):
                 continue
-            for section_name, key_field in (("MCQ", "answers"), ("TF", "true_false_answers"), ("NUMERIC", "numeric_answers")):
+            for section_name, key_field in (("MCQ", "mcq_answers"), ("TF", "true_false_answers"), ("NUMERIC", "numeric_answers")):
                 answers = key_data.get(key_field, {}) or {}
                 if not isinstance(answers, dict):
                     continue
@@ -1410,7 +1413,7 @@ class ExportReportsDialog(QDialog):
             ws.append(["Mã đề", "Phần", "Câu", "Đáp án"])
             payload = self.main_window._fetch_answer_keys_for_subject_scoped(subject_key) or {}
             for exam_code, key_data in payload.items():
-                for section_name, key_field in (("MCQ", "answers"), ("TF", "true_false_answers"), ("NUMERIC", "numeric_answers")):
+                for section_name, key_field in (("MCQ", "mcq_answers"), ("TF", "true_false_answers"), ("NUMERIC", "numeric_answers")):
                     answers = key_data.get(key_field, {}) if isinstance(key_data, dict) else {}
                     if not isinstance(answers, dict):
                         continue
