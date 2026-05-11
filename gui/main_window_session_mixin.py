@@ -349,8 +349,18 @@ class MainWindowSessionMixin:
             # scan_results_by_subject chỉ được nạp lại khi người dùng mở môn, bằng truy vấn DB.
             self.scan_results_by_subject = {}
             self.batch_working_state_by_subject = {}
-            self.subject_catalog = list(cfg.get("subject_catalog", self.subject_catalog)) or self.subject_catalog
-            self.block_catalog = list(cfg.get("block_catalog", self.block_catalog)) or self.block_catalog
+            # Global catalog order must follow persisted DB state; avoid restoring
+            # stale per-session snapshots that can reset user-managed ordering.
+            db_subjects = list(self.database.fetch_catalog("subjects") or [])
+            db_blocks = list(self.database.fetch_catalog("blocks") or [])
+            if db_subjects:
+                self.subject_catalog = db_subjects
+            elif isinstance(cfg.get("subject_catalog", []), list) and cfg.get("subject_catalog"):
+                self.subject_catalog = list(cfg.get("subject_catalog", []))
+            if db_blocks:
+                self.block_catalog = db_blocks
+            elif isinstance(cfg.get("block_catalog", []), list) and cfg.get("block_catalog"):
+                self.block_catalog = list(cfg.get("block_catalog", []))
             if self.session.answer_key_path:
                 p = Path(self.session.answer_key_path)
                 if p.exists() and p.suffix.lower() == ".json":
