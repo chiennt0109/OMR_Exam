@@ -104,8 +104,8 @@ class MainWindowBatchScopeMixin:
         return normalized
 
     @staticmethod
-    def _normalized_tf_answer_map(raw_map: object) -> dict[int, dict[str, bool]]:
-        normalized: dict[int, dict[str, bool]] = {}
+    def _normalized_tf_answer_map(raw_map: object) -> dict[int, dict[str, bool | str]]:
+        normalized: dict[int, dict[str, bool | str]] = {}
         if not isinstance(raw_map, dict):
             return normalized
         for q_raw, flags_raw in raw_map.items():
@@ -114,11 +114,11 @@ class MainWindowBatchScopeMixin:
             except Exception:
                 continue
             flags_src = flags_raw if isinstance(flags_raw, dict) else {}
-            flags: dict[str, bool] = {}
+            flags: dict[str, bool | str] = {}
             for key_raw, flag in flags_src.items():
                 key = str(key_raw or "").strip().lower()
                 if key in {"a", "b", "c", "d"}:
-                    flags[key] = bool(flag)
+                    flags[key] = "G" if str(flag).strip().upper() == "G" else bool(flag)
             if flags:
                 normalized[q_no] = flags
         return normalized

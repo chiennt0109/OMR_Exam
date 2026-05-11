@@ -17,7 +17,7 @@ TF_WILDCARD_VALUES = {"G"}
 class ImportedAnswerKey:
     exam_id: int = 1
     mcq_answers: dict[int, str] = field(default_factory=dict)
-    true_false_answers: dict[int, dict[str, bool]] = field(default_factory=dict)
+    true_false_answers: dict[int, dict[str, bool | str]] = field(default_factory=dict)
     numeric_answers: dict[int, str] = field(default_factory=dict)
     full_credit_questions: dict[str, list[int]] = field(default_factory=dict)
     invalid_answer_rows: dict[str, dict[int, str]] = field(default_factory=dict)
@@ -68,13 +68,13 @@ def _read_excel_multilevel(file_path: str | Path) -> pd.DataFrame | None:
     return multi
 
 
-def _parse_tf_token(df_row_idx: int, exam_code: str, token: str) -> dict[str, bool]:
+def _parse_tf_token(df_row_idx: int, exam_code: str, token: str) -> dict[str, bool | str]:
     raw = token.strip().upper().replace(" ", "")
     if len(raw) != 4:
         raise ImportError(
             f"Row {df_row_idx + 2}, exam '{exam_code}': invalid TF '{token}'. Expected 4 chars (T/F or Đ/S)."
         )
-    payload: dict[str, bool] = {}
+    payload: dict[str, bool | str] = {}
     for idx, ch in enumerate(raw):
         key = chr(ord("a") + idx)
         if ch in TF_TRUE_VALUES:
@@ -174,15 +174,17 @@ def _parse_single_exam_table(
             result.mcq_answers[q] = marked[0]
             continue
 
-        tf_payload: dict[str, bool] = {}
+        tf_payload: dict[str, bool | str] = {}
         for choice in sorted(option_map):
             token = vals[choice].upper()
             if token in TF_TRUE_VALUES:
                 tf_payload[choice.lower()] = True
             elif token in TF_FALSE_VALUES:
                 tf_payload[choice.lower()] = False
+            elif token in TF_WILDCARD_VALUES:
+                tf_payload[choice.lower()] = "G"
             else:
-                message = f"Row {row_idx + 2}, column '{choice}': invalid value '{vals[choice]}'. Expected T/F or Đ/S."
+                message = f"Row {row_idx + 2}, column '{choice}': invalid value '{vals[choice]}'. Expected T/F, Đ/S, or G."
                 if strict:
                     raise ImportError(message)
                 warnings.append(message)
