@@ -277,34 +277,16 @@ class MainWindow(MainWindowBrandingMixin, MainWindowAutoRecognitionMixin, MainWi
         self.stack.currentChanged.connect(self._handle_stack_changed)
         db_subjects = self.database.fetch_catalog("subjects")
         db_blocks = self.database.fetch_catalog("blocks")
-        default_subject_catalog = list(self.subject_catalog)
-        default_block_catalog = list(self.block_catalog)
         if db_subjects:
-            merged_subjects = list(db_subjects)
-            seen_subjects = {str(x).strip().casefold() for x in merged_subjects if str(x).strip()}
-            for item in default_subject_catalog:
-                key = str(item).strip().casefold()
-                if key and key not in seen_subjects:
-                    merged_subjects.append(item)
-                    seen_subjects.add(key)
-            self.subject_catalog = merged_subjects
-            self.subjects = list(merged_subjects)
-            if merged_subjects != db_subjects:
-                self.database.replace_catalog("subjects", self.subject_catalog)
+            # Persisted catalog order in DB is the source of truth.
+            self.subject_catalog = list(db_subjects)
+            self.subjects = list(db_subjects)
         else:
+            # First run only: seed DB from built-in defaults.
             self.database.replace_catalog("subjects", self.subject_catalog)
         if db_blocks:
-            merged_blocks = list(db_blocks)
-            seen_blocks = {str(x).strip().casefold() for x in merged_blocks if str(x).strip()}
-            for item in default_block_catalog:
-                key = str(item).strip().casefold()
-                if key and key not in seen_blocks:
-                    merged_blocks.append(item)
-                    seen_blocks.add(key)
-            self.block_catalog = merged_blocks
-            self.grades = list(merged_blocks)
-            if merged_blocks != db_blocks:
-                self.database.replace_catalog("blocks", self.block_catalog)
+            self.block_catalog = list(db_blocks)
+            self.grades = list(db_blocks)
         else:
             self.database.replace_catalog("blocks", self.block_catalog)
         self._refresh_exam_list()

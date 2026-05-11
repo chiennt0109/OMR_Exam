@@ -207,6 +207,18 @@ class ExportReportsDialog(QDialog):
             return []
         if key not in self._score_rows_cache:
             rows = list(self.main_window._ensure_export_score_rows_for_subject(key) or [])
+            initial_ids = self._initial_import_student_ids()
+            if initial_ids:
+                strict_filtered: list[dict] = []
+                for row in rows:
+                    sid = str((row or {}).get("student_id", "") or "").strip()
+                    status_text = str((row or {}).get("status", "") or (row or {}).get("note", "") or "").strip()
+                    if sid and sid in initial_ids:
+                        strict_filtered.append(dict(row))
+                        continue
+                    if not sid and status_text.startswith("Lỗi"):
+                        strict_filtered.append(dict(row))
+                rows = strict_filtered
             source_ids: set[str] = set()
             source_count = 0
             if hasattr(self.main_window, "_scoring_source_student_ids"):
@@ -227,6 +239,16 @@ class ExportReportsDialog(QDialog):
                 rows = filtered
             self._score_rows_cache[key] = rows
         return list(self._score_rows_cache.get(key, []))
+
+    def _initial_import_student_ids(self) -> set[str]:
+        out: set[str] = set()
+        if not getattr(self.main_window, "session", None):
+            return out
+        for st in (self.main_window.session.students or []):
+            sid = str(getattr(st, "student_id", "") or "").strip()
+            if sid:
+                out.add(sid)
+        return out
 
     def _collect_class_options(self) -> list[str]:
         vals = ["Tất cả"]
@@ -595,18 +617,65 @@ class ExportReportsDialog(QDialog):
         for exam_code, key_data in payload.items():
             if not isinstance(key_data, dict):
                 continue
-            for section_name, key_field in (("MCQ", "mcq_answers"), ("TF", "true_false_answers"), ("NUMERIC", "numeric_answers")):
-                answers = key_data.get(key_field, {}) or {}
-                if not isinstance(answers, dict):
-                    continue
-                g_qs = []
-                for q, ans in answers.items():
-                    ans_text = str(ans or "").strip().upper()
-                    if ans_text == "G" or ans_text.startswith("G;"):
-                        g_qs.append(str(q))
+            section_parts: list[str] = []
+            mcq_answers = key_data.get("mcq_answers", {}) or {}
+            if isinstance(mcq_answers, dict):
+                mcq_order = sorted(
+                    [str(q) for q in mcq_answers.keys()],
+                    key=lambda x: int(x) if str(x).isdigit() else str(x),
+                )
+                mcq_display_map = {q: idx for idx, q in enumerate(mcq_order, start=1)}
+                g_qs = sorted(
+                    [str(q) for q, ans in mcq_answers.items() if str(ans or "").strip().upper() == "G"],
+                    key=lambda x: int(x) if x.isdigit() else x,
+                )
                 if g_qs:
-                    sorted_q = sorted(g_qs, key=lambda x: int(x) if x.isdigit() else x)
-                    out.append(f"{exam_code}-{section_name}: " + ", ".join(sorted_q))
+                    section_parts.append("MCQ(" + ", ".join(f"C{mcq_display_map.get(q, q)}" for q in g_qs) + ")")
+
+            tf_answers = key_data.get("true_false_answers", {}) or {}
+            if isinstance(tf_answers, dict):
+                tf_order = sorted(
+                    [str(q) for q in tf_answers.keys()],
+                    key=lambda x: int(x) if str(x).isdigit() else str(x),
+                )
+                tf_display_map = {q: idx for idx, q in enumerate(tf_order, start=1)}
+                tf_g_items: list[str] = []
+                for q, flags in tf_answers.items():
+                    q_text = str(q)
+                    q_display = tf_display_map.get(q_text, q_text)
+                    if isinstance(flags, dict):
+                        whole_is_g = str(flags).strip().upper() == "G"
+                        if whole_is_g:
+                            tf_g_items.append(f"C{q_display}")
+                            continue
+                        for sub in ["a", "b", "c", "d"]:
+                            if str((flags or {}).get(sub, "")).strip().upper() == "G":
+                                tf_g_items.append(f"C{q_display}.{sub}")
+                    else:
+                        if str(flags or "").strip().upper() == "G":
+                            tf_g_items.append(f"C{q_display}")
+                if tf_g_items:
+                    def _tf_sort_key(token: str) -> tuple[int, str]:
+                        prefix = token.split(".", 1)[0].lstrip("C")
+                        return (int(prefix) if prefix.isdigit() else 10**9, token)
+                    section_parts.append("TF(" + ", ".join(sorted(tf_g_items, key=_tf_sort_key)) + ")")
+
+            numeric_answers = key_data.get("numeric_answers", {}) or {}
+            if isinstance(numeric_answers, dict):
+                numeric_order = sorted(
+                    [str(q) for q in numeric_answers.keys()],
+                    key=lambda x: int(x) if str(x).isdigit() else str(x),
+                )
+                numeric_display_map = {q: idx for idx, q in enumerate(numeric_order, start=1)}
+                g_qs = sorted(
+                    [str(q) for q, ans in numeric_answers.items() if str(ans or "").strip().upper() == "G"],
+                    key=lambda x: int(x) if x.isdigit() else x,
+                )
+                if g_qs:
+                    section_parts.append("NUMERIC(" + ", ".join(f"C{numeric_display_map.get(q, q)}" for q in g_qs) + ")")
+
+            if section_parts:
+                out.append(f"Mã đề {exam_code}: " + " | ".join(section_parts))
         return "; ".join(out)
 
     def build_absent_exam_report(self) -> ReportTable:

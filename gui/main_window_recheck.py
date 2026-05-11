@@ -785,7 +785,11 @@ def open_recheck_dialog(self) -> None:
                 out = []
                 for key_flag in ["a", "b", "c", "d"]:
                     if key_flag in value:
-                        out.append("Đ" if bool(value.get(key_flag)) else "S")
+                        marker = value.get(key_flag)
+                        if str(marker).strip().upper() == "G":
+                            out.append("G")
+                        else:
+                            out.append("Đ" if bool(marker) else "S")
                 if out:
                     return "".join(out)
             text = str(value or "").strip().upper()
@@ -798,7 +802,7 @@ def open_recheck_dialog(self) -> None:
                     marker = str(val or token).strip().upper()
                     out.append("Đ" if marker in {"T", "TRUE", "1", "Đ", "D", "ĐÚNG", "DUNG"} else "S")
                 return "".join(out)
-            return "".join("Đ" if ch in {"T", "Đ", "D", "1"} else "S" for ch in text if ch in {"T", "F", "Đ", "D", "S", "1", "0"})
+            return "".join("G" if ch == "G" else ("Đ" if ch in {"T", "Đ", "D", "1"} else "S") for ch in text if ch in {"T", "F", "Đ", "D", "S", "1", "0", "G"})
 
         def _normalize_numeric_token(value: object) -> str:
             text = str(value or "").strip().replace(" ", "")
@@ -816,6 +820,13 @@ def open_recheck_dialog(self) -> None:
             return text.lstrip("+")
 
         def _answers_match(section: str, correct: str, student: str) -> bool:
+            if str(section or "").upper() == "TF":
+                c_text = str(correct or "").strip().upper()
+                s_text = str(student or "").strip().upper()
+                if not c_text or not s_text:
+                    return False
+                pairs = list(zip(c_text[:4], s_text[:4]))
+                return bool(pairs) and all(exp == "G" or exp == act for exp, act in pairs)
             if str(section or "").upper() == "NUMERIC":
                 c_val = _normalize_numeric_token(correct)
                 s_val = _normalize_numeric_token(student)

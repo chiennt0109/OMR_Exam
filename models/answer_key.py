@@ -23,7 +23,7 @@ class SubjectKey:
     exam_code: str
     answers: dict[int, str]
     section_rules: list[SectionRule] = field(default_factory=list)
-    true_false_answers: dict[int, dict[str, bool]] = field(default_factory=dict)
+    true_false_answers: dict[int, dict[str, bool | str]] = field(default_factory=dict)
     numeric_answers: dict[int, str] = field(default_factory=dict)
     full_credit_questions: dict[str, list[int]] = field(default_factory=dict)
     invalid_answer_rows: dict[str, dict[int, str]] = field(default_factory=dict)
@@ -83,7 +83,10 @@ class AnswerKeyRepository:
                 "exam_code": v.exam_code,
                 "answers": {str(idx): ans for idx, ans in v.answers.items()},
                 "true_false_answers": {
-                    str(idx): {sub_q: bool(flag) for sub_q, flag in flags.items()}
+                    str(idx): {
+                        sub_q: ("G" if str(flag).strip().upper() == "G" else bool(flag))
+                        for sub_q, flag in flags.items()
+                    }
                     for idx, flags in v.true_false_answers.items()
                 },
                 "numeric_answers": {str(idx): ans for idx, ans in v.numeric_answers.items()},
@@ -118,7 +121,10 @@ class AnswerKeyRepository:
                     exam_code=raw["exam_code"],
                     answers={int(k): v for k, v in raw.get("answers", {}).items()},
                     true_false_answers={
-                        int(k): {str(sub): bool(flag) for sub, flag in ans.items()}
+                        int(k): {
+                            str(sub): ("G" if str(flag).strip().upper() == "G" else bool(flag))
+                            for sub, flag in ans.items()
+                        }
                         for k, ans in raw.get("true_false_answers", {}).items()
                     },
                     numeric_answers={int(k): str(v) for k, v in raw.get("numeric_answers", {}).items()},

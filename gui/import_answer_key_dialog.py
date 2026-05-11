@@ -33,6 +33,34 @@ class ImportedAnswerRow:
 
 
 class ImportAnswerKeyDialog(QDialog):
+    @staticmethod
+    def _tf_token_from_flags(flags: dict | None) -> str:
+        out: list[str] = []
+        data = flags if isinstance(flags, dict) else {}
+        for ch in ["a", "b", "c", "d"]:
+            value = data.get(ch)
+            if str(value).strip().upper() == "G":
+                out.append("G")
+            else:
+                out.append("Đ" if bool(value) else "S")
+        return "".join(out)
+
+    @staticmethod
+    def _tf_flags_from_token(text: str) -> dict[str, bool | str]:
+        flags: dict[str, bool | str] = {}
+        raw = str(text or "").strip().upper().replace(" ", "")
+        for idx, key in enumerate(["a", "b", "c", "d"]):
+            if idx >= len(raw):
+                break
+            ch = raw[idx]
+            if ch in {"Đ", "D", "T", "1"}:
+                flags[key] = True
+            elif ch in {"S", "F", "0"}:
+                flags[key] = False
+            elif ch == "G":
+                flags[key] = "G"
+        return flags
+
     def __init__(self, parent_window, rows: list[ImportedAnswerRow] | None = None, subject_key: str = "") -> None:
         self._legacy_mode = isinstance(parent_window, ImportedAnswerKeyPackage)
         if self._legacy_mode:
@@ -149,7 +177,7 @@ class ImportAnswerKeyDialog(QDialog):
         for q_no, ans in sorted((payload.get("mcq_answers") or {}).items(), key=lambda x: int(x[0])):
             rows.append(ImportedAnswerRow("MCQ", int(q_no), str(ans or "").strip().upper()))
         for q_no, flags in sorted((payload.get("tf_answers") or {}).items(), key=lambda x: int(x[0])):
-            token = "".join("Đ" if bool((flags or {}).get(ch)) else "S" for ch in ["a", "b", "c", "d"])
+            token = ImportAnswerKeyDialog._tf_token_from_flags(flags)
             rows.append(ImportedAnswerRow("TF", int(q_no), token))
         for q_no, ans in sorted((payload.get("numeric_answers") or {}).items(), key=lambda x: int(x[0])):
             rows.append(ImportedAnswerRow("NUMERIC", int(q_no), str(ans or "").strip()))
@@ -292,7 +320,7 @@ class ImportAnswerKeyDialog(QDialog):
             for q_no, ans in sorted((key.mcq_answers or {}).items(), key=lambda x: int(x[0])):
                 rows.append(ImportedAnswerRow(section="MCQ", question_no=int(q_no), answer=str(ans)))
             for q_no, flags in sorted((key.true_false_answers or {}).items(), key=lambda x: int(x[0])):
-                token = "".join("Đ" if bool((flags or {}).get(ch)) else "S" for ch in ["a", "b", "c", "d"])
+                token = ImportAnswerKeyDialog._tf_token_from_flags(flags)
                 rows.append(ImportedAnswerRow(section="TF", question_no=int(q_no), answer=token))
             for q_no, ans in sorted((key.numeric_answers or {}).items(), key=lambda x: int(x[0])):
                 rows.append(ImportedAnswerRow(section="NUMERIC", question_no=int(q_no), answer=str(ans)))
@@ -319,12 +347,7 @@ class ImportAnswerKeyDialog(QDialog):
                 if section == "MCQ":
                     key.mcq_answers[int(row.question_no)] = str(row.answer or "").strip().upper()
                 elif section == "TF":
-                    text = str(row.answer or "").strip().upper()
-                    key.true_false_answers[int(row.question_no)] = {
-                        flag: (text[idx] in {"Đ", "D", "T", "1"})
-                        for idx, flag in enumerate(["a", "b", "c", "d"])
-                        if idx < len(text) and text[idx] in {"Đ", "D", "T", "1", "S", "F", "0"}
-                    }
+                    key.true_false_answers[int(row.question_no)] = ImportAnswerKeyDialog._tf_flags_from_token(row.answer)
                 elif section == "NUMERIC":
                     key.numeric_answers[int(row.question_no)] = str(row.answer or "").strip()
             package.exam_keys[str(exam_code or "0000").strip() or "0000"] = key
@@ -349,19 +372,14 @@ class ImportAnswerKeyDialog(QDialog):
             return
 
         answers: dict[int, str] = {}
-        tf_answers: dict[int, dict[str, bool]] = {}
+        tf_answers: dict[int, dict[str, bool | str]] = {}
         numeric_answers: dict[int, str] = {}
 
         for row in rows:
             if row.section == "MCQ":
                 answers[int(row.question_no)] = str(row.answer or "").strip().upper()
             elif row.section == "TF":
-                text = str(row.answer or "").strip().upper()
-                tf_answers[int(row.question_no)] = {
-                    key: (text[idx] in {"Đ", "D", "T", "1"})
-                    for idx, key in enumerate(["a", "b", "c", "d"])
-                    if idx < len(text) and text[idx] in {"Đ", "D", "T", "1", "S", "F", "0"}
-                }
+                tf_answers[int(row.question_no)] = self._tf_flags_from_token(row.answer)
             else:
                 numeric_answers[int(row.question_no)] = str(row.answer or "").strip()
 

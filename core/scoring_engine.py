@@ -368,6 +368,9 @@ class ScoringEngine:
                 if opt not in normalized:
                     out.append("_")
                     continue
+                if str(normalized.get(opt, "")).strip().upper() == "G":
+                    out.append("G")
+                    continue
                 parsed = self._to_bool_mark(normalized.get(opt))
                 if parsed is None:
                     out.append("_")
