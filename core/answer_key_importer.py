@@ -10,6 +10,7 @@ import pandas as pd
 MCQ_CHOICES = {"A", "B", "C", "D", "E"}
 TF_TRUE_VALUES = {"T", "TRUE", "D", "Đ", "1"}
 TF_FALSE_VALUES = {"F", "FALSE", "S", "0"}
+TF_WILDCARD_VALUES = {"G"}
 
 
 @dataclass
@@ -80,9 +81,11 @@ def _parse_tf_token(df_row_idx: int, exam_code: str, token: str) -> dict[str, bo
             payload[key] = True
         elif ch in TF_FALSE_VALUES:
             payload[key] = False
+        elif ch in TF_WILDCARD_VALUES:
+            payload[key] = "G"
         else:
             raise ImportError(
-                f"Row {df_row_idx + 2}, exam '{exam_code}': invalid TF character '{ch}'. Expected T/F or Đ/S."
+                f"Row {df_row_idx + 2}, exam '{exam_code}': invalid TF character '{ch}'. Expected T/F, Đ/S, or G."
             )
     return payload
 
@@ -91,7 +94,7 @@ def _is_tf_token(value: str) -> bool:
     raw = str(value or "").strip().upper().replace(" ", "")
     if len(raw) != 4:
         return False
-    allowed = TF_TRUE_VALUES | TF_FALSE_VALUES
+    allowed = TF_TRUE_VALUES | TF_FALSE_VALUES | TF_WILDCARD_VALUES
     return all(ch in allowed for ch in raw)
 
 
