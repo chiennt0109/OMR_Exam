@@ -188,7 +188,11 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
             out = []
             for key_flag in ["a", "b", "c", "d"]:
                 if key_flag in value:
-                    out.append("Đ" if bool(value.get(key_flag)) else "S")
+                    marker = value.get(key_flag)
+                    if str(marker).strip().upper() == "G":
+                        out.append("G")
+                    else:
+                        out.append("Đ" if bool(marker) else "S")
             return "".join(out)
         text = str(value or "").strip().upper()
         if not text:
@@ -200,7 +204,7 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
                 marker = str(val or token).strip().upper()
                 out.append("Đ" if marker in {"T", "TRUE", "1", "Đ", "D", "ĐÚNG", "DUNG"} else "S")
             return "".join(out)
-        return "".join("Đ" if ch in {"T", "Đ", "D", "1"} else "S" for ch in text if ch in {"T", "F", "Đ", "D", "S", "1", "0"})
+        return "".join("G" if ch == "G" else ("Đ" if ch in {"T", "Đ", "D", "1"} else "S") for ch in text if ch in {"T", "F", "Đ", "D", "S", "1", "0", "G"})
 
     def _value_by_actual_or_display(answer_map: dict, q_actual: int, q_display: int) -> object:
         if q_actual in answer_map:
@@ -297,6 +301,14 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
             answer_norm = self.scoring_engine._normalize_numeric_text(answer_text)
             student_norm = self.scoring_engine._normalize_numeric_text(student_text)
             return bool(answer_norm and student_norm and answer_norm == student_norm)
+        if section == "TF":
+            if not answer_text or not student_text:
+                return False
+            matched = 0
+            for expected, actual in zip(answer_text[:4], student_text[:4]):
+                if expected == "G" or expected == actual:
+                    matched += 1
+            return matched == min(len(answer_text[:4]), len(student_text[:4]))
         return bool(answer_text and student_text and answer_text == student_text)
 
     def _append_row(section: str, q_display: int, q_actual: int, answer: str, student: str) -> None:

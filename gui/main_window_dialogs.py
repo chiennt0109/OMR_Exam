@@ -690,7 +690,10 @@ class SubjectConfigDialog(QDialog):
                 if str(k).strip().lstrip("-").isdigit()
             }
             key.true_false_answers = {
-                int(k): {str(sub): bool(flag) for sub, flag in (flags or {}).items()}
+                int(k): {
+                    str(sub): ("G" if str(flag).strip().upper() == "G" else bool(flag))
+                    for sub, flag in (flags or {}).items()
+                }
                 for k, flags in (payload.get("true_false_answers", {}) or {}).items()
                 if str(k).strip().lstrip("-").isdigit()
             }
@@ -717,7 +720,10 @@ class SubjectConfigDialog(QDialog):
             payload[str(code)] = {
                 "mcq_answers": {int(k): str(v) for k, v in (key.mcq_answers or {}).items()},
                 "true_false_answers": {
-                    int(k): {str(sub): bool(flag) for sub, flag in (flags or {}).items()}
+                    int(k): {
+                        str(sub): ("G" if str(flag).strip().upper() == "G" else bool(flag))
+                        for sub, flag in (flags or {}).items()
+                    }
                     for k, flags in (key.true_false_answers or {}).items()
                 },
                 "numeric_answers": {int(k): str(v) for k, v in (key.numeric_answers or {}).items()},
@@ -745,7 +751,7 @@ class SubjectConfigDialog(QDialog):
                 f"C{int(q)}:{str(a)}" for q, a in sorted((payload.get('mcq_answers', {}) or {}).items(), key=lambda item: int(item[0]))
             ) or "-"
             tf = ", ".join(
-                f"C{int(q)}:{''.join('Đ' if bool((flags or {}).get(ch)) else 'S' for ch in ['a','b','c','d'])}"
+                f"C{int(q)}:{''.join('G' if str((flags or {}).get(ch, '')).strip().upper() == 'G' else ('Đ' if bool((flags or {}).get(ch)) else 'S') for ch in ['a','b','c','d'])}"
                 for q, flags in sorted((payload.get("true_false_answers", {}) or {}).items(), key=lambda item: int(item[0]))
             ) or "-"
             numeric = ", ".join(
