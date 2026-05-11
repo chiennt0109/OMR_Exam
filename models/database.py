@@ -205,7 +205,7 @@ class OMRDatabase:
         if table_name not in {"subjects", "blocks"}:
             return []
         cur = self.conn.cursor()
-        rows = cur.execute(f"SELECT name FROM {table_name} ORDER BY name COLLATE NOCASE").fetchall()
+        rows = cur.execute(f"SELECT name FROM {table_name} ORDER BY id ASC").fetchall()
         return [str(row[0]) for row in rows]
 
     def replace_catalog(self, table_name: str, values: Iterable[str]) -> None:
