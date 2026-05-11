@@ -207,6 +207,18 @@ class ExportReportsDialog(QDialog):
             return []
         if key not in self._score_rows_cache:
             rows = list(self.main_window._ensure_export_score_rows_for_subject(key) or [])
+            initial_ids = self._initial_import_student_ids()
+            if initial_ids:
+                strict_filtered: list[dict] = []
+                for row in rows:
+                    sid = str((row or {}).get("student_id", "") or "").strip()
+                    status_text = str((row or {}).get("status", "") or (row or {}).get("note", "") or "").strip()
+                    if sid and sid in initial_ids:
+                        strict_filtered.append(dict(row))
+                        continue
+                    if not sid and status_text.startswith("Lỗi"):
+                        strict_filtered.append(dict(row))
+                rows = strict_filtered
             source_ids: set[str] = set()
             source_count = 0
             if hasattr(self.main_window, "_scoring_source_student_ids"):
@@ -227,6 +239,16 @@ class ExportReportsDialog(QDialog):
                 rows = filtered
             self._score_rows_cache[key] = rows
         return list(self._score_rows_cache.get(key, []))
+
+    def _initial_import_student_ids(self) -> set[str]:
+        out: set[str] = set()
+        if not getattr(self.main_window, "session", None):
+            return out
+        for st in (self.main_window.session.students or []):
+            sid = str(getattr(st, "student_id", "") or "").strip()
+            if sid:
+                out.add(sid)
+        return out
 
     def _collect_class_options(self) -> list[str]:
         vals = ["Tất cả"]
