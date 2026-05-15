@@ -38,24 +38,31 @@ def _load_api_mapping_rows(path: Path) -> tuple[list[str], list[dict[str, str]]]
         for row in reader:
             rows.append({str(k).strip("﻿"): str(v or "") for k, v in (row or {}).items()})
         return headers, rows
-    if ext == ".xlsx":
+    if ext in {".xlsx", ".xls", ".xlsm"}:
         try:
-            from openpyxl import load_workbook  # type: ignore
+            import pandas as pd  # type: ignore
         except Exception as exc:
-            raise RuntimeError(f"Thiếu openpyxl để đọc .xlsx: {exc}")
-        wb = load_workbook(path, read_only=True, data_only=True)
-        ws = wb.active
-        values = list(ws.values)
-        if not values:
+            raise RuntimeError(f"Thiếu pandas để đọc file Excel: {exc}")
+        try:
+            df = pd.read_excel(path, dtype=str)
+        except Exception as exc:
+            raise RuntimeError(f"Không đọc được file Excel: {exc}")
+        if df.empty and len(df.columns) == 0:
             return [], []
-        headers = [str(x or "") for x in values[0]]
-        for data in values[1:]:
-            row = {}
+        headers = [str(col or "").strip("﻿") for col in list(df.columns)]
+        clean_headers = [h for h in headers if str(h).strip()]
+        if not clean_headers:
+            return [], []
+        for _, series in df.fillna("").iterrows():
+            row_obj: dict[str, str] = {}
             for idx, key in enumerate(headers):
-                row[str(key)] = str(data[idx] if idx < len(data) and data[idx] is not None else "")
-            rows.append(row)
-        return [str(h or "") for h in headers if str(h or "").strip()], rows
-    raise RuntimeError("Chỉ hỗ trợ .csv/.txt/.tsv/.xlsx")
+                if not str(key).strip():
+                    continue
+                row_obj[str(key)] = str(series.iloc[idx] if idx < len(series) else "")
+            if any(str(v or "").strip() for v in row_obj.values()):
+                rows.append(row_obj)
+        return clean_headers, rows
+    raise RuntimeError("Chỉ hỗ trợ .csv/.txt/.tsv/.xlsx/.xls/.xlsm")
 
 
 def _expected_answer_string_length_for_subject(self, subject_key: str) -> int:
