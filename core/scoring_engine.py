@@ -551,14 +551,33 @@ class ScoringEngine:
             else:
                 wrong += 1
 
+        numeric_aligned_for_score = self._aligned_marked_answers(
+            {int(item["q_no"]): "" for item in defs["NUMERIC"]},
+            omr.numeric_answers or {},
+        )
+        has_numeric_maps_for_score = isinstance(omr.numeric_answers, dict) and bool(omr.numeric_answers)
+
         for item in defs["NUMERIC"]:
             q_no = int(item["q_no"])
             key_display = str(item["display"] or "-")
             key_match = str(item["match"] or "")
             width = int(item["width"])
-            raw_student = self._slice_answer_string(answer_string, cursor, width)
-            cursor += width
-            student = self._normalize_numeric_text(raw_student.replace("_", ""))
+
+            # NUMERIC answers are variable-length values. Never truncate a student's
+            # numeric answer to the answer-key width. Example: key "1" and marked
+            # "16" must be wrong, not converted to "1" and counted as correct.
+            if has_numeric_maps_for_score:
+                raw_value = self._exact_answer_lookup(omr.numeric_answers, q_no)
+                if raw_value == "":
+                    raw_value = numeric_aligned_for_score.get(q_no, "")
+                student = self._normalize_numeric_text(raw_value)
+                raw_student = student
+                cursor += width
+            else:
+                raw_student = self._slice_answer_string(answer_string, cursor, width)
+                cursor += width
+                student = self._normalize_numeric_text(raw_student.replace("_", ""))
+
             numeric_compare_items.append(self._build_numeric_compare_text(key_display, student, q_no))
             if mode == "Điểm theo phần":
                 q_points = num_pp if self._is_countable_numeric_key(key_display) else 0.0
@@ -571,7 +590,7 @@ class ScoringEngine:
                 bonus_full_credit_count += 1 if q_no in full_credit_map["NUMERIC"] else 0
                 bonus_full_credit_points += q_points if q_no in full_credit_map["NUMERIC"] else 0.0
                 score += q_points
-            elif raw_student == "_" * width:
+            elif not student:
                 blank += 1
             elif key_match and student == key_match:
                 correct += 1
