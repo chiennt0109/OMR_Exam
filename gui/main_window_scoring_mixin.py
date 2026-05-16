@@ -449,15 +449,34 @@ class MainWindowScoringMixin:
 
     @staticmethod
     def _tf_statement_correct_count(tf_compare_text: str) -> int:
+        def _norm_tf_char(ch: str) -> str:
+            raw = str(ch or "").upper()
+            if raw in {"Đ", "D", "T", "1"}:
+                return "Đ"
+            if raw in {"S", "F", "0"}:
+                return "S"
+            if raw == "G":
+                return "G"
+            return "_"
+
         total = 0
         for token in [x.strip() for x in str(tf_compare_text or "").split(";") if x.strip()]:
             _, _, pair = token.partition(":")
             key_txt, _, marked_txt = pair.partition("|")
-            key_norm = "".join(ch for ch in str(key_txt or "").upper() if ch in {"T", "F", "Đ", "D", "S"})
-            mark_norm = "".join(ch for ch in str(marked_txt or "").upper() if ch in {"T", "F", "Đ", "D", "S"})
-            limit = min(len(key_norm), len(mark_norm))
-            for i in range(limit):
-                if key_norm[i] == mark_norm[i]:
+            key_norm = [_norm_tf_char(ch) for ch in str(key_txt or "").upper() if _norm_tf_char(ch) != "_"]
+            mark_norm = [_norm_tf_char(ch) for ch in str(marked_txt or "").upper()]
+            has_mark = any(ch in {"Đ", "S"} for ch in mark_norm)
+            if not key_norm or not has_mark:
+                continue
+            if len(key_norm) == 1 and key_norm[0] == "G":
+                total += 4
+                continue
+            width = max(1, min(4, len(key_norm)))
+            mark_norm = (mark_norm[:width] + ["_"] * width)[:width]
+            for i in range(width):
+                expected = key_norm[i] if i < len(key_norm) else "_"
+                actual = mark_norm[i]
+                if expected == "G" or (expected in {"Đ", "S"} and expected == actual):
                     total += 1
         return total
 

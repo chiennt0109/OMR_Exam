@@ -261,7 +261,7 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
             return float(self.scoring_engine._question_score(section, q_actual, key, subject_cfg_local))
 
         if answer_text == "G":
-            return _max_points_for_question()
+            return _max_points_for_question() if student_text else 0.0
 
         if section == "MCQ":
             return _max_points_for_question() if (student_text and student_text == answer_text) else 0.0
@@ -273,8 +273,13 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
 
         if section == "TF":
             width = max(1, min(len(answer_text), 4))
+            if not student_text:
+                return 0.0
+            if answer_text == "G":
+                return _max_points_for_question()
+            student_aligned = student_text[:width].ljust(width, "_")
             matched = 0
-            for expected, actual in zip(answer_text[:width], student_text[:width]):
+            for expected, actual in zip(answer_text[:width], student_aligned):
                 if expected == actual or expected == "G":
                     matched += 1
             if mode == "Điểm theo phần":
@@ -297,6 +302,8 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
     def _is_answer_match_for_row(section: str, answer: str, student: str) -> bool:
         answer_text = str(answer or "").strip().upper()
         student_text = str(student or "").strip().upper()
+        if answer_text == "G":
+            return bool(student_text)
         if section == "NUMERIC":
             answer_norm = self.scoring_engine._normalize_numeric_text(answer_text)
             student_norm = self.scoring_engine._normalize_numeric_text(student_text)
@@ -304,11 +311,15 @@ def open_scoring_review_editor_dialog(self, subject_key: str, result: OMRResult)
         if section == "TF":
             if not answer_text or not student_text:
                 return False
+            if answer_text == "G":
+                return True
+            width = max(1, min(len(answer_text), 4))
+            student_aligned = student_text[:width].ljust(width, "_")
             matched = 0
-            for expected, actual in zip(answer_text[:4], student_text[:4]):
+            for expected, actual in zip(answer_text[:width], student_aligned):
                 if expected == "G" or expected == actual:
                     matched += 1
-            return matched == min(len(answer_text[:4]), len(student_text[:4]))
+            return matched == width
         return bool(answer_text and student_text and answer_text == student_text)
 
     def _append_row(section: str, q_display: int, q_actual: int, answer: str, student: str) -> None:

@@ -419,7 +419,7 @@ class ScoringEngine:
                 "Chấm theo cấu hình Điểm theo phần: "
                 f"MCQ tổng = {mcq_total:g} ({mcq_pp:g} điểm/câu theo {mcq_count} câu); "
                 f"TF tổng = {tf_total:g}, đúng 1/2/3/4 ý = {tf_rule[1]:g}/{tf_rule[2]:g}/{tf_rule[3]:g}/{tf_rule[4]:g}; "
-                f"NUMERIC tổng = {num_total:g} ({num_pp:g} điểm/câu theo {num_count} câu); đáp án 'G' = tự động đúng."
+                f"NUMERIC tổng = {num_total:g} ({num_pp:g} điểm/câu theo {num_count} câu); đáp án 'G' = tự động đúng nếu học sinh có làm."
             )
 
         mcq_points = self._question_score("MCQ", self._sorted_numeric_keys(subject_key.answers)[0], subject_key, subject_config) if self._sorted_numeric_keys(subject_key.answers) else 0.0
@@ -435,7 +435,7 @@ class ScoringEngine:
             "Chấm theo cấu hình Điểm theo câu: "
             f"MCQ đúng = {mcq_points:g} điểm/câu; "
             f"TF đúng 1/2/3/4 ý = {tf_rule[1]:g}/{tf_rule[2]:g}/{tf_rule[3]:g}/{tf_rule[4]:g}; "
-            f"NUMERIC đúng = {num_points:g} điểm/câu; đáp án 'G' = tự động đúng."
+            f"NUMERIC đúng = {num_points:g} điểm/câu; đáp án 'G' = tự động đúng nếu học sinh có làm."
         )
 
     def score(self, omr: OMRResult, subject_key: SubjectKey, student_name: str = "", subject_config: dict | None = None) -> ScoreResult:
@@ -501,7 +501,9 @@ class ScoringEngine:
             else:
                 q_points = self._question_score("MCQ", q_no, subject_key, subject_config)
             auto_full = bool(item["auto_full"]) or q_no in full_credit_map["MCQ"] or key_match == "G"
-            if auto_full:
+            if auto_full and student == "":
+                blank += 1
+            elif auto_full:
                 correct += 1
                 mcq_correct += 1
                 bonus_full_credit_count += 1 if q_no in full_credit_map["MCQ"] else 0
@@ -527,16 +529,16 @@ class ScoringEngine:
             tf_compare_items.append(self._build_tf_compare_text(key_display, student_tf.replace("_", "-"), q_no))
             q_points = self._question_score("TF", q_no, subject_key, subject_config)
             auto_full = bool(item["auto_full"]) or q_no in full_credit_map["TF"] or key_match == "G"
+            blank_statements = sum(1 for ch in raw_student[:width] if ch == "_")
+            if blank_statements >= width:
+                blank += int(width)
+                continue
             if auto_full:
                 correct += 1
                 tf_correct += 1
                 bonus_full_credit_count += 1 if q_no in full_credit_map["TF"] else 0
                 bonus_full_credit_points += q_points if q_no in full_credit_map["TF"] else 0.0
                 score += q_points
-                continue
-            blank_statements = sum(1 for ch in raw_student[:width] if ch == "_")
-            if blank_statements >= width:
-                blank += int(width)
                 continue
             if blank_statements > 0:
                 blank += int(blank_statements)
@@ -584,7 +586,9 @@ class ScoringEngine:
             else:
                 q_points = self._question_score("NUMERIC", q_no, subject_key, subject_config)
             auto_full = bool(item["auto_full"]) or q_no in full_credit_map["NUMERIC"] or str(key_display).strip().upper() == "G"
-            if auto_full:
+            if auto_full and not student:
+                blank += 1
+            elif auto_full:
                 correct += 1
                 numeric_correct += 1
                 bonus_full_credit_count += 1 if q_no in full_credit_map["NUMERIC"] else 0

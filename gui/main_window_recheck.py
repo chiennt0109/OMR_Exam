@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import copy
+import csv
+import unicodedata
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPixmap
@@ -34,6 +37,147 @@ from PySide6.QtWidgets import (
 from core.omr_engine import OMRResult
 from models.answer_key import SubjectKey
 from gui.ui_branding import TOOLBAR, app_icon, load_theme, apply_widget_branding, brand_button
+
+
+
+def _recheck_plain_text(value: object) -> str:
+    """Convert Excel/CSV cell values to stable text while preserving ID-like values."""
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    text = str(value).strip()
+    if text.endswith(".0") and text[:-2].replace("-", "", 1).isdigit():
+        return text[:-2]
+    return text
+
+
+def _recheck_strip_accents(text: object) -> str:
+    raw = unicodedata.normalize("NFD", str(text or ""))
+    return "".join(ch for ch in raw if unicodedata.category(ch) != "Mn").lower().strip()
+
+
+def _recheck_dedupe_headers(raw_headers: list[object]) -> list[str]:
+    headers: list[str] = []
+    seen: dict[str, int] = {}
+    for idx, raw in enumerate(raw_headers, start=1):
+        name = _recheck_plain_text(raw).strip() or f"Cột {idx}"
+        base = name
+        count = seen.get(base, 0)
+        if count:
+            name = f"{base}_{count + 1}"
+        seen[base] = count + 1
+        headers.append(name)
+    return headers
+
+
+def _recheck_row_has_header(row: list[str]) -> bool:
+    normalized_cells = [_recheck_strip_accents(cell) for cell in row]
+    joined = " ".join(normalized_cells)
+    header_keywords = (
+        "sbd", "so bao danh", "số báo danh", "student id", "student_id", "studentid",
+        "ma hoc sinh", "ma hs", "ho ten", "họ tên", "lop", "lớp", "phong thi", "phòng thi",
+    )
+    return any(keyword in joined for keyword in header_keywords)
+
+
+def _recheck_matrix_to_rows(matrix: list[list[object]]) -> tuple[list[str], list[dict[str, str]]]:
+    cleaned: list[list[str]] = []
+    max_width = 0
+    for raw_row in matrix or []:
+        row = [_recheck_plain_text(cell) for cell in (raw_row or [])]
+        while row and not str(row[-1]).strip():
+            row.pop()
+        if not any(str(cell).strip() for cell in row):
+            continue
+        cleaned.append(row)
+        max_width = max(max_width, len(row))
+    if not cleaned:
+        return [], []
+    for row in cleaned:
+        if len(row) < max_width:
+            row.extend([""] * (max_width - len(row)))
+    if _recheck_row_has_header(cleaned[0]):
+        headers = _recheck_dedupe_headers(cleaned[0])
+        body = cleaned[1:]
+    else:
+        headers = [f"Cột {idx}" for idx in range(1, max_width + 1)]
+        body = cleaned
+    rows = [{headers[col]: str(row[col]).strip() for col in range(len(headers))} for row in body]
+    rows = [row for row in rows if any(str(v).strip() for v in row.values())]
+    return headers, rows
+
+
+def _read_recheck_table_file(path: Path) -> tuple[list[str], list[dict[str, str]]]:
+    suffix = path.suffix.lower()
+    if suffix in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+        from openpyxl import load_workbook
+
+        wb = load_workbook(path, read_only=True, data_only=True)
+        try:
+            ws = wb.active
+            matrix: list[list[object]] = []
+            for row in ws.iter_rows():
+                values: list[str] = []
+                for cell in row:
+                    value = cell.value
+                    text = _recheck_plain_text(value)
+                    try:
+                        number_format = str(getattr(cell, "number_format", "") or "")
+                        if isinstance(value, int) and set(number_format) <= {"0"} and len(number_format) > len(text):
+                            text = text.zfill(len(number_format))
+                    except Exception:
+                        pass
+                    values.append(text)
+                matrix.append(values)
+            return _recheck_matrix_to_rows(matrix)
+        finally:
+            try:
+                wb.close()
+            except Exception:
+                pass
+
+    if suffix == ".xls":
+        try:
+            import pandas as pd
+            df = pd.read_excel(path, header=None, dtype=str).fillna("")
+            matrix = df.values.tolist()
+            return _recheck_matrix_to_rows(matrix)
+        except Exception as exc:
+            raise RuntimeError(f"Không đọc được file .xls. Hãy lưu lại file thành .xlsx hoặc cài thư viện đọc Excel phù hợp. Chi tiết: {exc}") from exc
+
+    encodings = ["utf-8-sig", "utf-8", "cp1258", "cp1252", "latin-1"]
+    last_exc: Exception | None = None
+    content = ""
+    for enc in encodings:
+        try:
+            content = path.read_text(encoding=enc)
+            break
+        except Exception as exc:
+            last_exc = exc
+    else:
+        raise RuntimeError(f"Không đọc được file văn bản: {last_exc}")
+
+    sample = content[:4096]
+    delimiter = "\t" if suffix == ".tsv" else ","
+    try:
+        delimiter = csv.Sniffer().sniff(sample, delimiters=",;\t|").delimiter
+    except Exception:
+        pass
+    matrix = list(csv.reader(content.splitlines(), delimiter=delimiter))
+    return _recheck_matrix_to_rows(matrix)
+
+
+def _default_recheck_sid_column(headers: list[str]) -> int:
+    keywords = (
+        "sbd", "so bao danh", "student id", "student_id", "studentid",
+        "ma hoc sinh", "ma hs", "ma dinh danh", "id hoc sinh",
+    )
+    for idx, header in enumerate(headers or []):
+        normalized = _recheck_strip_accents(header)
+        if any(keyword in normalized for keyword in keywords):
+            return idx
+    return 0
 
 
 def action_open_recheck(self) -> None:
@@ -101,25 +245,63 @@ def open_recheck_dialog(self) -> None:
         return
 
     def _load_sid_list_from_file() -> list[str]:
-        path, _ = QFileDialog.getOpenFileName(self, "Chọn file SBD phúc tra", "", "Data files (*.xlsx *.csv *.txt *.tsv);;All files (*.*)")
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Chọn file SBD phúc tra",
+            "",
+            "Data files (*.xlsx *.xls *.xlsm *.csv *.txt *.tsv);;All files (*.*)",
+        )
         if not path:
             return []
         try:
-            headers, data_rows = self._load_api_mapping_rows(Path(path))
+            headers, data_rows = _read_recheck_table_file(Path(path))
         except Exception as exc:
             QMessageBox.warning(self, "Phúc tra", f"Không đọc được file SBD:\n{exc}")
             return []
-        if not data_rows:
-            QMessageBox.warning(self, "Phúc tra", "File SBD rỗng.")
+        if not headers or not data_rows:
+            QMessageBox.warning(self, "Phúc tra", "File SBD rỗng hoặc không có dòng dữ liệu hợp lệ.")
             return []
-        sid_col_name, ok_pick = QInputDialog.getItem(self, "Phúc tra", "Chọn cột SBD:", headers, 0, False)
+
+        default_sid_idx = _default_recheck_sid_column(headers)
+        sid_col_name, ok_pick = QInputDialog.getItem(
+            self,
+            "Phúc tra",
+            "Chọn cột Số báo danh:",
+            headers,
+            default_sid_idx,
+            False,
+        )
         if not ok_pick or not sid_col_name:
             return []
+
+        known_by_norm: dict[str, str] = {}
+        known_by_digits: dict[str, str] = {}
+        for st in (self.session.students or []) if self.session else []:
+            sid_existing = str(getattr(st, "student_id", "") or "").strip()
+            if not sid_existing:
+                continue
+            sid_norm_existing = self._normalized_student_id_for_match(sid_existing)
+            if sid_norm_existing:
+                known_by_norm.setdefault(sid_norm_existing, sid_existing)
+            digits_key = "".join(ch for ch in sid_existing if ch.isdigit()).lstrip("0")
+            if digits_key:
+                known_by_digits.setdefault(digits_key, sid_existing)
+
         out: list[str] = []
+        seen_norms: set[str] = set()
         for row_obj in data_rows:
             raw_sid = str((row_obj or {}).get(sid_col_name, "") or "").strip()
-            if self._normalized_student_id_for_match(raw_sid):
-                out.append(raw_sid)
+            if raw_sid.endswith(".0") and raw_sid[:-2].isdigit():
+                raw_sid = raw_sid[:-2]
+            sid_norm = self._normalized_student_id_for_match(raw_sid)
+            if not sid_norm or sid_norm in seen_norms:
+                continue
+            digits_key = "".join(ch for ch in raw_sid if ch.isdigit()).lstrip("0")
+            sid_final = known_by_norm.get(sid_norm) or known_by_digits.get(digits_key) or raw_sid
+            out.append(sid_final)
+            seen_norms.add(sid_norm)
+        if not out:
+            QMessageBox.warning(self, "Phúc tra", "Không tìm thấy SBD hợp lệ trong cột đã chọn.")
         return out
 
     session_cfg = dict(self.session.config or {}) if self.session else {}
@@ -499,7 +681,10 @@ def open_recheck_dialog(self) -> None:
         pairs = _parse_pairs(raw, upper=True)
         for q_no, text in pairs.items():
             marks: dict[str, bool] = {}
-            for idx, ch in enumerate(text[:4]):
+            compact = "".join(ch for ch in str(text or "").strip().upper() if ch in {"Đ", "D", "S", "T", "F", "1", "0", "_"})
+            for idx, ch in enumerate(compact[:4]):
+                if ch == "_":
+                    continue
                 if ch in {"Đ", "D", "T", "1"}:
                     marks[["a", "b", "c", "d"][idx]] = True
                 elif ch in {"S", "F", "0"}:
@@ -607,14 +792,15 @@ def open_recheck_dialog(self) -> None:
     form.addRow("Mã đề", inp_exam)
     form.addRow("Điểm hiện tại", lbl_score)
     middle_l.addLayout(form)
-    answer_tbl = QTableWidget(0, 4)
-    answer_tbl.setHorizontalHeaderLabels(["Phần", "Câu", "Đáp án", "Bài làm"])
+    answer_tbl = QTableWidget(0, 5)
+    answer_tbl.setHorizontalHeaderLabels(["Phần", "Câu", "Đáp án", "Bài làm", "Điểm"])
     answer_tbl.verticalHeader().setVisible(False)
     answer_tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
     answer_tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
     answer_tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
     answer_tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
     answer_tbl.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+    answer_tbl.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
     middle_l.addWidget(QLabel("Đáp án đúng/sai theo từng câu"))
     middle_l.addWidget(answer_tbl, 1)
     action_row = QHBoxLayout()
@@ -780,29 +966,183 @@ def open_recheck_dialog(self) -> None:
                 return answer_map.get(str(q_display))
             return ""
 
-        def _tf_compact(value: object) -> str:
+        def _tf_compact(value: object, *, blank_if_empty: bool = False) -> str:
             if isinstance(value, dict):
+                if not value and not blank_if_empty:
+                    return ""
                 out = []
+                normalized = {str(k).lower(): v for k, v in value.items()}
                 for key_flag in ["a", "b", "c", "d"]:
-                    if key_flag in value:
-                        marker = value.get(key_flag)
-                        if str(marker).strip().upper() == "G":
-                            out.append("G")
-                        else:
-                            out.append("Đ" if bool(marker) else "S")
-                if out:
-                    return "".join(out)
-            text = str(value or "").strip().upper()
+                    if key_flag not in normalized:
+                        out.append("_")
+                        continue
+                    marker = normalized.get(key_flag)
+                    if str(marker).strip().upper() == "G":
+                        out.append("G")
+                    else:
+                        out.append("Đ" if bool(marker) else "S")
+                return "".join(out)
+            text = str(value or "").strip().upper().replace(" ", "")
             if not text:
-                return ""
+                return "____" if blank_if_empty else ""
             if ":" in text or "," in text:
                 out = []
                 for token in [x.strip() for x in text.split(",") if x.strip()]:
                     _, _, val = token.partition(":")
                     marker = str(val or token).strip().upper()
-                    out.append("Đ" if marker in {"T", "TRUE", "1", "Đ", "D", "ĐÚNG", "DUNG"} else "S")
-                return "".join(out)
-            return "".join("G" if ch == "G" else ("Đ" if ch in {"T", "Đ", "D", "1"} else "S") for ch in text if ch in {"T", "F", "Đ", "D", "S", "1", "0", "G"})
+                    if marker in {"", "_", "-"}:
+                        out.append("_")
+                    elif marker in {"T", "TRUE", "1", "Đ", "D", "ĐÚNG", "DUNG"}:
+                        out.append("Đ")
+                    else:
+                        out.append("S")
+                compact = "".join(out)
+            else:
+                compact = "".join("G" if ch == "G" else ("_" if ch == "_" else ("Đ" if ch in {"T", "Đ", "D", "1"} else "S")) for ch in text if ch in {"T", "F", "Đ", "D", "S", "1", "0", "G", "_"})
+            return compact[:4].ljust(4, "_") if blank_if_empty else compact
+
+        def _tf_has_work(text: object) -> bool:
+            return any(ch in {"Đ", "D", "S", "T", "F", "1", "0"} for ch in str(text or "").strip().upper())
+
+        def _tf_flags_from_compact(text: object) -> dict[str, bool]:
+            flags: dict[str, bool] = {}
+            compact = "".join(ch for ch in str(text or "").strip().upper() if ch in {"Đ", "D", "S", "T", "F", "1", "0", "_"})
+            for idx, ch in enumerate(compact[:4]):
+                if ch == "_":
+                    continue
+                key_flag = ["a", "b", "c", "d"][idx]
+                if ch in {"Đ", "D", "T", "1"}:
+                    flags[key_flag] = True
+                elif ch in {"S", "F", "0"}:
+                    flags[key_flag] = False
+            return flags
+
+        def _format_point_value(value: object) -> str:
+            try:
+                return f"{float(value):g}"
+            except Exception:
+                return "0"
+
+        def _row_points(section: str, q_no: int, student: str) -> float:
+            """Return the score of exactly one visible row in the recheck table.
+
+            Do not call scoring_engine.score() with a partial OMRResult here. The
+            scoring engine has an alignment fallback for legacy answer strings; a
+            partial result like {3: "D"} may be aligned to question 1 as well,
+            making a single MCQ row show double points. This helper mirrors the
+            engine's per-row scoring rules directly and never lets one row affect
+            another row.
+            """
+            if not key_obj:
+                return 0.0
+
+            sec = str(section or "").strip().upper()
+            qn = int(q_no)
+            cfg = self._subject_config_by_subject_key(subject_key) or {}
+            mode = str(self.scoring_engine._score_mode(cfg))
+            sec_scores = (cfg.get("section_scores", {}) or {}) if isinstance(cfg, dict) else {}
+            q_scores = (cfg.get("question_scores", {}) or {}) if isinstance(cfg, dict) else {}
+
+            try:
+                defs = self.scoring_engine._question_definitions(key_obj)
+            except Exception:
+                defs = {"MCQ": [], "TF": [], "NUMERIC": []}
+
+            def _to_float(value: object, default: float = 0.0) -> float:
+                try:
+                    return float(str(value).strip().replace(",", "."))
+                except Exception:
+                    return default
+
+            def _countable_count(section_name: str) -> int:
+                try:
+                    if section_name == "MCQ":
+                        return sum(1 for it in defs.get("MCQ", []) if self.scoring_engine._is_countable_mcq_key(it.get("display")))
+                    if section_name == "NUMERIC":
+                        return sum(1 for it in defs.get("NUMERIC", []) if self.scoring_engine._is_countable_numeric_key(it.get("display")))
+                except Exception:
+                    pass
+                return 0
+
+            def _base_question_points(section_name: str) -> float:
+                if mode == "Điểm theo phần":
+                    total = _to_float(((sec_scores.get(section_name) or {}).get("total_points")), 0.0)
+                    if section_name in {"MCQ", "NUMERIC"}:
+                        return max(0.0, total / float(_countable_count(section_name) or 1))
+                    # For TF full-credit/G rows, use the configured maximum per TF question.
+                    rule = ((sec_scores.get("TF") or {}).get("rule_per_question") or {})
+                    vals = [_to_float(v, 0.0) for v in (rule or {}).values()]
+                    return max(0.0, max(vals) if vals else total)
+                try:
+                    return float(self.scoring_engine._question_score(section_name, qn, key_obj, cfg) or 0.0)
+                except Exception:
+                    return 0.0
+
+            def _tf_rule_points() -> dict[int, float]:
+                if mode == "Điểm theo phần":
+                    rule_cfg = ((sec_scores.get("TF") or {}).get("rule_per_question") or {})
+                else:
+                    rule_cfg = (q_scores.get("TF") or {})
+                return {
+                    0: 0.0,
+                    1: max(0.0, _to_float(rule_cfg.get("1"), 0.1)),
+                    2: max(0.0, _to_float(rule_cfg.get("2"), 0.25)),
+                    3: max(0.0, _to_float(rule_cfg.get("3"), 0.5)),
+                    4: max(0.0, _to_float(rule_cfg.get("4"), _base_question_points("TF"))),
+                }
+
+            if sec == "MCQ":
+                student_token = str(student or "").strip().upper()[:1]
+                correct_token = str((getattr(key_obj, "answers", {}) or {}).get(qn, (invalid_rows.get("MCQ", {}) or {}).get(qn, "")) or "").strip().upper()
+                if not correct_token and qn in {int(x) for x in (full_credit.get("MCQ", []) or []) if str(x).strip().lstrip("-").isdigit()}:
+                    correct_token = "G"
+                if not student_token:
+                    return 0.0
+                if correct_token == "G" or student_token == correct_token:
+                    return _base_question_points("MCQ")
+                return 0.0
+
+            if sec == "TF":
+                raw_correct_tf = (getattr(key_obj, "true_false_answers", {}) or {}).get(qn, None)
+                correct_text = _tf_compact(raw_correct_tf) if raw_correct_tf is not None and raw_correct_tf != "" else ""
+                if not correct_text:
+                    correct_text = str((invalid_rows.get("TF", {}) or {}).get(qn, "") or "").strip().upper()
+                if not correct_text and qn in {int(x) for x in (full_credit.get("TF", []) or []) if str(x).strip().lstrip("-").isdigit()}:
+                    correct_text = "G"
+                student_text = _tf_compact(student, blank_if_empty=True)
+                if not _tf_has_work(student_text):
+                    return 0.0
+                if str(correct_text).strip().upper() == "G":
+                    return _base_question_points("TF")
+                width = max(1, min(len(str(correct_text or "")), 4))
+                aligned_student = str(student_text or "")[:width].ljust(width, "_")
+                matched = 0
+                for expected_ch, actual_ch in zip(str(correct_text or "")[:width].upper(), aligned_student.upper()):
+                    if expected_ch == "G" or expected_ch == actual_ch:
+                        matched += 1
+                return _tf_rule_points().get(matched, 0.0)
+
+            if sec == "NUMERIC":
+                student_token = str(student or "").strip()
+                correct_raw = str((getattr(key_obj, "numeric_answers", {}) or {}).get(qn, (invalid_rows.get("NUMERIC", {}) or {}).get(qn, "")) or "").strip()
+                if not correct_raw and qn in {int(x) for x in (full_credit.get("NUMERIC", []) or []) if str(x).strip().lstrip("-").isdigit()}:
+                    correct_raw = "G"
+                if not student_token:
+                    return 0.0
+                if str(correct_raw).strip().upper() == "G":
+                    return _base_question_points("NUMERIC")
+                c_val = _normalize_numeric_token(correct_raw)
+                s_val = _normalize_numeric_token(student_token)
+                if c_val and s_val and c_val == s_val:
+                    return _base_question_points("NUMERIC")
+                try:
+                    if c_val and s_val and abs(float(c_val) - float(s_val)) <= 1e-9:
+                        return _base_question_points("NUMERIC")
+                except Exception:
+                    pass
+                return 0.0
+
+            return 0.0
 
         def _normalize_numeric_token(value: object) -> str:
             text = str(value or "").strip().replace(" ", "")
@@ -820,23 +1160,28 @@ def open_recheck_dialog(self) -> None:
             return text.lstrip("+")
 
         def _answers_match(section: str, correct: str, student: str) -> bool:
-            if str(section or "").upper() == "TF":
-                c_text = str(correct or "").strip().upper()
-                s_text = str(student or "").strip().upper()
-                if not c_text or not s_text:
+            sec = str(section or "").upper()
+            c_text = str(correct or "").strip().upper()
+            s_text = str(student or "").strip().upper()
+            if c_text == "G":
+                return _tf_has_work(s_text) if sec == "TF" else bool(s_text)
+            if sec == "TF":
+                if not c_text or not _tf_has_work(s_text):
                     return False
-                pairs = list(zip(c_text[:4], s_text[:4]))
-                return bool(pairs) and all(exp == "G" or exp == act for exp, act in pairs)
-            if str(section or "").upper() == "NUMERIC":
+                width = max(1, min(len(c_text), 4))
+                student_aligned = _tf_compact(s_text, blank_if_empty=True)[:width].ljust(width, "_")
+                pairs = list(zip(c_text[:width], student_aligned))
+                return bool(pairs) and all((exp == "G") or (exp == act) for exp, act in pairs)
+            if sec == "NUMERIC":
                 c_val = _normalize_numeric_token(correct)
                 s_val = _normalize_numeric_token(student)
-                if c_val == s_val:
+                if c_val and s_val and c_val == s_val:
                     return True
                 try:
-                    return abs(float(c_val) - float(s_val)) <= 1e-9
+                    return bool(c_val and s_val) and abs(float(c_val) - float(s_val)) <= 1e-9
                 except Exception:
                     return False
-            return str(correct or "").strip().upper() == str(student or "").strip().upper()
+            return bool(c_text and s_text and c_text == s_text)
 
         def _add_row(section: str, q_display: int, q_no: int, correct: str, student: str) -> None:
             r = answer_tbl.rowCount()
@@ -851,6 +1196,10 @@ def open_recheck_dialog(self) -> None:
             if not _answers_match(section, correct, student):
                 student_item.setBackground(QColor(255, 225, 225))
             answer_tbl.setItem(r, 3, student_item)
+            point_item = QTableWidgetItem(_format_point_value(_row_points(section, int(q_no), student)))
+            point_item.setTextAlignment(Qt.AlignCenter)
+            point_item.setFlags(point_item.flags() & ~Qt.ItemIsEditable)
+            answer_tbl.setItem(r, 4, point_item)
             row_map.append((section, int(q_no)))
 
         for q_display, q_no in enumerate(expected.get("MCQ", []), start=1):
@@ -860,12 +1209,13 @@ def open_recheck_dialog(self) -> None:
             student = str(_value_by_actual_or_display(getattr(res_obj, "mcq_answers", {}) or {}, int(q_no), q_display) or "").strip().upper()
             _add_row("MCQ", q_display, int(q_no), correct, student)
         for q_display, q_no in enumerate(expected.get("TF", []), start=1):
-            correct = _tf_compact((getattr(key_obj, "true_false_answers", {}) or {}).get(int(q_no), {}) if key_obj else {})
+            raw_correct_tf = (getattr(key_obj, "true_false_answers", {}) or {}).get(int(q_no), None) if key_obj else None
+            correct = _tf_compact(raw_correct_tf) if raw_correct_tf is not None and raw_correct_tf != "" else ""
             if not correct:
                 correct = str((invalid_rows.get("TF", {}) or {}).get(int(q_no), "") or "").strip().upper()
             if not correct and int(q_no) in {int(x) for x in (full_credit.get("TF", []) or []) if str(x).strip().lstrip("-").isdigit()}:
                 correct = "G"
-            student = _tf_compact(_value_by_actual_or_display(getattr(res_obj, "true_false_answers", {}) or {}, int(q_no), q_display))
+            student = _tf_compact(_value_by_actual_or_display(getattr(res_obj, "true_false_answers", {}) or {}, int(q_no), q_display), blank_if_empty=True)
             _add_row("TF", q_display, int(q_no), correct, student)
         for q_display, q_no in enumerate(expected.get("NUMERIC", []), start=1):
             correct = str((getattr(key_obj, "numeric_answers", {}) or {}).get(int(q_no), (invalid_rows.get("NUMERIC", {}) or {}).get(int(q_no), "")) or "").strip()
@@ -874,6 +1224,10 @@ def open_recheck_dialog(self) -> None:
             student = str(_value_by_actual_or_display(getattr(res_obj, "numeric_answers", {}) or {}, int(q_no), q_display) or "").strip()
             _add_row("NUMERIC", q_display, int(q_no), correct, student)
         editor_refs["row_map"] = row_map
+        editor_refs["row_point_scorer"] = _row_points
+        editor_refs["row_answer_matcher"] = _answers_match
+        editor_refs["tf_compact"] = _tf_compact
+        editor_refs["tf_has_work"] = _tf_has_work
 
     def _on_answer_table_changed(item: QTableWidgetItem) -> None:
         if item is None or item.column() != 3:
@@ -884,23 +1238,44 @@ def open_recheck_dialog(self) -> None:
         raw_student_txt = str(item.text() or "").strip()
         if section_txt != "NUMERIC":
             student_txt = raw_student_txt.upper()
+            if section_txt == "TF":
+                tf_compact_fn = editor_refs.get("tf_compact")
+                if callable(tf_compact_fn):
+                    student_txt = str(tf_compact_fn(student_txt, blank_if_empty=True))
             if student_txt != str(item.text() or ""):
                 answer_tbl.blockSignals(True)
                 item.setText(student_txt)
                 answer_tbl.blockSignals(False)
         else:
             student_txt = raw_student_txt
-        is_match = (
-            abs(float(str(correct_txt).replace(",", ".").strip()) - float(str(student_txt).replace(",", ".").strip())) <= 1e-9
-            if section_txt == "NUMERIC"
-            and str(correct_txt).replace(",", ".").strip() not in {"", "G"}
-            and str(student_txt).replace(",", ".").strip() not in {"", "G"}
-            else correct_txt == str(student_txt).strip().upper() if section_txt != "NUMERIC" else str(correct_txt).replace(",", ".").strip() == str(student_txt).replace(",", ".").strip()
-        )
+
+        matcher = editor_refs.get("row_answer_matcher")
+        is_match = bool(matcher(section_txt, correct_txt, student_txt)) if callable(matcher) else False
         if not is_match:
             item.setBackground(QColor(255, 225, 225))
         else:
             item.setBackground(QColor(255, 255, 255, 0))
+
+        q_item = answer_tbl.item(row_idx, 1)
+        try:
+            q_no = int(q_item.data(Qt.UserRole) if q_item and q_item.data(Qt.UserRole) is not None else 0)
+        except Exception:
+            q_no = 0
+        point_value = 0.0
+        scorer = editor_refs.get("row_point_scorer")
+        if callable(scorer) and q_no > 0:
+            point_value = float(scorer(section_txt, q_no, student_txt) or 0.0)
+        point_item = answer_tbl.item(row_idx, 4)
+        if point_item is None:
+            point_item = QTableWidgetItem()
+            point_item.setTextAlignment(Qt.AlignCenter)
+            point_item.setFlags(point_item.flags() & ~Qt.ItemIsEditable)
+            answer_tbl.setItem(row_idx, 4, point_item)
+        point_text = f"{point_value:g}"
+        if point_item.text() != point_text:
+            answer_tbl.blockSignals(True)
+            point_item.setText(point_text)
+            answer_tbl.blockSignals(False)
 
     def _subject_room_for_sid(sid: str) -> str:
         cfg = self._subject_config_by_subject_key(subject_key) or {}
