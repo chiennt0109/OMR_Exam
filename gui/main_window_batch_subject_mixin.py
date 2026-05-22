@@ -741,6 +741,7 @@ class MainWindowBatchSubjectMixin:
 
     def _normalized_exam_room_mapping_by_room(self, cfg: dict) -> dict[str, set[str]]:
         normalized: dict[str, set[str]] = {}
+        sid_owner: dict[str, str] = {}
         mapping_by_room = cfg.get("exam_room_sbd_mapping_by_room", {}) if isinstance(cfg.get("exam_room_sbd_mapping_by_room", {}), dict) else {}
         for room_key, vals in mapping_by_room.items():
             room_text = str(room_key or "").strip()
@@ -751,7 +752,18 @@ class MainWindowBatchSubjectMixin:
                 raw_vals.extend(str(x).strip() for x in vals if str(x).strip())
             elif isinstance(vals, str):
                 raw_vals.extend(x.strip() for x in vals.replace(";", ",").replace("\n", ",").split(",") if x.strip())
-            normalized_vals = {self._normalized_student_id_for_match(x) for x in raw_vals if x}
+            normalized_vals: set[str] = set()
+            for sid_text in raw_vals:
+                sid_norm = self._normalized_student_id_for_match(sid_text)
+                if not sid_norm:
+                    continue
+                owner = sid_owner.get(sid_norm)
+                # Guardrail: một môn không được xếp cùng SBD ở nhiều cột/phòng.
+                # Giữ lần xuất hiện đầu tiên để đảm bảo mỗi SBD chỉ thuộc 1 phòng của môn.
+                if owner and owner != room_text:
+                    continue
+                sid_owner[sid_norm] = room_text
+                normalized_vals.add(sid_norm)
             if normalized_vals:
                 normalized[room_text] = normalized_vals
         return normalized
