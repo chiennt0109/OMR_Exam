@@ -37,6 +37,7 @@ class ReportTable:
 class ExportReportsDialog(QDialog):
     REPORT_SUBJECT_DIST = "Phổ điểm theo môn"
     REPORT_SUBJECT_STATS = "Chỉ số theo môn"
+    REPORT_SUBJECT_ROOM_STATS = "Thống kê số bài theo môn - phòng"
     REPORT_COMBO_RANK = "Bảng điểm theo tổ hợp"
     REPORT_COMBO_DIST = "Phổ điểm tổ hợp"
     REPORT_CLASS_SUMMARY = "Tổng hợp theo lớp"
@@ -67,6 +68,7 @@ class ExportReportsDialog(QDialog):
         for name in [
             self.REPORT_SUBJECT_DIST,
             self.REPORT_SUBJECT_STATS,
+            self.REPORT_SUBJECT_ROOM_STATS,
             self.REPORT_COMBO_RANK,
             self.REPORT_COMBO_DIST,
             self.REPORT_CLASS_SUMMARY,
@@ -911,6 +913,52 @@ class ExportReportsDialog(QDialog):
             rows.append([label, len(scores), *counts, perfect])
         return ReportTable(headers, rows)
 
+
+    def build_subject_room_stats_report(self) -> ReportTable:
+        headers = ["Tên môn", "Phòng thi", "Số SBD import", "Số bài thực tế", "Chênh lệch"]
+        rows: list[list[object]] = []
+        profiles = self._student_profile_map()
+
+        for subject_label, subject_key in self._collect_subject_pairs():
+            cfg = self.main_window._subject_config_by_subject_key(subject_key) or {}
+            mapped_room_by_sid = self._subject_mapping_room_by_sid(cfg, profiles)
+
+            expected_by_room: dict[str, set[str]] = {}
+            for sid_text, room_text in mapped_room_by_sid.items():
+                room = str(room_text or "").strip() or "[Không rõ phòng]"
+                expected_by_room.setdefault(room, set()).add(str(sid_text or "").strip())
+
+            actual_by_room: dict[str, set[str]] = {}
+            if hasattr(self.main_window, "_scoring_source_student_ids"):
+                try:
+                    source_ids, _ = self.main_window._scoring_source_student_ids(subject_key)
+                except Exception:
+                    source_ids = set()
+            else:
+                source_ids = set()
+
+            for sid in source_ids:
+                sid_text = str(sid or "").strip()
+                if not sid_text:
+                    continue
+                room_text = str(mapped_room_by_sid.get(sid_text, "") or "").strip()
+                if not room_text:
+                    room_text = str((profiles.get(sid_text, {}) or {}).get("exam_room", "") or "").strip()
+                room = room_text or "[Không rõ phòng]"
+                actual_by_room.setdefault(room, set()).add(sid_text)
+
+            room_names = sorted(set(expected_by_room.keys()) | set(actual_by_room.keys()))
+            if not room_names:
+                rows.append([subject_label, "[Không có danh sách phòng]", 0, 0, 0])
+                continue
+
+            for room in room_names:
+                expected = len(expected_by_room.get(room, set()))
+                actual = len(actual_by_room.get(room, set()))
+                rows.append([subject_label, room, expected, actual, actual - expected])
+
+        return ReportTable(headers, rows)
+
     def build_subject_stats_report(self) -> ReportTable:
         headers = ["Tên môn", "Điểm trung bình", "Điểm trung vị", "Điểm cao nhất", "Điểm thấp nhất"]
         rows: list[list[object]] = []
@@ -1155,6 +1203,8 @@ class ExportReportsDialog(QDialog):
             return self.build_subject_distribution_report()
         if name == self.REPORT_SUBJECT_STATS:
             return self.build_subject_stats_report()
+        if name == self.REPORT_SUBJECT_ROOM_STATS:
+            return self.build_subject_room_stats_report()
         if name == self.REPORT_COMBO_RANK:
             return self.build_combo_ranking_report()
         if name == self.REPORT_COMBO_DIST:
